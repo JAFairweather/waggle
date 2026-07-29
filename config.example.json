@@ -23,6 +23,7 @@
     "max_content_bytes": 16384,
     "replier_per_min": 5,
     "channel_per_min": 20,
-    "lane_per_hour": 200
+    "lane_per_hour": 200,
+    "deletes_per_hour": 20
   }
 }

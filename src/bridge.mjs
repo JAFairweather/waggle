@@ -31,6 +31,7 @@
 // `since`, so a since=now subscription silently drops fresh DMs. We default the
 // lookback to 48h and lean on durable id-dedup to make re-delivery a no-op.
 import WebSocket from 'ws'
+import { verifyEvent } from 'nostr-tools/pure'
 import { execFile } from 'node:child_process'
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -114,6 +115,13 @@ function loadPubWatermark() {
   catch { return null }
 }
 let pubWatermark = loadPubWatermark()
+// A7: NIP-09 deletion propagation. The posted-map records every public note we repost
+// (original id -> our Buzz copy) so an author's later kind:5 can withdraw the copy. The
+// kind:5 lookback is intentionally LONGER than the kind:1 watermark: deletes are rare,
+// idempotent under dedup, and a delete issued while the lane was down must not be missed.
+const POSTED_MAP_PATH = process.env.POSTED_MAP_PATH || resolve(ROOT, 'data', 'posted-map.log')
+const POSTED_CAP = Number(process.env.POSTED_CAP || 100000)
+const DEL_SINCE_SECS = Number(process.env.DEL_SINCE_SECS || 172800) // 48h
 function bumpPubWatermark(ts) {
   if (!Number.isFinite(ts) || ts <= 0 || (pubWatermark && ts <= pubWatermark)) return
   pubWatermark = ts
@@ -136,6 +144,7 @@ const PUB = cfg.public && cfg.public.inbox ? {
   replierPerMin: Number(cfg.public.replier_per_min != null ? cfg.public.replier_per_min : 5),     // A6
   channelPerMin: Number(cfg.public.channel_per_min != null ? cfg.public.channel_per_min : 20),    // A6
   lanePerHour: Number(cfg.public.lane_per_hour != null ? cfg.public.lane_per_hour : 200),         // A6
+  deletesPerHour: Number(cfg.public.deletes_per_hour != null ? cfg.public.deletes_per_hour : 20), // A7
 } : null
 
 const unresolved = (cfg.recipients || []).filter(r => !r.inbox || r.inbox.startsWith('INBOX_UUID_'))
@@ -162,6 +171,48 @@ function loadSeen() {
 function markSeen(id) {
   seen.add(id)
   try { appendFileSync(SEEN_PATH, id + '\n') } catch (e) { err(`dedup: append failed for ${id}: ${e.message}`) }
+}
+
+// A7 posted-map: append-only JSONL, same lifecycle as seen-ids. One {id, author, buzz,
+// dest, ts} record per reposted public note, plus {id, deleted:true} once withdrawn — the
+// deleted marker makes a second, different kind:5 for the same target a no-op (the seen
+// set only dedups the SAME delete id re-served by another relay).
+const postedMap = new Map() // orig event id -> { author, buzz, dest, deleted }
+function loadPostedMap() {
+  if (!existsSync(POSTED_MAP_PATH)) return
+  const lines = readFileSync(POSTED_MAP_PATH, 'utf8').split('\n').filter(Boolean).slice(-POSTED_CAP)
+  for (const line of lines) {
+    try {
+      const r = JSON.parse(line)
+      if (!r || !r.id) continue
+      if (r.deleted) { const e = postedMap.get(r.id); if (e) e.deleted = true; continue }
+      postedMap.set(r.id, { author: r.author, buzz: r.buzz || null, dest: r.dest, deleted: false })
+    } catch { err(`A7: skipping corrupt posted-map line`) }
+  }
+  if (postedMap.size) log(`A7: loaded ${postedMap.size} posted-map entries from ${POSTED_MAP_PATH}`)
+}
+function recordPosted(rec) {
+  postedMap.set(rec.id, { author: rec.author, buzz: rec.buzz || null, dest: rec.dest, deleted: false })
+  try { mkdirSync(dirname(POSTED_MAP_PATH), { recursive: true }); appendFileSync(POSTED_MAP_PATH, JSON.stringify(rec) + '\n') }
+  catch (e) { err(`A7: posted-map append failed for ${rec.id}: ${e.message}`) }
+}
+function recordWithdrawn(id) {
+  const e = postedMap.get(id)
+  if (e) e.deleted = true
+  try { appendFileSync(POSTED_MAP_PATH, JSON.stringify({ id, deleted: true }) + '\n') }
+  catch (er) { err(`A7: posted-map append failed for ${id}: ${er.message}`) }
+}
+// The buzz CLI's stdout carries the created event id (JSON or plain text); without it a
+// later withdrawal falls back to the follow-up-tombstone tier, so a miss is safe.
+function parseBuzzEventId(stdout) {
+  const s = String(stdout || '')
+  try {
+    const j = JSON.parse(s)
+    const v = j.event_id || j.id || j.event
+    if (typeof v === 'string' && /^[0-9a-f]{64}$/.test(v)) return v
+  } catch { /* not JSON — fall through to scan */ }
+  const m = s.match(/\b[0-9a-f]{64}\b/)
+  return m ? m[0] : null
 }
 
 // --- delivery ---------------------------------------------------------------
@@ -277,11 +328,22 @@ function forwardPublic(ev, why, dest, quarantine) {
     `author \`${ev.pubkey}\`\n` +
     `event \`${ev.id}\`  ·  ${when}${claim}\n\n` +
     '```\n' + body.replace(/```/g, '`​``') + '\n```\n'
-  // Test seam: exercise the full buzz-mode path (markSeen/watermark) without a network send.
-  if (process.env.WB_STUB_SEND) { log(`PUBLIC[stub] -> ${quarantine ? 'STAGING' : 'inbox'} ${dest}: kind1 ${ev.id.slice(0, 12)}… by ${author}… (${why})`); return }
+  // Test seam: exercise the full buzz-mode path (markSeen/watermark/posted-map) without a
+  // network send. The synthetic buzz id (orig id reversed — still 64 hex, still unique)
+  // exercises the same capture shape the live path records.
+  if (process.env.WB_STUB_SEND) {
+    log(`PUBLIC[stub] -> ${quarantine ? 'STAGING' : 'inbox'} ${dest}: kind1 ${ev.id.slice(0, 12)}… by ${author}… (${why})`)
+    recordPosted({ id: ev.id, author: ev.pubkey, buzz: ev.id.split('').reverse().join(''), dest, ts: nowSec })
+    return
+  }
   execFile('buzz', ['messages', 'send', '--channel', dest, '--content', content], (e, so, se) => {
     if (e) return err(`PUBLIC[buzz] ERR -> ${dest}: ${se || e.message}`)
     log(`PUBLIC[buzz] ok -> ${quarantine ? 'STAGING' : 'inbox'} ${dest}: kind1 ${ev.id.slice(0, 12)}… by ${author}… (${why})`)
+    // A7: record the repost so the author's later kind:5 can withdraw it. A null buzz id
+    // (stdout didn't carry one) degrades to the follow-up-tombstone tier — logged, safe.
+    const buzzId = parseBuzzEventId(so)
+    if (!buzzId) err(`A7 warn[no-id]: could not capture buzz event id for ${ev.id.slice(0, 12)}… — withdrawal will use follow-up tier`)
+    recordPosted({ id: ev.id, author: ev.pubkey, buzz: buzzId, dest, ts: nowSec })
   })
 }
 
@@ -323,6 +385,66 @@ function routePublic(ev) {
     bumpPubWatermark(clampCreated(ev.created_at, Math.floor(nowMs / 1000)).clamped)
   }
   forwardPublic(ev, why, dest, quarantine)
+}
+
+// --- A7: NIP-09 deletion propagation ----------------------------------------
+// A watched author's kind:5 withdraws our reposted copy of their note. Scope is
+// deliberately WATCHED AUTHORS ONLY: kind:5 can't be pre-subscribed for arbitrary future
+// strangers, and a stranger's quarantined reply is human-reviewed anyway (out of scope,
+// per C decision). Signature verification is MANDATORY here — unlike the repost path,
+// where the worst case is a mislabeled repost, a forged kind:5 would destroy our copies.
+const rlDeletes = [] // [tsMs...] lane-wide hourly window (A6 discipline: drops logged)
+function routeDelete(ev) {
+  if (!ev || !ev.id || ev.kind !== 5 || seen.has(ev.id)) return
+  if (!PUB.authors.includes(ev.pubkey)) return // scope: watched authors only
+  let okSig = false
+  try { okSig = verifyEvent(ev) } catch { okSig = false }
+  if (!okSig) { err(`A7 drop[bad-signature]: kind5 ${ev.id.slice(0, 12)}… claims ${String(ev.pubkey || '?').slice(0, 12)}…`); return }
+  const targets = (ev.tags || []).filter(t => t[0] === 'e' && /^[0-9a-f]{64}$/i.test(t[1] || '')).map(t => t[1].toLowerCase())
+  const acts = []
+  for (const id of targets) {
+    const entry = postedMap.get(id)
+    if (!entry || entry.deleted) continue
+    // NIP-09 authorship rule: a watched author must not be able to delete ANOTHER
+    // watched author's reposted note.
+    if (entry.author !== ev.pubkey) { err(`A7 drop[author-mismatch]: kind5 by ${ev.pubkey.slice(0, 12)}… targets ${id.slice(0, 12)}… posted by ${String(entry.author).slice(0, 12)}…`); continue }
+    acts.push({ id, entry })
+  }
+  if (!acts.length) return // unknown/already-withdrawn targets: leave unseen so a later repost+delete still works
+  const nowMs = Date.now()
+  slide(rlDeletes, nowMs, 3600_000)
+  if (rlDeletes.length >= PUB.deletesPerHour) { err(`A7 drop[rate]: delete cap ${PUB.deletesPerHour}/h — ${ev.id.slice(0, 12)}…`); return }
+  rlDeletes.push(nowMs)
+  if (FORWARD_MODE !== 'buzz') {
+    for (const a of acts) log(`A7[dryrun] would withdraw ${a.id.slice(0, 12)}… (buzz ${a.entry.buzz ? a.entry.buzz.slice(0, 12) + '…' : 'unknown'}) per kind5 ${ev.id.slice(0, 12)}…`)
+    return
+  }
+  markSeen(ev.id) // A2 discipline: commit before dispatch — a bounce can't re-run the withdrawal
+  for (const a of acts) withdraw(a.id, a.entry, ev)
+}
+
+// Three-tier withdrawal, logging which tier landed: (1) CLI-native delete with a public
+// tombstone reason, (2) edit the copy down to a tombstone, (3) follow-up tombstone post
+// when we never captured a buzz id or both mutations fail.
+function withdraw(origId, entry, delEv) {
+  const done = (tier) => { recordWithdrawn(origId); log(`A7 ok[${tier}]: withdrew ${origId.slice(0, 12)}… per kind5 ${delEv.id.slice(0, 12)}…`) }
+  const tombstone =
+    `🗑 **Withdrawn by author** — NIP-09 deletion\n` +
+    `author \`${entry.author}\` · original \`${origId}\` · delete \`${delEv.id}\`\n` +
+    `_Content removed at the author's request._\n`
+  if (process.env.WB_STUB_SEND) { done(entry.buzz ? 'stub-delete' : 'stub-post'); return }
+  const followUp = () => execFile('buzz', ['messages', 'send', '--channel', entry.dest, '--content', tombstone], (e3) => {
+    if (e3) return err(`A7 ERR[all-tiers]: could not withdraw ${origId.slice(0, 12)}…: ${e3.message}`)
+    done('follow-up')
+  })
+  if (!entry.buzz) return followUp()
+  execFile('buzz', ['messages', 'delete', '--event', entry.buzz, '--reason-code', 'nip09', '--public-reason', 'withdrawn by author (NIP-09)'], (e1) => {
+    if (!e1) return done('delete')
+    execFile('buzz', ['messages', 'edit', '--event', entry.buzz, '--content', tombstone], (e2) => {
+      if (!e2) return done('edit')
+      followUp()
+    })
+  })
 }
 
 // --- relay connections ------------------------------------------------------
@@ -371,10 +493,35 @@ function connectPublic(url) {
       eosed = true
       if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
       const now = Math.floor(Date.now() / 1000)
-      buf.sort((a, b) => clampCreated(a.created_at, now).clamped - clampCreated(b.created_at, now).clamped)
-      const batch = buf; buf = []
-      log(`[pub ${url}] ${reason} — flushing ${batch.length} backfilled (sorted), now live`)
-      for (const ev of batch) routePublic(ev)
+      // A7 backfill interplay: a valid buffered delete suppresses its buffered target
+      // outright — never post a note its author had already deleted by the time we booted.
+      // Deletes are processed AFTER the notes flush so a delete for a note posted in an
+      // earlier run still finds its posted-map entry.
+      const dels = buf.filter(e => e && e.kind === 5)
+      const notes = buf.filter(e => e && e.kind !== 5)
+      const suppressed = new Set()
+      for (const d of dels) {
+        let ok = false
+        try { ok = verifyEvent(d) } catch { ok = false }
+        if (!ok) continue
+        for (const t of (d.tags || [])) {
+          if (t[0] !== 'e' || !t[1]) continue
+          const target = notes.find(n => n.id === String(t[1]).toLowerCase())
+          if (target && target.pubkey === d.pubkey) suppressed.add(target.id)
+        }
+      }
+      notes.sort((a, b) => clampCreated(a.created_at, now).clamped - clampCreated(b.created_at, now).clamped)
+      buf = []
+      log(`[pub ${url}] ${reason} — flushing ${notes.length - suppressed.size} backfilled (sorted${suppressed.size ? `, ${suppressed.size} suppressed[deleted]` : ''}), now live`)
+      for (const ev of notes) {
+        if (suppressed.has(ev.id)) {
+          err(`PUBLIC suppress[deleted]: ${ev.id.slice(0, 12)}… deleted by author before delivery`)
+          if (FORWARD_MODE === 'buzz') markSeen(ev.id)
+          continue
+        }
+        routePublic(ev)
+      }
+      for (const d of dels) routeDelete(d)
     }
     ws.on('open', () => {
       alive = true
@@ -383,6 +530,9 @@ function connectPublic(url) {
       // history can't be pulled into a channel. The app-side buf cap below is defense in depth.
       if (PUB.authors.length) { expect.add('pa'); ws.send(JSON.stringify(['REQ', 'pa', { kinds: [1], authors: PUB.authors, since: PUB.since, limit: PUB.backfillLimit }])) }
       if (PUB.events.length) { expect.add('pe'); ws.send(JSON.stringify(['REQ', 'pe', { kinds: [1], '#e': PUB.events, since: PUB.since, limit: PUB.backfillLimit }])) }
+      // A7: kind:5 deletes from watched authors. Longer lookback than the kind:1 watermark
+      // (deletes are rare + idempotent; one issued during downtime must not be missed).
+      if (PUB.authors.length) { expect.add('pd'); ws.send(JSON.stringify(['REQ', 'pd', { kinds: [5], authors: PUB.authors, since: Math.floor(Date.now() / 1000) - DEL_SINCE_SECS, limit: PUB.backfillLimit }])) }
       // Safety: flush even if a relay never sends EOSE for a subscription.
       flushTimer = setTimeout(() => flush('EOSE timeout'), 10000)
     })
@@ -391,7 +541,7 @@ function connectPublic(url) {
       try { m = JSON.parse(d.toString()) } catch { return }
       if (m[0] === 'EVENT') {
         const ev = m[2]
-        if (eosed) { routePublic(ev); return }
+        if (eosed) { if (ev && ev.kind === 5) routeDelete(ev); else routePublic(ev); return }
         // A4: bound the pre-EOSE buffer app-side too — overflow dropped WITH a log, never silent.
         if (buf.length >= PUB.backfillLimit) { err(`[pub ${url}] backfill buffer cap ${PUB.backfillLimit} — dropping ${ev?.id ? ev.id.slice(0, 12) : '?'}…`); return }
         buf.push(ev)
@@ -410,11 +560,12 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { routePublic, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB }
+export { routePublic, routeDelete, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
   loadSeen()
+  loadPostedMap()
   log(`West Bridge v1 — mode=${FORWARD_MODE}, ${TARGETS.length} recipients, ${RELAYS.length} relays, ${PLANE_AUTHORS.length} channel plane(s), dm-since=${SINCE} (${SINCE_SECS}s), chan-since=${CHANNEL_SINCE} (${CHANNEL_SINCE_SECS}s)`)
   if (!SEALED_LANES) {
     log('sealed lanes: DISABLED (SEALED_LANES=off) — DM + Concord channel routing OFF; running PUBLIC read lane only')
@@ -428,7 +579,7 @@ if (!process.env.WB_NO_BOOT) {
   if (PUB) {
     if (!PUB.relays.length) err('WARN: public read lane configured but cfg.public.relays is empty — nothing to listen on')
     log(`public read lane -> inbox ${PUB.inbox}: ${PUB.relays.length} relay(s), ${PUB.authors.length} watched author(s), ${PUB.events.length} watched note(s), pub-since=${PUB.since} (${PUB_SINCE_SECS}s), watermark=${pubWatermark || 'none'}`)
-    log(`  gates: staging=${PUB.staging || 'HOLD (none)'} · backfill<=${PUB.backfillLimit} · maxContent=${PUB.maxContentBytes}B · rate ${PUB.replierPerMin}/replier/min ${PUB.channelPerMin}/chan/min ${PUB.lanePerHour}/lane/h`)
+    log(`  gates: staging=${PUB.staging || 'HOLD (none)'} · backfill<=${PUB.backfillLimit} · maxContent=${PUB.maxContentBytes}B · rate ${PUB.replierPerMin}/replier/min ${PUB.channelPerMin}/chan/min ${PUB.lanePerHour}/lane/h · deletes ${PUB.deletesPerHour}/h (A7)`)
     PUB.relays.forEach(connectPublic)
   } else {
     log('public read lane: inactive (no cfg.public.inbox)')
