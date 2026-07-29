@@ -111,7 +111,7 @@ try {
       const r = JSON.parse(line)
       if (!r || r.id !== id) continue
       if (r.deleted) released = null
-      else if (r.dest === PUB.inbox) released = r
+      else if (r.dest === PUB.inbox && !r.q) released = r
     } catch { /* skip corrupt line */ }
   }
 } catch { /* no map yet */ }

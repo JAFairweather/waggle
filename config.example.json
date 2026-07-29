@@ -15,7 +15,7 @@
     "_comment": "Public kind:1 read lane. Phase-0 safety gates: quarantine + bounds + rate limits.",
     "relays": ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.primal.net"],
     "inbox": "COMMUNITY_READ_LANE_UUID",
-    "staging_inbox": "QUARANTINE_STAGING_UUID (un-allowlisted replies land here for human approval; omit => hold-and-log)",
+    "staging_inbox": "<channel name or UUID for pending posts; may EQUAL inbox for a single-channel lifecycle (pending and released together); omit => hold-and-log>",
     "watch_authors": ["<hex pubkey of a trusted author whose kind:1 posts publish straight to the community channel>"],
     "watch_events": ["<event id of one of our own notes; replies to it are QUARANTINED unless the replier is an allowlisted author>"],
     "since_secs": 10800,
