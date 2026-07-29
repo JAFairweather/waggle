@@ -587,8 +587,22 @@ function replyInStaging(parentBuzzId, text) {
 async function handleCommand(m) {
   if (!m || !m.id || seen.has('cmd:' + m.id)) return
   if (!PUB.approvers.includes(String(m.pubkey || '').toLowerCase())) return // not an approver: not a command
-  const word = String(m.content || '').trim().toLowerCase().split(/\s+/)[0]
-  if (!['approve', 'watch', 'mute', 'reject'].includes(word)) return
+  const raw = String(m.content || '').trim().toLowerCase()
+  let word = raw.split(/\s+/)[0]
+  if (word === 'release') word = 'approve' // the labels say "released from quarantine" — honor the word
+  if (!['approve', 'watch', 'mute', 'reject'].includes(word)) {
+    // A single unrecognized word from an authorized approver on a pending post deserves an
+    // answer, not silence. Multi-word replies are conversation — ignored.
+    if (!raw.includes(' ') && raw.length <= 20) {
+      const parentTry = (m.tags || []).filter(t => t[0] === 'e').map(t => t[1])[0]
+      const stTry = parentTry && stagingByBuzzId.get(parentTry)
+      if (stTry && (stTry.q || stTry.dest !== PUB.inbox) && !seen.has('cmd:' + m.id)) {
+        markSeen('cmd:' + m.id)
+        replyInStaging(m.id, `unrecognized command \`${raw}\` — try **approve** (or release), **watch**, **mute**, or **reject**.`)
+      }
+    }
+    return
+  }
   const parent = (m.tags || []).filter(t => t[0] === 'e').map(t => t[1])[0]
   const st = parent && stagingByBuzzId.get(parent)
   if (!st || !(st.q || st.dest !== PUB.inbox)) return // command must anchor to a QUARANTINED post (flag, or legacy staging dest)
