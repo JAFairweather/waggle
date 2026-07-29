@@ -26,6 +26,8 @@
     "lane_per_hour": 200,
     "deletes_per_hour": 20,
     "approver_mention": "<Buzz @name mentioned in quarantine headers so arrivals notify the approver; omit for none>",
+    "approvers": ["<hex pubkey allowed to reply approve|watch|mute|reject on a quarantined post>"],
+    "trusted_repliers": [],
     "muted_authors": []
   }
 }
