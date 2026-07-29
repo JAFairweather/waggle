@@ -1,0 +1,32 @@
+# Public read-lane unit — the ONLY lane terminating untrusted network input, so it runs
+# under the dedicated non-root 'bridge' user (D1) with systemd sandboxing, in its own tree.
+#
+# /opt/west-bridge-read/.env (bridge:bridge, 0600) must set:
+#   SEALED_LANES=off           # this instance runs the public lane ONLY (sealed lanes are
+#                              # per-process-deduped — two instances running them = double delivery)
+#   FORWARD_MODE=dryrun        # flip to 'buzz' only at cutover (see deploy/README.md)
+#   BUZZ_RELAY_URL=...  BUZZ_PRIVATE_KEY=...  BUZZ_AUTH_TAG=...
+# Its config.json carries ONLY the "public" block (recipients/relays not required).
+# The buzz CLI must be executable by 'bridge' on the PATH below.
+[Unit]
+Description=West Bridge — public kind:1 read lane (quarantine-gated)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=bridge
+Group=bridge
+WorkingDirectory=/opt/west-bridge-read
+ExecStart=/usr/bin/node src/bridge.mjs
+EnvironmentFile=/opt/west-bridge-read/.env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/west-bridge-read/data
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

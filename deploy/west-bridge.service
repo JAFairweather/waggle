@@ -1,0 +1,20 @@
+# Sealed-lane unit (DM + Concord planes) — the EXISTING production service, checked in.
+# Runs as root today; migrating it off root is out of scope for Phase 1 (see deploy/README.md).
+# Its config.json must have NO "public" block — boot log must read:
+#   "public read lane: inactive (no cfg.public.inbox)"
+# The read lane runs separately as west-bridge-read.service under the 'bridge' user.
+[Unit]
+Description=West Bridge — sealed lanes (Armada DMs + Concord planes → Buzz inboxes)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/west-bridge
+ExecStart=/usr/bin/node src/bridge.mjs
+EnvironmentFile=/opt/west-bridge/.env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

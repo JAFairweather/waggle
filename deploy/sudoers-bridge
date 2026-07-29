@@ -1,0 +1,5 @@
+# Installed to /etc/sudoers.d/bridge by bridge-user.sh (validated with visudo -cf first).
+# EXACT commands only, no wildcards — the bridge user can manage its own unit and nothing
+# else. Journal access comes from the systemd-journal group, NOT a sudoed journalctl
+# (argument wildcards on journalctl are an escape hatch).
+bridge ALL=(root) NOPASSWD: /usr/bin/systemctl start west-bridge-read.service, /usr/bin/systemctl stop west-bridge-read.service, /usr/bin/systemctl restart west-bridge-read.service, /usr/bin/systemctl status west-bridge-read.service

@@ -50,6 +50,10 @@ inbox UUID). See `config.example.json`.
 | `SEEN_CAP` | `100000` | max ids retained in the durable dedup store |
 | `CONFIG_PATH` | `./config.json` | config location |
 | `SEEN_PATH` | `./data/seen-ids.log` | durable dedup store |
+| `SEALED_LANES` | `on` | `off` runs the public read lane ONLY — required on a second instance, since dedup is per-process and two instances routing sealed lanes double-deliver |
+| `PUB_WATERMARK_PATH` | `./data/pub-watermark` | A3: persisted public-lane resume point |
+| `POSTED_MAP_PATH` | `./data/posted-map.log` | A7: orig event id → our Buzz copy, for NIP-09 withdrawal |
+| `DEL_SINCE_SECS` | `172800` (48h) | A7: kind:5 lookback (longer than the watermark on purpose — a delete issued during downtime must not be missed) |
 
 ## Durability
 
@@ -57,32 +61,20 @@ Forwarded event ids are appended to `data/seen-ids.log` and re-hydrated on boot,
 so a restart (or a `SINCE` backfill) never re-delivers a DM already pushed.
 Pruned to the most-recent `SEEN_CAP` ids on boot.
 
-## Deploy (pending server details)
+## Deploy
 
-Runs always-on. Pick one once the target box is known:
+Everything lives in [`deploy/`](deploy/README.md): checked-in systemd units for both
+instances (sealed lanes as `west-bridge.service`, public read lane as
+`west-bridge-read.service` under the non-root `bridge` user), the `bridge-user.sh`
+provisioning script, the push-style `deploy.sh`, the nftables firewall, and the full
+migration runbook (cutover order, data-dir seeding, root-SSH-disable-last warning).
+The relay reconnect loop is in-process; systemd only covers a full crash.
 
-**systemd** (`/etc/systemd/system/west-bridge.service`):
+## Tests
 
-```ini
-[Unit]
-Description=West Bridge — Armada→Buzz DM forwarder
-After=network-online.target
-
-[Service]
-WorkingDirectory=/opt/west-bridge
-ExecStart=/usr/bin/node src/bridge.mjs
-EnvironmentFile=/opt/west-bridge/.env
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-**pm2**: `pm2 start src/bridge.mjs --name west-bridge && pm2 save`
-
-Either way, the relay reconnect loop is in-process; the manager only covers a
-full crash.
+`npm test` — drives the REAL exported routing functions with synthetic events, no
+sockets, no production state: `tests/a1_quarantine.mjs` (quarantine gate) and
+`tests/a7_deletion.mjs` (NIP-09 deletion propagation, real signatures in wire form).
 
 ## Roadmap
 

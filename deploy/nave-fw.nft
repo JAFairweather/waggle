@@ -1,0 +1,35 @@
+# West-bridge box firewall — promoted from the working .scratch draft, two egress fixes.
+# Manage only 'nave_fw'. The empty declaration ensures the table exists so the
+# delete never errors on first run; then we recreate it. We do NOT flush the
+# whole ruleset — Docker's tables must stay intact.
+#
+# Apply:    nft -f deploy/nave-fw.nft
+# Persist:  include this file from /etc/nftables.conf and enable nftables.service,
+#           so the rules survive reboot (verify with the reboot test in deploy/README.md).
+table inet nave_fw
+delete table inet nave_fw
+table inet nave_fw {
+  chain input {
+    type filter hook input priority 0; policy drop;
+    ct state established,related accept
+    ct state invalid drop
+    iif lo accept
+    ip saddr 172.16.0.0/12 accept          # Docker bridge subnets: container -> host (host.docker.internal, etc.)
+    meta l4proto { icmp, ipv6-icmp } accept
+    tcp dport { 22, 80, 443 } accept
+  }
+  chain output {
+    type filter hook output priority 0; policy drop;
+    ct state established,related accept
+    ct state invalid drop
+    oif lo accept
+    udp dport 53 accept                     # DNS resolution
+    tcp dport 53 accept                     # DNS over TCP
+    udp dport 123 accept                    # NTP — clock drift silently breaks since windows,
+                                            # the A3 watermark, and A5 created_at clamping
+    tcp dport 80 accept                     # apt mirrors are commonly plain http
+    tcp dport 443 accept                    # outbound wss: public trio + Armada relays + fleet relay
+  }
+  # No per-IP relay pinning on purpose: damus/nos.lol/primal sit behind churning CDN IPs;
+  # a port-level allowlist is the honest design.
+}
