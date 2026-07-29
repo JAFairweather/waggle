@@ -411,7 +411,7 @@ async function forwardPublic(ev, why, dest, quarantine) {
   const content = quarantine
     ? `${mention}⏳ **QUARANTINED** — external Nostr reply, _pending approval_ (${why})\n` +
       `**Unverified · NOT in any community channel.** A human must approve before this is republished.\n` +
-      `Approve: \`waggle-approve ${ev.id}\` (add \`--watch\` for standing trust)\n` +
+      `Approve: \`waggle-approve ${ev.id}\` (or reply approve / follow / mute / reject right here)\n` +
       `author ${name ? `**${name}** · ` : ''}\`${npub || ev.pubkey}\`\n` +
       `event \`${ev.id}\`  ·  ${when}${claim}\n\n` + fenced
     : `📡 ${name ? `**${name}** ` : ''}\`${npub || ev.pubkey}\` · _via waggle — ${why}_\n\n` + fenced
@@ -440,11 +440,11 @@ function routePublic(ev) {
   // reply from anyone else is an untrusted stranger and is quarantined.
   const trusted = PUB.authors.includes(ev.pubkey)
   let why = null, quarantine = false
-  if (trusted) why = 'standing watch'
+  if (trusted) why = 'mirrored feed'
   else if (PUB.events.length) {
     const es = (ev.tags || []).filter(t => t[0] === 'e').map(t => t[1])
     if (es.some(id => PUB.events.includes(id))) {
-      if (PUB.trustedRepliers.includes(ev.pubkey)) why = 'standing watch' // reply-trust: no queue, no feed mirror
+      if (PUB.trustedRepliers.includes(ev.pubkey)) why = 'standing follow' // reply-trust: no queue, no feed mirror
       else { why = 'reply to our note'; quarantine = true }
     }
   }
@@ -546,7 +546,7 @@ function withdraw(origId, entry, delEv) {
 // confirming in the same thread. A command is an ordinary SIGNED kind:9 event; authority is
 // the author pubkey checked against cfg.public.approvers. No command line, no ssh.
 //   approve — release this one note to the community channel
-//   watch   — release it AND grant reply-trust (their future replies skip the queue)
+//   follow  — release it AND grant reply-trust (their future replies skip the queue); 'watch' = alias
 //   mute    — durable reject: this author's replies stop reaching staging
 //   reject  — explicit no (records the decision; author stays quarantined)
 const stagingByBuzzId = new Map() // buzz event id of a staging post -> { orig, author, dest }
@@ -590,7 +590,8 @@ async function handleCommand(m) {
   const raw = String(m.content || '').trim().toLowerCase()
   let word = raw.split(/\s+/)[0]
   if (word === 'release') word = 'approve' // the labels say "released from quarantine" — honor the word
-  if (!['approve', 'watch', 'mute', 'reject'].includes(word)) {
+  if (word === 'watch') word = 'follow'    // James's verb: follow (watch kept as alias)
+  if (!['approve', 'follow', 'mute', 'reject'].includes(word)) {
     // A single unrecognized word from an authorized approver on a pending post deserves an
     // answer, not silence. Multi-word replies are conversation — ignored.
     if (!raw.includes(' ') && raw.length <= 20) {
@@ -598,7 +599,7 @@ async function handleCommand(m) {
       const stTry = parentTry && stagingByBuzzId.get(parentTry)
       if (stTry && (stTry.q || stTry.dest !== PUB.inbox) && !seen.has('cmd:' + m.id)) {
         markSeen('cmd:' + m.id)
-        replyInStaging(m.id, `unrecognized command \`${raw}\` — try **approve** (or release), **watch**, **mute**, or **reject**.`)
+        replyInStaging(m.id, `unrecognized command \`${raw}\` — try **approve** (or release), **follow**, **mute**, or **reject**.`)
       }
     }
     return
@@ -630,10 +631,10 @@ async function handleCommand(m) {
     forwardPublic(ev, 'released from quarantine', PUB.inbox, false)
   }
   let granted = ''
-  if (word === 'watch') {
+  if (word === 'follow') {
     if (!PUB.trustedRepliers.includes(st.author)) PUB.trustedRepliers.push(st.author)
     mutateConfig(c => { c.public.trusted_repliers = Array.from(new Set([...(c.public.trusted_repliers || []), st.author])) })
-    granted = ` · standing watch granted (their replies now skip the queue)`
+    granted = ` · standing follow granted (their replies now skip the queue)`
   }
   replyInStaging(m.id, `✅ ${alreadyReleased ? 'already released earlier' : 'released to the community channel'}${granted}`)
 }
