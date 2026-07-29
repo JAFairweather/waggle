@@ -228,15 +228,15 @@ function loadPostedMap() {
       const r = JSON.parse(line)
       if (!r || !r.id) continue
       if (r.deleted) { const e = postedMap.get(r.id); if (e) e.deleted = true; continue }
-      postedMap.set(r.id, { author: r.author, buzz: r.buzz || null, dest: r.dest, deleted: false })
-      if (r.buzz) stagingByBuzzId.set(r.buzz, { orig: r.id, author: r.author, dest: r.dest })
+      postedMap.set(r.id, { author: r.author, buzz: r.buzz || null, dest: r.dest, q: !!r.q, deleted: false })
+      if (r.buzz) stagingByBuzzId.set(r.buzz, { orig: r.id, author: r.author, dest: r.dest, q: !!r.q })
     } catch { err(`A7: skipping corrupt posted-map line`) }
   }
   if (postedMap.size) log(`A7: loaded ${postedMap.size} posted-map entries from ${POSTED_MAP_PATH}`)
 }
 function recordPosted(rec) {
-  postedMap.set(rec.id, { author: rec.author, buzz: rec.buzz || null, dest: rec.dest, deleted: false })
-  if (rec.buzz) stagingByBuzzId.set(rec.buzz, { orig: rec.id, author: rec.author, dest: rec.dest })
+  postedMap.set(rec.id, { author: rec.author, buzz: rec.buzz || null, dest: rec.dest, q: !!rec.q, deleted: false })
+  if (rec.buzz) stagingByBuzzId.set(rec.buzz, { orig: rec.id, author: rec.author, dest: rec.dest, q: !!rec.q })
   try { mkdirSync(dirname(POSTED_MAP_PATH), { recursive: true }); appendFileSync(POSTED_MAP_PATH, JSON.stringify(rec) + '\n') }
   catch (e) { err(`A7: posted-map append failed for ${rec.id}: ${e.message}`) }
 }
@@ -420,7 +420,7 @@ async function forwardPublic(ev, why, dest, quarantine) {
   // exercises the same capture shape the live path records.
   if (process.env.WB_STUB_SEND) {
     log(`PUBLIC[stub] -> ${quarantine ? 'STAGING' : 'inbox'} ${dest}: kind1 ${ev.id.slice(0, 12)}… by ${author}… (${why})`)
-    recordPosted({ id: ev.id, author: ev.pubkey, buzz: ev.id.split('').reverse().join(''), dest, ts: nowSec })
+    recordPosted({ id: ev.id, author: ev.pubkey, buzz: ev.id.split('').reverse().join(''), dest, q: !!quarantine, ts: nowSec })
     return
   }
   execFile('buzz', ['messages', 'send', '--channel', dest, '--content', content], (e, so, se) => {
@@ -430,7 +430,7 @@ async function forwardPublic(ev, why, dest, quarantine) {
     // (stdout didn't carry one) degrades to the follow-up-tombstone tier — logged, safe.
     const buzzId = parseBuzzEventId(so)
     if (!buzzId) err(`A7 warn[no-id]: could not capture buzz event id for ${ev.id.slice(0, 12)}… — withdrawal will use follow-up tier`)
-    recordPosted({ id: ev.id, author: ev.pubkey, buzz: buzzId, dest, ts: nowSec })
+    recordPosted({ id: ev.id, author: ev.pubkey, buzz: buzzId, dest, q: !!quarantine, ts: nowSec })
   })
 }
 
@@ -591,7 +591,7 @@ async function handleCommand(m) {
   if (!['approve', 'watch', 'mute', 'reject'].includes(word)) return
   const parent = (m.tags || []).filter(t => t[0] === 'e').map(t => t[1])[0]
   const st = parent && stagingByBuzzId.get(parent)
-  if (!st || st.dest !== PUB.staging) return // command must anchor to a quarantined post
+  if (!st || !(st.q || st.dest !== PUB.inbox)) return // command must anchor to a QUARANTINED post (flag, or legacy staging dest)
   markSeen('cmd:' + m.id) // commit-before-dispatch: a crash can never double-execute a command
   log(`command '${word}' from approver ${m.pubkey.slice(0, 12)}… on ${st.orig.slice(0, 12)}…`)
 
@@ -605,7 +605,7 @@ async function handleCommand(m) {
 
   // approve / watch — release the note (refusing duplicates), then grant trust if asked.
   const prior = postedMap.get(st.orig)
-  const alreadyReleased = prior && !prior.deleted && prior.dest === PUB.inbox
+  const alreadyReleased = prior && !prior.deleted && prior.dest === PUB.inbox && !prior.q
   if (!alreadyReleased) {
     const ev = await fetchEventById(st.orig)
     if (!ev) return replyInStaging(m.id, `⚠️ could not fetch the original from any relay — nothing released.`)
