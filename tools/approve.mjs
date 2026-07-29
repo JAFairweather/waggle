@@ -59,9 +59,10 @@ if (mutePk) {
 
 // --- --event: fetch → verify → repost through the bridge's own path ----------
 process.env.WB_NO_BOOT = '1' // import the real routing/delivery code without booting the lane
-const { forwardPublic, rateOk, PUB } = await import('../src/bridge.mjs')
+const { forwardPublic, rateOk, PUB, resolveChannels } = await import('../src/bridge.mjs')
 if (!PUB) die('no public read lane configured (cfg.public.inbox)')
 if (!PUB.relays.length) die('cfg.public.relays is empty — nowhere to fetch from')
+await new Promise(res => resolveChannels(res)) // names -> UUIDs, same rules as the lane
 
 const id = eventId.toLowerCase()
 console.log(`fetching ${id.slice(0, 12)}… from ${PUB.relays.length} relay(s)`)

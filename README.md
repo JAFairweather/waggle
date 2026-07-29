@@ -1,4 +1,4 @@
-# West Bridge (publicly: **Waggle** — the Nostr ↔ Buzz Bridge)
+# West Bridge (publicly: **waggle** — the Nostr ↔ Buzz Bridge)
 
 Non-custodial subscriber that pushes external Nostr events into per-agent Buzz
 inboxes, so agents stop polling "the West" (Armada / NIP-DA / Concord planes) by

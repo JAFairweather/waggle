@@ -129,9 +129,11 @@ function bumpPubWatermark(ts) {
   try { mkdirSync(dirname(PUB_WATERMARK_PATH), { recursive: true }); writeFileSync(PUB_WATERMARK_PATH, String(ts)) }
   catch (e) { err(`pub watermark: write failed: ${e.message}`) }
 }
-const PUB = cfg.public && cfg.public.inbox ? {
+const PUB = cfg.public ? {
   relays: cfg.public.relays || [],
-  inbox: cfg.public.inbox,
+  // Channel values accept a UUID or a NAME (resolved at boot via `buzz channels list`).
+  // The default community channel is the one named "waggle".
+  inbox: cfg.public.inbox || 'waggle',
   // A1: un-allowlisted external replies quarantine into this STAGING channel for human
   // approval — they never reach a community channel automatically. Null => hold-and-log
   // (default-closed): a stranger's reply is never auto-delivered anywhere.
@@ -152,6 +154,35 @@ const PUB = cfg.public && cfg.public.inbox ? {
   approverMention: cfg.public.approver_mention || null,
   muted: (cfg.public.muted_authors || []).map(s => String(s).toLowerCase()),
 } : null
+
+// Channel-name resolution: public.inbox / staging_inbox may be a Buzz channel NAME instead
+// of a UUID — resolved once at boot (and by tools) via `buzz channels list`, so config reads
+// as intent ("waggle-test") instead of hex. Unresolvable names are fatal in buzz mode.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+function resolveChannels(cb) {
+  const pending = PUB ? [PUB.inbox, PUB.staging].filter(v => v && !UUID_RE.test(v)) : []
+  if (!pending.length) return cb()
+  if (FORWARD_MODE !== 'buzz') { err(`WARN: channel name(s) ${pending.join(', ')} left unresolved in ${FORWARD_MODE} mode`); return cb() }
+  execFile('buzz', ['channels', 'list'], (e, so) => {
+    if (e) { err(`FATAL: cannot resolve channel names — 'buzz channels list' failed: ${e.message}`); process.exit(1) }
+    const byName = new Map()
+    try {
+      for (const c of JSON.parse(String(so).slice(String(so).indexOf('[')))) {
+        byName.set(String(c.name || '').toLowerCase(), c.id || c.channel_id || c.uuid)
+      }
+    } catch { err('FATAL: could not parse `buzz channels list` output'); process.exit(1) }
+    const one = (v, what) => {
+      if (!v || UUID_RE.test(v)) return v
+      const id = byName.get(v.toLowerCase())
+      if (!id) { err(`FATAL: no Buzz channel named '${v}' (${what}) — create it or use a UUID`); process.exit(1) }
+      log(`channel ${what}: '${v}' -> ${id}`)
+      return id
+    }
+    PUB.inbox = one(PUB.inbox, 'inbox')
+    PUB.staging = one(PUB.staging, 'staging_inbox')
+    cb()
+  })
+}
 
 const unresolved = (cfg.recipients || []).filter(r => !r.inbox || r.inbox.startsWith('INBOX_UUID_'))
 if (unresolved.length) {
@@ -376,7 +407,7 @@ async function forwardPublic(ev, why, dest, quarantine) {
       `Approve: \`waggle-approve ${ev.id}\` (add \`--watch\` for standing trust)\n` +
       `author ${name ? `**${name}** · ` : ''}\`${npub || ev.pubkey}\`\n` +
       `event \`${ev.id}\`  ·  ${when}${claim}\n\n` + fenced
-    : `📡 ${name ? `**${name}** ` : ''}\`${npub || ev.pubkey}\` · _via Waggle — ${why}_\n\n` + fenced
+    : `📡 ${name ? `**${name}** ` : ''}\`${npub || ev.pubkey}\` · _via waggle — ${why}_\n\n` + fenced
   // Test seam: exercise the full buzz-mode path (markSeen/watermark/posted-map) without a
   // network send. The synthetic buzz id (orig id reversed — still 64 hex, still unique)
   // exercises the same capture shape the live path records.
@@ -612,7 +643,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { routePublic, routeDelete, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId }
+export { routePublic, routeDelete, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
@@ -630,9 +661,11 @@ if (!process.env.WB_NO_BOOT) {
   }
   if (PUB) {
     if (!PUB.relays.length) err('WARN: public read lane configured but cfg.public.relays is empty — nothing to listen on')
+    resolveChannels(() => {
     log(`public read lane -> inbox ${PUB.inbox}: ${PUB.relays.length} relay(s), ${PUB.authors.length} watched author(s), ${PUB.events.length} watched note(s), pub-since=${PUB.since} (${PUB_SINCE_SECS}s), watermark=${pubWatermark || 'none'}`)
     log(`  gates: staging=${PUB.staging || 'HOLD (none)'} · backfill<=${PUB.backfillLimit} · maxContent=${PUB.maxContentBytes}B · rate ${PUB.replierPerMin}/replier/min ${PUB.channelPerMin}/chan/min ${PUB.lanePerHour}/lane/h · deletes ${PUB.deletesPerHour}/h (A7)`)
     PUB.relays.forEach(connectPublic)
+    })
   } else {
     log('public read lane: inactive (no cfg.public.inbox)')
   }
