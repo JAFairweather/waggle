@@ -98,15 +98,36 @@ if (!fetched) die(`event not found on any configured relay — cannot approve wh
 if (!verifyEvent(fetched)) die('signature verification FAILED — refusing to approve')
 if (fetched.kind !== 1) die(`kind ${fetched.kind} is not a kind:1 note — refusing`)
 
-if (!rateOk(fetched, PUB.inbox, Date.now())) die('A6 rate cap would be exceeded — try again later')
-forwardPublic(fetched, 'approved external reply', PUB.inbox, false)
+// Refuse silent duplicates: a note already released to the community channel is never
+// re-posted by accident. --watch on an already-released note grants trust WITHOUT
+// reposting; --force is the explicit re-release override.
+const force = args.includes('--force')
+const POSTED_MAP_PATH = process.env.POSTED_MAP_PATH || resolve(ROOT, 'data', 'posted-map.log')
+let released = null
+try {
+  for (const line of readFileSync(POSTED_MAP_PATH, 'utf8').split('\n').filter(Boolean)) {
+    try {
+      const r = JSON.parse(line)
+      if (!r || r.id !== id) continue
+      if (r.deleted) released = null
+      else if (r.dest === PUB.inbox) released = r
+    } catch { /* skip corrupt line */ }
+  }
+} catch { /* no map yet */ }
+
+if (released && !force) {
+  if (!watch) die(`already released to the community channel (buzz ${String(released.buzz).slice(0, 12)}…) — re-releasing would post a duplicate. Use --force to do it anyway.`)
+  console.log(`already released (buzz ${String(released.buzz).slice(0, 12)}…) — skipping repost, applying --watch only`)
+} else {
+  if (!rateOk(fetched, PUB.inbox, Date.now())) die('A6 rate cap would be exceeded — try again later')
+  forwardPublic(fetched, 'released from quarantine', PUB.inbox, false)
+  console.log(`approved ${id.slice(0, 12)}… by ${fetched.pubkey.slice(0, 12)}… -> community inbox ${PUB.inbox}`)
+}
 
 try {
   mkdirSync(dirname(APPROVALS_PATH), { recursive: true })
   appendFileSync(APPROVALS_PATH, JSON.stringify({ id, author: fetched.pubkey, watch, ts: Math.floor(Date.now() / 1000) }) + '\n')
 } catch (e) { console.error(`warn: approvals.log append failed: ${e.message}`) }
-
-console.log(`approved ${id.slice(0, 12)}… by ${fetched.pubkey.slice(0, 12)}… -> community inbox ${PUB.inbox}`)
 
 if (watch) {
   const cfg = loadCfg()
