@@ -1,4 +1,4 @@
-# Draft Specification — Waggle, the Nostr ↔ Buzz Bridge
+# Draft Specification — waggle, the Nostr ↔ Buzz Bridge
 
 > **External cut** — generated from the internal working spec; do not edit by hand.
 > Contributors are named by role: *writing lead*, *read-lane engineer*, *outbox engineer*,
@@ -7,7 +7,7 @@
 **Status:** DRAFT v1.10.2 · **Date:** 2026-07-29 · **Author:** the writing lead (writing lane)
 **Grounded in:** internal ground-truth documents (available on request).
 **Purpose:** a single artifact the maintainer can hand to Derek Ross or the Buzz team — what the bridge *is*, what value it brings the ecosystem, and how we get from today's proven POC to a durable feature.
-**Name:** *Waggle* (the maintainer, 2026-07-29) — after the waggle dance: how a returning bee tells the hive, in a form the hive trusts, what's out in the open field. The out door is the flight; the quarantined in door is the dance. (Internal repo/service names stay `west-bridge`; Waggle is the public-facing name.)
+**Name:** *waggle* (the maintainer, 2026-07-29) — after the waggle dance: how a returning bee tells the hive, in a form the hive trusts, what's out in the open field. The out door is the flight; the quarantined in door is the dance. (Internal repo/service names stay `west-bridge`; waggle is the public-facing name.)
 
 > Derek Ross, on Nostr: *"Buzz supports kind:1 notes as an early and experimental feature… if a community wanted to turn this on, we'd have community relays where members could post and interact with the larger Nostr kind:1 ecosystem. All that would be needed is NIP-65 inbox/outbox…"*
 >
