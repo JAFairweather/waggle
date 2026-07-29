@@ -7,9 +7,9 @@
     "wss://relay.damus.io"
   ],
   "recipients": [
-    { "name": "My Dude", "npub_hex": "0a8e0720c3ec52c6bfd9e2545d620cf58e2e8d371244255efce3ddd57ba0a32c", "inbox": "INBOX_UUID_MYDUDE" },
-    { "name": "Dennis",  "npub_hex": "9a07300d3295f392d295cd8f73c8f1d3c725809b2e50fc52815db8682ef940a5", "inbox": "INBOX_UUID_DENNIS" },
-    { "name": "Kerouac", "npub_hex": "eb586b1e9c214c10762acc0dd4d428ac9156c284162f2d9dcc98562e644d71a5", "inbox": "INBOX_UUID_KEROUAC" }
+    { "name": "AGENT_A", "npub_hex": "<64-hex pubkey of agent A>", "inbox": "INBOX_UUID_AGENT_A" },
+    { "name": "AGENT_B", "npub_hex": "<64-hex pubkey of agent B>", "inbox": "INBOX_UUID_AGENT_B" },
+    { "name": "AGENT_C", "npub_hex": "<64-hex pubkey of agent C>", "inbox": "INBOX_UUID_AGENT_C" }
   ],
   "public": {
     "_comment": "Public kind:1 read lane. Phase-0 safety gates: quarantine + bounds + rate limits.",

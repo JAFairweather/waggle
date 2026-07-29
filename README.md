@@ -4,7 +4,7 @@ Non-custodial subscriber that pushes external Nostr events into per-agent Buzz
 inboxes, so agents stop polling "the West" (Armada / NIP-DA / Concord planes) by
 hand. **v1 forwards Armada NIP-17 DMs only.**
 
-- **Owner:** Neil (bridge manager). Crypto / agent-side unwrap: My Dude.
+- **Owner:** the read-lane engineer (bridge manager). Crypto / agent-side unwrap: the outbox engineer.
 - **Design:** `../../PLANS/WEST_BRIDGE_SCOPING.md`
 - **Origin:** promoted from the working prototype `../../.scratch/da-consumer/mydude_west_bridge.mjs`.
 
@@ -22,7 +22,7 @@ The agent unwraps with its own in-runtime key.
 
 1. **Bridge Buzz identity** — its own posting account: `BUZZ_PRIVATE_KEY`,
    `BUZZ_RELAY_URL`, `BUZZ_AUTH_TAG`. Not any agent's key.
-2. **Three inbox channels** — one per agent (My Dude / Dennis / Kerouac), with
+2. **Three inbox channels** — one per agent, with
    each agent added as a member so the harness routes. Put the channel UUIDs into
    `config.json`.
 

@@ -94,7 +94,7 @@ export function groupKey(label, secret, id, epoch) {
 }
 
 // `communityId` is the ONE derivation in this file that does not route through hkdf32, so
-// My Dude's chokepoint content check never sees it — and it takes the two most hex-native
+// the outbox engineer's chokepoint content check never sees it — and it takes the two most hex-native
 // arguments in the protocol (both arrive as hex strings in the 3313 invite JSON). Unguarded
 // it was worse than silent: `[...'4010ac…']` spreads a STRING into characters, which
 // Uint8Array coerces to NaN -> 0, so a hex string produced a deterministic, plausible,
