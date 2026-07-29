@@ -32,6 +32,7 @@
 // lookback to 48h and lean on durable id-dedup to make re-delivery a no-op.
 import WebSocket from 'ws'
 import { verifyEvent } from 'nostr-tools/pure'
+import * as nip19 from 'nostr-tools/nip19'
 import { execFile } from 'node:child_process'
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -307,10 +308,44 @@ function rateOk(ev, dest, nowMs) {
   return true
 }
 
+// Friendly names: best-effort kind:0 lookup on the public relays, cached with a TTL. A
+// profile name is UNTRUSTED, attacker-controlled text rendered outside the content fence —
+// markdown/mention/link characters are stripped and the length capped before use.
+const nameCache = new Map() // pubkey -> { name: string|null, ts }
+const NAME_TTL_MS = 3600_000
+function fetchProfileName(pubkey) {
+  const hit = nameCache.get(pubkey)
+  if (hit && Date.now() - hit.ts < NAME_TTL_MS) return Promise.resolve(hit.name)
+  return new Promise(res => {
+    let best = null, open = PUB.relays.length, done = false
+    const finish = () => { if (done) return; done = true; nameCache.set(pubkey, { name: best, ts: Date.now() }); res(best) }
+    if (!open) return finish()
+    const t = setTimeout(finish, 2000)
+    for (const url of PUB.relays) {
+      let ws
+      try { ws = new WebSocket(url) } catch { if (--open === 0) { clearTimeout(t); finish() } continue }
+      const bye = () => { try { ws.close() } catch { /* closed */ } if (--open === 0) { clearTimeout(t); finish() } }
+      ws.on('open', () => ws.send(JSON.stringify(['REQ', 'nm', { kinds: [0], authors: [pubkey], limit: 1 }])))
+      ws.on('message', d => {
+        try {
+          const m = JSON.parse(d.toString())
+          if (m[0] === 'EVENT' && m[2] && m[2].pubkey === pubkey) {
+            const p = JSON.parse(m[2].content || '{}')
+            const raw = String(p.display_name || p.name || '').replace(/[`@\[\]()\n\r*_~]/g, '').trim().slice(0, 32)
+            if (raw) best = raw
+          }
+          if (m[0] === 'EOSE') bye()
+        } catch { /* ignore bad frames */ }
+      })
+      ws.on('error', bye)
+    }
+  })
+}
+
 // Repost a PLAINTEXT public note into a Buzz channel. `dest` is the community inbox for a
 // trusted (allowlisted) note, or the STAGING inbox for a quarantined external reply (A1).
 // No unwrap label, no key — already-public content.
-function forwardPublic(ev, why, dest, quarantine) {
+async function forwardPublic(ev, why, dest, quarantine) {
   const author = ev.pubkey ? ev.pubkey.slice(0, 16) : '?'
   const nowSec = Math.floor(Date.now() / 1000)
   const { clamped, outOfRange } = clampCreated(ev.created_at, nowSec)
@@ -325,16 +360,23 @@ function forwardPublic(ev, why, dest, quarantine) {
   // that happens to contain "@Name" or markdown can't inject a Buzz mention/format.
   const body = String(ev.content || '')
   const mention = quarantine && PUB.approverMention ? `@${PUB.approverMention} ` : ''
-  const header = quarantine
-    ? `${mention}⏳ **QUARANTINED external Nostr reply** — _${why}_\n` +
+  // Friendly author identity: display name from the author's public kind:0 (UNTRUSTED text —
+  // sanitized, rendered outside the fence) plus the npub, which is what a reader can
+  // actually paste into a client. Best-effort with a 2s budget; falls back to npub alone.
+  let name = null
+  if (!process.env.WB_STUB_SEND) { try { name = await fetchProfileName(ev.pubkey) } catch { name = null } }
+  let npub = null
+  try { npub = nip19.npubEncode(ev.pubkey) } catch { npub = null }
+  const fenced = '```\n' + body.replace(/```/g, '`​``') + '\n```\n'
+  // Two displays, two jobs: STAGING is the review surface (full ids, timestamps, the approve
+  // command). A RELEASED message is conversation — one friendly line, no hex walls.
+  const content = quarantine
+    ? `${mention}⏳ **QUARANTINED** — external Nostr reply, _pending approval_ (${why})\n` +
       `**Unverified · NOT in any community channel.** A human must approve before this is republished.\n` +
-      `Approve: \`node tools/approve.mjs --event ${ev.id}\` (add \`--watch\` to trust the author)\n`
-    : `📡 **Public Nostr note** — _${why}_\n`
-  const content =
-    header +
-    `author \`${ev.pubkey}\`\n` +
-    `event \`${ev.id}\`  ·  ${when}${claim}\n\n` +
-    '```\n' + body.replace(/```/g, '`​``') + '\n```\n'
+      `Approve: \`waggle-approve ${ev.id}\` (add \`--watch\` for standing trust)\n` +
+      `author ${name ? `**${name}** · ` : ''}\`${npub || ev.pubkey}\`\n` +
+      `event \`${ev.id}\`  ·  ${when}${claim}\n\n` + fenced
+    : `📡 ${name ? `**${name}** ` : ''}\`${npub || ev.pubkey}\` · _via Waggle — ${why}_\n\n` + fenced
   // Test seam: exercise the full buzz-mode path (markSeen/watermark/posted-map) without a
   // network send. The synthetic buzz id (orig id reversed — still 64 hex, still unique)
   // exercises the same capture shape the live path records.
@@ -360,7 +402,7 @@ function routePublic(ev) {
   // reply from anyone else is an untrusted stranger and is quarantined.
   const trusted = PUB.authors.includes(ev.pubkey)
   let why = null, quarantine = false
-  if (trusted) why = 'watched author'
+  if (trusted) why = 'standing watch'
   else if (PUB.events.length) {
     const es = (ev.tags || []).filter(t => t[0] === 'e').map(t => t[1])
     if (es.some(id => PUB.events.includes(id))) { why = 'reply to our note'; quarantine = true }
