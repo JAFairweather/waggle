@@ -34,6 +34,7 @@ import WebSocket from 'ws'
 import { verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -259,6 +260,73 @@ function parseBuzzEventId(stdout) {
   return m ? m[0] : null
 }
 
+// --- Lane-2 rate caps (annex §4.1.1; C3-approved shipping defaults) ----------
+// The binding constraint is harness WAKE-RATE per recipient, not relay bandwidth: every
+// delivered wrap can spin a full agent turn. Per-plane + per-recipient keying so one noisy
+// plane can never starve a quiet one (UC-2 fan-out bounded without collateral throttling).
+// EVERY drop is logged with a reason — and only the HASHED channel id (the raw Concord
+// channel_id is a secret).
+const LANE2_CAPS_PATH = process.env.LANE2_CAPS_PATH || resolve(ROOT, 'config', 'lane2_caps.json')
+const LANE2_DROPS_PATH = process.env.LANE2_DROPS_PATH || resolve(ROOT, 'data', 'lane2_drops.log')
+const L2_DEFAULTS = {
+  perPlane: { maxEventBytes: 65536, postsPerMinute: 20, postsPerHour: 300, perRecipientPerMinute: 12 },
+  burst: { bootBackfillMax: 50, recipientBurst: 6 },
+  global: { totalPostsPerHour: 2000 },
+}
+const L2 = (() => {
+  try {
+    const f = JSON.parse(readFileSync(LANE2_CAPS_PATH, 'utf8'))
+    return {
+      perPlane: { ...L2_DEFAULTS.perPlane, ...(f.perPlane || {}) },
+      burst: { ...L2_DEFAULTS.burst, ...(f.burst || {}) },
+      global: { ...L2_DEFAULTS.global, ...(f.global || {}) },
+    }
+  } catch { return L2_DEFAULTS }
+})()
+const planeHash = (pk) => createHash('sha256').update(String(pk)).digest('hex').slice(0, 12)
+const l2PlaneMin = new Map(), l2PlaneHr = new Map(), l2Global = []
+// Per-recipient token bucket: capacity = recipientBurst above the sustained rate; refill at
+// perRecipientPerMinute/60 tokens per second. Sustained throughput == the /min cap; short
+// legitimate clusters ride the burst.
+const l2Bucket = new Map() // `${plane}:${inbox}` -> { tokens, at }
+let l2BootRemaining = L2.burst.bootBackfillMax
+function l2Drop(reason, plane, ev) {
+  err(`LANE2 drop[${reason}]: plane ${planeHash(plane)} — ${String(ev.id || '?').slice(0, 12)}…`)
+  try {
+    mkdirSync(dirname(LANE2_DROPS_PATH), { recursive: true })
+    appendFileSync(LANE2_DROPS_PATH, JSON.stringify({ reason, plane_id_hash: planeHash(plane), event_id: ev.id, ts: Math.floor(Date.now() / 1000) }) + '\n')
+  } catch { /* the err() line above still stands */ }
+}
+// Plane + global gate. Returns false (and logs) when the event must not fan out at all.
+function l2PlaneOk(plane, ev, nowMs) {
+  if (JSON.stringify(ev).length > L2.perPlane.maxEventBytes) { l2Drop('size', plane, ev); return false }
+  const boot = l2BootRemaining > 0
+  const mins = slide(l2PlaneMin.get(plane) || [], nowMs, 60_000)
+  if (!boot && mins.length >= L2.perPlane.postsPerMinute) { l2Drop('plane-per-min', plane, ev); return false }
+  const hrs = slide(l2PlaneHr.get(plane) || [], nowMs, 3600_000)
+  if (hrs.length >= L2.perPlane.postsPerHour) { l2Drop('plane-per-hour', plane, ev); return false }
+  slide(l2Global, nowMs, 3600_000)
+  if (l2Global.length >= L2.global.totalPostsPerHour) { l2Drop('global-per-hour', plane, ev); return false }
+  if (boot) l2BootRemaining--
+  mins.push(nowMs); l2PlaneMin.set(plane, mins)
+  hrs.push(nowMs); l2PlaneHr.set(plane, hrs)
+  l2Global.push(nowMs)
+  return true
+}
+// Per-recipient gate: the wake-rate cap. A capped recipient skips THIS delivery; the
+// plane's other recipients still receive it.
+function l2RecipientOk(plane, inbox, ev, nowMs, boot) {
+  if (boot) return true // boot allowance covers the recipient thrash ceiling too
+  const key = `${plane}:${inbox}`
+  const b = l2Bucket.get(key) || { tokens: L2.burst.recipientBurst, at: nowMs }
+  b.tokens = Math.min(L2.burst.recipientBurst, b.tokens + ((nowMs - b.at) / 1000) * (L2.perPlane.perRecipientPerMinute / 60))
+  b.at = nowMs
+  if (b.tokens < 1) { l2Bucket.set(key, b); l2Drop(`recipient-rate:${inbox.slice(0, 8)}`, plane, ev); return false }
+  b.tokens -= 1
+  l2Bucket.set(key, b)
+  return true
+}
+
 // --- delivery ---------------------------------------------------------------
 // Deliver a SEALED 1059 into the recipient's Buzz inbox. The agent unwraps it.
 // `src` describes the unwrap path for the recipient: a DM opens with the agent's own
@@ -282,6 +350,7 @@ function forward(rec, ev, src) {
     return
   }
   const content = `@${rec.name}\n\n${label}\n\n\`\`\`json\n${JSON.stringify(ev)}\n\`\`\`\n`
+  if (process.env.WB_STUB_SEND) { log(`FORWARD[stub] -> ${rec.name} inbox ${rec.inbox}: 1059 ${ev.id.slice(0, 12)}…`); return }
   execFile('buzz', ['messages', 'send', '--channel', rec.inbox, '--content', content], (e, so, se) => {
     if (e) return err(`FORWARD[buzz] ERR -> ${rec.name}: ${se || e.message}`)
     log(`FORWARD[buzz] ok -> ${rec.name} inbox: ${src && src.channel ? `${src.channel} ` : 'DM '}1059 ${ev.id.slice(0, 12)}…`)
@@ -295,7 +364,13 @@ function route(ev) {
   // Every configured member of that channel gets a copy; each decrypts with the plane key.
   const plane = PLANES[ev.pubkey]
   if (plane) {
-    const recips = plane.recipients
+    const nowMs = Date.now()
+    const boot = l2BootRemaining > 0
+    // Lane-2 caps: plane/global gate first (drop fans out to nobody), then the
+    // per-recipient wake-rate gate filters WHO receives this one.
+    if (!l2PlaneOk(ev.pubkey, ev, nowMs)) { if (FORWARD_MODE === 'buzz') markSeen(ev.id); return }
+    const recips = plane.recipients.filter(r => l2RecipientOk(ev.pubkey, r.inbox, ev, nowMs, boot))
+    if (!recips.length) { if (FORWARD_MODE === 'buzz') markSeen(ev.id); return }
     // Same dedup discipline as DMs: only commit seen on a real buzz-mode delivery into a
     // provisioned inbox, so a dryrun or a placeholder inbox never suppresses later backfill.
     const willDeliver = FORWARD_MODE === 'buzz' && recips.some(r => !r.inbox.startsWith('INBOX_UUID_'))
@@ -763,7 +838,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { routePublic, routeDelete, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels }
+export { route, routePublic, routeDelete, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
@@ -777,6 +852,7 @@ if (!process.env.WB_NO_BOOT) {
     if (PLANE_AUTHORS.length) for (const pk of PLANE_AUTHORS) log(`  channel '${PLANES[pk].name}' <- plane ${pk.slice(0, 12)}… -> ${PLANES[pk].recipients.map(r => r.name).join(', ')}`)
     if (!TARGETS.length) { err('FATAL: no recipients configured.'); process.exit(1) }
     if (!RELAYS.length) { err('FATAL: no relays configured.'); process.exit(1) }
+    log(`  lane-2 caps: ${L2.perPlane.postsPerMinute}/plane/min ${L2.perPlane.postsPerHour}/plane/h · ${L2.perPlane.perRecipientPerMinute}/recipient/min (+${L2.burst.recipientBurst} burst) · ${L2.global.totalPostsPerHour}/global/h · max ${L2.perPlane.maxEventBytes}B · boot allowance ${L2.burst.bootBackfillMax}`)
     RELAYS.forEach(connect)
   }
   if (PUB) {
