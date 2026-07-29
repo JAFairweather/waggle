@@ -10,7 +10,7 @@
 // (BUZZ_PRIVATE_KEY) to post into the inbox channels. Safe on a server that holds
 // no agent keys.
 //
-// Promoted from the .scratch prototype (My Dude, 2026-07-24) by Neil (bridge mgr):
+// Promoted from the .scratch prototype (the outbox engineer, 2026-07-24) by the read-lane engineer:
 //   - config externalized to config.json (relays + recipients + inbox UUIDs)
 //   - dedup is now DURABLE (survives restarts) so a bounce can't re-deliver
 //   - the NIP-59 48h backdate window is the DEFAULT, not an opt-in flag
@@ -47,7 +47,7 @@ const FORWARD_MODE = process.env.FORWARD_MODE || 'buzz'
 // SEALED_LANES=off runs the PUBLIC read lane ONLY — no DM lane, no Concord channel lane. Use this
 // on a SECOND instance (e.g. a local read-lane host) when another instance already owns the sealed
 // lanes: dedup is per-process (module-level `seen` + its own seen-ids.log), so two instances both
-// routing the sealed lanes deliver every wrap TWICE, byte-identical (Dennis, 2026-07-28). Default on.
+// routing the sealed lanes deliver every wrap TWICE, byte-identical (research & verification, 2026-07-28). Default on.
 const SEALED_LANES = (process.env.SEALED_LANES || 'on').toLowerCase() !== 'off'
 const SINCE_SECS = process.env.SINCE_SECS != null ? Number(process.env.SINCE_SECS) : 172800 // 48h
 const SINCE = Math.floor(Date.now() / 1000) - SINCE_SECS
@@ -231,7 +231,7 @@ function forward(rec, ev, src) {
   // derive from the #general community_root — NOT an ECDH seal to any p-tag. A member whose
   // runtime lacks that root cannot open it; say so, rather than "go unwrap," so a missing
   // Concord grant reads as a provisioning gap instead of a bad route. (Cost six confused
-  // rounds with Kerouac, 2026-07-24, before this said so.)
+  // rounds with a team member, 2026-07-24, before this said so.)
   const label = src && src.channel
     ? `New Concord channel post on **${src.channel}** — its outer \`p\` tag is a random decoy, not a recipient. ` +
       `Decrypt with the plane key you derive from the **${src.channel} community_root** ` +
