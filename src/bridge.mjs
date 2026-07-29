@@ -153,6 +153,11 @@ const PUB = cfg.public ? {
   // durable form — a muted author's replies stop reaching staging at all.
   approverMention: cfg.public.approver_mention || null,
   muted: (cfg.public.muted_authors || []).map(s => String(s).toLowerCase()),
+  // Reply-trust vs feed-follow are DIFFERENT grants: a trusted replier's replies to our
+  // notes skip the quarantine; a watched author's entire public feed mirrors in.
+  trustedRepliers: (cfg.public.trusted_repliers || []).map(s => String(s).toLowerCase()),
+  // Pubkeys allowed to issue in-channel approval commands (signed kind:9 replies in staging).
+  approvers: (cfg.public.approvers || []).map(s => String(s).toLowerCase()),
 } : null
 
 // Channel-name resolution: public.inbox / staging_inbox may be a Buzz channel NAME instead
@@ -224,12 +229,14 @@ function loadPostedMap() {
       if (!r || !r.id) continue
       if (r.deleted) { const e = postedMap.get(r.id); if (e) e.deleted = true; continue }
       postedMap.set(r.id, { author: r.author, buzz: r.buzz || null, dest: r.dest, deleted: false })
+      if (r.buzz) stagingByBuzzId.set(r.buzz, { orig: r.id, author: r.author, dest: r.dest })
     } catch { err(`A7: skipping corrupt posted-map line`) }
   }
   if (postedMap.size) log(`A7: loaded ${postedMap.size} posted-map entries from ${POSTED_MAP_PATH}`)
 }
 function recordPosted(rec) {
   postedMap.set(rec.id, { author: rec.author, buzz: rec.buzz || null, dest: rec.dest, deleted: false })
+  if (rec.buzz) stagingByBuzzId.set(rec.buzz, { orig: rec.id, author: rec.author, dest: rec.dest })
   try { mkdirSync(dirname(POSTED_MAP_PATH), { recursive: true }); appendFileSync(POSTED_MAP_PATH, JSON.stringify(rec) + '\n') }
   catch (e) { err(`A7: posted-map append failed for ${rec.id}: ${e.message}`) }
 }
@@ -436,7 +443,10 @@ function routePublic(ev) {
   if (trusted) why = 'standing watch'
   else if (PUB.events.length) {
     const es = (ev.tags || []).filter(t => t[0] === 'e').map(t => t[1])
-    if (es.some(id => PUB.events.includes(id))) { why = 'reply to our note'; quarantine = true }
+    if (es.some(id => PUB.events.includes(id))) {
+      if (PUB.trustedRepliers.includes(ev.pubkey)) why = 'standing watch' // reply-trust: no queue, no feed mirror
+      else { why = 'reply to our note'; quarantine = true }
+    }
   }
   if (!why) return
 
@@ -527,6 +537,101 @@ function withdraw(origId, entry, delEv) {
       if (!e2) return done('edit')
       followUp()
     })
+  })
+}
+
+// --- In-Buzz approval console -------------------------------------------------
+// The staging channel doubles as the approval surface: an authorized approver replies to a
+// quarantined post with one word — approve | watch | mute | reject — and the bridge acts,
+// confirming in the same thread. A command is an ordinary SIGNED kind:9 event; authority is
+// the author pubkey checked against cfg.public.approvers. No command line, no ssh.
+//   approve — release this one note to the community channel
+//   watch   — release it AND grant reply-trust (their future replies skip the queue)
+//   mute    — durable reject: this author's replies stop reaching staging
+//   reject  — explicit no (records the decision; author stays quarantined)
+const stagingByBuzzId = new Map() // buzz event id of a staging post -> { orig, author, dest }
+
+function fetchEventById(id) {
+  return new Promise(res => {
+    const socks = []
+    let settled = false
+    const finish = ev => { if (settled) return; settled = true; for (const w of socks) { try { w.close() } catch { /* closed */ } } res(ev || null) }
+    setTimeout(() => finish(null), 10000)
+    for (const url of PUB.relays) {
+      try {
+        const w = new WebSocket(url)
+        socks.push(w)
+        w.on('open', () => w.send(JSON.stringify(['REQ', 'fx', { ids: [id] }])))
+        w.on('message', d => { try { const m = JSON.parse(d.toString()); if (m[0] === 'EVENT' && m[2] && m[2].id === id) finish(m[2]) } catch { /* ignore */ } })
+        w.on('error', () => { /* dead relay */ })
+      } catch { /* bad url */ }
+    }
+  })
+}
+
+function mutateConfig(fn) {
+  try {
+    const fresh = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'))
+    fn(fresh)
+    writeFileSync(CONFIG_PATH, JSON.stringify(fresh, null, 2) + '\n')
+    return true
+  } catch (e) { err(`commands: config write failed: ${e.message}`); return false }
+}
+
+function replyInStaging(parentBuzzId, text) {
+  execFile('buzz', ['messages', 'send', '--channel', PUB.staging, '--reply-to', parentBuzzId, '--content', text], (e) => {
+    if (e) err(`commands: confirmation reply failed: ${e.message}`)
+  })
+}
+
+async function handleCommand(m) {
+  if (!m || !m.id || seen.has('cmd:' + m.id)) return
+  if (!PUB.approvers.includes(String(m.pubkey || '').toLowerCase())) return // not an approver: not a command
+  const word = String(m.content || '').trim().toLowerCase().split(/\s+/)[0]
+  if (!['approve', 'watch', 'mute', 'reject'].includes(word)) return
+  const parent = (m.tags || []).filter(t => t[0] === 'e').map(t => t[1])[0]
+  const st = parent && stagingByBuzzId.get(parent)
+  if (!st || st.dest !== PUB.staging) return // command must anchor to a quarantined post
+  markSeen('cmd:' + m.id) // commit-before-dispatch: a crash can never double-execute a command
+  log(`command '${word}' from approver ${m.pubkey.slice(0, 12)}… on ${st.orig.slice(0, 12)}…`)
+
+  if (word === 'reject') return replyInStaging(m.id, `🚫 rejected — no action taken; the author remains quarantined.`)
+
+  if (word === 'mute') {
+    if (!PUB.muted.includes(st.author)) PUB.muted.push(st.author)
+    mutateConfig(c => { c.public.muted_authors = Array.from(new Set([...(c.public.muted_authors || []), st.author])) })
+    return replyInStaging(m.id, `🔇 muted \`${st.author.slice(0, 12)}…\` — their replies will no longer reach staging.`)
+  }
+
+  // approve / watch — release the note (refusing duplicates), then grant trust if asked.
+  const prior = postedMap.get(st.orig)
+  const alreadyReleased = prior && !prior.deleted && prior.dest === PUB.inbox
+  if (!alreadyReleased) {
+    const ev = await fetchEventById(st.orig)
+    if (!ev) return replyInStaging(m.id, `⚠️ could not fetch the original from any relay — nothing released.`)
+    let ok = false
+    try { ok = verifyEvent(ev) } catch { ok = false }
+    if (!ok) return replyInStaging(m.id, `⚠️ signature verification FAILED — refusing to release.`)
+    if (!rateOk(ev, PUB.inbox, Date.now())) return replyInStaging(m.id, `⚠️ rate cap would be exceeded — try again later.`)
+    forwardPublic(ev, 'released from quarantine', PUB.inbox, false)
+  }
+  let granted = ''
+  if (word === 'watch') {
+    if (!PUB.trustedRepliers.includes(st.author)) PUB.trustedRepliers.push(st.author)
+    mutateConfig(c => { c.public.trusted_repliers = Array.from(new Set([...(c.public.trusted_repliers || []), st.author])) })
+    granted = ` · standing watch granted (their replies now skip the queue)`
+  }
+  replyInStaging(m.id, `✅ ${alreadyReleased ? 'already released earlier' : 'released to the community channel'}${granted}`)
+}
+
+let cmdCursor = 0
+function pollCommands() {
+  execFile('buzz', ['messages', 'get', '--channel', PUB.staging, '--limit', '30'], (e, so) => {
+    if (e) return err(`commands: staging read failed: ${e.message}`)
+    let msgs
+    try { msgs = JSON.parse(String(so).slice(String(so).indexOf('['))) } catch { return err('commands: unparseable staging read') }
+    for (const m of msgs) { if ((m.created_at || 0) >= cmdCursor - 300) handleCommand(m).catch(er => err(`commands: ${er.message}`)) }
+    cmdCursor = Math.floor(Date.now() / 1000)
   })
 }
 
@@ -665,6 +770,10 @@ if (!process.env.WB_NO_BOOT) {
     log(`public read lane -> inbox ${PUB.inbox}: ${PUB.relays.length} relay(s), ${PUB.authors.length} watched author(s), ${PUB.events.length} watched note(s), pub-since=${PUB.since} (${PUB_SINCE_SECS}s), watermark=${pubWatermark || 'none'}`)
     log(`  gates: staging=${PUB.staging || 'HOLD (none)'} · backfill<=${PUB.backfillLimit} · maxContent=${PUB.maxContentBytes}B · rate ${PUB.replierPerMin}/replier/min ${PUB.channelPerMin}/chan/min ${PUB.lanePerHour}/lane/h · deletes ${PUB.deletesPerHour}/h (A7)`)
     PUB.relays.forEach(connectPublic)
+    if (PUB.staging && PUB.approvers.length && FORWARD_MODE === 'buzz') {
+      log(`approval console: watching staging for commands from ${PUB.approvers.length} approver(s)`)
+      pollCommands(); setInterval(pollCommands, 15000)
+    }
     })
   } else {
     log('public read lane: inactive (no cfg.public.inbox)')

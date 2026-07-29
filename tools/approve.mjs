@@ -130,15 +130,17 @@ try {
   appendFileSync(APPROVALS_PATH, JSON.stringify({ id, author: fetched.pubkey, watch, ts: Math.floor(Date.now() / 1000) }) + '\n')
 } catch (e) { console.error(`warn: approvals.log append failed: ${e.message}`) }
 
-if (watch) {
+const follow = args.includes('--follow')
+if (watch || follow) {
   const cfg = loadCfg()
-  cfg.public.watch_authors = cfg.public.watch_authors || []
+  const key = follow ? 'watch_authors' : 'trusted_repliers' // --watch = reply-trust; --follow = full feed mirror
+  cfg.public[key] = cfg.public[key] || []
   const pk = fetched.pubkey.toLowerCase()
-  if (!cfg.public.watch_authors.includes(pk)) {
-    cfg.public.watch_authors.push(pk)
+  if (!cfg.public[key].includes(pk)) {
+    cfg.public[key].push(pk)
     saveCfg(cfg)
-    console.log(`now watching author ${pk} — this widens the allowlist. Restart the bridge to apply.`)
+    console.log(`granted ${follow ? 'FULL FOLLOW (feed mirror)' : 'reply-trust (standing watch)'} to ${pk}. Restart the bridge to apply.`)
   } else {
-    console.log(`author ${pk} is already watched`)
+    console.log(`author ${pk} already has that grant`)
   }
 }
