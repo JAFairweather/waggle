@@ -1,0 +1,21 @@
+{
+  "name": "west-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Non-custodial subscriber that pushes external Nostr events (Armada NIP-17 DMs) into per-agent Buzz inboxes.",
+  "main": "src/bridge.mjs",
+  "scripts": {
+    "start": "node src/bridge.mjs",
+    "dryrun": "FORWARD_MODE=dryrun node src/bridge.mjs"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
+    "nostr-tools": "^2.24.1",
+    "ws": "^8.21.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
