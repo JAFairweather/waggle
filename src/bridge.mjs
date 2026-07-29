@@ -145,6 +145,11 @@ const PUB = cfg.public && cfg.public.inbox ? {
   channelPerMin: Number(cfg.public.channel_per_min != null ? cfg.public.channel_per_min : 20),    // A6
   lanePerHour: Number(cfg.public.lane_per_hour != null ? cfg.public.lane_per_hour : 200),         // A6
   deletesPerHour: Number(cfg.public.deletes_per_hour != null ? cfg.public.deletes_per_hour : 20), // A7
+  // Approval workflow: @mention prepended to a quarantine header so the arrival notifies
+  // the approver through the existing Buzz mention path. Mutes are the reject verb's
+  // durable form — a muted author's replies stop reaching staging at all.
+  approverMention: cfg.public.approver_mention || null,
+  muted: (cfg.public.muted_authors || []).map(s => String(s).toLowerCase()),
 } : null
 
 const unresolved = (cfg.recipients || []).filter(r => !r.inbox || r.inbox.startsWith('INBOX_UUID_'))
@@ -319,9 +324,11 @@ function forwardPublic(ev, why, dest, quarantine) {
   // Reposted content is untrusted public text. It is delivered as a fenced block so a note
   // that happens to contain "@Name" or markdown can't inject a Buzz mention/format.
   const body = String(ev.content || '')
+  const mention = quarantine && PUB.approverMention ? `@${PUB.approverMention} ` : ''
   const header = quarantine
-    ? `⏳ **QUARANTINED external Nostr reply** — _${why}_\n` +
-      `**Unverified · NOT in any community channel.** A human must approve before this is republished.\n`
+    ? `${mention}⏳ **QUARANTINED external Nostr reply** — _${why}_\n` +
+      `**Unverified · NOT in any community channel.** A human must approve before this is republished.\n` +
+      `Approve: \`node tools/approve.mjs --event ${ev.id}\` (add \`--watch\` to trust the author)\n`
     : `📡 **Public Nostr note** — _${why}_\n`
   const content =
     header +
@@ -366,6 +373,9 @@ function routePublic(ev) {
   // and skips staging — the watch_authors set gates it in.)
   let dest = PUB.inbox
   if (quarantine) {
+    // A muted author was explicitly rejected by the approver — their replies no longer
+    // reach staging (still logged, per the A6 no-silent-drop rule).
+    if (PUB.muted.includes(ev.pubkey)) { err(`PUBLIC drop[muted]: reply ${ev.id.slice(0, 12)}… by muted author ${ev.pubkey.slice(0, 12)}…`); markSeen(ev.id); return }
     if (!PUB.staging) { err(`PUBLIC hold: no staging channel — quarantined reply ${ev.id.slice(0, 12)}… by ${ev.pubkey.slice(0, 12)}… NOT delivered (default-closed)`); markSeen(ev.id); return }
     dest = PUB.staging
   }
