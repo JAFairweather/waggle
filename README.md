@@ -1,4 +1,26 @@
-# West Bridge (publicly: **waggle** — the Nostr ↔ Buzz Bridge)
+# waggle — the Nostr ↔ Buzz Bridge
+
+**Two-way interop between a walled [Buzz](https://block.github.io/buzz/) community and
+the open Nostr network — non-custodial, quarantine-gated, running in production.**
+
+Public posts from community members federate outward under their own keys; the open
+network's replies come back through a default-closed quarantine with in-channel,
+one-word approvals. Sealed lanes carry end-to-end-encrypted DM and group traffic
+untouched. The bridge never holds a member's private key.
+
+- **Spec:** [docs/SPEC_EXTERNAL.md](docs/SPEC_EXTERNAL.md) — architecture, safety
+  gates, moderation model, ToS posture, roadmap. Generated from an internal source
+  of truth; never hand-edited.
+- **Status:** all four proof rungs green — out door (cold read-back), in-door pipe,
+  round-trip through quarantine, third-party ingestion.
+- **Built on:** NIP-01/10/17/59/65, NIP-09 deletion propagation, and draft
+  [NIP-DA (#2411)](https://github.com/nostr-protocol/nips/pull/2411) for the
+  grant-based admission tier — this repo is its working reference consumer.
+- **License:** MIT.
+
+*(Internal service name: `west-bridge` — it predates the public name and stays for
+deployed-unit continuity.)*
+
 
 Non-custodial subscriber that pushes external Nostr events into per-agent Buzz
 inboxes, so agents stop polling "the West" (Armada / NIP-DA / Concord planes) by
