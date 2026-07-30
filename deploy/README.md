@@ -48,9 +48,14 @@ A3 watermark resumes where local stopped, and A2's seen-set makes the overlap a 
 5. **(box, as root — independent)** Refresh the sealed tree to the current build:
    `sh deploy/deploy.sh sealed <admin>@<host>`. Confirm its `config.json` has **no**
    `public` block; its boot log must read `public read lane: inactive`.
-6. **Harden LAST:** apply `nft -f deploy/nave-fw.nft` and persist it; re-verify the admin
-   login; only then `PermitRootLogin no` + `sshd -t` + reload; finally the reboot test —
-   both units return, the watermark resumes, the journal is clean.
+6. **Harden LAST:** apply `nft -f deploy/nave-fw.nft` and persist it, then **prove it loaded**
+   with `sudo deploy/verify-firewall.sh` (exit 0 = verified; **3 = inconclusive, not an
+   all-clear**). Applying is not loading: the correct ruleset once sat on a box for a day
+   without ever entering the kernel, while NTP egress was dropped and the clock silently
+   drifted — which corrupts the `since` windows, the A3 watermark and the A5 `created_at`
+   clamp, with no error anywhere. Re-verify the admin login; only then `PermitRootLogin no` +
+   `sshd -t` + reload; finally the reboot test — both units return, the watermark resumes, the
+   journal is clean, and `verify-firewall.sh` still exits 0.
 
 ## Post-deploy verification (required)
 
