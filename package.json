@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node src/bridge.mjs",
     "dryrun": "FORWARD_MODE=dryrun node src/bridge.mjs",
-    "test": "node tests/a1_quarantine.mjs && node tests/a7_deletion.mjs && node tests/lane2_caps.mjs"
+    "test": "node tests/a1_quarantine.mjs && node tests/a7_deletion.mjs && node tests/lane2_caps.mjs && node tests/nipda_admission.mjs"
   },
   "dependencies": {
     "@noble/curves": "^1.9.7",

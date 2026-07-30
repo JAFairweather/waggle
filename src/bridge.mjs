@@ -159,6 +159,9 @@ const PUB = cfg.public ? {
   trustedRepliers: (cfg.public.trusted_repliers || []).map(s => String(s).toLowerCase()),
   // Pubkeys allowed to issue in-channel approval commands (signed kind:9 replies in staging).
   approvers: (cfg.public.approvers || []).map(s => String(s).toLowerCase()),
+  // Keys whose signed 440/441 events the bridge honors for admission. Defaults to the
+  // approvers set — the same authority that runs the quarantine console.
+  grantors: (cfg.public.grantors || cfg.public.approvers || []).map(s => String(s).toLowerCase()),
 } : null
 
 // Channel-name resolution: public.inbox / staging_inbox may be a Buzz channel NAME instead
@@ -325,6 +328,50 @@ function l2RecipientOk(plane, inbox, ev, nowMs, boot) {
   b.tokens -= 1
   l2Bucket.set(key, b)
   return true
+}
+
+// --- NIP-DA admission tier (annex §4.1.1 — S3: granted external participants) --
+// PUBLIC signed grants from the maintainer admit a known external identity past the
+// quarantine: kind 440 admits, 441 revokes, both verified (signature + grantor set +
+// salted scope-hash binding to THIS channel) and consumed statelessly — the grant set is
+// rebuilt from the relays on every boot, so there is nothing to migrate and revocation
+// needs no restart. Provisional kinds sit behind one config knob (Marmot-band renumber).
+const NIPDA_PATH = process.env.NIPDA_KINDS_PATH || resolve(ROOT, 'config', 'nipda_kinds.json')
+const NIPDA = (() => {
+  const d = { grant: 440, revocation: 441, index: 10440, dataset: 30440, scopeTag: 'da-scope', capTag: 'da-cap' }
+  try { return { ...d, ...JSON.parse(readFileSync(NIPDA_PATH, 'utf8')) } } catch { return d }
+})()
+const scopeHash = (channelId, saltHex) =>
+  createHash('sha256').update(Buffer.concat([
+    Buffer.from('waggle/da-scope/v1'), Buffer.from([0]), Buffer.from(String(channelId)), Buffer.from(saltHex, 'hex'),
+  ])).digest('hex')
+const grantSet = new Map() // grantee pubkey -> { grantId, grantor }
+function processGrantEvent(ev) {
+  if (!ev || !ev.id || !PUB) return
+  const grantors = PUB.grantors
+  if (!grantors.includes(String(ev.pubkey || '').toLowerCase())) return
+  let ok = false
+  try { ok = verifyEvent(ev) } catch { ok = false }
+  if (!ok) { err(`NIPDA drop[bad-signature]: kind${ev.kind} ${String(ev.id).slice(0, 12)}…`); return }
+  if (ev.kind === NIPDA.revocation) {
+    const target = (ev.tags || []).filter(t => t[0] === 'e').map(t => t[1])[0]
+    for (const [pk, g] of grantSet) if (g.grantId === target) {
+      grantSet.delete(pk)
+      log(`NIPDA revoked: grantee ${pk.slice(0, 12)}… (441 ${ev.id.slice(0, 12)}…)`)
+    }
+    return
+  }
+  if (ev.kind !== NIPDA.grant) return
+  const grantee = (ev.tags || []).filter(t => t[0] === 'p').map(t => t[1])[0]
+  const scope = (ev.tags || []).find(t => t[0] === NIPDA.scopeTag)
+  const cap = (ev.tags || []).find(t => t[0] === NIPDA.capTag)?.[1]
+  if (!grantee || !scope || !cap) return
+  // The salted hash binds the grant to a channel without the channel id riding publicly;
+  // the bridge knows its own channel id, so it recomputes and compares.
+  if (scope[1] !== scopeHash(PUB.inbox, scope[2] || '')) return // scoped to some other channel — not ours
+  if (cap !== 'admit' && cap !== 'admit+read') return
+  grantSet.set(String(grantee).toLowerCase(), { grantId: ev.id, grantor: ev.pubkey })
+  log(`NIPDA granted: ${String(grantee).slice(0, 12)}… admitted (${cap}, 440 ${ev.id.slice(0, 12)}…)`)
 }
 
 // --- delivery ---------------------------------------------------------------
@@ -516,6 +563,7 @@ function routePublic(ev) {
   const trusted = PUB.authors.includes(ev.pubkey)
   let why = null, quarantine = false
   if (trusted) why = 'mirrored feed'
+  else if (grantSet.has(ev.pubkey)) why = 'granted participant' // §4.1 S3: admitted by signed 440, revocable by 441
   else if (PUB.events.length) {
     const es = (ev.tags || []).filter(t => t[0] === 'e').map(t => t[1])
     if (es.some(id => PUB.events.includes(id))) {
@@ -811,6 +859,9 @@ function connectPublic(url) {
       // A7: kind:5 deletes from watched authors. Longer lookback than the kind:1 watermark
       // (deletes are rare + idempotent; one issued during downtime must not be missed).
       if (PUB.authors.length) { expect.add('pd'); ws.send(JSON.stringify(['REQ', 'pd', { kinds: [5], authors: PUB.authors, since: Math.floor(Date.now() / 1000) - DEL_SINCE_SECS, limit: PUB.backfillLimit }])) }
+      // NIP-DA: grants + revocations from the grantor set. Wide lookback — a standing
+      // grant issued weeks ago must survive any restart (stateless consumption).
+      if (PUB.grantors.length) { expect.add('pg'); ws.send(JSON.stringify(['REQ', 'pg', { kinds: [NIPDA.grant, NIPDA.revocation], authors: PUB.grantors, limit: 200 }])) }
       // Safety: flush even if a relay never sends EOSE for a subscription.
       flushTimer = setTimeout(() => flush('EOSE timeout'), 10000)
     })
@@ -819,6 +870,7 @@ function connectPublic(url) {
       try { m = JSON.parse(d.toString()) } catch { return }
       if (m[0] === 'EVENT') {
         const ev = m[2]
+        if (ev && (ev.kind === NIPDA.grant || ev.kind === NIPDA.revocation)) { processGrantEvent(ev); return }
         if (eosed) { if (ev && ev.kind === 5) routeDelete(ev); else routePublic(ev); return }
         // A4: bound the pre-EOSE buffer app-side too — overflow dropped WITH a log, never silent.
         if (buf.length >= PUB.backfillLimit) { err(`[pub ${url}] backfill buffer cap ${PUB.backfillLimit} — dropping ${ev?.id ? ev.id.slice(0, 12) : '?'}…`); return }
@@ -838,7 +890,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { route, routePublic, routeDelete, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels }
+export { route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
@@ -860,6 +912,7 @@ if (!process.env.WB_NO_BOOT) {
     resolveChannels(() => {
     log(`public read lane -> inbox ${PUB.inbox}: ${PUB.relays.length} relay(s), ${PUB.authors.length} watched author(s), ${PUB.events.length} watched note(s), pub-since=${PUB.since} (${PUB_SINCE_SECS}s), watermark=${pubWatermark || 'none'}`)
     log(`  gates: staging=${PUB.staging || 'HOLD (none)'} · backfill<=${PUB.backfillLimit} · maxContent=${PUB.maxContentBytes}B · rate ${PUB.replierPerMin}/replier/min ${PUB.channelPerMin}/chan/min ${PUB.lanePerHour}/lane/h · deletes ${PUB.deletesPerHour}/h (A7)`)
+    if (PUB.grantors.length) log(`  admission: ${PUB.grantors.length} grantor key(s); NIP-DA kinds ${NIPDA.grant}/${NIPDA.revocation}/${NIPDA.index}`)
     PUB.relays.forEach(connectPublic)
     if (PUB.staging && PUB.approvers.length && FORWARD_MODE === 'buzz') {
       log(`approval console: watching staging for commands from ${PUB.approvers.length} approver(s)`)
