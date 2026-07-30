@@ -527,16 +527,24 @@ async function forwardPublic(ev, why, dest, quarantine) {
   if (!process.env.WB_STUB_SEND) { try { name = await fetchProfileName(ev.pubkey) } catch { name = null } }
   let npub = null
   try { npub = nip19.npubEncode(ev.pubkey) } catch { npub = null }
+  // Heavily contracted npub for the attribution line — enough to recognize/verify, not a wall.
+  const npubShort = npub ? `${npub.slice(0, 10)}…${npub.slice(-5)}` : (ev.pubkey || '?').slice(0, 12) + '…'
+  // Presentation follows TRUST. Quarantined content is UNDER REVIEW: keep it guarded — fenced,
+  // raw, so an unvouched stranger's text can never inject a mention/format while a human decides.
+  // A RELEASED / granted / watched identity has been vouched for: render it as a natural message
+  // — flowing text, no code bubble, no line numbers — with mentions/nostr-refs defused by a
+  // zero-width space (renders as "@name" but never resolves to a real Buzz ping). A8 (native
+  // foreign-signed rendering) is what finally puts the participant's OWN avatar + name on it;
+  // until then this is a Neil-authored message that reads as cleanly as a repost can.
   const fenced = '```\n' + body.replace(/```/g, '`​``') + '\n```\n'
-  // Two displays, two jobs: STAGING is the review surface (full ids, timestamps, the approve
-  // command). A RELEASED message is conversation — one friendly line, no hex walls.
+  const natural = body.replace(/@(?=[\w])/g, '@​').replace(/\bnostr:/gi, 'nostr​:')
   const content = quarantine
     ? `${mention}⏳ **QUARANTINED** — external Nostr reply, _pending approval_ (${why})\n` +
       `**Unverified · NOT in any community channel.** A human must approve before this is republished.\n` +
       `Approve: \`waggle-approve ${ev.id}\` (or reply approve / follow / mute / reject right here)\n` +
       `author ${name ? `**${name}** · ` : ''}\`${npub || ev.pubkey}\`\n` +
       `event \`${ev.id}\`  ·  ${when}${claim}\n\n` + fenced
-    : `📡 ${name ? `**${name}** ` : ''}\`${npub || ev.pubkey}\` · _via waggle — ${why}_\n\n` + fenced
+    : `**${name || npubShort}**  ·  \`${npubShort}\`  ·  _via waggle_\n\n${natural}`
   // Test seam: exercise the full buzz-mode path (markSeen/watermark/posted-map) without a
   // network send. The synthetic buzz id (orig id reversed — still 64 hex, still unique)
   // exercises the same capture shape the live path records.
