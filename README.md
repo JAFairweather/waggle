@@ -11,6 +11,10 @@ untouched. The bridge never holds a member's private key.
 - **Spec:** [docs/SPEC_EXTERNAL.md](docs/SPEC_EXTERNAL.md) — architecture, safety
   gates, moderation model, ToS posture, roadmap. Generated from an internal source
   of truth; never hand-edited.
+- **Trust boundaries:** [docs/CONCORD_CONSUMER.md](docs/CONCORD_CONSUMER.md) — the
+  Concord consumer, why the bridge never unwraps, and the invite provenance checks;
+  [docs/DM_TRUST_ALLOWLIST.md](docs/DM_TRUST_ALLOWLIST.md) — which senders an agent acts
+  on, honoured today rather than enforced.
 - **Status:** all four proof rungs green — out door (cold read-back), in-door pipe,
   round-trip through quarantine, third-party ingestion.
 - **Built on:** NIP-01/10/17/59/65, NIP-09 deletion propagation, and draft
