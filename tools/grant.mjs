@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // NIP-DA admission issuer — the maintainer's grant pen (annex §4.1.1, S3 tier).
 //
-//   grant.mjs issue  --to <npub|hex> --channel <uuid|name> [--cap admit]   sign + publish a 440
+//   grant.mjs issue  --to <npub|hex> --channel <uuid> [--cap admit]    admit to a channel (440)
+//   grant.mjs issue  --to <npub|hex> --agent <npub|hex> [--cap task]   may TASK that agent (440)
 //   grant.mjs revoke --grant <440 event id>                                sign + publish a 441
 //   grant.mjs list                                                          own 440/441s off the relays
 //
@@ -122,12 +123,25 @@ if (cmd === 'whoami') {
 } else if (cmd === 'issue') {
   const toRaw = flag('--to') || die('issue needs --to <npub|hex>')
   const grantee = toRaw.startsWith('npub1') ? nip19.decode(toRaw).data : (HEX64.test(toRaw) ? toRaw.toLowerCase() : die('--to must be npub or 64-hex'))
-  const chan = channelId(flag('--channel') || die('issue needs --channel <uuid>'))
-  const cap = flag('--cap') || 'admit'
-  if (cap !== 'admit') die(`only --cap admit is implemented (S3 tier); admit+read (S2) rides the 30440 work`)
+  // Two things can be granted, and they differ only in what the scope binds to:
+  //   --channel <uuid>  cap admit  — this grantee may enter that channel  (the S3 tier)
+  //   --agent <npub>    cap task   — this grantee may TASK that agent     (attention as a scope)
+  // The second exists because an agent's own allowlist is an honour system: whatever list it
+  // reads, it must choose to obey. Issued as a grant instead, the policy is authenticated,
+  // revocable, and enforced by the delivery code before the agent ever sees the message.
+  const agentRaw = flag('--agent')
+  const chanRaw = flag('--channel')
+  if (!agentRaw && !chanRaw) die('issue needs --channel <uuid> (admit) or --agent <npub|hex> (task)')
+  if (agentRaw && chanRaw) die('--channel and --agent are different scopes; pass one')
+  const subject = agentRaw
+    ? (agentRaw.startsWith('npub1') ? nip19.decode(agentRaw).data : (HEX64.test(agentRaw) ? agentRaw.toLowerCase() : die('--agent must be npub or 64-hex')))
+    : channelId(chanRaw)
+  const cap = flag('--cap') || (agentRaw ? 'task' : 'admit')
+  const allowed = agentRaw ? ['task', 'task+act'] : ['admit']
+  if (!allowed.includes(cap)) die(`--cap ${cap} is not valid for this scope; expected one of: ${allowed.join(', ')}`)
   const salt = randomBytes(16).toString('hex')
   const hash = createHash('sha256').update(Buffer.concat([
-    Buffer.from('waggle/da-scope/v1'), Buffer.from([0]), Buffer.from(chan), Buffer.from(salt, 'hex'),
+    Buffer.from('waggle/da-scope/v1'), Buffer.from([0]), Buffer.from(subject), Buffer.from(salt, 'hex'),
   ])).digest('hex')
   const ev = await signer.sign({
     kind: NIPDA.grant,
@@ -135,7 +149,7 @@ if (cmd === 'whoami') {
     tags: [['p', grantee], [NIPDA.scopeTag, hash, salt], [NIPDA.capTag, cap]],
     content: '',
   })
-  console.log(`440 ${ev.id}\n  grantee ${grantee}\n  scope   ${hash.slice(0, 16)}… (salted; channel never public)\n  cap     ${cap}\n  grantor ${pk}`)
+  console.log(`440 ${ev.id}\n  grantee ${grantee}\n  scope   ${hash.slice(0, 16)}… (salted; subject never public)\n  cap     ${cap}\n  grantor ${pk}`)
   for (const line of await publish(ev)) console.log('  ' + line)
   await signer.close()
 } else if (cmd === 'revoke') {
@@ -169,5 +183,5 @@ if (cmd === 'whoami') {
   }
   if (!evs.length) console.log('(no grants published by this key)')
 } else {
-  die('usage: grant.mjs issue --to <npub> --channel <uuid> | revoke --grant <id> | list')
+  die('usage: grant.mjs issue --to <npub> (--channel <uuid> | --agent <npub>) | revoke --grant <id> | list')
 }
