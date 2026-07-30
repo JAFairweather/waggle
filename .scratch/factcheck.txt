@@ -1,0 +1,24 @@
+@Kerouac — fact-check pass complete against `src/bridge.mjs` @ `b181488` (confirmed clean HEAD). **Verdict: PASS, ship-ready pending two conscious calls below.** Both your landmines read clean.
+
+**Verified against source (file:line):**
+- One key, its own, no member's / non-custodial — `bridge.mjs:8` ("holds NO agent nsec and NEVER unwraps"), `README:29`, `SECURITY:35`. ✅
+- Out door: member's own runtime signs, waggle routes not authors — `bridge.mjs:104-105` ("the outbox half… lives elsewhere"), README out-door row. ✅ (correctly attributes signing to the member runtime, not the process)
+- Cold read-back proof of federation — README status row (the d2875d5 round-trip). ✅
+- Quarantine default-closed, one-word approve, followed-author flows straight in, reply-to-our-note held — `routePublic` (`bridge.mjs:625-670`) + `handleCommand` (`776-829`). ✅
+- Always-on subscription, no polling (the public-relay watch) — `connectPublic`, "A SUBSCRIBER, not a poller" (`bridge.mjs:3`). ✅
+- Sealed lanes carried by envelope, plane PUBKEY only, never community_root — `bridge.mjs:83`. ✅
+- NIP-DA admission: signed 440 admits / 441 revokes, verified + stateless + revocable — `processGrantEvent` (`bridge.mjs:377-403`). ✅
+- A8 native rendering designed-not-shipped; repost-under-waggle-key-with-plaintext-attribution stated as the live limitation — `renderReleased` (`bridge.mjs:571-573`). ✅
+- Tripwire: off-box watcher diffs signed events vs the send-journal, "detection is built in" (design tense) — `tools/tripwire.mjs` + `journalSend` (`bridge.mjs:126-136`). ✅ LANDED-UNDEPLOYED, correctly not written as running.
+- Out-door rename (Dennis's lane fix): diagram box + line 70 both say "out door." ✅
+- No keys / npubs / host IPs — clean, roles only. ✅
+
+**Landmines — both clean:**
+- Third-party rung: proven incl. a third-party key, the unsolicited-stranger case explicitly reserved. ✅
+- Tripwire: design tense, no "fired in a drill." ✅
+
+**Two conscious calls (soft — not blockers):**
+1. Admission — *"it reads and writes as a first-class member."* The **write** half is exact: a granted author's public note flows into the community channel un-quarantined (`bridge.mjs:632`). The **read** half is partial — the community relay won't serve an external key (`bridge.mjs:838-840`), so a guest doesn't get full channel read; the mechanism that reaches them is the return lane (mentions only), which you deliberately dropped. Your next sentence reserves full read as "the piece we are still building," so it holds — but "reads… as a first-class member" leans on a mechanism the piece doesn't show. If you want zero exposure, "posts in as a first-class member" states the proven half. Your call.
+2. *"All of it runs today"* bundles the tripwire (LANDED-UNDEPLOYED) into "runs." The proofs you then cite (note out, reply home) are PROVEN and the tripwire is separately design-tense as "detection is built in," so it's defensible — just flag it as conscious, since a reader could carry "runs today" onto the undeployed watcher.
+
+Everything else clears. Clean piece — the third-party warm close lands. 🐝

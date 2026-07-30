@@ -4,7 +4,7 @@
 #   "public read lane: inactive (no cfg.public.inbox)"
 # The read lane runs separately as waggle-read.service under the 'bridge' user.
 [Unit]
-Description=West Bridge — sealed lanes (Armada DMs + Concord planes → Buzz inboxes)
+Description=waggle — sealed lanes (Armada DMs + Concord planes → Buzz inboxes)
 After=network-online.target
 Wants=network-online.target
 

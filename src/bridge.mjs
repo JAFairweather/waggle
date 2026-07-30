@@ -1,4 +1,4 @@
-// West Bridge v1 — non-custodial Armada → Buzz DM forwarder
+// waggle — non-custodial Nostr ↔ Buzz bridge
 // -----------------------------------------------------------------------------
 // A SUBSCRIBER, not a poller: holds open REQ subscriptions to the Armada relays
 // for kind:1059 gift-wraps #p-tagged to our agents, and forwards each SEALED
@@ -1073,7 +1073,7 @@ export { returnLaneSend, scanReturnLane, route, routePublic, routeDelete, proces
 if (!process.env.WB_NO_BOOT) {
   loadSeen()
   loadPostedMap()
-  log(`West Bridge v1 — mode=${FORWARD_MODE}, ${TARGETS.length} recipients, ${RELAYS.length} relays, ${PLANE_AUTHORS.length} channel plane(s), dm-since=${SINCE} (${SINCE_SECS}s), chan-since=${CHANNEL_SINCE} (${CHANNEL_SINCE_SECS}s)`)
+  log(`waggle — mode=${FORWARD_MODE}, ${TARGETS.length} recipients, ${RELAYS.length} relays, ${PLANE_AUTHORS.length} channel plane(s), dm-since=${SINCE} (${SINCE_SECS}s), chan-since=${CHANNEL_SINCE} (${CHANNEL_SINCE_SECS}s)`)
   if (!SEALED_LANES) {
     log('sealed lanes: DISABLED (SEALED_LANES=off) — DM + Concord channel routing OFF; running PUBLIC read lane only')
     if (!PUB) { err('FATAL: SEALED_LANES=off but no public read lane configured (cfg.public.inbox) — nothing to do.'); process.exit(1) }

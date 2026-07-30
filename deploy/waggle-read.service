@@ -9,7 +9,7 @@
 # Its config.json carries ONLY the "public" block (recipients/relays not required).
 # The buzz CLI must be executable by 'bridge' on the PATH below.
 [Unit]
-Description=West Bridge — public kind:1 read lane (quarantine-gated)
+Description=waggle — public kind:1 read lane (quarantine-gated)
 After=network-online.target
 Wants=network-online.target
 
