@@ -1,8 +1,8 @@
 #!/bin/sh
 # Push-style deploy from the Mac — the reproducible replacement for hand-typed ssh steps.
 #
-#   sh deploy/deploy.sh read   bridge@<host>     # public read lane -> /opt/west-bridge-read
-#   sh deploy/deploy.sh sealed <admin>@<host>    # sealed lanes     -> /opt/west-bridge
+#   sh deploy/deploy.sh read   bridge@<host>     # public read lane -> /opt/waggle-read
+#   sh deploy/deploy.sh sealed <admin>@<host>    # sealed lanes     -> /opt/waggle-sealed
 #
 # Ships code ONLY: config.json, .env, and data/ are never touched (rsync has no --delete,
 # and none of those paths are in the ship list). Refuses to restart a tree whose config is
@@ -12,14 +12,14 @@ set -eu
 TARGET="${1:-}"
 DEST="${2:-}"
 case "$TARGET" in
-  read)   TREE=/opt/west-bridge-read; UNIT=west-bridge-read.service ;;
-  sealed) TREE=/opt/west-bridge;      UNIT=west-bridge.service ;;
+  read)   TREE=/opt/waggle-read; UNIT=waggle-read.service ;;
+  sealed) TREE=/opt/waggle-sealed;      UNIT=waggle-sealed.service ;;
   *) echo "usage: sh deploy/deploy.sh read|sealed user@host"; exit 1 ;;
 esac
 [ -n "$DEST" ] || { echo "usage: sh deploy/deploy.sh $TARGET user@host"; exit 1; }
 
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-echo "== west-bridge deploy: $TARGET -> $DEST:$TREE =="
+echo "== waggle deploy: $TARGET -> $DEST:$TREE =="
 
 echo "-- preflight --"
 ssh "$DEST" "[ -f $TREE/config.json ]" || {

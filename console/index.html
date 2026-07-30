@@ -6,7 +6,11 @@
 <title>waggle console — who is admitted, and by whose signature</title>
 <meta name="description" content="Read-only view of a waggle bridge's live admissions. Reads signed grants off the relays and verifies them in the page. No server, no keys, no privileged access.">
 <script type="importmap">
-{ "imports": { "nostr-tools": "./vendor/nostr-tools.mjs" } }
+{ "imports": {
+    "nostr-tools": "./vendor/nostr-tools.mjs",
+    "nostr-tools/pool": "./vendor/nostr-tools-pool.mjs",
+    "nostr-tools/nip46": "./vendor/nostr-tools-nip46.mjs"
+} }
 </script>
 <style>
   :root {
@@ -15,6 +19,7 @@
     --gold:#c39a56; --gold-bright:#e2c079;
     --accent:#cf8a2e; --accent-bright:#e8a545; --accent-ink:#0b0906;
     --good:#8fae6a; --warn:#d9a648; --critical:#c0705a;
+    --alby:#ffdf6f; --alby-bright:#ffe98c; --alby-ink:#1c1400;
     --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","Inter",Roboto,"Helvetica Neue",Arial,sans-serif;
     --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Roboto Mono",monospace;
     --display:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
@@ -53,6 +58,18 @@
   .btn{background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--r-sm);
     padding:10px 18px;font-weight:700;font-size:15px;font-family:inherit;cursor:pointer;margin-top:14px}
   .btn:hover{background:var(--accent-bright)}
+  /* the family's standard sign-in cluster — same markup and classes as the other consoles */
+  button.primary{background:var(--accent);border:1px solid var(--accent);color:var(--accent-ink);
+    font-weight:700;text-transform:uppercase;letter-spacing:.1em}
+  button.primary:hover{background:var(--accent-bright);border-color:var(--accent-bright)}
+  .alby-bar{width:100%;display:flex;align-items:center;justify-content:center;gap:10px;padding:14px 18px;
+    font-size:15px;font-weight:700;letter-spacing:.01em;background:var(--alby);border:1px solid var(--alby);
+    color:var(--alby-ink);text-transform:none;border-radius:var(--r-sm);cursor:pointer;font-family:inherit;margin-top:4px}
+  .alby-bar:hover{background:var(--alby-bright);border-color:var(--alby-bright)}
+  .alby-bar .alby-mark{width:24px;height:24px;flex:none}
+  .alby-sub{text-align:center;color:var(--dim);font-size:12px;margin:10px 0 0}
+  .alt{margin-top:16px;color:var(--dim);font-size:14px}
+  .alt a{color:var(--accent);cursor:pointer;text-decoration:underline}
   .btn.ghost{background:transparent;color:var(--text);border:1px solid var(--line-strong)}
   .btn.ghost:hover{border-color:var(--accent);color:var(--accent-bright);background:transparent}
   .btn:disabled{opacity:.45;cursor:not-allowed}
@@ -80,41 +97,38 @@
 </style>
 </head>
 <body>
+<!-- the shared Nave identity bar (nave-connect + nave-titlebar), vendored and mounted the
+     same way every other app in the family does it — one sign-in, promoted not re-invented -->
+<div id="titlebar" style="max-width:1000px;margin:0 auto;padding:0 20px"></div>
+
 <main>
-  <div class="top">
-    <svg class="mark" viewBox="0 0 100 100" role="img" aria-label="waggle">
-      <rect x="2" y="2" width="96" height="96" rx="20" fill="#0b0906" stroke="#c39a56" stroke-opacity="0.5" stroke-width="2"/>
-      <g fill="none" stroke="#e2c079" stroke-width="2.6" stroke-linecap="round" opacity="0.9">
-        <path d="M62 34 C 38 24 22 44 38 66"/><path d="M62 34 C 86 44 74 70 38 66"/>
-      </g>
-      <polyline points="38,66 46.5,59 47.5,48 58.5,45 62,34" fill="none" stroke="#e2c079"
-        stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-      <circle cx="62" cy="34" r="3" fill="#e2c079"/>
-    </svg>
-    <div class="title">waggle console</div>
-  </div>
-  <p class="sub">Who is admitted to your community, who may task your agents, and by whose signature.
-  This page reads the signed grants off the public relays and <b>verifies every signature here, in
+  <p class="sub" style="margin-top:26px">This page reads the signed grants off the public relays and <b>verifies every signature here, in
   your browser</b>. It needs no access to your bridge host and no key of any kind — an admission is
   a public signed event, so seeing the truth of it requires no privilege.</p>
 
-  <div class="panel" id="auth">
-    <h2>Sign in</h2>
+  <div class="panel" id="auth" style="display:none">
+    <h2>Choose a signer</h2>
     <p style="margin:0 0 12px;color:var(--dim);font-size:13.5px;max-width:74ch">
       Reading needs no key at all — leave this alone and use the lookup below. Sign in only to
       <b>act</b>: issue a grant, or revoke one. Your key never enters this page; it stays in your
       signer, which is handed an unsigned event and returns a signature.
     </p>
-    <div class="row" id="signin-buttons">
-      <button class="btn ghost" id="si-ext">Browser signer</button>
-      <button class="btn ghost" id="si-bunker">Remote signer</button>
-      <button class="btn ghost" id="si-local">Local key</button>
+    <button class="alby-bar" id="si-ext"><span class="alby-mark"><svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
+      <ellipse cx="9.5" cy="9" rx="3.6" ry="5.4" fill="#1c1400" fill-opacity=".22" transform="rotate(-22 9.5 9)"/>
+      <ellipse cx="18.5" cy="9" rx="3.6" ry="5.4" fill="#1c1400" fill-opacity=".22" transform="rotate(22 18.5 9)"/>
+      <ellipse cx="14" cy="16" rx="6" ry="7.4" fill="#1c1400"/>
+      <path d="M8.6 14 H19.4 M8.6 17.6 H19.4 M10.4 21 H17.6" stroke="#ffdf6f" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M12 8.2 L10.4 4.4 M16 8.2 L17.6 4.4" stroke="#1c1400" stroke-width="1.3" stroke-linecap="round"/>
+      <circle cx="10.2" cy="3.8" r="1.05" fill="#1c1400"/><circle cx="17.8" cy="3.8" r="1.05" fill="#1c1400"/>
+    </svg></span> Sign in with Alby</button>
+    <div class="alby-sub">works with any NIP-07 signer — Alby · nos2x · Amber</div>
+    <div class="row" style="margin-top:18px">
+      <input id="bunker" placeholder="bunker://… from your remote signer (iPhone / no extension)"
+        autocomplete="off" spellcheck="false">
+      <button class="primary" id="si-bunker-go" style="flex:0 0 auto">Connect</button>
     </div>
-    <div id="bunker-row" style="display:none">
-      <label for="bunker">bunker:// connection</label>
-      <input id="bunker" placeholder="bunker://…" spellcheck="false" autocomplete="off">
-      <button class="btn" id="si-bunker-go">Connect</button>
-    </div>
+    <div class="alby-sub">NIP-46 remote signing — pair once with your bunker; the key never enters this browser</div>
+    <div class="alt"><a id="si-local">Advanced: use a local key in this tab (demo / recovery)</a></div>
     <div id="local-row" style="display:none">
       <label for="localkey">nsec — this one <b>does</b> enter the page, which is why it is last</label>
       <input id="localkey" type="password" placeholder="nsec1…" spellcheck="false" autocomplete="off">
@@ -270,6 +284,42 @@ function renderRows() {
       </tr>`).join('')
 }
 
+// ── The shared identity bar ─────────────────────────────────────────────────────────────────
+// Vendored from the estate's component rather than hand-rolled: one sign-in across the fleet,
+// promoted rather than levelled down. The bar owns the signed-in/signed-out presentation and
+// the npub pill; this page only supplies the callbacks.
+import { renderTitlebar, updateTitlebar } from './vendor/nave-titlebar.mjs'
+
+const TB = $('titlebar')
+const WAGGLE_SEAL = `<svg viewBox="0 0 100 100" fill="none" aria-hidden="true">
+  <rect x="2" y="2" width="96" height="96" rx="20" fill="#0b0906" stroke="#c39a56" stroke-opacity="0.5" stroke-width="2"/>
+  <g fill="none" stroke="#e2c079" stroke-width="2.6" stroke-linecap="round" opacity="0.9">
+    <path d="M62 34 C 38 24 22 44 38 66"/><path d="M62 34 C 86 44 74 70 38 66"/></g>
+  <polyline points="38,66 46.5,59 47.5,48 58.5,45 62,34" fill="none" stroke="#e2c079" stroke-width="4"
+    stroke-linecap="round" stroke-linejoin="round"/><circle cx="62" cy="34" r="3" fill="#e2c079"/></svg>`
+
+function drawTitlebar(npub, kind) {
+  renderTitlebar(TB, {
+    appName: 'waggle console',
+    tagline: 'who is admitted, and by whose signature',
+    sealSvg: WAGGLE_SEAL,
+    npub: npub || null,
+    kind: kind || null,
+    onSignIn: npub ? undefined : () => { $('auth').style.display = ''; $('auth').scrollIntoView({ behavior: 'smooth', block: 'center' }) },
+    onRefresh: npub ? () => $('go').click() : undefined,
+    onLogout: npub ? () => {
+      // Signed out means signed out: drop the signer, hide the actions, and re-draw the rows
+      // without them. A control plane must never leave an action visible that it cannot perform.
+      signer = null; signerPk = null
+      $('issue-panel').style.display = 'none'
+      $('confirm-panel').style.display = 'none'
+      setAuth('')
+      drawTitlebar(null, null); renderRows()
+    } : undefined,
+  })
+}
+drawTitlebar(null, null)
+
 // ── Signing ────────────────────────────────────────────────────────────────────────────────
 // The key never enters this page for the two paths that matter: a browser signer and a remote
 // signer are both handed an unsigned event and return a signature. The local-key path is last
@@ -281,10 +331,10 @@ const setAuth = (msg, cls = '') => { const s = $('authst'); s.className = 'statu
 async function adopt(s, label) {
   signer = s
   signerPk = await s.getPublicKey()
-  setAuth(`signed in via ${label} as ${short(signerPk)} — you can now issue and revoke`, 'ok')
-  $('signin-buttons').style.display = 'none'
-  $('bunker-row').style.display = 'none'
+  setAuth('')
+  $('auth').style.display = 'none'
   $('local-row').style.display = 'none'
+  drawTitlebar(nip19.npubEncode(signerPk), s.kind || label)
   $('issue-panel').style.display = ''
   // Convenience only: the grantor field is what you sign as, so default it to the signed-in key.
   if (!$('grantor').value.trim()) { $('grantor').value = nip19.npubEncode(signerPk); $('go').click() }
@@ -296,8 +346,7 @@ $('si-ext').addEventListener('click', async () => {
   try { const { nip07Signer } = await nc(); await adopt(nip07Signer(), 'a browser signer') }
   catch (e) { setAuth(e.message, 'err') }
 })
-$('si-bunker').addEventListener('click', () => { $('bunker-row').style.display = ''; $('local-row').style.display = 'none' })
-$('si-local').addEventListener('click', () => { $('local-row').style.display = ''; $('bunker-row').style.display = 'none' })
+$('si-local').addEventListener('click', () => { $('local-row').style.display = '' })
 $('si-bunker-go').addEventListener('click', async () => {
   setAuth('connecting — approve the request in your signer…')
   try {
