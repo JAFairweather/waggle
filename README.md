@@ -23,7 +23,7 @@ no member's.
   grant-based admission tier — this repo is its working reference consumer.
 - **License:** MIT.
 
-*(Internal service name: `west-bridge` — it predates the public name and stays for
+*(Internal service name: `waggle` — it predates the public name and stays for
 deployed-unit continuity.)*
 
 
@@ -33,7 +33,6 @@ hand. **v1 forwards Armada NIP-17 DMs only.**
 
 - **Owner:** the read-lane engineer (bridge manager). Crypto / agent-side unwrap: the outbox engineer.
 - **Design:** `../../PLANS/WEST_BRIDGE_SCOPING.md`
-- **Origin:** promoted from the working prototype `../../.scratch/da-consumer/mydude_west_bridge.mjs`.
 
 ## What it does
 
@@ -93,8 +92,8 @@ Pruned to the most-recent `SEEN_CAP` ids on boot.
 ## Deploy
 
 Everything lives in [`deploy/`](deploy/README.md): checked-in systemd units for both
-instances (sealed lanes as `west-bridge.service`, public read lane as
-`west-bridge-read.service` under the non-root `bridge` user), the `bridge-user.sh`
+instances (sealed lanes as `waggle-sealed.service`, public read lane as
+`waggle-read.service` under the non-root `bridge` user), the `bridge-user.sh`
 provisioning script, the push-style `deploy.sh`, the nftables firewall, and the full
 migration runbook (cutover order, data-dir seeding, root-SSH-disable-last warning).
 The relay reconnect loop is in-process; systemd only covers a full crash.

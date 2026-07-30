@@ -1,8 +1,8 @@
 #!/bin/sh
 # deploy/verify-deployed.sh — post-deploy drift check (issue #33).
 #
-#   sh deploy/verify-deployed.sh read   bridge@<host>  [git-ref]   # /opt/west-bridge-read
-#   sh deploy/verify-deployed.sh sealed <admin>@<host> [git-ref]   # /opt/west-bridge
+#   sh deploy/verify-deployed.sh read   bridge@<host>  [git-ref]   # /opt/waggle-read
+#   sh deploy/verify-deployed.sh sealed <admin>@<host> [git-ref]   # /opt/waggle-sealed
 #   sh deploy/verify-deployed.sh read   /local/tree     [git-ref]  # a local tree (used by the test)
 #
 # deploy.sh SHIPS code but nothing confirms afterwards that what is running is what was
@@ -21,8 +21,8 @@ set -eu
 TARGET="${1:-}"; DEST="${2:-}"; REF="${3:-HEAD}"
 usage() { echo "usage: sh deploy/verify-deployed.sh read|sealed <user@host | /local/tree> [git-ref]"; }
 case "$TARGET" in
-  read)   TREE=/opt/west-bridge-read ;;
-  sealed) TREE=/opt/west-bridge ;;
+  read)   TREE=/opt/waggle-read ;;
+  sealed) TREE=/opt/waggle-sealed ;;
   *) usage; exit 2 ;;
 esac
 [ -n "$DEST" ] || { usage; exit 2; }

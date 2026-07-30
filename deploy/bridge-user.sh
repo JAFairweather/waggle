@@ -10,7 +10,7 @@
 # verify-first step (see deploy/README.md: an admin user must be login-verified first,
 # or the sealed unit becomes unmanageable).
 set -eu
-echo "== west-bridge: bridge user bring-up on $(hostname) =="
+echo "== waggle: bridge user bring-up on $(hostname) =="
 
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
@@ -25,10 +25,10 @@ esac
 # 2) User + tree -------------------------------------------------------------------------
 echo "-- user + tree --"
 id bridge >/dev/null 2>&1 || useradd -r -m -s /bin/bash bridge
-mkdir -p /opt/west-bridge-read/data
-chown -R bridge:bridge /opt/west-bridge-read
-chmod 750 /opt/west-bridge-read
-echo "  bridge user + /opt/west-bridge-read ready"
+mkdir -p /opt/waggle-read/data
+chown -R bridge:bridge /opt/waggle-read
+chmod 750 /opt/waggle-read
+echo "  bridge user + /opt/waggle-read ready"
 
 # 3) restrict-prefixed authorized_keys ---------------------------------------------------
 # 'restrict' kills pty/agent/port/X11 forwarding; command execution still works, which is
@@ -43,7 +43,7 @@ chmod 600 "$BHOME/.ssh/authorized_keys"
 echo "  installed (append; nothing overwritten)"
 
 # 4) Scoped sudo — exact unit commands only, validated before install --------------------
-echo "-- sudoers (scoped to west-bridge-read.service) --"
+echo "-- sudoers (scoped to waggle-read.service) --"
 visudo -cf "$DIR/sudoers-bridge"
 install -m 440 "$DIR/sudoers-bridge" /etc/sudoers.d/bridge
 echo "  /etc/sudoers.d/bridge installed"
@@ -54,15 +54,15 @@ echo "  bridge added to systemd-journal group"
 
 # 6) Unit install ------------------------------------------------------------------------
 echo "-- systemd unit --"
-install -m 644 "$DIR/west-bridge-read.service" /etc/systemd/system/west-bridge-read.service
+install -m 644 "$DIR/waggle-read.service" /etc/systemd/system/waggle-read.service
 systemctl daemon-reload
-echo "  west-bridge-read.service installed (not started — config/.env first)"
+echo "  waggle-read.service installed (not started — config/.env first)"
 
 echo
 echo "== bridge-user DONE =="
 echo "NEXT (see deploy/README.md for the full cutover order):"
-echo "  1) Create /opt/west-bridge-read/.env (bridge:bridge, 0600):"
+echo "  1) Create /opt/waggle-read/.env (bridge:bridge, 0600):"
 echo "       SEALED_LANES=off  FORWARD_MODE=dryrun  BUZZ_RELAY_URL=...  BUZZ_PRIVATE_KEY=...  BUZZ_AUTH_TAG=..."
-echo "  2) Create /opt/west-bridge-read/config.json — ONLY the \"public\" block."
+echo "  2) Create /opt/waggle-read/config.json — ONLY the \"public\" block."
 echo "  3) From the Mac:  sh deploy/deploy.sh read bridge@<host>"
 echo "  4) Verify dryrun in the journal, then flip FORWARD_MODE=buzz at cutover."

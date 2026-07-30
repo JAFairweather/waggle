@@ -1,7 +1,7 @@
 # Public read-lane unit — the ONLY lane terminating untrusted network input, so it runs
 # under the dedicated non-root 'bridge' user (D1) with systemd sandboxing, in its own tree.
 #
-# /opt/west-bridge-read/.env (bridge:bridge, 0600) must set:
+# /opt/waggle-read/.env (bridge:bridge, 0600) must set:
 #   SEALED_LANES=off           # this instance runs the public lane ONLY (sealed lanes are
 #                              # per-process-deduped — two instances running them = double delivery)
 #   FORWARD_MODE=dryrun        # flip to 'buzz' only at cutover (see deploy/README.md)
@@ -16,15 +16,15 @@ Wants=network-online.target
 [Service]
 User=bridge
 Group=bridge
-WorkingDirectory=/opt/west-bridge-read
+WorkingDirectory=/opt/waggle-read
 ExecStart=/usr/bin/node src/bridge.mjs
-EnvironmentFile=/opt/west-bridge-read/.env
+EnvironmentFile=/opt/waggle-read/.env
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=5
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/opt/west-bridge-read/data
+ReadWritePaths=/opt/waggle-read/data
 ProtectHome=yes
 PrivateTmp=yes
 

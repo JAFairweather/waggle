@@ -8,11 +8,11 @@ claim depends on it. Read this whole file before touching the box.
 
 | | sealed lanes (existing) | public read lane (new) |
 |---|---|---|
-| Unit | `west-bridge.service` | `west-bridge-read.service` |
+| Unit | `waggle-sealed.service` | `waggle-read.service` |
 | User | root *(Phase 1: unchanged — migrating sealed off root is explicitly out of scope)* | `bridge:bridge` |
-| Tree | `/opt/west-bridge` | `/opt/west-bridge-read` (0750) |
+| Tree | `/opt/waggle-sealed` | `/opt/waggle-read` (0750) |
 | Config | **no** `public` block — boot log must read `public read lane: inactive` | **only** the `public` block |
-| Env | `/opt/west-bridge/.env` | `/opt/west-bridge-read/.env` with `SEALED_LANES=off` |
+| Env | `/opt/waggle-sealed/.env` | `/opt/waggle-read/.env` with `SEALED_LANES=off` |
 | Data | own `data/` | own `data/` (disjoint dedup by construction — the lanes are event-disjoint) |
 
 Why split: the read lane is the only lane terminating **untrusted network input**; it must
@@ -31,18 +31,18 @@ A3 watermark resumes where local stopped, and A2's seen-set makes the overlap a 
    `BRIDGE_PUB='ssh-ed25519 …' sh bridge-user.sh`
    Then create the admin user for later root-SSH disable (see the warning below) and
    **verify both logins from the Mac before proceeding.**
-2. **(box)** Create `/opt/west-bridge-read/.env` (bridge:bridge, 0600) with
+2. **(box)** Create `/opt/waggle-read/.env` (bridge:bridge, 0600) with
    `SEALED_LANES=off`, `FORWARD_MODE=dryrun`, and the `BUZZ_*` trio; create
-   `/opt/west-bridge-read/config.json` with only the `public` block.
+   `/opt/waggle-read/config.json` with only the `public` block.
 3. **(Mac)** `sh deploy/deploy.sh read bridge@<host>` — dryrun posts nothing, so the
    local read lane can keep running. Watch the journal for `[pub …] open, subscribing`
    and clean `PUBLIC[dryrun]` routing lines.
 4. **Cutover (the only ordered part):**
    a. Stop the local read-lane process.
    b. Copy the local `data/seen-ids.log`, `data/pub-watermark`, and `data/posted-map.log`
-      into `/opt/west-bridge-read/data/` (chown bridge:bridge).
-   c. Flip `.env` to `FORWARD_MODE=buzz`; `sudo systemctl restart west-bridge-read`;
-      `sudo systemctl enable west-bridge-read`.
+      into `/opt/waggle-read/data/` (chown bridge:bridge).
+   c. Flip `.env` to `FORWARD_MODE=buzz`; `sudo systemctl restart waggle-read`;
+      `sudo systemctl enable waggle-read`.
    d. Watch for `PUBLIC[buzz] ok` lines; eyeball the Buzz channel — there must be no
       duplicate posts.
 5. **(box, as root — independent)** Refresh the sealed tree to the current build:
@@ -64,8 +64,8 @@ After **every** `deploy.sh`, run the drift check for that tree and treat any mis
 failed deploy — roll forward, do not leave it:
 
 ```
-sh deploy/verify-deployed.sh sealed <admin>@<host>   [git-ref]   # /opt/west-bridge
-sh deploy/verify-deployed.sh read   bridge@<host>    [git-ref]   # /opt/west-bridge-read
+sh deploy/verify-deployed.sh sealed <admin>@<host>   [git-ref]   # /opt/waggle-sealed
+sh deploy/verify-deployed.sh read   bridge@<host>    [git-ref]   # /opt/waggle-read
 ```
 
 It hashes each shipped file on the box and compares it to the git blob it should match at
@@ -176,7 +176,7 @@ journal is only public event ids, nothing sensitive), on its own timer just ahea
 tripwire tick:
 
 ```
-rsync -az bridge@<box>:/opt/west-bridge/data/send-journal.log /opt/waggle/data/send-journal.log
+rsync -az bridge@<box>:/opt/waggle-sealed/data/send-journal.log /opt/waggle/data/send-journal.log
 ```
 
 Then install the units (edit `WorkingDirectory`/`User`/paths in the unit files to match this
@@ -196,7 +196,7 @@ On macOS (no systemd) run the same script from a `launchd` job or `cron` on the 
 
 Weaker (dies with the box it polices), but better than nothing while an off-host watcher is
 being stood up. Point `WorkingDirectory` at the sealed tree's checkout and
-`SEND_JOURNAL_PATH` at `/opt/west-bridge/data/send-journal.log` directly (grant the runtime
+`SEND_JOURNAL_PATH` at `/opt/waggle-sealed/data/send-journal.log` directly (grant the runtime
 user group-read on it), and update `ReadWritePaths` to that same tree's `data/` so the
 alarm log stays writable. Everything else is identical. Note the weakness is not just that
 the watcher dies with the box — the box also writes the journal it is judged against, so a
