@@ -9,10 +9,15 @@
 // other than our process — theft, a second signer, an impersonation. That is the alarm.
 //
 // Runs on-box OR off-box. OFF-BOX IS STRONGER: a box compromise can kill an on-box watcher,
-// but not one running on your Mac / a separate host. Point SEND_JOURNAL_PATH at a synced copy
-// of the journal (rsync/scp on a timer) and run this anywhere.
+// but not one running on your Mac / a separate host. Sync each lane's journal (rsync/scp on a
+// timer) and run this anywhere.
 //
-//   POSTER=<npub|hex> node tools/tripwire.mjs [--since-min 120] [--journal <path>]
+// UNION THE LANES: the poster key signs on every lane, but each bridge instance journals to its
+// OWN tree (sealed -> /opt/waggle-sealed/data, public read-lane -> /opt/waggle-read/data).
+// Give the watcher ALL of them or a legitimate send on the lane it did not see reads as theft.
+//
+//   POSTER=<npub|hex> node tools/tripwire.mjs [--since-min 120] [--journal <a> --journal <b> ...]
+//   (--journal is repeatable; SEND_JOURNAL_PATH may be a `:`-separated list; all are unioned.)
 //   (POSTER defaults to the pubkey of BUZZ_PRIVATE_KEY if that env is present.)
 //
 // Alarm: loud stderr, an appended data/tripwire-alarms.log, and exit code 2. If ALARM_NSEC +
@@ -29,6 +34,7 @@ import * as nip44 from 'nostr-tools/nip44'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const arg = (n, d) => { const i = process.argv.indexOf(n); return i === -1 ? d : process.argv[i + 1] }
+const args = (n) => process.argv.reduce((a, v, i) => (process.argv[i - 1] === n ? [...a, v] : a), [])
 const die = (m) => { console.error(`tripwire: ${m}`); process.exit(1) }
 
 // Poster identity — the key whose signing we are policing.
@@ -51,7 +57,17 @@ if (process.env.ALARM_NSEC) {
 
 const sinceMin = Number(arg('--since-min', 120))
 const since = Math.floor(Date.now() / 1000) - sinceMin * 60
-const JOURNAL = arg('--journal', process.env.SEND_JOURNAL_PATH || resolve(ROOT, 'data', 'send-journal.log'))
+// The poster key signs on BOTH lanes and each bridge instance journals to its OWN tree (sealed
+// -> /opt/waggle-sealed/data, public read-lane -> /opt/waggle-read/data). The tripwire must diff
+// on-relay posts against the UNION of every lane's journal, or a legitimate send recorded only
+// in the lane it did not sync reads as unauthorized -> false alarm. So --journal is repeatable,
+// and SEND_JOURNAL_PATH may be a `:`-separated list; every path is unioned.
+const JOURNALS = (() => {
+  const flags = args('--journal')
+  if (flags.length) return flags
+  const env = (process.env.SEND_JOURNAL_PATH || '').split(':').map(s => s.trim()).filter(Boolean)
+  return env.length ? env : [resolve(ROOT, 'data', 'send-journal.log')]
+})()
 const ALARMS = resolve(ROOT, 'data', 'tripwire-alarms.log')
 
 function loadRelays() {
@@ -64,9 +80,11 @@ function loadRelays() {
 
 function loadJournal() {
   const ids = new Set()
-  if (!existsSync(JOURNAL)) { console.error(`tripwire: WARNING — no journal at ${JOURNAL}; every post will look unauthorized. Point --journal at the bridge's send-journal.`); return ids }
-  for (const line of readFileSync(JOURNAL, 'utf8').split('\n').filter(Boolean)) {
-    try { const r = JSON.parse(line); if (r.id) ids.add(r.id) } catch { /* skip */ }
+  for (const path of JOURNALS) {
+    if (!existsSync(path)) { console.error(`tripwire: WARNING — no journal at ${path}; sends recorded only there will look unauthorized. Sync every lane's send-journal (--journal is repeatable).`); continue }
+    for (const line of readFileSync(path, 'utf8').split('\n').filter(Boolean)) {
+      try { const r = JSON.parse(line); if (r.id) ids.add(r.id) } catch { /* skip */ }
+    }
   }
   return ids
 }
@@ -106,7 +124,7 @@ const events = await fetchPosterEvents()
 const anomalies = events.filter(e => !journal.has(e.id))
 const iso = (s) => new Date(s * 1000).toISOString()
 
-console.error(`tripwire: poster ${posterHex.slice(0, 12)}… · window ${sinceMin}m · ${events.length} on-relay event(s) · ${journal.size} journaled · ${anomalies.length} unaccounted`)
+console.error(`tripwire: poster ${posterHex.slice(0, 12)}… · window ${sinceMin}m · ${events.length} on-relay event(s) · ${journal.size} journaled across ${JOURNALS.length} lane journal(s) · ${anomalies.length} unaccounted`)
 
 if (!anomalies.length) {
   console.log('OK — every on-relay post by the poster key was emitted by our process.')

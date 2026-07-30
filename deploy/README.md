@@ -165,19 +165,28 @@ On a **watcher host** that is not the box — clone this repo, `npm ci`, then:
 ```
 # tripwire.env (0600, owner-only, NEVER committed):
 POSTER=<npub of the bridge poster key>          # PUBLIC key only — the watcher never signs as poster
-SEND_JOURNAL_PATH=/opt/waggle/data/send-journal.log   # the LOCAL synced copy (below)
+SEND_JOURNAL_PATH=/opt/waggle/data/journal-sealed.log:/opt/waggle/data/journal-read.log  # BOTH lanes, :-separated (below)
 ALARM_NSEC=<dedicated alarm key nsec>           # rule 1 — a fresh, zero-authority key
 ALARM_TO=<npub to DM on alarm>
 BUZZ_RELAY_URL=<relay>                          # extra public relays come from config.json
 ```
 
-The watcher **pulls** the journal (so the box needs no credentials to the watcher — the
-journal is only public event ids, nothing sensitive), on its own timer just ahead of the
-tripwire tick:
+The watcher **pulls** the journals (so the box needs no credentials to the watcher — a journal
+is only public event ids, nothing sensitive), on its own timer just ahead of the tripwire tick.
+**Pull every lane's journal, not just one:** the poster key signs on both lanes but each bridge
+instance journals to its own tree, so the tripwire must diff against their UNION — a legitimate
+send on the lane you did not sync otherwise reads as theft. Two lanes today, sealed and the
+public read lane (pull each as a user that can read that tree — the sealed tree is not readable
+by the read-lane account):
 
 ```
-rsync -az bridge@<box>:/opt/waggle-sealed/data/send-journal.log /opt/waggle/data/send-journal.log
+rsync -az <sealed-reader>@<box>:/opt/waggle-sealed/data/send-journal.log /opt/waggle/data/journal-sealed.log
+rsync -az bridge@<box>:/opt/waggle-read/data/send-journal.log            /opt/waggle/data/journal-read.log
 ```
+
+`SEND_JOURNAL_PATH` lists both (`:`-separated, above); `tripwire.mjs` unions them and warns for
+any journal it cannot find, so a half-completed sync fails loud rather than silently narrowing
+what it checks.
 
 Then install the units (edit `WorkingDirectory`/`User`/paths in the unit files to match this
 host first):
@@ -195,13 +204,14 @@ On macOS (no systemd) run the same script from a `launchd` job or `cron` on the 
 ### On-box fallback
 
 Weaker (dies with the box it polices), but better than nothing while an off-host watcher is
-being stood up. Point `WorkingDirectory` at the sealed tree's checkout and
-`SEND_JOURNAL_PATH` at `/opt/waggle-sealed/data/send-journal.log` directly (grant the runtime
-user group-read on it), and update `ReadWritePaths` to that same tree's `data/` so the
-alarm log stays writable. Everything else is identical. Note the weakness is not just that
-the watcher dies with the box — the box also writes the journal it is judged against, so a
-thief who owns the box can forge journal entries to match a stolen-key post. On-box catches
-mistakes and crude theft; only off-host catches an adversary who owns the host.
+being stood up. Set `SEND_JOURNAL_PATH` to **both** trees' journals, `:`-separated —
+`/opt/waggle-sealed/data/send-journal.log:/opt/waggle-read/data/send-journal.log` (grant the
+runtime user read on each) — for the same union reason as above; point `WorkingDirectory` at a
+repo checkout and update `ReadWritePaths` to that checkout's `data/` so the alarm log stays
+writable. Everything else is identical. Note the weakness is not just that the watcher dies with
+the box — the box also writes the journals it is judged against, so a thief who owns the box can
+forge entries to match a stolen-key post. On-box catches mistakes and crude theft; only off-host
+catches an adversary who owns the host.
 
 ### Verify (positive + negative control)
 
