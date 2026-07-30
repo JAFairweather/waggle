@@ -170,19 +170,30 @@ On a **watcher host** that is not the box — clone this repo, `npm ci`, then:
 ```
 # tripwire.env (0600, owner-only, NEVER committed):
 POSTER=<npub of the bridge poster key>          # PUBLIC key only — the watcher never signs as poster
-SEND_JOURNAL_PATH=/opt/waggle/data/send-journal.log   # the LOCAL synced copy (below)
+SEND_JOURNAL_PATH=/opt/waggle/data/journal-sealed.log:/opt/waggle/data/journal-read.log  # BOTH lanes, :-separated (below)
 ALARM_NSEC=<dedicated alarm key nsec>           # rule 1 — a fresh, zero-authority key
 ALARM_TO=<npub to DM on alarm>
 BUZZ_RELAY_URL=<relay>                          # extra public relays come from config.json
 ```
 
-The watcher **pulls** the journal (so the box needs no credentials to the watcher — the
-journal is only public event ids, nothing sensitive), on its own timer just ahead of the
-tripwire tick:
+The watcher **pulls** the journals (so the box needs no credentials to the watcher — a journal
+is only public event ids, nothing sensitive), on its own timer just ahead of the tripwire tick.
+
+**Pull every lane's journal, not just one.** The poster key signs on both lanes, but each bridge
+instance journals to its own tree, so the tripwire diffs against their UNION — a legitimate send
+on the lane you did not sync otherwise reads as theft. Two lanes today; pull each as a user that
+can read that tree, since the sealed tree is not readable by the read-lane account:
 
 ```
-rsync -az bridge@<box>:/opt/waggle-sealed/data/send-journal.log /opt/waggle/data/send-journal.log
+rsync -az <sealed-reader>@<box>:/opt/waggle-sealed/data/send-journal.log /opt/waggle/data/journal-sealed.log
+rsync -az bridge@<box>:/opt/waggle-read/data/send-journal.log            /opt/waggle/data/journal-read.log
 ```
+
+`SEND_JOURNAL_PATH` lists both (`:`-separated above; `--journal` may also be repeated, and commas
+work too). Any journal the tripwire cannot find is named in a warning, and if nothing else is
+unaccounted for it exits **3 — INCONCLUSIVE**, never 0. A half-completed sync therefore fails
+loud rather than quietly narrowing what was checked: "no anomalies" across part of the evidence
+is not an all-clear.
 
 Then install the units (edit `WorkingDirectory`/`User`/paths in the unit files to match this
 host first):
