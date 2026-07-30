@@ -31,7 +31,8 @@
 // `since`, so a since=now subscription silently drops fresh DMs. We default the
 // lookback to 48h and lean on durable id-dedup to make re-delivery a no-op.
 import WebSocket from 'ws'
-import { verifyEvent } from 'nostr-tools/pure'
+import { verifyEvent, finalizeEvent, generateSecretKey, getEventHash, getPublicKey } from 'nostr-tools/pure'
+import * as nip44 from 'nostr-tools/nip44'
 import * as nip19 from 'nostr-tools/nip19'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -133,6 +134,16 @@ function journalSend(id, meta) {
   try { mkdirSync(dirname(SEND_JOURNAL_PATH), { recursive: true }); appendFileSync(SEND_JOURNAL_PATH, JSON.stringify({ id, ...meta, ts: Math.floor(Date.now() / 1000) }) + '\n') }
   catch (e) { err(`tripwire: journal append failed for ${String(id).slice(0, 12)}…: ${e.message}`) }
 }
+// The bridge's own identity, used to SEAL outbound return-lane mail. A NIP-17 seal names its
+// real sender, so this has to be the bridge's key — the wrap around it is signed by a throwaway,
+// which is why this traffic never appears on the wire as the poster key.
+const BRIDGE_SK = (() => {
+  const raw = process.env.BUZZ_PRIVATE_KEY
+  if (!raw) return null
+  try { return raw.startsWith('nsec1') ? nip19.decode(raw).data : Uint8Array.from(Buffer.from(raw, 'hex')) } catch { return null }
+})()
+const BRIDGE_PK = BRIDGE_SK ? getPublicKey(BRIDGE_SK) : null
+
 const POSTED_CAP = Number(process.env.POSTED_CAP || 100000)
 const DEL_SINCE_SECS = Number(process.env.DEL_SINCE_SECS || 172800) // 48h
 function bumpPubWatermark(ts) {
@@ -170,6 +181,12 @@ const PUB = cfg.public ? {
   trustedRepliers: (cfg.public.trusted_repliers || []).map(s => String(s).toLowerCase()),
   // Pubkeys allowed to issue in-channel approval commands (signed kind:9 replies in staging).
   approvers: (cfg.public.approvers || []).map(s => String(s).toLowerCase()),
+  // [{ npub_hex, mention }] — an admitted participant, and the @name that reaches them in
+  // channel. Empty by default: the return lane carries nothing until someone is named.
+  returnLane: (cfg.public.return_lane || []).map(r => ({
+    npub_hex: String(r.npub_hex || r.npub || '').toLowerCase(),
+    mention: String(r.mention || '').replace(/^@/, ''),
+  })).filter(r => /^[0-9a-f]{64}$/.test(r.npub_hex) && r.mention),
   // Keys whose signed 440/441 events the bridge honors for admission. Defaults to the
   // approvers set — the same authority that runs the quarantine console.
   grantors: (cfg.public.grantors || cfg.public.approvers || []).map(s => String(s).toLowerCase()),
@@ -811,6 +828,82 @@ async function handleCommand(m) {
   replyInStaging(m.id, `✅ ${alreadyReleased ? 'already released earlier' : 'released to the community channel'}${granted}`)
 }
 
+// --- Return lane (#40) ------------------------------------------------------------------------
+// The out door federates and the in door admits, but nothing carried the community's own words
+// back OUT to an admitted participant. They could be spoken to in a channel they cannot read.
+// An outside teammate who can be addressed but never hears anything is not a participant; they
+// are a topic of conversation.
+//
+// Why the bridge has to do this rather than the participant subscribing for itself: the
+// community relay is auth-gated and does not serve an external key. A participant admitted "by
+// grant, no account" therefore CANNOT subscribe to the channel it was admitted to. The bridge
+// holds workspace access and is the only party that can read the channel and carry it out. This
+// is not the tidier design — it is the only available one.
+//
+// Only mentions are carried, never the whole channel. Forwarding everything would turn the
+// bridge into a firehose pointed out of a private room, which is the exact opposite of the
+// consent the in door spends all its effort enforcing.
+const rlSeen = new Set()
+
+function returnLaneSend(toHex, text, meta) {
+  if (!BRIDGE_SK) { err('return lane: no bridge key to seal with — skipping'); return }
+  const now = Math.floor(Date.now() / 1000)
+  // NIP-59 backdating: randomise wrap and seal timestamps into the past so an observer cannot
+  // correlate a channel message with a delivery by timing alone.
+  const fuzzed = () => now - Math.floor(Math.random() * 172800)
+  try {
+    const rumor = { kind: 14, pubkey: BRIDGE_PK, created_at: now, tags: [['p', toHex]], content: text }
+    rumor.id = getEventHash(rumor)
+    const seal = finalizeEvent({ kind: 13, created_at: fuzzed(), tags: [],
+      content: nip44.encrypt(JSON.stringify(rumor), nip44.getConversationKey(BRIDGE_SK, toHex)) }, BRIDGE_SK)
+    const wsk = generateSecretKey()
+    const wrap = finalizeEvent({ kind: 1059, created_at: fuzzed(), tags: [['p', toHex]],
+      content: nip44.encrypt(JSON.stringify(seal), nip44.getConversationKey(wsk, toHex)) }, wsk)
+    // Test seam: exercise sealing and journaling without opening a socket, the same shape the
+    // public lane uses. The crypto still runs — a stub that skipped it would prove nothing.
+    if (!process.env.WB_STUB_SEND) {
+      for (const url of PUB.relays) {
+        try {
+          const w = new WebSocket(url)
+          const t = setTimeout(() => { try { w.close() } catch { /* */ } }, 10000)
+          w.on('open', () => w.send(JSON.stringify(['EVENT', wrap])))
+          w.on('message', () => { clearTimeout(t); try { w.close() } catch { /* */ } })
+          w.on('error', () => clearTimeout(t))
+        } catch { /* dead relay */ }
+      }
+    }
+    // Journaled even though the wrap's author is ephemeral and so can never trip the tripwire:
+    // "it happens not to alarm" is a weaker property than "it is written down".
+    journalSend(wrap.id, { kind: 1059, lane: 'return', to: toHex.slice(0, 12), ...meta })
+    log(`RETURN -> ${toHex.slice(0, 12)}…: sealed ${String(text).length}B (wrap ${wrap.id.slice(0, 12)}…)`)
+  } catch (e) { err(`return lane: seal/send failed: ${e.message}`) }
+}
+
+function scanReturnLane(msgs) {
+  if (!PUB.returnLane.length || !BRIDGE_SK) return
+  for (const m of msgs || []) {
+    if (!m || !m.id || rlSeen.has(m.id)) continue
+    const body = String(m.content || '')
+    const from = String(m.pubkey || '')
+    for (const r of PUB.returnLane) {
+      if (from === r.npub_hex) continue                                  // never echo their own words back
+      // Word-boundary match, not substring: "@claudex" must not deliver to "@claude". A
+      // substring test would carry a private message to someone it was never addressed to,
+      // silently, and the longer the roster the likelier it gets. The name may end at
+      // whitespace or ordinary punctuation, but not at another name character.
+      if (!new RegExp('@' + r.mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])', 'i').test(body)) continue
+      rlSeen.add(m.id)
+      returnLaneSend(r.npub_hex,
+        `📥 **${r.mention}** — you were mentioned in the community.\n\n> ` +
+        body.replace(/\r/g, '').split('\n').join('\n> ') +
+        `\n\n_carried out by waggle's return lane. Replying to this message reaches nobody; ` +
+        `post from your own key and the bridge brings it back in._`,
+        { src: m.id })
+      break
+    }
+  }
+}
+
 let cmdCursor = 0
 function pollCommands() {
   execFile('buzz', ['messages', 'get', '--channel', PUB.staging, '--limit', '30'], (e, so) => {
@@ -818,6 +911,7 @@ function pollCommands() {
     let msgs
     try { msgs = JSON.parse(String(so).slice(String(so).indexOf('['))) } catch { return err('commands: unparseable staging read') }
     for (const m of msgs) { if ((m.created_at || 0) >= cmdCursor - 300) handleCommand(m).catch(er => err(`commands: ${er.message}`)) }
+    scanReturnLane(msgs)
     cmdCursor = Math.floor(Date.now() / 1000)
   })
 }
@@ -973,7 +1067,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels }
+export { returnLaneSend, scanReturnLane, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
