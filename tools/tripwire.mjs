@@ -51,7 +51,23 @@ if (process.env.ALARM_NSEC) {
 
 const sinceMin = Number(arg('--since-min', 120))
 const since = Math.floor(Date.now() / 1000) - sinceMin * 60
-const JOURNAL = arg('--journal', process.env.SEND_JOURNAL_PATH || resolve(ROOT, 'data', 'send-journal.log'))
+// ONE identity, MANY trees. The read lane and the sealed/return lanes run from separate
+// deployments with separate data dirs, and both sign as the same poster key. Diffing against a
+// single tree's journal therefore reads the OTHER lane's legitimate sends as theft — a false
+// alarm on day one (#87). So the journal is the UNION of every lane's log.
+//
+// Accepts --journal repeatedly, and comma/colon-separated values in either --journal or
+// SEND_JOURNAL_PATH.
+function journalPaths() {
+  const raw = []
+  for (let i = 2; i < process.argv.length - 1; i++) {
+    if (process.argv[i] === '--journal') raw.push(process.argv[i + 1])
+  }
+  if (!raw.length && process.env.SEND_JOURNAL_PATH) raw.push(process.env.SEND_JOURNAL_PATH)
+  const split = raw.flatMap(s => String(s).split(/[,:]/)).map(s => s.trim()).filter(Boolean)
+  return split.length ? split : [resolve(ROOT, 'data', 'send-journal.log')]
+}
+const JOURNALS = journalPaths()
 const ALARMS = resolve(ROOT, 'data', 'tripwire-alarms.log')
 
 function loadRelays() {
@@ -62,13 +78,26 @@ function loadRelays() {
   return [...out]
 }
 
+// Returns the union, plus the paths that were not there. A MISSING journal is not an empty one:
+// it means part of this identity's legitimate output is unaccounted for, so "no anomalies" would
+// be a conclusion the evidence cannot support. The caller reports INCONCLUSIVE rather than clean
+// — being unable to check is not the same as being fine.
 function loadJournal() {
   const ids = new Set()
-  if (!existsSync(JOURNAL)) { console.error(`tripwire: WARNING — no journal at ${JOURNAL}; every post will look unauthorized. Point --journal at the bridge's send-journal.`); return ids }
-  for (const line of readFileSync(JOURNAL, 'utf8').split('\n').filter(Boolean)) {
-    try { const r = JSON.parse(line); if (r.id) ids.add(r.id) } catch { /* skip */ }
+  const missing = []
+  for (const path of JOURNALS) {
+    if (!existsSync(path)) {
+      console.error(`tripwire: WARNING — no journal at ${path}. This lane's legitimate sends will look unauthorized.`)
+      missing.push(path)
+      continue
+    }
+    let n = 0
+    for (const line of readFileSync(path, 'utf8').split('\n').filter(Boolean)) {
+      try { const r = JSON.parse(line); if (r.id) { ids.add(r.id); n++ } } catch { /* skip */ }
+    }
+    console.error(`tripwire: journal ${path} — ${n} entries`)
   }
-  return ids
+  return { ids, missing }
 }
 
 // Fetch recent events authored by the poster across the relay set.
@@ -101,14 +130,21 @@ async function alarmDM(text) {
 }
 
 // --- run ---
-const journal = loadJournal()
+const { ids: journal, missing } = loadJournal()
 const events = await fetchPosterEvents()
 const anomalies = events.filter(e => !journal.has(e.id))
 const iso = (s) => new Date(s * 1000).toISOString()
 
-console.error(`tripwire: poster ${posterHex.slice(0, 12)}… · window ${sinceMin}m · ${events.length} on-relay event(s) · ${journal.size} journaled · ${anomalies.length} unaccounted`)
+console.error(`tripwire: poster ${posterHex.slice(0, 12)}… · window ${sinceMin}m · ${events.length} on-relay event(s) · ${journal.size} journaled across ${JOURNALS.length - missing.length}/${JOURNALS.length} lane(s) · ${anomalies.length} unaccounted`)
 
 if (!anomalies.length) {
+  // A half-synced union cannot produce an all-clear. With a lane's journal absent, "nothing
+  // unaccounted" only means nothing was found in the part we could see, and reporting that as OK
+  // is precisely the shape of check that passes because it examined nothing.
+  if (missing.length) {
+    console.log(`INCONCLUSIVE — no anomalies found, but ${missing.length} of ${JOURNALS.length} lane journal(s) were missing:\n  ${missing.join('\n  ')}\nFix the sync before trusting this result. This is NOT an all-clear.`)
+    process.exit(3)
+  }
   console.log('OK — every on-relay post by the poster key was emitted by our process.')
   process.exit(0)
 }
