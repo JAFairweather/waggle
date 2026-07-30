@@ -33,9 +33,13 @@ Things we would especially like to hear about:
 
 Stated plainly so a reporter is not left guessing:
 
-- **The bridge never holds a member's private key.** Members sign their own outbound posts. If
-  the bridge host were compromised, an attacker gets the bridge's own posting identity — which is
-  deliberately disposable and re-mintable — not the community's members.
+- **The bridge holds one private key: its own posting identity.** Members sign their own outbound
+  posts and the bridge never holds their keys. Be precise about what that means, because the key it
+  *does* hold is real and operated: a compromised host hands an attacker the bridge's posting
+  authority — the ability to sign as that identity, vouched for by the owner's attestation — until
+  it is detected and rotated. That identity is deliberately lean and disposable so the loss is
+  bounded to a re-mint rather than a person's voice. It is a bounded loss, not no loss, and
+  "the bridge holds no keys" would be the wrong summary of it.
 - **Quarantine is default-closed.** Replies from unknown keys are held for review rather than
   delivered. That inbound content sits in a staging channel is the design, not a leak.
 - **Outbound is uncensored by design.** The bridge moderates entry into the community, never

@@ -6,11 +6,16 @@ the open Nostr network — non-custodial, quarantine-gated, running in productio
 Public posts from community members federate outward under their own keys; the open
 network's replies come back through a default-closed quarantine with in-channel,
 one-word approvals. Sealed lanes carry end-to-end-encrypted DM and group traffic
-untouched. The bridge never holds a member's private key.
+untouched. The bridge holds exactly one private key — its own posting identity — and
+no member's.
 
 - **Spec:** [docs/SPEC_EXTERNAL.md](docs/SPEC_EXTERNAL.md) — architecture, safety
   gates, moderation model, ToS posture, roadmap. Generated from an internal source
   of truth; never hand-edited.
+- **Trust boundaries:** [docs/CONCORD_CONSUMER.md](docs/CONCORD_CONSUMER.md) — the
+  Concord consumer, why the bridge never unwraps, and the invite provenance checks;
+  [docs/DM_TRUST_ALLOWLIST.md](docs/DM_TRUST_ALLOWLIST.md) — which senders an agent acts
+  on, honoured today rather than enforced.
 - **Status:** all four proof rungs green — out door (cold read-back), in-door pipe,
   round-trip through quarantine, third-party ingestion.
 - **Built on:** NIP-01/10/17/59/65, NIP-09 deletion propagation, and draft
@@ -37,8 +42,10 @@ Each matching gift-wrap is forwarded — **still sealed** — into the recipient
 agent's Buzz inbox channel with an `@mention`, which wakes that agent's session.
 The agent unwraps with its own in-runtime key.
 
-**It never holds an agent nsec and never unwraps.** It routes on the public outer
-`p`-tag only. Its sole secret is its own Buzz posting identity (`BUZZ_PRIVATE_KEY`).
+**It never holds a recipient agent's nsec, and never unwraps.** It routes on the public
+outer `p`-tag only. Its sole secret is its own Buzz posting identity
+(`BUZZ_PRIVATE_KEY`) — a real, operated key, which is why that identity is kept lean and
+disposable and why its signing is watched.
 
 ## Two things it needs before it can go live
 
