@@ -53,6 +53,8 @@
   .btn{background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--r-sm);
     padding:10px 18px;font-weight:700;font-size:15px;font-family:inherit;cursor:pointer;margin-top:14px}
   .btn:hover{background:var(--accent-bright)}
+  .btn.ghost{background:transparent;color:var(--text);border:1px solid var(--line-strong)}
+  .btn.ghost:hover{border-color:var(--accent);color:var(--accent-bright);background:transparent}
   .btn:disabled{opacity:.45;cursor:not-allowed}
 
   .status{font-size:13px;color:var(--dim);margin-top:10px;min-height:19px}
@@ -96,6 +98,56 @@
   your browser</b>. It needs no access to your bridge host and no key of any kind — an admission is
   a public signed event, so seeing the truth of it requires no privilege.</p>
 
+  <div class="panel" id="auth">
+    <h2>Sign in</h2>
+    <p style="margin:0 0 12px;color:var(--dim);font-size:13.5px;max-width:74ch">
+      Reading needs no key at all — leave this alone and use the lookup below. Sign in only to
+      <b>act</b>: issue a grant, or revoke one. Your key never enters this page; it stays in your
+      signer, which is handed an unsigned event and returns a signature.
+    </p>
+    <div class="row" id="signin-buttons">
+      <button class="btn ghost" id="si-ext">Browser signer</button>
+      <button class="btn ghost" id="si-bunker">Remote signer</button>
+      <button class="btn ghost" id="si-local">Local key</button>
+    </div>
+    <div id="bunker-row" style="display:none">
+      <label for="bunker">bunker:// connection</label>
+      <input id="bunker" placeholder="bunker://…" spellcheck="false" autocomplete="off">
+      <button class="btn" id="si-bunker-go">Connect</button>
+    </div>
+    <div id="local-row" style="display:none">
+      <label for="localkey">nsec — this one <b>does</b> enter the page, which is why it is last</label>
+      <input id="localkey" type="password" placeholder="nsec1…" spellcheck="false" autocomplete="off">
+      <button class="btn" id="si-local-go">Use this key</button>
+    </div>
+    <div class="status" id="authst"></div>
+  </div>
+
+  <div class="panel" id="issue-panel" style="display:none">
+    <h2>Issue a grant</h2>
+    <div class="row">
+      <div>
+        <label for="g-to">Grantee — who is being admitted or authorised</label>
+        <input id="g-to" placeholder="npub1… or 64-hex" spellcheck="false">
+      </div>
+      <div>
+        <label for="g-subject">Subject — a channel UUID (admit) or an agent npub (task)</label>
+        <input id="g-subject" placeholder="channel UUID, or agent npub" spellcheck="false">
+      </div>
+    </div>
+    <button class="btn" id="g-preview">Review before signing</button>
+    <div class="status" id="issuest"></div>
+  </div>
+
+  <div class="panel" id="confirm-panel" style="display:none">
+    <h2>Confirm — this is exactly what will be signed</h2>
+    <pre id="confirm-json" style="background:var(--field);border:1px solid var(--line);border-radius:var(--r-sm);padding:12px 14px;overflow-x:auto;font-family:var(--mono);font-size:12px;color:var(--text);margin:0 0 12px"></pre>
+    <div id="confirm-why" style="color:var(--dim);font-size:13.5px;margin-bottom:12px"></div>
+    <button class="btn" id="confirm-go">Sign and publish</button>
+    <button class="btn ghost" id="confirm-cancel">Cancel</button>
+    <div class="status" id="confirmst"></div>
+  </div>
+
   <div class="panel">
     <h2>Look up</h2>
     <div class="row">
@@ -116,8 +168,8 @@
   <div class="panel">
     <h2>Admissions</h2>
     <div class="tablewrap"><table id="tbl">
-      <thead><tr><th>Grantee</th><th>State</th><th>Capability</th><th>Scope</th><th>Issued</th><th>Grant</th></tr></thead>
-      <tbody id="rows"><tr><td colspan="6" class="empty">Nothing read yet.</td></tr></tbody>
+      <thead><tr><th>Grantee</th><th>State</th><th>Capability</th><th>Scope</th><th>Issued</th><th>Grant</th><th></th></tr></thead>
+      <tbody id="rows"><tr><td colspan="7" class="empty">Nothing read yet.</td></tr></tbody>
     </table></div>
   </div>
 
@@ -194,6 +246,152 @@ function query(url, filter, ms = 9000) {
   })
 }
 
+// Rendering is separate from reading so signing in can re-draw the same data with actions
+// attached, without re-querying the relays.
+let lastGrants = null, lastSubjectNote = '', lastGrantor = null
+function renderRows() {
+  const rows = $('rows')
+  if (lastGrants === null) return              // never read yet — leave "Nothing read yet."
+  if (!lastGrants.length) {
+    rows.innerHTML = `<tr><td colspan="7" class="empty">No grants from this key${lastSubjectNote}.</td></tr>`
+    return
+  }
+  rows.innerHTML = lastGrants.map(g => `
+      <tr>
+        <td class="who">${short(g.grantee)}</td>
+        <td><span class="pill ${g.live ? 'live' : 'revoked'}">${g.live ? 'live' : 'revoked'}</span></td>
+        <td>${g.cap}</td>
+        <td>${g.scopeLabel}</td>
+        <td>${new Date(g.at * 1000).toISOString().slice(0, 16).replace('T', ' ')}</td>
+        <td class="who">${short(g.id)}</td>
+        <td>${g.live && signer && signerPk === lastGrantor
+            ? `<button class="btn ghost" style="margin:0;padding:5px 12px;font-size:12.5px" onclick="__revoke('${g.id}','${short(g.grantee)}')">Revoke</button>`
+            : ''}</td>
+      </tr>`).join('')
+}
+
+// ── Signing ────────────────────────────────────────────────────────────────────────────────
+// The key never enters this page for the two paths that matter: a browser signer and a remote
+// signer are both handed an unsigned event and return a signature. The local-key path is last
+// and labelled as the one that does load a key here — it exists so a newcomer without either
+// is not walled out, not because it is the good option.
+let signer = null, signerPk = null
+
+const setAuth = (msg, cls = '') => { const s = $('authst'); s.className = 'status ' + cls; s.textContent = msg }
+async function adopt(s, label) {
+  signer = s
+  signerPk = await s.getPublicKey()
+  setAuth(`signed in via ${label} as ${short(signerPk)} — you can now issue and revoke`, 'ok')
+  $('signin-buttons').style.display = 'none'
+  $('bunker-row').style.display = 'none'
+  $('local-row').style.display = 'none'
+  $('issue-panel').style.display = ''
+  // Convenience only: the grantor field is what you sign as, so default it to the signed-in key.
+  if (!$('grantor').value.trim()) { $('grantor').value = nip19.npubEncode(signerPk); $('go').click() }
+  renderRows()
+}
+const nc = () => import('./vendor/nave-connect.mjs')
+
+$('si-ext').addEventListener('click', async () => {
+  try { const { nip07Signer } = await nc(); await adopt(nip07Signer(), 'a browser signer') }
+  catch (e) { setAuth(e.message, 'err') }
+})
+$('si-bunker').addEventListener('click', () => { $('bunker-row').style.display = ''; $('local-row').style.display = 'none' })
+$('si-local').addEventListener('click', () => { $('local-row').style.display = ''; $('bunker-row').style.display = 'none' })
+$('si-bunker-go').addEventListener('click', async () => {
+  setAuth('connecting — approve the request in your signer…')
+  try {
+    const { nip46Signer } = await nc()
+    const s = await nip46Signer($('bunker').value.trim())
+    $('bunker').value = ''      // do not leave the token sitting in the DOM
+    await adopt(s, 'a remote signer')
+  } catch (e) { setAuth(e.message, 'err') }
+})
+$('si-local-go').addEventListener('click', async () => {
+  try {
+    const { localSigner } = await nc()
+    const s = localSigner($('localkey').value.trim())
+    $('localkey').value = ''
+    await adopt(s, 'a local key')
+  } catch (e) { setAuth(e.message, 'err') }
+})
+
+// Publish to every relay, and report each one. A write that "succeeded" because one relay
+// accepted it and three were never asked is not a fact worth showing.
+function publish(ev) {
+  return Promise.all(RELAYS.map(url => new Promise(res => {
+    let ws, done = false
+    const fin = (m) => { if (done) return; done = true; try { ws.close() } catch {} ; res(`${new URL(url).host}: ${m}`) }
+    try { ws = new WebSocket(url) } catch { return res(`${new URL(url).host}: no connection`) }
+    const t = setTimeout(() => fin('timeout'), 12000)
+    ws.onopen = () => ws.send(JSON.stringify(['EVENT', ev]))
+    ws.onmessage = (e) => { try { const m = JSON.parse(e.data)
+      if (m[0] === 'OK' && m[1] === ev.id) { clearTimeout(t); fin(m[2] ? 'accepted' : `rejected ${m[3] || ''}`) } } catch {} }
+    ws.onerror = () => { clearTimeout(t); fin('error') }
+  })))
+}
+
+// Show the event, then sign it. Never the other way round: a page that pops a signer prompt
+// before displaying what it is asking for teaches approve-first-read-never, which is exactly
+// what an approval exists to prevent.
+let pendingTemplate = null
+function proposeSigning(template, why) {
+  pendingTemplate = template
+  $('confirm-json').textContent = JSON.stringify(template, null, 2)
+  $('confirm-why').textContent = why
+  $('confirm-panel').style.display = ''
+  $('confirmst').className = 'status'; $('confirmst').textContent = ''
+  $('confirm-panel').scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+$('confirm-cancel').addEventListener('click', () => { pendingTemplate = null; $('confirm-panel').style.display = 'none' })
+$('confirm-go').addEventListener('click', async () => {
+  if (!pendingTemplate || !signer) return
+  const st = $('confirmst'); st.className = 'status'; st.textContent = 'Waiting for your signer…'
+  try {
+    const signed = await signer.signEvent(pendingTemplate)
+    st.textContent = 'Publishing…'
+    const results = await publish(signed)
+    const okCount = results.filter(r => r.includes('accepted')).length
+    st.className = 'status ' + (okCount ? 'ok' : 'err')
+    st.textContent = `${okCount}/${results.length} relays accepted · ${results.join(' · ')}`
+    pendingTemplate = null
+    setTimeout(() => { $('confirm-panel').style.display = 'none'; $('go').click() }, 1800)
+  } catch (e) { st.className = 'status err'; st.textContent = e.message }
+})
+
+// Revoke — a 441 naming the grant. This is the action most likely to be wanted in a hurry,
+// which is precisely why it should not require finding a terminal.
+window.__revoke = (grantId, granteeShort) => {
+  if (!signer) return setAuth('sign in first — revoking is a signing act', 'err')
+  proposeSigning({
+    kind: 441, created_at: Math.floor(Date.now() / 1000),
+    tags: [['e', grantId]], content: '',
+  }, `This revokes the grant held by ${granteeShort}. It takes effect the next time any consumer reads the relays — no restart anywhere. It cannot be un-published, though you can always issue a new grant.`)
+}
+
+// Issue — a 440 binding a grantee to a subject, with a fresh salt so two grants into the same
+// subject cannot be linked by anyone watching.
+$('g-preview').addEventListener('click', async () => {
+  const st = $('issuest'); st.className = 'status'; st.textContent = ''
+  try {
+    if (!signer) throw new Error('sign in first — issuing is a signing act')
+    const grantee = toHex($('g-to').value)
+    const subjRaw = $('g-subject').value.trim()
+    if (!subjRaw) throw new Error('a subject is required — a grant with no scope grants nothing')
+    const isAgent = subjRaw.startsWith('npub1') || /^[0-9a-f]{64}$/i.test(subjRaw)
+    const subject = isAgent ? toHex(subjRaw) : subjRaw.toLowerCase()
+    const cap = isAgent ? 'task' : 'admit'
+    const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)))
+    const hash = await scopeHash(subject, salt)
+    proposeSigning({
+      kind: 440, created_at: Math.floor(Date.now() / 1000),
+      tags: [['p', grantee], ['da-scope', hash, salt], ['da-cap', cap]], content: '',
+    }, isAgent
+      ? `This authorises ${short(grantee)} to TASK the agent ${short(subject)} — to give it instructions it will act on. The subject is stored as a salted hash, so nobody watching can tell which agent this is for.`
+      : `This admits ${short(grantee)} to the channel ${subjRaw}. The channel id never rides publicly — it is stored as a salted hash that only someone who already knows the channel can match.`)
+  } catch (e) { st.className = 'status err'; st.textContent = e.message }
+})
+
 $('go').addEventListener('click', async () => {
   const st = $('st'); const rows = $('rows')
   st.className = 'status'; st.textContent = 'Reading…'
@@ -234,18 +432,13 @@ $('go').addEventListener('click', async () => {
     if (!answered.length) {
       st.className = 'status err'
       st.textContent = 'No relay answered. Nothing is shown because nothing could be verified — this is not the same as "nobody is admitted".'
-      rows.innerHTML = '<tr><td colspan="6" class="empty">Unverifiable — no relay answered.</td></tr>'
+      rows.innerHTML = '<tr><td colspan="7" class="empty">Unverifiable — no relay answered.</td></tr>'
       return
     }
-    rows.innerHTML = out.length ? out.map(g => `
-      <tr>
-        <td class="who">${short(g.grantee)}</td>
-        <td><span class="pill ${g.live ? 'live' : 'revoked'}">${g.live ? 'live' : 'revoked'}</span></td>
-        <td>${g.cap}</td>
-        <td>${g.scopeLabel}</td>
-        <td>${new Date(g.at * 1000).toISOString().slice(0, 16).replace('T', ' ')}</td>
-        <td class="who">${short(g.id)}</td>
-      </tr>`).join('') : `<tr><td colspan="6" class="empty">No grants from this key${subject ? ' bound to that subject' : ''}.</td></tr>`
+    lastGrants = out
+    lastGrantor = grantor
+    lastSubjectNote = subject ? ' bound to that subject' : ''
+    renderRows()
 
     st.className = 'status ok'
     st.textContent = `${out.filter(g => g.live).length} live · ${out.filter(g => !g.live).length} revoked · `
