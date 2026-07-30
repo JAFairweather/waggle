@@ -23,7 +23,8 @@
 
 import WebSocket from 'ws'
 import { randomBytes, createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeEvent, getPublicKey, generateSecretKey } from 'nostr-tools/pure'
@@ -44,7 +45,22 @@ async function resolveSigner() {
   if (process.env.GRANTOR_BUNKER) {
     const bp = await parseBunkerInput(process.env.GRANTOR_BUNKER)
     if (!bp || !bp.pubkey) die('GRANTOR_BUNKER is not a valid bunker:// URI or name@domain — expected bunker://<pubkey>?relay=wss://…&secret=…')
-    const clientSk = generateSecretKey() // ephemeral transport key; not the signing identity
+    // PERSIST the client key: a NIP-46 bunker authorizes a specific CLIENT keypair, not
+    // just anyone holding the secret. A fresh key each run is a new "app" the signer has
+    // never seen ("Unknown client"). We pair ONCE (you approve in the signer), then reuse
+    // the same client key for every later issue/revoke. Not the signing identity — just
+    // this tool's stable connection identity to your bunker.
+    const keyDir = process.env.WAGGLE_HOME || resolve(homedir(), '.waggle')
+    const keyPath = resolve(keyDir, 'grant-client.key')
+    let clientSk
+    if (existsSync(keyPath)) {
+      clientSk = Uint8Array.from(Buffer.from(readFileSync(keyPath, 'utf8').trim(), 'hex'))
+    } else {
+      clientSk = generateSecretKey()
+      mkdirSync(keyDir, { recursive: true })
+      writeFileSync(keyPath, Buffer.from(clientSk).toString('hex'), { mode: 0o600 })
+      console.error(`(new client key saved to ${keyPath} — approve this app in your signer once; later runs reuse it)`)
+    }
     // fromBunker is the factory that populates the pointer (the constructor is private);
     // onauth surfaces the approval URL some signers require on first connect.
     const bunker = BunkerSigner.fromBunker(clientSk, bp, { onauth: (url) => console.error(`approve this connection in your signer: ${url}`) })
