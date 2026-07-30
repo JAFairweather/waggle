@@ -41,6 +41,14 @@ if (!poster && process.env.BUZZ_PRIVATE_KEY) {
 if (!poster) die('set POSTER=<npub|hex> (or provide BUZZ_PRIVATE_KEY to derive it)')
 const posterHex = poster.startsWith('npub1') ? nip19.decode(poster).data : poster.toLowerCase()
 
+// Rule 1 as a property of the code, not just the docs: the alarm must be signed by a SEPARATE
+// key, never the poster. If ALARM_NSEC derives to the poster, a thief holding that nsec could
+// forge the all-clear too — so refuse to run rather than offer that false assurance.
+if (process.env.ALARM_NSEC) {
+  const alarmSk = process.env.ALARM_NSEC.startsWith('nsec1') ? nip19.decode(process.env.ALARM_NSEC).data : Uint8Array.from(Buffer.from(process.env.ALARM_NSEC, 'hex'))
+  if (getPublicKey(alarmSk) === posterHex) die('ALARM_NSEC derives to the POSTER key — the alarm must be signed by a SEPARATE, zero-authority key (rule 1). An alarm signed by the identity under suspicion proves nothing.')
+}
+
 const sinceMin = Number(arg('--since-min', 120))
 const since = Math.floor(Date.now() / 1000) - sinceMin * 60
 const JOURNAL = arg('--journal', process.env.SEND_JOURNAL_PATH || resolve(ROOT, 'data', 'send-journal.log'))
