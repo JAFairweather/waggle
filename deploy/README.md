@@ -52,6 +52,33 @@ A3 watermark resumes where local stopped, and A2's seen-set makes the overlap a 
    login; only then `PermitRootLogin no` + `sshd -t` + reload; finally the reboot test —
    both units return, the watermark resumes, the journal is clean.
 
+## Post-deploy verification (required)
+
+`deploy.sh` ships code but does not confirm afterwards that what is running is what was
+shipped. Trees drift — a lane can sit several commits behind `main`, or the two units can
+drift apart, with no visible signal while every status surface still reads healthy. That
+is not cosmetic: a build predating the send-journal instrumentation gives the tripwire
+nothing to diff against, so **detection silently degrades to nothing.**
+
+After **every** `deploy.sh`, run the drift check for that tree and treat any mismatch as a
+failed deploy — roll forward, do not leave it:
+
+```
+sh deploy/verify-deployed.sh sealed <admin>@<host>   [git-ref]   # /opt/west-bridge
+sh deploy/verify-deployed.sh read   bridge@<host>    [git-ref]   # /opt/west-bridge-read
+```
+
+It hashes each shipped file on the box and compares it to the git blob it should match at
+`git-ref` (default `HEAD` — pass the tag/commit you deployed). It checks exactly
+`deploy.sh`'s ship list; `config.json`, `.env` and `data/` are never shipped and are
+excluded on purpose. Exit `0` = the deployed build matches the ref; `1` = drift, with the
+offending paths named loudly; `2` = usage / bad ref / tree unreachable. Running both trees
+against the same ref also catches the two units drifting apart from each other.
+
+This is the automated form of the manual "sealed tree md5 vs the repo baseline" note under
+*Pre-cutover box checks* — prefer this. The regression test `tests/deploy_verify.mjs`
+proves it reports drift on a deliberately stale tree.
+
 ## ⚠ Root-SSH disable is lockout-sensitive
 
 Today the management key lands on root and the sealed unit is administered as root.
