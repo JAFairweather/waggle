@@ -863,6 +863,21 @@ function connectPublic(url) {
     // events after EOSE deliver immediately in receipt order.
     let buf = [], eosed = false, flushTimer = null
     const expect = new Set()
+    // Tracks what the granted-author subscription currently covers, so a reconnect or an
+    // unchanged grant set does not churn the relay with an identical REQ.
+    let grantedSubKey = null
+    const subscribeGranted = () => {
+      const authors = [...grantSet.keys()].sort()
+      const key = authors.join(',')
+      if (!authors.length || key === grantedSubKey) return
+      grantedSubKey = key
+      try {
+        // Same sub id each time — a relay replaces a subscription reusing its id, so this
+        // updates the filter in place rather than accumulating stale ones.
+        ws.send(JSON.stringify(['REQ', 'pga', { kinds: [1], authors, since: PUB.since, limit: PUB.backfillLimit }]))
+        log(`[pub ${url}] granted-author subscription -> ${authors.length} admitted identity(ies)`)
+      } catch (e) { err(`[pub ${url}] could not subscribe to granted authors: ${e?.message || '?'}`) }
+    }
     const flush = (reason) => {
       if (eosed) return
       eosed = true
@@ -913,13 +928,32 @@ function connectPublic(url) {
       if (PUB.grantors.length) { expect.add('pg'); ws.send(JSON.stringify(['REQ', 'pg', { kinds: [NIPDA.grant, NIPDA.revocation], authors: PUB.grantors, limit: 200 }])) }
       // Safety: flush even if a relay never sends EOSE for a subscription.
       flushTimer = setTimeout(() => flush('EOSE timeout'), 10000)
+      // If grants were already loaded on a previous connection, re-open the granted-author
+      // subscription immediately on reconnect rather than waiting for a grant event to replay.
+      subscribeGranted()
     })
     ws.on('message', d => {
       let m
       try { m = JSON.parse(d.toString()) } catch { return }
       if (m[0] === 'EVENT') {
         const ev = m[2]
-        if (ev && (ev.kind === NIPDA.grant || ev.kind === NIPDA.revocation)) { processGrantEvent(ev); return }
+        if (ev && (ev.kind === NIPDA.grant || ev.kind === NIPDA.revocation)) {
+          const before = grantSet.size
+          processGrantEvent(ev)
+          // A grant ADMITS, but nothing was FETCHING. The four subscriptions above pull kind:1
+          // by watched author and by reply-to-our-note; none pulls a granted participant's own
+          // posts, so an admitted identity could be answered but never heard from unless it also
+          // happened to sit in watch_authors. That overlap is what hid this: two mechanisms,
+          // one load-bearing, and the wrong one got the credit.
+          //
+          // The granted set is not known until this subscription has been read, so the
+          // subscription for it cannot be opened at connect time with the others. It is opened
+          // here instead, and re-opened whenever the set changes — so a new grant starts pulling
+          // that author's posts without a restart, mirroring revocation, which already stops
+          // honouring them without one.
+          if (grantSet.size !== before) subscribeGranted()
+          return
+        }
         if (eosed) { if (ev && ev.kind === 5) routeDelete(ev); else routePublic(ev); return }
         // A4: bound the pre-EOSE buffer app-side too — overflow dropped WITH a log, never silent.
         if (buf.length >= PUB.backfillLimit) { err(`[pub ${url}] backfill buffer cap ${PUB.backfillLimit} — dropping ${ev?.id ? ev.id.slice(0, 12) : '?'}…`); return }
