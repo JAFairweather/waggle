@@ -68,7 +68,10 @@ function journalPaths() {
   return split.length ? split : [resolve(ROOT, 'data', 'send-journal.log')]
 }
 const JOURNALS = journalPaths()
-const ALARMS = resolve(ROOT, 'data', 'tripwire-alarms.log')
+// Overridable so a drill can write somewhere disposable. A test that appends to the real alarm
+// log leaves fake alarms in the record an operator is meant to trust — and the suite's own rule
+// is that it touches no production state.
+const ALARMS = process.env.ALARM_LOG_PATH || resolve(ROOT, 'data', 'tripwire-alarms.log')
 
 function loadRelays() {
   const out = new Set()
@@ -131,7 +134,21 @@ async function alarmDM(text) {
 
 // --- run ---
 const { ids: journal, missing } = loadJournal()
-const events = await fetchPosterEvents()
+
+// --events-from <file> substitutes the WIRE, never the judgement. It replaces only where events
+// come from; the diff against the journal, the alarm log, the DM and the exit codes stay the code
+// a real run uses. That is the point — a drill exercising a parallel path proves nothing about
+// the path that matters. Opt-in, and announced loudly, so a substituted run can never be mistaken
+// for a live one when someone reads the log later.
+const EVENTS_FROM = arg('--events-from', null)
+let events
+if (EVENTS_FROM) {
+  console.error(`tripwire: DRILL — events read from ${EVENTS_FROM}, NOT from the relays. This run says nothing about live state.`)
+  events = readFileSync(EVENTS_FROM, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
+} else {
+  events = await fetchPosterEvents()
+}
+
 const anomalies = events.filter(e => !journal.has(e.id))
 const iso = (s) => new Date(s * 1000).toISOString()
 
