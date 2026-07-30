@@ -43,9 +43,11 @@ const die = (m) => { console.error(`grant: ${m}`); process.exit(1) }
 async function resolveSigner() {
   if (process.env.GRANTOR_BUNKER) {
     const bp = await parseBunkerInput(process.env.GRANTOR_BUNKER)
-    if (!bp) die('GRANTOR_BUNKER is not a valid bunker:// connection string')
+    if (!bp || !bp.pubkey) die('GRANTOR_BUNKER is not a valid bunker:// URI or name@domain — expected bunker://<pubkey>?relay=wss://…&secret=…')
     const clientSk = generateSecretKey() // ephemeral transport key; not the signing identity
-    const bunker = new BunkerSigner(clientSk, bp)
+    // fromBunker is the factory that populates the pointer (the constructor is private);
+    // onauth surfaces the approval URL some signers require on first connect.
+    const bunker = BunkerSigner.fromBunker(clientSk, bp, { onauth: (url) => console.error(`approve this connection in your signer: ${url}`) })
     await bunker.connect()
     const pubkey = await bunker.getPublicKey()
     return { pubkey, sign: (tmpl) => bunker.signEvent(tmpl), close: () => bunker.close?.() }
