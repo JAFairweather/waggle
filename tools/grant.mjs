@@ -175,13 +175,34 @@ if (cmd === 'whoami') {
   })))
   const evs = [...found.values()].sort((a, b) => a.created_at - b.created_at)
   const revoked = new Set(evs.filter(e => e.kind === NIPDA.revocation).flatMap(e => e.tags.filter(t => t[0] === 'e').map(t => t[1])))
+  // Optional scope filter. The scope is a salted hash, so only someone who knows the subject
+  // can tell what a grant is FOR — which is the privacy property working as intended. The salt
+  // rides publicly in the tag, so the holder of the subject can recompute and match. Pass
+  // --agent/--channel to see only the grants that bind to that subject.
+  const filterRaw = flag('--agent') || flag('--channel')
+  const filterSubject = !filterRaw ? null
+    : (flag('--agent')
+        ? (filterRaw.startsWith('npub1') ? nip19.decode(filterRaw).data : filterRaw.toLowerCase())
+        : channelId(filterRaw))
+  const matchesScope = (e) => {
+    if (!filterSubject) return true
+    const tag = e.tags.find(t => t[0] === NIPDA.scopeTag)
+    if (!tag) return false
+    const recomputed = createHash('sha256').update(Buffer.concat([
+      Buffer.from('waggle/da-scope/v1'), Buffer.from([0]), Buffer.from(filterSubject), Buffer.from(tag[2] || '', 'hex'),
+    ])).digest('hex')
+    return tag[1] === recomputed
+  }
+  let shown = 0
   for (const e of evs) {
-    if (e.kind === NIPDA.grant) {
-      const grantee = e.tags.find(t => t[0] === 'p')?.[1] || '?'
-      console.log(`${revoked.has(e.id) ? 'REVOKED' : 'ACTIVE '} 440 ${e.id.slice(0, 12)}… -> ${grantee.slice(0, 12)}… (${new Date(e.created_at * 1000).toISOString()})`)
-    }
+    if (e.kind !== NIPDA.grant || !matchesScope(e)) continue
+    shown++
+    const grantee = e.tags.find(t => t[0] === 'p')?.[1] || '?'
+    const cap = e.tags.find(t => t[0] === NIPDA.capTag)?.[1] || '?'
+    console.log(`${revoked.has(e.id) ? 'REVOKED' : 'ACTIVE '} 440 ${e.id} -> ${grantee} (${cap}, ${new Date(e.created_at * 1000).toISOString()})`)
   }
   if (!evs.length) console.log('(no grants published by this key)')
+  else if (!shown) console.log(filterSubject ? '(none bound to that subject)' : '(no grants)')
 } else {
   die('usage: grant.mjs issue --to <npub> (--channel <uuid> | --agent <npub>) | revoke --grant <id> | list')
 }
