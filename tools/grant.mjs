@@ -81,13 +81,24 @@ async function resolveSigner() {
   const pubkey = getPublicKey(sk)
   return { pubkey, sign: (tmpl) => finalizeEvent(tmpl, sk), close: () => {} }
 }
-const signer = await resolveSigner()
-const pk = signer.pubkey
-
 const args = process.argv.slice(2)
 const cmd = args[0]
 const flag = (n) => { const i = args.indexOf(n); return i === -1 ? null : args[i + 1] }
 const HEX64 = /^[0-9a-f]{64}$/i
+
+// Only the commands that SIGN need a signer. `list` just reads relays, so given --grantor it
+// runs with no signer at all — no connection, no approval prompt, no wait. That matters: a tool
+// that asks your signer for permission it does not need trains you to approve without reading.
+let signer, pk
+const listOnly = cmd === 'list' && flag('--grantor')
+if (listOnly) {
+  const g = flag('--grantor')
+  pk = g.startsWith('npub1') ? nip19.decode(g).data : (HEX64.test(g) ? g.toLowerCase() : die('--grantor must be npub or 64-hex'))
+  signer = { pubkey: pk, sign: () => die('list is read-only'), close: () => {} }
+} else {
+  signer = await resolveSigner()
+  pk = signer.pubkey
+}
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function relays() {
@@ -121,8 +132,15 @@ if (cmd === 'whoami') {
   console.log(`  "grantors": ["${pk}"]`)
   await signer.close()
 } else if (cmd === 'issue') {
-  const toRaw = flag('--to') || die('issue needs --to <npub|hex>')
-  const grantee = toRaw.startsWith('npub1') ? nip19.decode(toRaw).data : (HEX64.test(toRaw) ? toRaw.toLowerCase() : die('--to must be npub or 64-hex'))
+  // --to accepts a comma-separated list so a batch signs over ONE signer connection. Each
+  // invocation is a fresh process and therefore a fresh NIP-46 session; issuing five grants as
+  // five commands means five approval prompts, which trains an operator to approve without
+  // reading — the opposite of what an approval is for.
+  const toRaw = flag('--to') || die('issue needs --to <npub|hex>[,<npub|hex>…]')
+  const grantees = toRaw.split(',').map(s => s.trim()).filter(Boolean).map(t =>
+    t.startsWith('npub1') ? nip19.decode(t).data : (HEX64.test(t) ? t.toLowerCase() : die(`--to entry is not an npub or 64-hex: ${t}`)))
+  if (!grantees.length) die('issue needs at least one --to')
+  const grantee = grantees[0]
   // Two things can be granted, and they differ only in what the scope binds to:
   //   --channel <uuid>  cap admit  — this grantee may enter that channel  (the S3 tier)
   //   --agent <npub>    cap task   — this grantee may TASK that agent     (attention as a scope)
@@ -139,18 +157,22 @@ if (cmd === 'whoami') {
   const cap = flag('--cap') || (agentRaw ? 'task' : 'admit')
   const allowed = agentRaw ? ['task', 'task+act'] : ['admit']
   if (!allowed.includes(cap)) die(`--cap ${cap} is not valid for this scope; expected one of: ${allowed.join(', ')}`)
-  const salt = randomBytes(16).toString('hex')
-  const hash = createHash('sha256').update(Buffer.concat([
-    Buffer.from('waggle/da-scope/v1'), Buffer.from([0]), Buffer.from(subject), Buffer.from(salt, 'hex'),
-  ])).digest('hex')
-  const ev = await signer.sign({
-    kind: NIPDA.grant,
-    created_at: Math.floor(Date.now() / 1000),
-    tags: [['p', grantee], [NIPDA.scopeTag, hash, salt], [NIPDA.capTag, cap]],
-    content: '',
-  })
-  console.log(`440 ${ev.id}\n  grantee ${grantee}\n  scope   ${hash.slice(0, 16)}… (salted; subject never public)\n  cap     ${cap}\n  grantor ${pk}`)
-  for (const line of await publish(ev)) console.log('  ' + line)
+  // One fresh salt PER grant, never one for the batch: a shared salt would make two grants into
+  // the same subject linkable, which is the exact property the salt exists to prevent.
+  for (const g of grantees) {
+    const salt = randomBytes(16).toString('hex')
+    const hash = createHash('sha256').update(Buffer.concat([
+      Buffer.from('waggle/da-scope/v1'), Buffer.from([0]), Buffer.from(subject), Buffer.from(salt, 'hex'),
+    ])).digest('hex')
+    const ev = await signer.sign({
+      kind: NIPDA.grant,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [['p', g], [NIPDA.scopeTag, hash, salt], [NIPDA.capTag, cap]],
+      content: '',
+    })
+    console.log(`440 ${ev.id}\n  grantee ${g}\n  scope   ${hash.slice(0, 16)}… (salted; subject never public)\n  cap     ${cap}\n  grantor ${pk}`)
+    for (const line of await publish(ev)) console.log('  ' + line)
+  }
   await signer.close()
 } else if (cmd === 'revoke') {
   const target = flag('--grant') || die('revoke needs --grant <440 event id>')
