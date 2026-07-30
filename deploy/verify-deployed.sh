@@ -62,13 +62,32 @@ PLIST=$(printf '%s ' $PATHS)
 REMOTE_SCAN='cd "'"$TREE"'" 2>/dev/null || { echo TREE-MISSING; exit 3; }
 for p in '"$PLIST"'; do if [ -f "$p" ]; then sha256sum "$p"; else echo "MISSING  $p"; fi; done'
 
-case "$DEST" in
-  *@*|*:*)
-    ssh "$DEST" "$REMOTE_SCAN" > "$ACT" 2>/dev/null \
-      || { echo "  ✗ could not reach $DEST over ssh (or remote scan failed)"; exit 2; } ;;
-  *)
+# Is DEST a local directory or an ssh destination? Matching on "@" or ":" alone gets this
+# wrong for an ssh CONFIG ALIAS — `waggle-box` has neither, so it was being treated as a local
+# path, `cd` failed inside a subshell, and the script died on that subshell's exit code before
+# reaching the code that explains what happened. A silent exit 3 from a drift checker is worse
+# than no checker: it looks like a finding and carries none.
+#
+# An existing local directory is a local tree; anything else is an ssh destination. That also
+# fixes the reverse error — a directory named like a host is now read as the directory it is.
+if [ -d "$DEST" ]; then DEST_KIND=local; else DEST_KIND=remote; fi
+
+case "$DEST_KIND" in
+  remote)
+    # stderr is NOT swallowed: it carries the ssh failure, the host-key prompt, and the remote
+    # shell's own complaint. Hiding it is how "cannot reach the box" becomes "exited 3".
+    if ! ssh "$DEST" "$REMOTE_SCAN" > "$ACT"; then
+      RC=$?
+      case "$RC" in
+        3) echo "  ✗ deployed tree $TREE does not exist on $DEST" ;;
+        255) echo "  ✗ could not reach $DEST over ssh — check the host, the alias, or your key" ;;
+        *) echo "  ✗ remote scan on $DEST failed (exit $RC) — see the ssh output above" ;;
+      esac
+      exit 2
+    fi ;;
+  local)
     # local tree: DEST is the tree root; hash with whichever tool exists.
-    ( cd "$DEST" 2>/dev/null || { echo TREE-MISSING; exit 3; }
+    ( cd "$DEST" || { echo TREE-MISSING; exit 3; }
       for p in $PATHS; do
         if [ -f "$p" ]; then printf '%s  %s\n' "$(SHA < "$p")" "$p"; else echo "MISSING  $p"; fi
       done ) > "$ACT" ;;
