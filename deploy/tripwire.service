@@ -1,0 +1,46 @@
+# waggle tripwire unit (oneshot; driven by tripwire.timer). Out-of-process detection of
+# unauthorized signing by the bridge POSTER key: tools/tripwire.mjs fetches the poster's
+# recent on-relay events and diffs them against the bridge send-journal (#33). Exit codes:
+#   0 = clean (every on-relay post came from our process)
+#   2 = ALARM — an on-relay post the bridge never emitted (theft / second signer)
+#   1 = misconfig (no POSTER, etc.)
+# systemd surfaces exit 2 as a FAILED unit; the script ALSO sends the alarm DM itself
+# (out-of-band, signed by the separate alarm key). Alert on `systemctl --failed` as the
+# local backstop to the DM. See deploy/README.md "Tripwire" for the full contract.
+#
+# TWO RULES THIS UNIT EXISTS TO ENFORCE:
+#   1. ALARM_NSEC is a DEDICATED key, NEVER the poster (BUZZ_PRIVATE_KEY) key. An alarm
+#      signed by the identity under suspicion proves nothing. The alarm key has zero
+#      authority — its only power is sending a DM — so it is safe to hold on the watcher.
+#   2. OFF-HOST IS STRONGER. A compromised box can silence an on-box watcher before it
+#      fires. Prefer a SEPARATE host running this against a synced copy of the journal.
+#
+# WorkingDirectory is a checkout of THIS repo on the watcher host (off-host: your Mac / a
+# second box — recommended; on-box fallback: point it at the sealed tree). Adjust the paths
+# and User below to that host. tripwire.env (0600, owner-only, NEVER committed) sets:
+#   POSTER=<npub|hex of the bridge poster key>   # the PUBLIC key — this watcher never signs as poster
+#   SEND_JOURNAL_PATH=<path to the (synced) send-journal.log>
+#   ALARM_NSEC=<dedicated alarm key nsec>        # rule 1 — separate identity
+#   ALARM_TO=<npub to DM on alarm>
+#   BUZZ_RELAY_URL=<relay>                       # extra public relays are read from config.json
+[Unit]
+Description=waggle tripwire — detect out-of-process signing by the bridge poster key
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=bridge
+Group=bridge
+WorkingDirectory=/opt/waggle
+# --since-min 60 is deliberately WIDER than the 30-min timer cadence: overlapping windows
+# mean a single missed run never opens a detection gap (see tripwire.timer).
+ExecStart=/usr/bin/node tools/tripwire.mjs --since-min 60
+EnvironmentFile=/opt/waggle/tripwire.env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# Only the alarms log is written; everything else is read-only or network.
+ReadWritePaths=/opt/waggle/data

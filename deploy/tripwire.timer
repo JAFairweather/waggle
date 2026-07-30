@@ -1,0 +1,23 @@
+# Drives tripwire.service on a fixed cadence, so detection is a property of the INSTALL,
+# not of operator diligence (the whole point of #34). The cadence (30 min) is shorter than
+# the service's poll window (--since-min 60) BY DESIGN: overlapping windows mean one missed
+# or delayed run never opens a gap a thief could slip a post through unseen.
+#
+#   sudo cp deploy/tripwire.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tripwire.timer
+#   systemctl list-timers tripwire.timer      # confirm it is scheduled
+[Unit]
+Description=waggle tripwire — periodic out-of-process signing check (every 30 min)
+
+[Timer]
+# First run shortly after boot, then every 30 minutes of active time.
+OnBootSec=5min
+OnUnitActiveSec=30min
+# Jitter so many installs do not hammer the relays on the same tick.
+RandomizedDelaySec=2min
+# Catch up one run if the host was down at the scheduled time.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

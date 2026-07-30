@@ -123,3 +123,95 @@ GRANTOR_BUNKER='bunker://…' node tools/grant.mjs revoke --grant <440 id>
 
 `GRANTOR_NSEC` (a local key) also works for demos/CI, but the bunker path is the
 zero-custody default: the maintainer authors admissions without any key touching the host.
+
+## Tripwire — out-of-process signing detection (#34)
+
+Process rate-limits cannot catch key theft: a thief with the raw poster nsec signs
+**direct**, bypassing our code entirely. `tools/tripwire.mjs` watches the **wire** instead
+of the process — it fetches the poster key's recent on-relay events and diffs them against
+the bridge's own send-journal (`data/send-journal.log`). Any post authored by our key that
+the journal does not contain was signed by something other than our process: theft, a
+second signer, an impersonation. That is the alarm.
+
+`deploy/tripwire.service` (oneshot) + `deploy/tripwire.timer` (30-min cadence) make
+detection a property of the **install**, not of anyone remembering to run a script.
+
+### Two rules the unit exists to enforce
+
+1. **The alarm is signed by a SEPARATE key, never the poster key.** An alarm signed by the
+   identity under suspicion is worthless — a thief holding the poster nsec could forge the
+   all-clear too. Set `ALARM_NSEC` to a **dedicated** key with zero authority (its only
+   power is sending a DM), so it is safe to hold on the watcher and disposable if the
+   watcher is lost. Never set it to `BUZZ_PRIVATE_KEY`.
+2. **Off-host is stronger.** A compromised box can silence an on-box watcher before it
+   fires. The recommended posture runs the tripwire on a **separate host** (your Mac, a
+   second droplet) against a synced copy of the journal — a box compromise then cannot kill
+   its own detector. On-box is the fallback, not the target.
+
+### Dependency ordering (#33)
+
+The diff is only meaningful against a **current** journal. The install must be running a
+build that writes `data/send-journal.log` on every send (both lanes) — that is exactly what
+#33's deployed-build verification confirms. Until then the journal may be stale or absent,
+and the script will (correctly) warn that **every** post looks unauthorized. **Do not arm
+the alarm DM until #33 confirms the running build is journaling.** The `since-min 60` window
+being wider than the 30-min cadence means every post is covered by ≥2 runs — one missed run
+never opens a gap.
+
+### Off-host install (recommended)
+
+On a **watcher host** that is not the box — clone this repo, `npm ci`, then:
+
+```
+# tripwire.env (0600, owner-only, NEVER committed):
+POSTER=<npub of the bridge poster key>          # PUBLIC key only — the watcher never signs as poster
+SEND_JOURNAL_PATH=/opt/waggle/data/send-journal.log   # the LOCAL synced copy (below)
+ALARM_NSEC=<dedicated alarm key nsec>           # rule 1 — a fresh, zero-authority key
+ALARM_TO=<npub to DM on alarm>
+BUZZ_RELAY_URL=<relay>                          # extra public relays come from config.json
+```
+
+The watcher **pulls** the journal (so the box needs no credentials to the watcher — the
+journal is only public event ids, nothing sensitive), on its own timer just ahead of the
+tripwire tick:
+
+```
+rsync -az bridge@<box>:/opt/west-bridge/data/send-journal.log /opt/waggle/data/send-journal.log
+```
+
+Then install the units (edit `WorkingDirectory`/`User`/paths in the unit files to match this
+host first):
+
+```
+sudo cp deploy/tripwire.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now tripwire.timer
+systemctl list-timers tripwire.timer
+```
+
+On macOS (no systemd) run the same script from a `launchd` job or `cron` on the same
+30-min cadence — the units are a convenience, `tools/tripwire.mjs` is the whole detector.
+
+### On-box fallback
+
+Weaker (dies with the box it polices), but better than nothing while an off-host watcher is
+being stood up. Point `WorkingDirectory` at the sealed tree's checkout and
+`SEND_JOURNAL_PATH` at `/opt/west-bridge/data/send-journal.log` directly (grant the runtime
+user group-read on it), and update `ReadWritePaths` to that same tree's `data/` so the
+alarm log stays writable. Everything else is identical. Note the weakness is not just that
+the watcher dies with the box — the box also writes the journal it is judged against, so a
+thief who owns the box can forge journal entries to match a stolen-key post. On-box catches
+mistakes and crude theft; only off-host catches an adversary who owns the host.
+
+### Verify (positive + negative control)
+
+- **Negative control (must stay quiet):** run a tick with a healthy journal — a journaled,
+  bridge-emitted post must yield exit 0 and `OK — every on-relay post … was emitted by our
+  process.`
+- **Positive control (must fire):** temporarily point `--journal` at an empty file (or sign
+  one test event off-process) so a real on-relay post is unaccounted — the run must print
+  `🚨 TRIPWIRE`, append `data/tripwire-alarms.log`, exit 2, and (if `ALARM_*` are set) DM the
+  alarm. Restore the real journal path after.
+
+Alert on **exit 2 / unit failure** (`systemctl --failed`, or an `OnFailure=` handler) as the
+local backstop to the out-of-band alarm DM.
