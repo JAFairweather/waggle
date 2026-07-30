@@ -94,6 +94,13 @@
   .note{border:1px dashed var(--line-strong);border-radius:var(--r-md);padding:14px 16px;
     color:var(--dim);font-size:13.5px;margin-top:20px}
   .note b{color:var(--text)}
+
+  /* waggle is a lowercase wordmark. The shared bar uppercases app names by default and paints
+     them in --accent, which on this dark ground reads as a dim brown — legible enough for a
+     label, not for the one word the page is named after. Override locally rather than in the
+     shared component: the casing is waggle's brand rule, not a defect in the design system. */
+  #titlebar .ntb-name{text-transform:none;letter-spacing:.02em;color:var(--gold-bright)}
+  #titlebar .ntb-name::first-letter{color:var(--gold-bright)}
 </style>
 </head>
 <body>
