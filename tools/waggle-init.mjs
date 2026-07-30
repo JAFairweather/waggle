@@ -104,8 +104,29 @@ const checks = [
   ['public.grantors', Array.isArray(P.grantors) && P.grantors.length && !isPlaceholder(P.grantors[0]), 'whose signed grants admit an outside participant'],
   ['public.watch_events', Array.isArray(P.watch_events) && P.watch_events.length && !isPlaceholder(P.watch_events[0]), 'notes whose replies you want to receive'],
 ]
+// A configured channel is a UUID, and a UUID confirms nothing to a human. "public.inbox ✓" next
+// to an unreadable id is exactly the kind of green tick that gets trusted without being checked —
+// and pointing the bridge at the wrong channel is silent until members see traffic they did not
+// expect. So resolve the name and show it. Best-effort: needs the CLI and credentials, and when
+// it cannot resolve we say so rather than implying the id was validated.
+function channelLabel(uuid) {
+  if (!hasBuzz) return `${uuid} ${c.dim}(name unresolved — buzz CLI not on PATH)${c.off}`
+  try {
+    const out = execFileSync('buzz', ['channels', 'get', '--channel', uuid], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    const name = JSON.parse(out)?.name
+    return name ? `${c.ok}#${name}${c.off} ${c.dim}(${uuid.slice(0, 8)}…)${c.off}` : uuid
+  } catch {
+    return `${uuid} ${c.dim}(name unresolved — no credentials here, or the channel is not visible to you)${c.off}`
+  }
+}
+
 let gaps = 0
-for (const [k, ok, why] of checks) { if (ok) good(k); else { todo(`${k} — ${why}`); gaps++ } }
+for (const [k, ok, why] of checks) {
+  if (!ok) { todo(`${k} — ${why}`); gaps++; continue }
+  if (k === 'public.inbox') good(`${k} → messages land in ${channelLabel(P.inbox)}`)
+  else if (k === 'public.staging_inbox') good(`${k} → quarantine waits in ${channelLabel(P.staging_inbox)}`)
+  else good(k)
+}
 
 // --- interactive fill ---------------------------------------------------------------------------
 if (!CHECK_ONLY && (gaps || !cfgExists)) {
@@ -165,10 +186,13 @@ todo('Apply the firewall:                  deploy/nave-fw.nft')
 note('it permits NTP egress on purpose — a dropped clock silently corrupts every time-based gate')
 
 head('After it runs — the steps that prove it, rather than assume it')
-todo('Confirm the clock is synchronised on the host')
+todo('Prove the firewall loaded and the clock is synced:  sudo deploy/verify-firewall.sh')
+note('applying is not loading — a correct ruleset once sat on a box for a day without')
+note('entering the kernel. Exit 3 means INCONCLUSIVE, which is not an all-clear.')
 todo('Confirm the deployed build matches git:  sh deploy/verify-deployed.sh')
 todo('Schedule the tripwire, then make it fire once on purpose')
 note('a detector that has never fired is not a detector, it is an assumption with a timer')
+note('npm test rehearses both controls offline; the live drill is still worth doing once')
 todo('Publish the agent relay list:        node tools/publish_relay_list.mjs')
 todo('Admit a participant, if you want one: sh tools/grant-setup.sh')
 
