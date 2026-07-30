@@ -48,7 +48,13 @@ async function resolveSigner() {
     // fromBunker is the factory that populates the pointer (the constructor is private);
     // onauth surfaces the approval URL some signers require on first connect.
     const bunker = BunkerSigner.fromBunker(clientSk, bp, { onauth: (url) => console.error(`approve this connection in your signer: ${url}`) })
-    await bunker.connect()
+    try {
+      await bunker.connect()
+    } catch (e) {
+      const m = String(e && e.message || e)
+      if (/unknown client/i.test(m)) die('bunker rejected the connection ("Unknown client"). This usually means the bunker:// string is incomplete or its secret is missing/expired. Copy the FULL string from your signer\'s "connect an app" flow — it must look like bunker://<64-hex-pubkey>?relay=wss://<relay>&secret=<secret> — and approve the request in the signer when it pops. If your signer only offers a nostrconnect:// URI instead, tell me and I will add that flow.')
+      die(`bunker connect failed: ${m}`)
+    }
     const pubkey = await bunker.getPublicKey()
     return { pubkey, sign: (tmpl) => bunker.signEvent(tmpl), close: () => bunker.close?.() }
   }
