@@ -11,7 +11,13 @@
 // channel id) recomputes and matches. Revocation is a 441 e-tagging the 440. The bridge
 // consumes both statelessly off the relays; no restart needed for either direction.
 //
-// Env: GRANTOR_NSEC (nsec1…|hex — the maintainer key; the bridge honors keys in
+// Signing, in precedence order:
+//   GRANTOR_BUNKER=bunker://<pubkey>?relay=…&secret=…  — REMOTE signer (NIP-46): the key stays
+//     in your signer app (Amber / nsec.app / Alby); grant.mjs never sees it. The bunker's
+//     own pubkey becomes the grantor — run `grant.mjs whoami` to read it, then set it in
+//     cfg.public.grantors. This is the zero-custody, spec-correct path.
+//   GRANTOR_NSEC=nsec1…|hex — LOCAL key (demos/CI only; the key is in this process).
+// The bridge honors grantor keys in
 // cfg.public.grantors, defaulting to the approvers set). Kinds are provisional and read
 // from config/nipda_kinds.json when present (NIPDA_KINDS_PATH to override).
 
@@ -20,7 +26,8 @@ import { randomBytes, createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { finalizeEvent, getPublicKey } from 'nostr-tools/pure'
+import { finalizeEvent, getPublicKey, generateSecretKey } from 'nostr-tools/pure'
+import { BunkerSigner, parseBunkerInput } from 'nostr-tools/nip46'
 import * as nip19 from 'nostr-tools/nip19'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -31,9 +38,26 @@ const NIPDA = (() => {
 const CONFIG_PATH = process.env.CONFIG_PATH || resolve(ROOT, 'config.json')
 const die = (m) => { console.error(`grant: ${m}`); process.exit(1) }
 
-const raw = process.env.GRANTOR_NSEC || die('set GRANTOR_NSEC (the maintainer key that signs grants)')
-const sk = raw.startsWith('nsec1') ? nip19.decode(raw).data : Uint8Array.from(Buffer.from(raw, 'hex'))
-const pk = getPublicKey(sk)
+// Resolve a signer: a remote bunker (key never local) or a local key. Returns
+// { pubkey, sign(template) } so the rest of the tool is signer-agnostic.
+async function resolveSigner() {
+  if (process.env.GRANTOR_BUNKER) {
+    const bp = await parseBunkerInput(process.env.GRANTOR_BUNKER)
+    if (!bp) die('GRANTOR_BUNKER is not a valid bunker:// connection string')
+    const clientSk = generateSecretKey() // ephemeral transport key; not the signing identity
+    const bunker = new BunkerSigner(clientSk, bp)
+    await bunker.connect()
+    const pubkey = await bunker.getPublicKey()
+    return { pubkey, sign: (tmpl) => bunker.signEvent(tmpl), close: () => bunker.close?.() }
+  }
+  const raw = process.env.GRANTOR_NSEC
+  if (!raw) die('set GRANTOR_BUNKER (remote signer, recommended) or GRANTOR_NSEC (local key)')
+  const sk = raw.startsWith('nsec1') ? nip19.decode(raw).data : Uint8Array.from(Buffer.from(raw, 'hex'))
+  const pubkey = getPublicKey(sk)
+  return { pubkey, sign: (tmpl) => finalizeEvent(tmpl, sk), close: () => {} }
+}
+const signer = await resolveSigner()
+const pk = signer.pubkey
 
 const args = process.argv.slice(2)
 const cmd = args[0]
@@ -65,7 +89,13 @@ function channelId(v) {
   die(`--channel must be the channel UUID (names resolve inside the bridge, not the issuer): got '${v}'`)
 }
 
-if (cmd === 'issue') {
+if (cmd === 'whoami') {
+  console.log(`grantor pubkey: ${pk}`)
+  console.log(`         npub:  ${nip19.npubEncode(pk)}`)
+  console.log(`\nSet this in the bridge's config.public.grantors to authorize it, e.g.:`)
+  console.log(`  "grantors": ["${pk}"]`)
+  await signer.close()
+} else if (cmd === 'issue') {
   const toRaw = flag('--to') || die('issue needs --to <npub|hex>')
   const grantee = toRaw.startsWith('npub1') ? nip19.decode(toRaw).data : (HEX64.test(toRaw) ? toRaw.toLowerCase() : die('--to must be npub or 64-hex'))
   const chan = channelId(flag('--channel') || die('issue needs --channel <uuid>'))
@@ -75,23 +105,24 @@ if (cmd === 'issue') {
   const hash = createHash('sha256').update(Buffer.concat([
     Buffer.from('waggle/da-scope/v1'), Buffer.from([0]), Buffer.from(chan), Buffer.from(salt, 'hex'),
   ])).digest('hex')
-  const ev = finalizeEvent({
+  const ev = await signer.sign({
     kind: NIPDA.grant,
     created_at: Math.floor(Date.now() / 1000),
     tags: [['p', grantee], [NIPDA.scopeTag, hash, salt], [NIPDA.capTag, cap]],
     content: '',
-  }, sk)
+  })
   console.log(`440 ${ev.id}\n  grantee ${grantee}\n  scope   ${hash.slice(0, 16)}… (salted; channel never public)\n  cap     ${cap}\n  grantor ${pk}`)
   for (const line of await publish(ev)) console.log('  ' + line)
+  await signer.close()
 } else if (cmd === 'revoke') {
   const target = flag('--grant') || die('revoke needs --grant <440 event id>')
   if (!HEX64.test(target)) die('--grant must be a 64-hex event id')
-  const ev = finalizeEvent({
+  const ev = await signer.sign({
     kind: NIPDA.revocation,
     created_at: Math.floor(Date.now() / 1000),
     tags: [['e', target.toLowerCase()]],
     content: '',
-  }, sk)
+  })
   console.log(`441 ${ev.id} revoking ${target.slice(0, 12)}…`)
   for (const line of await publish(ev)) console.log('  ' + line)
 } else if (cmd === 'list') {
