@@ -27,6 +27,7 @@
     "deletes_per_hour": 20,
     "approver_mention": "<Buzz @name mentioned in quarantine headers so arrivals notify the approver; omit for none>",
     "approvers": ["<hex pubkey allowed to reply approve|watch|mute|reject on a quarantined post>"],
+    "grantors": ["<hex pubkey whose signed NIP-DA 440/441 admit or revoke a granted participant; defaults to approvers>"],
     "trusted_repliers": [],
     "muted_authors": []
   }
