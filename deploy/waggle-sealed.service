@@ -12,6 +12,20 @@ Wants=network-online.target
 WorkingDirectory=/opt/waggle-sealed
 ExecStart=/usr/bin/node src/bridge.mjs
 EnvironmentFile=/opt/waggle-sealed/.env
+# Sealed alternative (docs/KEY_CUSTODY.md). systemd-creds keeps the key encrypted at rest,
+# bound to this host, so a stolen disk or a leaked backup yields ciphertext:
+#
+#   systemd-creds encrypt --name=buzzkey /dev/stdin /etc/credstore.encrypted/buzzkey
+#
+# then swap the line above for the two below and have the service read the key from
+# $CREDENTIALS_DIRECTORY/buzzkey instead of BUZZ_PRIVATE_KEY:
+#
+#   LoadCredentialEncrypted=buzzkey:/etc/credstore.encrypted/buzzkey
+#   Environment=BUZZ_PRIVATE_KEY_FILE=%d/buzzkey
+#
+# This protects the COLD copy only. The process still holds the plaintext in memory to sign,
+# so it does nothing against a live host compromise - that answer is the disposable identity,
+# the tripwire, and rotation. See docs/KEY_CUSTODY.md before choosing.
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=5
