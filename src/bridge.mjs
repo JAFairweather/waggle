@@ -514,6 +514,47 @@ function fetchProfileName(pubkey) {
   })
 }
 
+// --- Presentation. Follows TRUST — but a quarantined message still has to be READ, because a
+// human is being asked to judge it. An earlier cut wrapped untrusted text in a code fence:
+// safe, and unusable. Fences don't wrap, so the message ran off the edge behind a line-number
+// gutter and truncated mid-sentence — we were asking for a decision about content the approver
+// could not see. The guard was doing its job at the expense of the job.
+//
+// So: NEUTRALISE rather than ENCASE. The escaping below was always what made untrusted text
+// safe; the fence was belt-and-braces charging legibility for it.
+const ZWSP = '​'
+// A zero-width space after @ and nostr: — the reference RENDERS but never resolves to a real
+// ping. Applied to every reposted body, vouched or not: nobody gets to summon a member.
+export const defuseRefs = (s) => String(s)
+  .replace(/@(?=[\w])/g, `@${ZWSP}`)
+  .replace(/\bnostr:/gi, `nostr${ZWSP}:`)
+// A zero-width space before line-leading markdown, so an unvouched sender can't mint headings,
+// rules, lists, tables or nested fences that imitate our own chrome. The impersonation that
+// matters is a quarantined note dressed up as an approval notice. Quarantined text only — a
+// vouched identity keeps its formatting.
+export const defuseMarkup = (s) => String(s)
+  .replace(/```/g, `\`${ZWSP}\`\``)
+  .replace(/^(\s*)([#>\-*+`|=~_]|\d+[.)])/gm, `$1${ZWSP}$2`)
+export const quoted = (s) => String(s).replace(/\r/g, '').split('\n').map(l => `> ${l}`).join('\n')
+
+// One unmistakable state line, then the MESSAGE — readable, wrapping, set apart as a quote —
+// then provenance and the actions. The old order buried the thing being judged under five
+// lines of instructions, which is backwards for a screen whose only job is a human decision.
+export function renderQuarantined({ body, mention = '', name, npub, when, claim = '', why, id }) {
+  return `${mention}⏳ **QUARANTINED** — external Nostr reply, held out of every channel until you approve it.\n\n` +
+    quoted(defuseMarkup(defuseRefs(body))) + '\n\n' +
+    `**from** ${name ? `**${name}** · ` : ''}\`${npub}\`  ·  ${when}${claim}  ·  _${why}_\n` +
+    `Reply **approve** · **follow** · **mute** · **reject** — or \`waggle-approve ${id}\``
+}
+
+// A vouched identity — released, granted, or a followed author. Reads as an ordinary message:
+// flowing text, no code bubble, no gutter. A8 (native foreign-signed rendering) is what finally
+// puts the participant's OWN avatar and name on it; until then this is a bridge-authored
+// message that reads as cleanly as a repost can.
+export function renderReleased({ body, name, npubShort }) {
+  return `**${name || npubShort}**  ·  \`${npubShort}\`  ·  _via waggle_\n\n${defuseRefs(body)}`
+}
+
 // Repost a PLAINTEXT public note into a Buzz channel. `dest` is the community inbox for a
 // trusted (allowlisted) note, or the STAGING inbox for a quarantined external reply (A1).
 // No unwrap label, no key — already-public content.
@@ -541,22 +582,9 @@ async function forwardPublic(ev, why, dest, quarantine) {
   try { npub = nip19.npubEncode(ev.pubkey) } catch { npub = null }
   // Heavily contracted npub for the attribution line — enough to recognize/verify, not a wall.
   const npubShort = npub ? `${npub.slice(0, 10)}…${npub.slice(-5)}` : (ev.pubkey || '?').slice(0, 12) + '…'
-  // Presentation follows TRUST. Quarantined content is UNDER REVIEW: keep it guarded — fenced,
-  // raw, so an unvouched stranger's text can never inject a mention/format while a human decides.
-  // A RELEASED / granted / watched identity has been vouched for: render it as a natural message
-  // — flowing text, no code bubble, no line numbers — with mentions/nostr-refs defused by a
-  // zero-width space (renders as "@name" but never resolves to a real Buzz ping). A8 (native
-  // foreign-signed rendering) is what finally puts the participant's OWN avatar + name on it;
-  // until then this is a Neil-authored message that reads as cleanly as a repost can.
-  const fenced = '```\n' + body.replace(/```/g, '`​``') + '\n```\n'
-  const natural = body.replace(/@(?=[\w])/g, '@​').replace(/\bnostr:/gi, 'nostr​:')
   const content = quarantine
-    ? `${mention}⏳ **QUARANTINED** — external Nostr reply, _pending approval_ (${why})\n` +
-      `**Unverified · NOT in any community channel.** A human must approve before this is republished.\n` +
-      `Approve: \`waggle-approve ${ev.id}\` (or reply approve / follow / mute / reject right here)\n` +
-      `author ${name ? `**${name}** · ` : ''}\`${npub || ev.pubkey}\`\n` +
-      `event \`${ev.id}\`  ·  ${when}${claim}\n\n` + fenced
-    : `**${name || npubShort}**  ·  \`${npubShort}\`  ·  _via waggle_\n\n${natural}`
+    ? renderQuarantined({ body, mention, name, npub: npub || ev.pubkey, when, claim, why, id: ev.id })
+    : renderReleased({ body, name, npubShort })
   // Test seam: exercise the full buzz-mode path (markSeen/watermark/posted-map) without a
   // network send. The synthetic buzz id (orig id reversed — still 64 hex, still unique)
   // exercises the same capture shape the live path records.
