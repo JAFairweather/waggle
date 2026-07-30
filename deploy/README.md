@@ -78,3 +78,21 @@ BUZZ_RELAY_URL=...
 BUZZ_PRIVATE_KEY=...           # the BRIDGE posting identity — never an agent key
 BUZZ_AUTH_TAG=...
 ```
+
+
+## Admission grants (§4.1 S3) — who may admit a participant
+
+The bridge admits a granted participant when it sees a signed NIP-DA 440 from a key in
+`config.public.grantors`. Keep the signing key OFF the box — use a remote signer:
+
+```
+# 1. Read the pubkey your signer holds (key stays in Amber / nsec.app / Alby):
+GRANTOR_BUNKER='bunker://<pubkey>?relay=wss://…&secret=…' node tools/grant.mjs whoami
+# 2. Put that pubkey in the read-lane config.public.grantors, redeploy.
+# 3. Issue / revoke — every signature happens in your signer, never here:
+GRANTOR_BUNKER='bunker://…' node tools/grant.mjs issue  --to <npub> --channel <uuid>
+GRANTOR_BUNKER='bunker://…' node tools/grant.mjs revoke --grant <440 id>
+```
+
+`GRANTOR_NSEC` (a local key) also works for demos/CI, but the bunker path is the
+zero-custody default: the maintainer authors admissions without any key touching the host.
