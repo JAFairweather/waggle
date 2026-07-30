@@ -101,6 +101,29 @@ the model. A trusted pre-processor unwraps, checks the sender against the list, 
 then admits the message (or drops it), rather than handing everything to the agent and
 trusting it to self-police.
 
+### The cost the gate cannot remove
+
+Because the sender is knowable only *after* decryption, the gate stops unauthorized
+**instructions** but not unauthorized **work**. Every inbound gift-wrap addressed to the
+agent has to be opened — a NIP-44 decrypt — just to learn who sent it and decide whether it
+passes. An attacker who floods the inbox with junk wraps therefore forces one decrypt per
+wrap even though none survive the gate: a cost attack on the gate itself, weaker than
+getting a message through, but not nothing. (The same holds for anything that *routes* or
+*wakes* on sender identity — an event-driven wake trigger must decrypt before it can refuse
+a stranger, so a stranger can still make it do work.)
+
+This one cannot be gated away, and the reason is structural: there is no pre-decrypt
+discriminator to act on. The real sender is *inside* the seal, and NIP-59 makes the outer
+wrap's author an **ephemeral, random** key — so neither "drop wraps from bad senders" nor
+"rate-limit a noisy sender" is available before the decrypt has already been paid. The gate
+runs where the sender first becomes visible, and that is after the cost is spent.
+
+So it is **mitigable, not eliminable** — a decrypt-throughput cap, a cap on downstream
+actions per window, durable dedup so a replayed wrap id never pays twice, and monitoring
+that reads a decrypt spike as signal. Meet it as a design fact of *any* NIP-17 sender gate,
+not a defect of this one: the same property that forces enforcement to live post-decrypt
+(above) is the property that leaves this residual behind.
+
 ### The work that changes it
 
 The enforced shape already exists in a sibling integration: the Marmot/opencode bridge in
