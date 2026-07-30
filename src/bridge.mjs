@@ -122,6 +122,17 @@ let pubWatermark = loadPubWatermark()
 // kind:5 lookback is intentionally LONGER than the kind:1 watermark: deletes are rare,
 // idempotent under dedup, and a delete issued while the lane was down must not be missed.
 const POSTED_MAP_PATH = process.env.POSTED_MAP_PATH || resolve(ROOT, 'data', 'posted-map.log')
+// Tripwire send-journal: every event id THIS process publishes as the poster identity,
+// appended synchronously. An out-of-process watcher (tools/tripwire.mjs) diffs the poster's
+// on-relay events against this journal — any post signed by our key that is NOT here means
+// the key signed something we did not (theft / a second signer). Process rate-limits cannot
+// catch that; this can. (Q1, waggle's finding, 2026-07-30.)
+const SEND_JOURNAL_PATH = process.env.SEND_JOURNAL_PATH || resolve(ROOT, 'data', 'send-journal.log')
+function journalSend(id, meta) {
+  if (!id) return
+  try { mkdirSync(dirname(SEND_JOURNAL_PATH), { recursive: true }); appendFileSync(SEND_JOURNAL_PATH, JSON.stringify({ id, ...meta, ts: Math.floor(Date.now() / 1000) }) + '\n') }
+  catch (e) { err(`tripwire: journal append failed for ${String(id).slice(0, 12)}…: ${e.message}`) }
+}
 const POSTED_CAP = Number(process.env.POSTED_CAP || 100000)
 const DEL_SINCE_SECS = Number(process.env.DEL_SINCE_SECS || 172800) // 48h
 function bumpPubWatermark(ts) {
@@ -401,6 +412,7 @@ function forward(rec, ev, src) {
   execFile('buzz', ['messages', 'send', '--channel', rec.inbox, '--content', content], (e, so, se) => {
     if (e) return err(`FORWARD[buzz] ERR -> ${rec.name}: ${se || e.message}`)
     log(`FORWARD[buzz] ok -> ${rec.name} inbox: ${src && src.channel ? `${src.channel} ` : 'DM '}1059 ${ev.id.slice(0, 12)}…`)
+    journalSend(parseBuzzEventId(so), { kind: 9, dest: rec.inbox, lane: 'sealed' })
   })
 }
 
@@ -561,6 +573,7 @@ async function forwardPublic(ev, why, dest, quarantine) {
     const buzzId = parseBuzzEventId(so)
     if (!buzzId) err(`A7 warn[no-id]: could not capture buzz event id for ${ev.id.slice(0, 12)}… — withdrawal will use follow-up tier`)
     recordPosted({ id: ev.id, author: ev.pubkey, buzz: buzzId, dest, q: !!quarantine, ts: nowSec })
+    journalSend(buzzId, { kind: 9, dest, lane: 'public' })
   })
 }
 
