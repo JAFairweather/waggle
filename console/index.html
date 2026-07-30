@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>waggle console — who is admitted, and by whose signature</title>
+<meta name="description" content="Read-only view of a waggle bridge's live admissions. Reads signed grants off the relays and verifies them in the page. No server, no keys, no privileged access.">
+<script type="importmap">
+{ "imports": { "nostr-tools": "./vendor/nostr-tools.mjs" } }
+</script>
+<style>
+  :root {
+    --ground:#0b0906; --panel:#14100a; --panel-2:#1b1409; --line:#2a2317; --line-strong:#3a3020;
+    --field:#0d0a06; --text:#f4efe4; --dim:#9c927f; --faint:#6f6555;
+    --gold:#c39a56; --gold-bright:#e2c079;
+    --accent:#cf8a2e; --accent-bright:#e8a545; --accent-ink:#0b0906;
+    --good:#8fae6a; --warn:#d9a648; --critical:#c0705a;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","Inter",Roboto,"Helvetica Neue",Arial,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Roboto Mono",monospace;
+    --display:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+    --r-sm:6px; --r-md:10px;
+  }
+  @media (prefers-color-scheme: light){ :root:not([data-theme="dark"]){
+    --ground:#f5f0e4; --panel:#fffdf7; --panel-2:#ece4d2; --line:#ddd2ba; --line-strong:#c8b89a;
+    --field:#fffdf7; --text:#241d12; --dim:#6f6553; --faint:#8a7f66;
+    --accent:#8a5a14; --accent-bright:#a86f1e; --accent-ink:#fffdf7;
+    --good:#4f7a34; --warn:#9a6a12; --critical:#a2482f; } }
+  :root[data-theme="light"]{ --ground:#f5f0e4; --panel:#fffdf7; --panel-2:#ece4d2; --line:#ddd2ba;
+    --line-strong:#c8b89a; --field:#fffdf7; --text:#241d12; --dim:#6f6553; --faint:#8a7f66;
+    --accent:#8a5a14; --accent-bright:#a86f1e; --accent-ink:#fffdf7;
+    --good:#4f7a34; --warn:#9a6a12; --critical:#a2482f; }
+
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--ground);color:var(--text);font-family:var(--sans);line-height:1.55}
+  main{max-width:1000px;margin:0 auto;padding:0 20px 60px}
+  a{color:var(--accent-bright)}
+  code,.mono{font-family:var(--mono)}
+
+  .top{display:flex;align-items:center;gap:14px;padding:24px 0 6px}
+  .mark{width:44px;height:44px;flex:none}
+  .title{font-family:var(--display);font-size:24px;font-weight:600}
+  .sub{color:var(--dim);font-size:14px;margin:0 0 22px;max-width:70ch}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);padding:16px 18px;margin-bottom:16px}
+  .panel h2{font-family:var(--mono);font-size:11.5px;text-transform:uppercase;letter-spacing:.14em;
+    color:var(--dim);margin:0 0 12px;font-weight:600}
+  label{display:block;font-family:var(--mono);font-size:11px;color:var(--dim);
+    margin:10px 0 5px;text-transform:uppercase;letter-spacing:.1em}
+  input{width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);
+    border-radius:var(--r-sm);padding:10px 12px;font-family:var(--mono);font-size:13px}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  .row > div{flex:1;min-width:260px}
+  .btn{background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--r-sm);
+    padding:10px 18px;font-weight:700;font-size:15px;font-family:inherit;cursor:pointer;margin-top:14px}
+  .btn:hover{background:var(--accent-bright)}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+
+  .status{font-size:13px;color:var(--dim);margin-top:10px;min-height:19px}
+  .status.err{color:var(--critical)}
+  .status.ok{color:var(--good)}
+
+  table{border-collapse:collapse;width:100%;font-size:13.5px}
+  th{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;
+    color:var(--faint);text-align:left;padding:0 12px 8px 0;border-bottom:1px solid var(--line);font-weight:600}
+  td{padding:10px 12px 10px 0;border-bottom:1px solid var(--line);vertical-align:top;color:var(--dim)}
+  td.who{color:var(--text);font-family:var(--mono);font-size:12.5px;white-space:nowrap}
+  .pill{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;
+    text-transform:uppercase;padding:2px 8px;border-radius:999px;border:1px solid}
+  .pill.live{color:var(--good);border-color:var(--good)}
+  .pill.revoked{color:var(--critical);border-color:var(--critical);text-decoration:line-through}
+  .tablewrap{overflow-x:auto}
+  .empty{color:var(--faint);font-size:14px;padding:14px 0}
+  .rel{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin-top:12px;line-height:1.8}
+  .rel b{color:var(--dim);font-weight:600}
+  .note{border:1px dashed var(--line-strong);border-radius:var(--r-md);padding:14px 16px;
+    color:var(--dim);font-size:13.5px;margin-top:20px}
+  .note b{color:var(--text)}
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <svg class="mark" viewBox="0 0 100 100" role="img" aria-label="waggle">
+      <rect x="2" y="2" width="96" height="96" rx="20" fill="#0b0906" stroke="#c39a56" stroke-opacity="0.5" stroke-width="2"/>
+      <g fill="none" stroke="#e2c079" stroke-width="2.6" stroke-linecap="round" opacity="0.9">
+        <path d="M62 34 C 38 24 22 44 38 66"/><path d="M62 34 C 86 44 74 70 38 66"/>
+      </g>
+      <polyline points="38,66 46.5,59 47.5,48 58.5,45 62,34" fill="none" stroke="#e2c079"
+        stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="62" cy="34" r="3" fill="#e2c079"/>
+    </svg>
+    <div class="title">waggle console</div>
+  </div>
+  <p class="sub">Who is admitted to your community, who may task your agents, and by whose signature.
+  This page reads the signed grants off the public relays and <b>verifies every signature here, in
+  your browser</b>. It needs no access to your bridge host and no key of any kind — an admission is
+  a public signed event, so seeing the truth of it requires no privilege.</p>
+
+  <div class="panel">
+    <h2>Look up</h2>
+    <div class="row">
+      <div>
+        <label for="grantor">Grantor — whose signature is the policy</label>
+        <input id="grantor" placeholder="npub1… or 64-hex" spellcheck="false">
+      </div>
+      <div>
+        <label for="subject">Subject — the channel id or agent npub a grant binds to (optional)</label>
+        <input id="subject" placeholder="channel UUID, or an agent npub" spellcheck="false">
+      </div>
+    </div>
+    <button class="btn" id="go">Read the grants</button>
+    <div class="status" id="st"></div>
+    <div class="rel" id="relays"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Admissions</h2>
+    <div class="tablewrap"><table id="tbl">
+      <thead><tr><th>Grantee</th><th>State</th><th>Capability</th><th>Scope</th><th>Issued</th><th>Grant</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="6" class="empty">Nothing read yet.</td></tr></tbody>
+    </table></div>
+  </div>
+
+  <div class="note">
+    <b>Why the scope column may say “opaque.”</b> A grant binds to its subject as a <i>salted hash</i>,
+    so a passer-by cannot tell which channel — or which agent — a grant is for, and two grants into
+    the same place cannot be linked. The salt rides publicly in the tag, so anyone who already knows
+    the subject can recompute the hash and confirm the match. Enter the subject above and matching
+    grants resolve; leave it blank and they stay opaque, which is the privacy property working
+    rather than a failure to load.
+  </div>
+  <div class="note">
+    <b>Read-only, and deliberately.</b> Issuing or revoking is a signing act and belongs where the
+    key lives — <code>tools/grant.mjs</code> and <code>tools/grant-setup.sh</code>. A console that
+    could revoke would need a key in the browser, which is a larger surface than the convenience is
+    worth. What is missing is never invented: if a relay refuses or fails, this says so rather than
+    quietly showing you a shorter list and letting you read it as “nobody is admitted.”
+  </div>
+</main>
+
+<script type="module">
+// Local vendored bundle, resolved through the importmap — no CDN. A page that verifies
+// signatures must not fetch its verifier from a third party at load time.
+import { verifyEvent, nip19 } from 'nostr-tools'
+const { decode } = nip19
+
+const $ = (id) => document.getElementById(id)
+const RELAYS = ['wss://relay.damus.io','wss://nos.lol','wss://relay.primal.net','wss://relay.ditto.pub','wss://jskitty.com/nostr']
+const KIND = { grant: 440, revocation: 441 }
+const TAG = { scope: 'da-scope', cap: 'da-cap' }
+
+const hexToBytes = (h) => Uint8Array.from(h.match(/.{1,2}/g).map(b => parseInt(b, 16)))
+const bytesToHex = (u) => [...u].map(b => b.toString(16).padStart(2, '0')).join('')
+const enc = new TextEncoder()
+
+// Same construction the issuer and the bridge use. If this drifts, grants stop resolving here
+// while remaining perfectly valid — so it is deliberately written to mirror them literally.
+async function scopeHash(subject, saltHex) {
+  const salt = saltHex ? hexToBytes(saltHex) : new Uint8Array(0)
+  const prefix = enc.encode('waggle/da-scope/v1')
+  const subj = enc.encode(String(subject))
+  const buf = new Uint8Array(prefix.length + 1 + subj.length + salt.length)
+  buf.set(prefix, 0); buf[prefix.length] = 0
+  buf.set(subj, prefix.length + 1); buf.set(salt, prefix.length + 1 + subj.length)
+  return bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', buf)))
+}
+
+const toHex = (v) => {
+  const s = String(v || '').trim()
+  if (s.startsWith('npub1')) return decode(s).data
+  if (/^[0-9a-f]{64}$/i.test(s)) return s.toLowerCase()
+  throw new Error(`not an npub or 64-hex key: ${s || '(empty)'}`)
+}
+const short = (h) => h ? `${h.slice(0, 8)}…${h.slice(-4)}` : '?'
+
+// One relay. Reports whether it actually answered — a refusal is not an absence, and a count
+// built on silent failures would misreport "nobody is admitted".
+function query(url, filter, ms = 9000) {
+  return new Promise((res) => {
+    let ws, done = false, answered = false
+    const out = []
+    const fin = () => { if (done) return; done = true; try { ws.close() } catch {} ; res({ url, out, answered }) }
+    try { ws = new WebSocket(url) } catch { return res({ url, out, answered }) }
+    const t = setTimeout(fin, ms)
+    ws.onopen = () => ws.send(JSON.stringify(['REQ', 'c', filter]))
+    ws.onmessage = (e) => {
+      try { const m = JSON.parse(e.data)
+        if (m[0] === 'EVENT') out.push(m[2])
+        if (m[0] === 'EOSE') { answered = true; clearTimeout(t); fin() }
+        if (m[0] === 'CLOSED') { clearTimeout(t); fin() }
+      } catch {}
+    }
+    ws.onerror = () => { clearTimeout(t); fin() }
+  })
+}
+
+$('go').addEventListener('click', async () => {
+  const st = $('st'); const rows = $('rows')
+  st.className = 'status'; st.textContent = 'Reading…'
+  $('go').disabled = true
+  try {
+    const grantor = toHex($('grantor').value)
+    const subjRaw = $('subject').value.trim()
+    const subject = subjRaw ? (subjRaw.startsWith('npub1') ? decode(subjRaw).data : subjRaw.toLowerCase()) : null
+
+    const results = await Promise.all(RELAYS.map(u => query(u, { kinds: [KIND.grant, KIND.revocation], authors: [grantor], limit: 500 })))
+    const answered = results.filter(r => r.answered)
+    $('relays').innerHTML = results.map(r =>
+      `<b>${new URL(r.url).host}</b> ${r.answered ? `answered · ${r.out.length}` : 'no answer'}`).join(' &nbsp;·&nbsp; ')
+
+    const byId = new Map()
+    for (const r of results) for (const e of r.out) byId.set(e.id, e)
+
+    // Verify here. A grant is only policy if its signature holds and its author is the grantor.
+    const evs = [...byId.values()].filter(e => e.pubkey === grantor).sort((a, b) => a.created_at - b.created_at)
+    let forged = 0
+    const valid = evs.filter(e => { const ok = verifyEvent(e); if (!ok) forged++; return ok })
+    const revoked = new Set(valid.filter(e => e.kind === KIND.revocation)
+      .flatMap(e => e.tags.filter(t => t[0] === 'e').map(t => t[1])))
+
+    const out = []
+    for (const e of valid.filter(x => x.kind === KIND.grant)) {
+      const grantee = e.tags.find(t => t[0] === 'p')?.[1]
+      const scope = e.tags.find(t => t[0] === TAG.scope)
+      const cap = e.tags.find(t => t[0] === TAG.cap)?.[1] || '?'
+      let scopeLabel = 'opaque'
+      if (subject && scope) {
+        scopeLabel = (await scopeHash(subject, scope[2])) === scope[1] ? 'matches subject' : 'other subject'
+      }
+      if (subject && scopeLabel !== 'matches subject') continue
+      out.push({ grantee, cap, scopeLabel, at: e.created_at, id: e.id, live: !revoked.has(e.id) })
+    }
+
+    if (!answered.length) {
+      st.className = 'status err'
+      st.textContent = 'No relay answered. Nothing is shown because nothing could be verified — this is not the same as "nobody is admitted".'
+      rows.innerHTML = '<tr><td colspan="6" class="empty">Unverifiable — no relay answered.</td></tr>'
+      return
+    }
+    rows.innerHTML = out.length ? out.map(g => `
+      <tr>
+        <td class="who">${short(g.grantee)}</td>
+        <td><span class="pill ${g.live ? 'live' : 'revoked'}">${g.live ? 'live' : 'revoked'}</span></td>
+        <td>${g.cap}</td>
+        <td>${g.scopeLabel}</td>
+        <td>${new Date(g.at * 1000).toISOString().slice(0, 16).replace('T', ' ')}</td>
+        <td class="who">${short(g.id)}</td>
+      </tr>`).join('') : `<tr><td colspan="6" class="empty">No grants from this key${subject ? ' bound to that subject' : ''}.</td></tr>`
+
+    st.className = 'status ok'
+    st.textContent = `${out.filter(g => g.live).length} live · ${out.filter(g => !g.live).length} revoked · `
+      + `${answered.length}/${RELAYS.length} relays answered`
+      + (forged ? ` · ${forged} event(s) failed signature verification and were discarded` : '')
+  } catch (e) {
+    st.className = 'status err'
+    st.textContent = e.message
+  } finally { $('go').disabled = false }
+})
+</script>
+</body>
+</html>
