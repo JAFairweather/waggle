@@ -49,7 +49,7 @@ process.env.WB_STUB_SEND = '1'
 process.env.WB_NO_BOOT = '1'
 
 const bridge = await import('../src/bridge.mjs')
-const { handleRelayIngress, route, grantSet, relaySeen, relayDropCounts, relayDropTotalPreAuth, resolveRelayDest, PUB } = bridge
+const { handleRelayIngress, route, grantSet, relaySeen, addRelaySeen, dropRelaySeen, relayDropCounts, relayDropTotalPreAuth, resolveRelayDest, PUB } = bridge
 
 let fails = 0
 const ok = (n, c) => { console.log(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) fails++ }
@@ -97,6 +97,25 @@ ok('resolveRelayDest rejects empty', resolveRelayDest('') === null)
   // dedup-before-decrypt: replaying the SAME wrap does nothing
   handleRelayIngress(wrap); await tick()
   ok('replaying the same wrap carries nothing new (§6 dedup)', delta().length === 0)
+}
+
+// --- the claim/rollback primitive that makes concurrent delivery safe ----------------------
+// HONEST SCOPE: this suite CANNOT reproduce the concurrency itself. Under WB_STUB_SEND the stub
+// branch marks synchronously — there is no async window — while the bug lives in the execFile
+// callback. A "two relays deliver at once" test written here passes with OR without the fix, so
+// it would be a check that has only ever passed. What IS testable is the primitive: a claim taken
+// at dispatch suppresses a re-entry, and a rollback restores retryability. The concurrency proof
+// is the live run (one wrap must produce exactly one channel post), not this file.
+{
+  const sk = generateSecretKey(); const { wrap, senderPk } = wrapFor(sk, { body: 'claim/rollback' })
+  admit(senderPk); delta()
+  addRelaySeen(wrap.id)
+  handleRelayIngress(wrap); await tick()
+  ok('a claimed wrap is not carried again', delta().filter(e => e.kind === 9 && e.lane === 'relay').length === 0)
+  dropRelaySeen(wrap.id)
+  ok('rollback clears the claim, so a failed send can retry', !relaySeen.has(wrap.id))
+  handleRelayIngress(wrap); await tick()
+  ok('after rollback the same wrap carries exactly once', delta().filter(e => e.kind === 9 && e.lane === 'relay').length === 1)
 }
 
 // --- route() dispatches the branch ------------------------------------------

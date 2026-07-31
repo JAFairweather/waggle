@@ -343,6 +343,15 @@ function markRelaySeen(id) {
   relaySeen.add(id)
   try { appendFileSync(RELAYSEEN_PATH, id + '\n') } catch (e) { err(`relay-lane dedup: append failed for ${id}: ${e.message}`) }
 }
+// Claim/rollback split, mirroring the return lane's addRlSeen/dropRlSeen (#121 finding #2).
+// The entry check `relaySeen.has(ev.id)` and the durable `markRelaySeen` sit on opposite sides of
+// an ASYNC buzz send. Without an in-memory claim taken synchronously at dispatch, every copy of
+// the same wrap arriving before the first send returns passes the check and posts again — and that
+// is not a rare race but the NORMAL case: a sender publishes to N relays and the bridge subscribes
+// to all of them. Observed on the lane's first live use: one wrap, two identical channel posts
+// 423ms apart. Claim on dispatch, persist on success, roll back on failure so it still retries.
+function addRelaySeen(id) { relaySeen.add(id) }
+function dropRelaySeen(id) { relaySeen.delete(id) }
 
 // A7 posted-map: append-only JSONL, same lifecycle as seen-ids. One {id, author, buzz,
 // dest, ts} record per reposted public note, plus {id, deleted:true} once withdrawn — the
@@ -1160,7 +1169,7 @@ async function postRelay(ev, sender, dest, wantCh, body) {
   execFile('buzz', ['messages', 'send', '--channel', dest, '--content', content], (e, so, se) => {
     // A channel waggle is not a member of fails HERE with a distinct RELAY[buzz] ERR — it can never
     // masquerade as a §7 drop, and it is NOT marked seen, so it retries rather than dropping.
-    if (e) { err(`RELAY[buzz] ERR -> ${dest}: ${se || e.message} — NOT marked seen, will retry`); return }
+    if (e) { dropRelaySeen(ev.id); err(`RELAY[buzz] ERR -> ${dest}: ${se || e.message} — claim rolled back, will retry`); return }
     // commit-AFTER-send (#114 finding-3): mark the wrap carried only once the kind:9 posted, so a
     // transient failure retries. Residual: a crash after this post but before the mark re-posts on
     // restart — kind:9 has no idempotency key, so the dup-on-crash residual stands (§6).
@@ -1208,6 +1217,7 @@ function handleRelayIngress(ev) {
   if (!bytes) return relayReject(sender, ev.id, 'empty body', wantCh)
   if (bytes > PUB.maxContentBytes) return relayReject(sender, ev.id, `over ${PUB.maxContentBytes}B cap`, wantCh)
   if (!relayRateOk(sender, dest, nowMs)) return relayReject(sender, ev.id, 'rate cap', wantCh)
+  addRelaySeen(ev.id)   // claim BEFORE the async send: a copy from another relay must not post again
   postRelay(ev, sender, dest, wantCh, body)
 }
 
@@ -1574,7 +1584,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
+export { returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
