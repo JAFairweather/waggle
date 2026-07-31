@@ -31,7 +31,10 @@ const work = mkdtempSync(join(tmpdir(), 'wb-runner-'))
 // One hub clone shared across cases (the runner only reads + detaches within it).
 const hub = join(work, 'hub')
 execSync(`git clone --quiet --no-hardlinks "${REPO}" "${hub}"`, { stdio: 'ignore' })
-const TARGET = execSync(`git -C "${hub}" rev-parse origin/main`, { encoding: 'utf8' }).trim()
+// Resolve the target from the clone's HEAD, not origin/main: CI checks the repo out in
+// DETACHED HEAD (no local main branch), so the clone has no origin/main to rev-parse. HEAD
+// is the checked-out commit either way. Pass it explicitly as WB_REF on every run below.
+const TARGET = execSync(`git -C "${hub}" rev-parse HEAD`, { encoding: 'utf8' }).trim()
 
 // Run the runner against a fresh tree. state = CI stub (success|failure|pending); extraEnv
 // lets a case override npm/restart. Returns { code, out, tree, restartMarker }.
@@ -44,6 +47,7 @@ function runCase(state, extraEnv = {}) {
     ...process.env,
     WB_HUB: hub,
     WB_TREE: tree,
+    WB_REF: TARGET,                                    // explicit sha (no origin/main in a CI clone)
     WB_NO_FETCH: '1',                                  // offline: drive the hub as-is
     STUB_CI_STATE: state,
     WB_CI_STATE_CMD: 'echo "$STUB_CI_STATE" #',        // ignore the sha arg (commented out)
@@ -80,7 +84,7 @@ try {
   // deploy on top of the seeded tree
   const keep2 = (() => {
     const restartMarker = join(keep.tree, '.restarted2')
-    const e = { ...process.env, WB_HUB: hub, WB_TREE: keep.tree, WB_NO_FETCH: '1',
+    const e = { ...process.env, WB_HUB: hub, WB_TREE: keep.tree, WB_REF: TARGET, WB_NO_FETCH: '1',
       STUB_CI_STATE: 'success', WB_CI_STATE_CMD: 'echo "$STUB_CI_STATE" #', WB_NPM_CMD: ':',
       WB_RESTART_CMD: `touch "${restartMarker}" #` }
     // force a re-deploy by clearing the recorded sha
@@ -117,7 +121,7 @@ try {
   try {
     out2 = execFileSync('sh', ['-c', `sh "${SCRIPT}" read 2>&1`], {
       cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, WB_HUB: hub, WB_TREE: first.tree, WB_NO_FETCH: '1',
+      env: { ...process.env, WB_HUB: hub, WB_TREE: first.tree, WB_REF: TARGET, WB_NO_FETCH: '1',
              STUB_CI_STATE: 'success', WB_CI_STATE_CMD: 'echo "$STUB_CI_STATE" #',
              WB_NPM_CMD: ':', WB_RESTART_CMD: `touch "${first.restartMarker}" #` },
     })
@@ -138,7 +142,7 @@ try {
   try {
     dOut = execFileSync('sh', ['-c', `sh "${SCRIPT}" read 2>&1`], {
       cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, WB_HUB: hub, WB_NO_FETCH: '1', DRY_RUN: '1',
+      env: { ...process.env, WB_HUB: hub, WB_REF: TARGET, WB_NO_FETCH: '1', DRY_RUN: '1',
              STUB_CI_STATE: 'success', WB_CI_STATE_CMD: 'echo "$STUB_CI_STATE" #' },
     })
   } catch (e) { dc = e.status ?? 1; dOut = (e.stdout || '') + (e.stderr || '') }
