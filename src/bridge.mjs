@@ -636,8 +636,23 @@ export function renderQuarantined({ body, mention = '', name, npub, when, claim 
 // flowing text, no code bubble, no gutter. A8 (native foreign-signed rendering) is what finally
 // puts the participant's OWN avatar and name on it; until then this is a bridge-authored
 // message that reads as cleanly as a repost can.
-export function renderReleased({ body, name, npubShort }) {
-  return `**${name || npubShort}**  ·  \`${npubShort}\`  ·  _via waggle_\n\n${defuseRefs(body)}`
+// `liveRefs` decides whether the body's @mentions survive (#94). Presentation follows trust, and
+// defuseMarkup already states the rule this completes: "a vouched identity keeps its formatting."
+// That exception was implemented for markup and never for refs, so EVERY reposted body had its
+// mentions killed — a signed, revocably-granted participant's included. The cost was not
+// cosmetic: an admitted agent could be carried into the room and still not wake a single
+// colleague, which is the entire point of being admitted. That is what pushed operators onto a
+// path that signs as the bridge instead. #94 diagnosed it exactly and was closed on a screenshot
+// taken from that other path, where defuseRefs never runs.
+//
+// DEFAULT FALSE — fail closed. Only a live NIP-DA grant (signed, scoped, revocable by a 441)
+// buys live refs. A mirrored feed does not: `watch_authors` streams an author's ENTIRE public
+// feed inward, so honouring refs there would let any watched note summon the room. Nor does a
+// standing follow (reply-trust is strictly narrower than admission), nor content a human released
+// from quarantine — approving a stranger's note means "this may be published", never "this may
+// summon people".
+export function renderReleased({ body, name, npubShort, liveRefs = false }) {
+  return `**${name || npubShort}**  ·  \`${npubShort}\`  ·  _via waggle_\n\n${liveRefs ? body : defuseRefs(body)}`
 }
 
 // Repost a PLAINTEXT public note into a Buzz channel. `dest` is the community inbox for a
@@ -671,9 +686,14 @@ async function forwardPublic(ev, why, dest, quarantine) {
   try { npub = nip19.npubEncode(ev.pubkey) } catch { npub = null }
   // Heavily contracted npub for the attribution line — enough to recognize/verify, not a wall.
   const npubShort = npub ? `${npub.slice(0, 10)}…${npub.slice(-5)}` : (ev.pubkey || '?').slice(0, 12) + '…'
+  // #94: only a live NIP-DA grant earns live @mentions. grantSet is exactly the signed-and-
+  // revocable set (`processGrantEvent`), so a 441 removes the ability to summon the room in the
+  // same act that removes admission — no second switch to forget. Every other reason a note
+  // reaches here (mirrored feed, standing follow, human-released quarantine) stays defused.
+  const liveRefs = !quarantine && !!ev.pubkey && grantSet.has(String(ev.pubkey).toLowerCase())
   const content = quarantine
     ? renderQuarantined({ body, mention, name, npub: npub || ev.pubkey, when, claim, why, id: ev.id })
-    : renderReleased({ body, name, npubShort })
+    : renderReleased({ body, name, npubShort, liveRefs })
   // Test seam: exercise the full buzz-mode path (markSeen/watermark/posted-map) without a
   // network send. The synthetic buzz id (orig id reversed — still 64 hex, still unique)
   // exercises the same capture shape the live path records.
