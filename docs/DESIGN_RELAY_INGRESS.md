@@ -29,6 +29,35 @@ removes the last remaining reason anyone reaches for (a). One mechanism, two pro
 the author — that is A8/#55 and unchanged. It does not stop waggle being *able* to author free text
 (A3), nor stop a root-capable operator from requesting a signature (A4 + narrowing the sudo grant).
 
+### 1.1 The cost this lane does NOT remove — the rights exposure
+
+**The strongest argument against this lane, and it belongs in the doc rather than in a reviewer's
+head.** A bridge-relayed write is **S3-shaped** — `SPEC_EXTERNAL` §4.1: *"a bridge-relayed write
+would re-author (S3 territory)."* Re-authoring is not an attribution blemish; §3.3/B-2 states what
+it costs the operator:
+
+> *"the reposted copy becomes the operator's Your Content under the Terms — carrying a **warranty**
+> that the operator holds all rights necessary to grant Block a sublicensable license over it
+> (**he does not**, for a third party's authored note) and **responsibility** for it 'as if that
+> activity were your own.'"*
+
+This lane removes **publicity**. It does **not** remove re-authoring, so **the operator keeps
+warranting rights over content he does not own**, for every message an admitted agent sends
+through it. That exposure already exists on the public lane running today — this design inherits
+it rather than introducing it, and inheriting it *silently* is the failure mode to avoid.
+
+Three consequences that must not be lost:
+
+- **Label it S3-shaped.** The spec permits a degraded write *"only if labeled explicitly
+  S3-shaped… never counted in the A8-free S1 story."* This is not a step toward native
+  participation; it is a better-transported version of the degraded one.
+- **Volume becomes a rights question, not only a rate-limit question.** §3.3's mitigation is *"keep
+  inbound volume minimal… and keep the ingress allowlist narrow."* `relay_channels` and the A6
+  caps are doing double duty, and whoever tunes them should know that.
+- **A8 (#55) is what resolves it; Ask 3 (`require_relay_membership`) is what removes the need for
+  it.** Both are Block's to grant, neither is ours. Until then this is the best available option —
+  and "best available" is the honest claim, not "solved".
+
 ## 2. The mechanism
 
 ```
