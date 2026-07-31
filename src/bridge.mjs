@@ -199,8 +199,13 @@ const PUB = cfg.public ? {
     // UNIQUE to one entry (see PUB.sharedAuthorKeys below); a key shared across entries — today's
     // single bridge key signs every agent's posts, reposts and quarantine headers — is ambiguous
     // and defers to the per-event registry (agentAuthoredBy) instead. Optional; `author`/`authors`.
+    // The bridge key is filtered out here, at parse, mirroring scanAuthors' exclusion at :233.
+    // Binding it to an entry would make boundUnique fire on every bridge-signed message (today
+    // that is ALL of them — reposts and quarantine headers included), silently treating them as
+    // the agent's own words. Config can reach the key; the parser must not honor it. (Finding 1.)
     authors: (Array.isArray(r.authors) ? r.authors : (r.author != null ? [r.author] : []))
-      .map(s => String(s || '').toLowerCase()).filter(s => /^[0-9a-f]{64}$/.test(s)),
+      .map(s => String(s || '').toLowerCase())
+      .filter(s => /^[0-9a-f]{64}$/.test(s) && s !== String(BRIDGE_PK || '').toLowerCase()),
   })).filter(r => /^[0-9a-f]{64}$/.test(r.npub_hex) && r.mention),
   // Working channel(s) the return-lane detector scans for @mentions of, and replies to, an
   // admitted agent. Resolved at boot like inbox/staging. DEFAULT EMPTY, and NEVER implicitly
@@ -322,14 +327,16 @@ function loadPostedMap() {
       if (!r || !r.id) continue
       if (r.deleted) { const e = postedMap.get(r.id); if (e) e.deleted = true; continue }
       postedMap.set(r.id, { author: r.author, buzz: r.buzz || null, dest: r.dest, q: !!r.q, deleted: false, agent: r.agent || null })
-      if (r.buzz) stagingByBuzzId.set(r.buzz, { orig: r.id, author: r.author, dest: r.dest, q: !!r.q, agent: r.agent || null })
+      if (r.buzz) stagingByBuzzId.set(String(r.buzz).toLowerCase(), { orig: r.id, author: r.author, dest: r.dest, q: !!r.q, agent: r.agent || null })
     } catch { err(`A7: skipping corrupt posted-map line`) }
   }
   if (postedMap.size) log(`A7: loaded ${postedMap.size} posted-map entries from ${POSTED_MAP_PATH}`)
 }
 function recordPosted(rec) {
   postedMap.set(rec.id, { author: rec.author, buzz: rec.buzz || null, dest: rec.dest, q: !!rec.q, deleted: false, agent: rec.agent || null })
-  if (rec.buzz) stagingByBuzzId.set(rec.buzz, { orig: rec.id, author: rec.author, dest: rec.dest, q: !!rec.q, agent: rec.agent || null })
+  // Keyed lowercase to match agentAuthoredBy's read (:972). A raw write against a lowercasing read
+  // fails closed silently on any uppercase id — return-lane reply/echo-attribution misses. (Finding 4.)
+  if (rec.buzz) stagingByBuzzId.set(String(rec.buzz).toLowerCase(), { orig: rec.id, author: rec.author, dest: rec.dest, q: !!rec.q, agent: rec.agent || null })
   try { mkdirSync(dirname(POSTED_MAP_PATH), { recursive: true }); appendFileSync(POSTED_MAP_PATH, JSON.stringify(rec) + '\n') }
   catch (e) { err(`A7: posted-map append failed for ${rec.id}: ${e.message}`) }
 }
@@ -850,7 +857,7 @@ async function handleCommand(m) {
     // answer, not silence. Multi-word replies are conversation — ignored.
     if (!raw.includes(' ') && raw.length <= 20) {
       const parentTry = (m.tags || []).filter(t => t[0] === 'e').map(t => t[1])[0]
-      const stTry = parentTry && stagingByBuzzId.get(parentTry)
+      const stTry = parentTry && stagingByBuzzId.get(String(parentTry).toLowerCase())
       if (stTry && (stTry.q || stTry.dest !== PUB.inbox) && !seen.has('cmd:' + m.id)) {
         markSeen('cmd:' + m.id)
         replyInStaging(m.id, `unrecognized command \`${raw}\` — try **approve** (or release), **follow**, **mute**, or **reject**.`)
@@ -859,7 +866,7 @@ async function handleCommand(m) {
     return
   }
   const parent = (m.tags || []).filter(t => t[0] === 'e').map(t => t[1])[0]
-  const st = parent && stagingByBuzzId.get(parent)
+  const st = parent && stagingByBuzzId.get(String(parent).toLowerCase())
   if (!st || !(st.q || st.dest !== PUB.inbox)) return // command must anchor to a QUARANTINED post (flag, or legacy staging dest)
   markSeen('cmd:' + m.id) // commit-before-dispatch: a crash can never double-execute a command
   log(`command '${word}' from approver ${m.pubkey.slice(0, 12)}… on ${st.orig.slice(0, 12)}…`)
@@ -929,8 +936,30 @@ function markRlSeen(key) {
   catch (e) { err(`return lane: dedup append failed for ${String(key).slice(0, 24)}…: ${e.message}`) }
 }
 
+// Drop-log dedup (finding #2). The signer-gate err() in scanReturnLane fires before the
+// per-recipient rlSeen check, so without this a STATIC backlog of non-admitted signers re-logs
+// every poll (15s at --limit 30 ≈ 172k lines/day) onto a box whose journals the tripwire reads.
+// A drop is a transient observation, not durable state — all we need is "have I already shouted
+// about THIS message id". Bounded, in-memory, insertion-ordered eviction keeps it capped.
+const rlDropLogged = new Set()
+const RL_DROP_LOG_CAP = Number(process.env.RL_DROP_LOG_CAP || 5000)
+function rlDropOnce(id) {
+  const k = String(id)
+  if (rlDropLogged.has(k)) return false
+  rlDropLogged.add(k)
+  if (rlDropLogged.size > RL_DROP_LOG_CAP) rlDropLogged.delete(rlDropLogged.values().next().value)
+  return true
+}
+
+// Returns true iff the seal was built, journaled and dispatched without throwing — the caller
+// commits dedup only then (finding #3). A false return (no key, or a seal/journal throw) leaves
+// the message un-marked so the next poll retries it, rather than committing rlSeen and losing the
+// mention forever. Relay-level delivery confirmation (a wrap dispatched to only dead sockets still
+// returns true) is deliberately out of scope here — that is the send-side no-miss follow-up (#117:
+// bounded retry queue, capped attempts/TTL, give-up alarm). This fix closes the swallowed-throw
+// path; #117 closes the dead-relay path. At-least-once on a notification lane beats at-most-once.
 function returnLaneSend(toHex, text, meta) {
-  if (!BRIDGE_SK) { err('return lane: no bridge key to seal with — skipping'); return }
+  if (!BRIDGE_SK) { err('return lane: no bridge key to seal with — skipping'); return false }
   const now = Math.floor(Date.now() / 1000)
   // NIP-59 backdating: randomise wrap and seal timestamps into the past so an observer cannot
   // correlate a channel message with a delivery by timing alone.
@@ -960,7 +989,8 @@ function returnLaneSend(toHex, text, meta) {
     // "it happens not to alarm" is a weaker property than "it is written down".
     journalSend(wrap.id, { kind: 1059, lane: 'return', to: toHex.slice(0, 12), ...meta })
     log(`RETURN -> ${toHex.slice(0, 12)}…: sealed ${String(text).length}B (wrap ${wrap.id.slice(0, 12)}…)`)
-  } catch (e) { err(`return lane: seal/send failed: ${e.message}`) }
+    return true
+  } catch (e) { err(`return lane: seal/send failed: ${e.message}`); return false }
 }
 
 // Which return-lane recipient (delivery npub) a given bridge-posted Buzz event was authored FOR,
@@ -1004,8 +1034,8 @@ function scanReturnLane(msgs, opts = {}) {
   for (const m of msgs || []) {
     if (!m || !m.id) continue
     const from = String(m.pubkey || '').toLowerCase()
-    if (gateActive && !gate.has(from)) {                   // signer gate — logged, never a silent drop
-      err(`RETURN drop[author]: ${String(m.id).slice(0, 12)}… signer ${from.slice(0, 12)}… not in scan_authors`)
+    if (gateActive && !gate.has(from)) {                   // signer gate — logged once per id, never silent
+      if (rlDropOnce(m.id)) err(`RETURN drop[author]: ${String(m.id).slice(0, 12)}… signer ${from.slice(0, 12)}… not in scan_authors`)
       continue
     }
     const body = String(m.content || '')
@@ -1029,13 +1059,17 @@ function scanReturnLane(msgs, opts = {}) {
         new RegExp('@' + r.mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])', 'i').test(body)
       const repliedTo = parents.some(pid => agentAuthoredBy(pid) === r.npub_hex)
       if (!mentioned && !repliedTo) continue
-      markRlSeen(key)                                      // commit-before-send: a crash never re-delivers
-      returnLaneSend(r.npub_hex,
+      // Commit-AFTER-send (finding #3): mark seen only once the seal succeeded. A seal/journal
+      // throw leaves the key un-marked so the next poll retries, instead of committing dedup and
+      // dropping the mention forever. A crash between send and mark re-delivers (at-least-once) —
+      // the correct failure for a notification lane whose design says silence must not look calm.
+      const sent = returnLaneSend(r.npub_hex,
         `📥 **${r.mention}** — you were ${repliedTo && !mentioned ? 'replied to' : 'mentioned'} in the community.\n\n> ` +
         body.replace(/\r/g, '').split('\n').join('\n> ') +
         `\n\n_carried out by waggle's return lane. Replying to this message reaches nobody; ` +
         `post from your own key and the bridge brings it back in._`,
         { src: m.id, why: repliedTo && !mentioned ? 'reply' : 'mention' })
+      if (sent) markRlSeen(key)
     }
   }
 }
