@@ -10,12 +10,27 @@ brief, **`~/.buzz/GUIDES/WAGGLE_BRIEF.md`** on the maintainer's machine (which s
 **If you cannot reach that brief, you are in a limited environment** — e.g. a cloud container with
 only this repo cloned, no `~/.buzz`, no `~/Projects`, no `buzz`/`gh` CLI. That is expected, not
 broken. When it happens:
+
+- **First, confirm the GitHub MCP is connected — it is your only lever.** It replaces `gh`
+  (`list_pull_requests` / `list_issues`), and opening a PR is how you land *everything*. Verify with
+  a read; opening a PR also needs push/create access. If it is not up, that is a **setup blocker to
+  raise, not to work around** — without it you can neither see the backlog nor deliver work. Say when
+  you are using the MCP in place of `gh`.
+- You do **not** need, and cannot use, the **nvoy/Buzz MCP** here — it is key-gated and lives on the
+  maintainer's node. Do not reach for it or wait on it.
 - Work the **repo surface** — code, tests, design, and spec/research issues — and land every change
   as a **PR for the maintainer to merge**. Never push to a live host or restore host privilege.
 - **Do not guess operational procedures** (relay-lane sends, crew contact, deploy). Being unable to
   check is not permission (`docs/AGENT_BRIEF.md`). Ask the maintainer to paste the brief section you
   need, or scope your work to what the repo alone supports.
-- `gh` → the GitHub MCP (`list_pull_requests` / `list_issues`) is a fine substitute; say you did it.
+
+**How work is delegated and reviewed here** (so a limited session knows where its reach ends): the
+maintainer runs an agent crew — see `docs/SPEC_EXTERNAL.md` for the roles (writing lead, read-lane
+engineer, outbox engineer, research & verification). Substantive PRs get adversarial review from the
+crew before merge. **You cannot reach the crew from a limited environment** — that needs the private
+brief's tools. So: open your PR, note who should review it and why, and **hand it up** — routing to
+the crew and merging happen through the maintainer or a Buzz-capable session. Do **not** block
+waiting to reach the crew yourself; deliver the PR and continue.
 
 ---
 
