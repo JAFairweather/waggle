@@ -1,0 +1,23 @@
+# Drives deploy-runner@%i.service on a fixed cadence, so "deploy the latest green main" is a
+# property of the INSTALL, not of an operator running a push script. %i = read | sealed.
+#
+#   sudo systemctl enable --now deploy-runner@read.timer
+#   sudo systemctl enable --now deploy-runner@sealed.timer     # after the sealed drop-in
+#   systemctl list-timers 'deploy-runner@*'                    # confirm scheduled
+#
+# Cadence: 3 min. A tick with no new green commit is cheap — one API read and a git fetch,
+# then exit 0 "already current". The window between a merge going green and the box picking
+# it up is at most one cadence plus the jitter.
+[Unit]
+Description=waggle deploy runner (%i lane) — poll for a CI-green main every 3 min
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=3min
+# Jitter so read and sealed (and many installs) do not all hit the GitHub API on the same tick.
+RandomizedDelaySec=45s
+# Catch up one run if the host was down at the scheduled time.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

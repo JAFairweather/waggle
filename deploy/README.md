@@ -88,6 +88,62 @@ This is the automated form of the manual "sealed tree md5 vs the repo baseline" 
 *Pre-cutover box checks* — prefer this. The regression test `tests/deploy_verify.mjs`
 proves it reports drift on a deliberately stale tree.
 
+## Pull-based deploy runner (#129)
+
+`deploy.sh` is a **push** from the Mac, and a push needs a standing grant on the box that
+can restart the unit as `bridge` — which is also arbitrary execution as `bridge`, i.e. the
+ability to sign as waggle. The deploy path is the last place standing write to production
+hides. `deploy/deploy-runner.sh` inverts it: the **box pulls**. A timer runs the runner;
+it looks for a commit on `main` that CI has marked green, ships that commit into the lane
+tree, records the SHA, and runs `verify-deployed.sh` — refusing loudly on drift. There is
+no inbound credential to the box, so a GitHub compromise is not a production compromise.
+
+```
+sh deploy/deploy-runner.sh read      # /opt/waggle-read
+sh deploy/deploy-runner.sh sealed    # /opt/waggle-sealed
+```
+
+**Authorisation = merged + green.** Nothing here deploys a commit that is not both on
+`main` and passing CI for *that exact SHA* (GitHub check-runs, not the legacy status API).
+To require an explicit human blessing per release, point `WB_REF` at a signed tag instead
+of `origin/main` — a one-line swap, no rebuild.
+
+**Gates the runner keeps** (all covered by `tests/deploy_runner.mjs`, negative controls
+included — a `pending` build waits, a `red` build is refused, an injected post-ship change
+alarms):
+
+- deploys only a CI-green commit; `pending` retries next tick, `failure` refuses and says so
+- never touches `config.json`, `.env` or `data/` — not in the ship list, and no `--delete`.
+  These hold the live-only values (`watch_authors`, `return_lane`, `scan_channels`,
+  `relay_channels` — see #104) a careless deploy would erase.
+- records the deployed SHA to `<tree>/DEPLOYED_SHA` so drift is checkable without a checkout
+- runs `verify-deployed.sh` after every deploy; a mismatch **alarms** (exit 1 / FAILED unit),
+  it never logs-and-passes
+
+### One-time bootstrap (the only privileged step)
+
+The runner removes *standing* write; installing it is a *bounded, one-time* privileged act.
+
+1. **Hub clone** the box pulls into (never a lane tree): `git clone <repo> /opt/waggle-hub`,
+   owned by the deploy identity. The runner only `fetch`es and `checkout --detach`s here.
+2. **Units:** `sudo cp deploy/deploy-runner@.{service,timer} /etc/systemd/system/` then
+   `sudo systemctl daemon-reload`.
+3. **read lane:** `sudo systemctl enable --now deploy-runner@read.timer`. It runs as
+   `bridge`, which already owns `/opt/waggle-read` and holds the scoped `sudo systemctl
+   restart waggle-read.service` grant (`deploy/sudoers-bridge`). No new authority.
+4. **sealed lane — get it off root in the same pass.** `/opt/waggle-sealed` is administered
+   as **root** today; do not deploy it as root. Create a scoped `deploy` user that owns the
+   sealed tree + hub and holds *only* `sudo systemctl restart waggle-sealed.service`, add the
+   drop-in from the unit header (`User=deploy`), then
+   `sudo systemctl enable --now deploy-runner@sealed.timer`. Now neither lane is deployed by
+   root, and no principal holds a general shell on production.
+5. Confirm: `systemctl list-timers 'deploy-runner@*'`.
+
+For a **private** repo, drop a read-only token in `/opt/waggle-hub/deploy-runner.env`
+(`GH_TOKEN=…`, `0600`, never committed) — a read cap, still no write authority on the box.
+
+Nothing arms until it passes a review and a green `verify-deployed.sh` against the box.
+
 ## ⚠ Root-SSH disable is lockout-sensitive
 
 Today the management key lands on root and the sealed unit is administered as root.
