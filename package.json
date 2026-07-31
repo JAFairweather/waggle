@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node src/bridge.mjs",
     "dryrun": "FORWARD_MODE=dryrun node src/bridge.mjs",
-    "test": "node tests/a1_quarantine.mjs && node tests/a7_deletion.mjs && node tests/lane2_caps.mjs && node tests/nipda_admission.mjs && node tests/render_states.mjs && node tests/deploy_verify.mjs && node tests/return_lane.mjs && node tests/return_lane_scan.mjs && node tests/return_lane_nomiss.mjs && node tests/tripwire_union.mjs && node tests/tripwire_detection.mjs",
+    "test": "node tests/a1_quarantine.mjs && node tests/a7_deletion.mjs && node tests/lane2_caps.mjs && node tests/nipda_admission.mjs && node tests/render_states.mjs && node tests/deploy_verify.mjs && node tests/return_lane.mjs && node tests/return_lane_scan.mjs && node tests/return_lane_nomiss.mjs && node tests/relay_ingress.mjs && node tests/tripwire_union.mjs && node tests/tripwire_detection.mjs",
     "console": "node tools/serve-console.mjs"
   },
   "dependencies": {
