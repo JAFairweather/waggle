@@ -3,8 +3,19 @@
 Auto-loaded by Claude Code sessions in this repo. Read it before touching anything.
 
 Host-specific operations — deployment paths, channel ids, how to reach the boxes, how to message
-the crew — are **not** here, because this repo is public. They live in the operator's local
-runbook (`~/.buzz/GUIDES/CLAUDE_OPERATING_RUNBOOK.md` on the maintainer's machine).
+the crew — are **not** here, because this repo is public. They live in the operator's private
+brief, **`~/.buzz/GUIDES/WAGGLE_BRIEF.md`** on the maintainer's machine (which supersedes the older
+`CLAUDE_OPERATING_RUNBOOK.md`).
+
+**If you cannot reach that brief, you are in a limited environment** — e.g. a cloud container with
+only this repo cloned, no `~/.buzz`, no `~/Projects`, no `buzz`/`gh` CLI. That is expected, not
+broken. When it happens:
+- Work the **repo surface** — code, tests, design, and spec/research issues — and land every change
+  as a **PR for the maintainer to merge**. Never push to a live host or restore host privilege.
+- **Do not guess operational procedures** (relay-lane sends, crew contact, deploy). Being unable to
+  check is not permission (`docs/AGENT_BRIEF.md`). Ask the maintainer to paste the brief section you
+  need, or scope your work to what the repo alone supports.
+- `gh` → the GitHub MCP (`list_pull_requests` / `list_issues`) is a fine substitute; say you did it.
 
 ---
 
