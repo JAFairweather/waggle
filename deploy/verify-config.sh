@@ -94,6 +94,28 @@ if scan_channels or return_lane:
             print("           (%d author-binding(s) are live policy off-repo — a rebuild drops them and" % bound)
             print("            echo-skip falls back to the per-event registry; confirm each is deliberate)")
 
+# ── relay lane (admitted agents inject sealed kind:14 requests): relay_channels ──
+# Same failure class as watch_authors and scan_channels, and it has a valid empty state: the relay
+# lane is fully inert while relay_channels is empty (default-closed), so a box that does not run it
+# is correct with the key absent — which is why this cannot join the hard REQUIRED set above. But
+# config.example.json carries a PLACEHOLDER here (an angle-bracketed string, never a real channel).
+# A rebuild that fills in relays/inbox/watch_authors/approvers and leaves this untouched comes up
+# healthy and drops every relay-ingress request silently: an admitted agent's sealed post is acked
+# ok:false or never routed, with nothing at runtime to notice. So surface it — count when real,
+# and flag loudly when the only thing present is the example placeholder.
+relay_channels = live.get("relay_channels")
+if relay_channels:
+    real = [c for c in relay_channels if isinstance(c, str) and c and "<" not in c]
+    print()
+    print("relay lane (admitted agents inject sealed requests) — live policy the repo cannot hold:")
+    if real:
+        print("  ok       relay_channels %d allowlisted channel(s) — box-side policy a rebuild would drop" % len(real))
+    else:
+        print("  MISSING  relay_channels present but unfilled (example placeholder only) — the relay lane is INERT")
+        print("           (this is what a rebuild from config.example.json lands on; fill in the live")
+        print("            channel(s) or drop the key entirely, but do not ship the placeholder)")
+        fail = 1
+
 print()
 if fail:
     print("FAILED — the bridge will start and route less than you think.")
