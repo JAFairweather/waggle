@@ -31,7 +31,7 @@
     "scan_channels": ["<channel name or UUID of a WORKING channel to scan for @mentions/replies to a return-lane agent; NEVER the staging_inbox; omit => scan nothing>"],
     "scan_authors": ["<hex pubkey allowed to TRIGGER a return-lane carry (signer gate); omit => floors to approvers+grantors+trusted_repliers; bridge key is always excluded; live routing policy, held durable off-repo>"],
     "return_lane": [
-      { "npub_hex": "<64-hex delivery key of an admitted agent — where its sealed mentions are addressed>", "mention": "<@name that reaches it in channel>", "authors": ["<64-hex Buzz-side key that signs THIS agent's own in-channel posts; drives echo-skip only while unique to one entry; omit if it shares the bridge key>"] }
+      { "npub_hex": "<64-hex delivery key of an admitted agent — where its sealed mentions are addressed>", "mention": "<@name that reaches it in channel>", "authors": ["<64-hex Buzz-side key that signs THIS agent's own in-channel posts; drives echo-skip only while unique to one entry; omit if it shares the bridge key. Bind a key here ONLY if it signs exactly one agent's posts: the guard keys off config-entry count, not actual signing multiplicity, so pinning the de-facto-shared bridge key to a single entry silently defeats it (a cross-mention would be dropped as echo)>"] }
     ],
     "trusted_repliers": [],
     "muted_authors": []
