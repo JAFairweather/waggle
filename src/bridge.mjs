@@ -1106,6 +1106,74 @@ function pollCommands() {
   })
 }
 
+// A5-scan: NO-MISS ACROSS DOWNTIME (#5). A blind newest-page read (`--limit N`, no since) drops
+// any mention buried past the N newest during an outage, and dedup can never recover a message that
+// was never scanned — durable rlSeen closes the re-SEND half, not the MISS half. So the scan is
+// anchored to a PERSISTED per-channel cursor (same A3 shape as pub-watermark): each poll reads from
+// (cursor - overlap) forward and PAGINATES with --before until the backlog is drained, so --limit
+// can never truncate it. The cursor advances only after a full, clean drain — a read/parse failure
+// leaves it untouched so the next poll re-reads (a failed carry is never a silent skip). The overlap
+// re-read is a no-op under durable rlSeen (per source × recipient), never a re-carry. On first boot
+// (no cursor) it floors to a bounded lookback, matching the DM lane's 48h + id-dedup philosophy.
+const SCAN_WATERMARK_PATH = process.env.SCAN_WATERMARK_PATH || resolve(ROOT, 'data', 'scan-watermark.json')
+const SCAN_WATERMARK_OVERLAP = Number(process.env.SCAN_WATERMARK_OVERLAP || 120)
+const SCAN_BOOTSTRAP_SECS = Number(process.env.SCAN_BOOTSTRAP_SECS || 172800) // 48h, matches DM lane
+const SCAN_PAGE_LIMIT = Number(process.env.SCAN_PAGE_LIMIT || 200)
+function loadScanCursors() {
+  try { const o = JSON.parse(readFileSync(SCAN_WATERMARK_PATH, 'utf8')); return (o && typeof o === 'object') ? o : {} }
+  catch { return {} }
+}
+let scanCursors = loadScanCursors()
+function scanSince(ch) {
+  const c = Number(scanCursors[ch] || 0)
+  return c > 0 ? c - SCAN_WATERMARK_OVERLAP : Math.floor(Date.now() / 1000) - SCAN_BOOTSTRAP_SECS
+}
+function bumpScanCursor(ch, ts) {
+  if (!Number.isFinite(ts) || ts <= 0 || ts <= Number(scanCursors[ch] || 0)) return
+  scanCursors[ch] = ts
+  try { mkdirSync(dirname(SCAN_WATERMARK_PATH), { recursive: true }); writeFileSync(SCAN_WATERMARK_PATH, JSON.stringify(scanCursors)) }
+  catch (e) { err(`scan watermark: write failed: ${e.message}`) }
+}
+
+// Default page fetch: shell out to `buzz messages get`. Injectable (fetchPage) so the paging /
+// no-miss logic is drivable by a test with synthetic pages — the scan test drives scanReturnLane
+// directly; this lets #5 drive the window and pagination the same way, no socket.
+function scanFetchPage(ch, floor, before, cb) {
+  const args = ['messages', 'get', '--channel', ch, '--limit', String(SCAN_PAGE_LIMIT), '--since', String(floor)]
+  if (before) args.push('--before', String(before))
+  execFile('buzz', args, (e, so) => {
+    if (e) return cb(e)
+    let msgs
+    try { msgs = JSON.parse(String(so).slice(String(so).indexOf('['))) } catch { return cb(new Error('unparseable read')) }
+    cb(null, msgs)
+  })
+}
+
+// Drain one scan channel: page back from newest to the cursor floor, then route the whole set once
+// and advance the cursor to the newest created_at seen. Pages are unioned by id (not appended) so a
+// --before boundary that re-includes a same-timestamp message never double-counts, and a page that
+// adds zero new ids terminates the walk (guards against a same-created_at cluster larger than the
+// page). Nothing routes and the cursor does not move if a page read fails.
+function scanChannel(ch, fetchPage = scanFetchPage) {
+  const floor = scanSince(ch)
+  const acc = []
+  const seenIds = new Set()
+  const page = (before) => {
+    fetchPage(ch, floor, before, (e, msgs) => {
+      if (e) return err(`scan: read failed for ${String(ch).slice(0, 8)}…: ${e.message}`) // no cursor advance — next poll retries
+      let added = 0
+      for (const m of (msgs || [])) { if (m && m.id && !seenIds.has(m.id)) { seenIds.add(m.id); acc.push(m); added++ } }
+      const oldest = (msgs || []).reduce((mn, x) => Math.min(mn, Number(x && x.created_at) || Infinity), Infinity)
+      // A full page still above the floor may be truncating the backlog — walk back. Stop once a
+      // page yields nothing new, so a same-timestamp cluster can never spin forever.
+      if (added > 0 && (msgs || []).length >= SCAN_PAGE_LIMIT && Number.isFinite(oldest) && oldest > floor) return page(oldest)
+      scanReturnLane(acc, { authors: PUB.scanAuthors })
+      bumpScanCursor(ch, acc.reduce((mx, x) => Math.max(mx, Number(x && x.created_at) || 0), 0))
+    })
+  }
+  page(null)
+}
+
 // The WORKING-channel scan, deliberately separate from pollCommands. It carries out return-lane
 // mentions/replies from the configured scan channel(s) under the scan_authors signer gate — and it
 // NEVER calls handleCommand: a #connector post is not a signed console command, and only staging
@@ -1115,14 +1183,7 @@ function pollCommands() {
 // regardless of which poll saw it first, and durable across a restart.
 function pollScanChannels() {
   if (!PUB.scanChannels.length) return
-  for (const ch of PUB.scanChannels) {
-    execFile('buzz', ['messages', 'get', '--channel', ch, '--limit', '30'], (e, so) => {
-      if (e) return err(`scan: read failed for ${String(ch).slice(0, 8)}…: ${e.message}`)
-      let msgs
-      try { msgs = JSON.parse(String(so).slice(String(so).indexOf('['))) } catch { return err(`scan: unparseable read for ${String(ch).slice(0, 8)}…`) }
-      scanReturnLane(msgs, { authors: PUB.scanAuthors })
-    })
-  }
+  for (const ch of PUB.scanChannels) scanChannel(ch)
 }
 
 // --- relay connections ------------------------------------------------------
@@ -1276,7 +1337,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { returnLaneSend, scanReturnLane, pollScanChannels, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels }
+export { returnLaneSend, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
