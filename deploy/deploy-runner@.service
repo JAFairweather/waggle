@@ -1,0 +1,52 @@
+# waggle pull-based deploy runner (issue #129), templated per lane: %i = read | sealed.
+# Driven by deploy-runner@.timer. Oneshot: each tick fetches main into the hub clone, and
+# IF a new commit is CI-green, ships it into /opt/waggle-%i, records the SHA, and runs
+# verify-deployed.sh — alarming (FAILED unit) on drift. No inbound credential to the box.
+#
+#   sudo cp deploy/deploy-runner@.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now deploy-runner@read.timer
+#   # sealed lane: see the drop-in below FIRST, then enable deploy-runner@sealed.timer
+#
+# IDENTITY (the point of #129 — no standing write, scoped per tree):
+#   read   -> runs as 'bridge', which already holds scoped `sudo systemctl restart
+#             waggle-read.service` (deploy/sudoers-bridge) and owns /opt/waggle-read.
+#   sealed -> /opt/waggle-sealed runs as ROOT today; do NOT run its deploy as root. Create a
+#             scoped 'deploy' user that owns the sealed tree + hub and holds ONLY
+#             `sudo systemctl restart waggle-sealed.service`, then add an override so this
+#             instance runs as that user:
+#               /etc/systemd/system/deploy-runner@sealed.service.d/override.conf
+#                 [Service]
+#                 User=deploy
+#                 Group=deploy
+#             Getting sealed off a root deploy path is the same-pass hardening the issue asks
+#             for — landing it here means neither lane is deployed by root.
+#
+# Optional /opt/waggle-hub/deploy-runner.env (0600, NEVER committed) — only needed if the
+# repo is private (a READ-only token, still no write authority on the box):
+#   GH_TOKEN=<read-only PAT>
+[Unit]
+Description=waggle deploy runner (%i lane) — pull a CI-green main and verify
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=bridge
+Group=bridge
+WorkingDirectory=/opt/waggle-hub
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=WB_HUB=/opt/waggle-hub
+# The env file is optional; '-' means "do not fail if it is absent" (public repo needs none).
+EnvironmentFile=-/opt/waggle-hub/deploy-runner.env
+ExecStart=/bin/sh /opt/waggle-hub/deploy/deploy-runner.sh %i
+# The runner restarts the lane via the scoped `sudo systemctl restart waggle-%i.service`
+# grant, so privilege escalation must be allowed for that one exact command.
+NoNewPrivileges=no
+ProtectHome=yes
+PrivateTmp=yes
+# Writable: the hub clone it fetches/checks out, and the lane tree it ships into. Nothing
+# else — config.json/.env/data inside the tree are never in the ship list, so they are not
+# touched even though the tree is writable.
+ProtectSystem=strict
+ReadWritePaths=/opt/waggle-hub /opt/waggle-%i
