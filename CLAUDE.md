@@ -112,14 +112,16 @@ that merely ran.** The suite was green through all of them.
 
 ## Tests
 
-`npm test` — ten suites, against the real exported functions with synthetic events. No sockets,
+`npm test` — 13 suites, against the real exported functions with synthetic events. No sockets,
 no production state, no writes outside a temp dir.
 
 quarantine gating · deletion propagation · sealed-lane rate caps · grant admission · message
-rendering · deployed-build verification · return lane · return-lane scan · tripwire union ·
-tripwire detection drill
+rendering · deployed-build verification · return lane · return-lane scan · return-lane no-miss ·
+relay ingress · tripwire union · tripwire detection drill · deploy runner
 
-CI runs them on push and PR. **If a run reports fewer than ten, the branch is on a stale base.**
+CI runs them on push and PR. **If a run reports fewer than 13, the branch is on a stale base.**
+The count of record is the `test` script in `package.json`; a prose count that disagrees with it
+is the prose being wrong.
 
 The rendering suite is the one to read when reviewing: it tests what the bridge **refuses**. A
 hostile note tries to ping the approver, mint an `APPROVED BY` heading, break out of its quote and
