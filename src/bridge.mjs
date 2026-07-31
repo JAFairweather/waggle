@@ -1508,6 +1508,20 @@ function connectPublic(url) {
       // NIP-DA: grants + revocations from the grantor set. Wide lookback — a standing
       // grant issued weeks ago must survive any restart (stateless consumption).
       if (PUB.grantors.length) { expect.add('pg'); ws.send(JSON.stringify(['REQ', 'pg', { kinds: [NIPDA.grant, NIPDA.revocation], authors: PUB.grantors, limit: 200 }])) }
+      // Relay lane (DESIGN_RELAY_INGRESS): wraps p-tagged to waggle's OWN key. This REQ lives HERE,
+      // not in the sealed connect block, because the handler needs PUB state that only this
+      // instance has: `grantSet` (populated by the `pg` subscription above), `relayChannels`, and
+      // the Buzz posting path. The sealed instance runs the sealed block but carries no `public`
+      // section at all, so a request arriving there would fail `not admitted` against an empty
+      // grant set — grants on one instance, subscription on the other, and the lane inert on both.
+      //
+      // NOT gated on `expect`/EOSE: these are requests to act on, not backfill to sort and flush.
+      // `since: SINCE` (not PUB.since) because NIP-59 randomises `created_at` backwards by up to
+      // two days — a watermark-tight window would silently drop a legitimately backdated wrap.
+      // Re-serving is safe: `relaySeen` dedups durably, before decryption.
+      if (BRIDGE_PK && PUB.relayChannels.length) {
+        ws.send(JSON.stringify(['REQ', 'pr', { kinds: [1059], '#p': [BRIDGE_PK], since: SINCE }]))
+      }
       // Safety: flush even if a relay never sends EOSE for a subscription.
       flushTimer = setTimeout(() => flush('EOSE timeout'), 10000)
       // If grants were already loaded on a previous connection, re-open the granted-author
@@ -1536,6 +1550,11 @@ function connectPublic(url) {
           if (grantSet.size !== before) subscribeGranted()
           return
         }
+        // Relay-lane requests are handled immediately, BEFORE the eosed/backfill branch: a wrap is
+        // an instruction to relay, not a note to sort into a flush window. Buffering one would
+        // delay it behind backfill and — worse — subject it to the `backfillLimit` overflow drop,
+        // where a legitimate request would be discarded as if it were surplus history.
+        if (ev && ev.kind === 1059 && BRIDGE_PK && PUB.relayChannels.length) { handleRelayIngress(ev); return }
         if (eosed) { if (ev && ev.kind === 5) routeDelete(ev); else routePublic(ev); return }
         // A4: bound the pre-EOSE buffer app-side too — overflow dropped WITH a log, never silent.
         if (buf.length >= PUB.backfillLimit) { err(`[pub ${url}] backfill buffer cap ${PUB.backfillLimit} — dropping ${ev?.id ? ev.id.slice(0, 12) : '?'}…`); return }
