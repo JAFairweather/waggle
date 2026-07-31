@@ -1,0 +1,46 @@
+name: CI
+
+# Run the test suite on every PR and on pushes to main (issue #38). The four
+# suites — quarantine gating, deletion propagation, lane-2 rate caps, grant
+# admission — plus render/deploy-verify/return-lane are side-effect-free (temp
+# dirs, stubbed sends), so they are safe to run unattended. A visible green
+# check replaces "whoever remembered to run it locally", and is part of the
+# credibility story for a public repo.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: npm test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # A real .git checkout is required: tests/deploy_verify.mjs drives
+        # `git archive HEAD` / `git cat-file` to build its fixture. The default
+        # shallow depth is fine — HEAD is present.
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22' # matches the deployed runtime; package.json engines is >=20
+          cache: npm
+
+      - name: Install from lockfile
+        run: npm ci --no-audit --no-fund
+
+      - name: Provide a config for the suite
+        # config.json is gitignored — per-box routing policy lives on the host
+        # (issue #104), not in git. The committed example carries the schema the
+        # suite needs; a1 grounds in it, the others write their own temp configs.
+        run: cp config.example.json config.json
+
+      - name: Test
+        run: npm test
