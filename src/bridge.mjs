@@ -46,6 +46,11 @@ const ROOT = resolve(__dirname, '..')
 const CONFIG_PATH = process.env.CONFIG_PATH || resolve(ROOT, 'config.json')
 const SEEN_PATH = process.env.SEEN_PATH || resolve(ROOT, 'data', 'seen-ids.log')
 const SEEN_CAP = Number(process.env.SEEN_CAP || 100000)
+// Return-lane dedup store — same append-only, capped lifecycle as seen-ids, but a SEPARATE file:
+// its keys are (source_id × recipient) composites, not bare event ids, so one community message
+// carries out to every matching recipient exactly once and never re-delivers across a restart.
+const RLSEEN_PATH = process.env.RLSEEN_PATH || resolve(ROOT, 'data', 'return-lane-seen.log')
+const RLSEEN_CAP = Number(process.env.RLSEEN_CAP || 100000)
 const FORWARD_MODE = process.env.FORWARD_MODE || 'buzz'
 // SEALED_LANES=off runs the PUBLIC read lane ONLY — no DM lane, no Concord channel lane. Use this
 // on a SECOND instance (e.g. a local read-lane host) when another instance already owns the sealed
@@ -186,18 +191,73 @@ const PUB = cfg.public ? {
   returnLane: (cfg.public.return_lane || []).map(r => ({
     npub_hex: String(r.npub_hex || r.npub || '').toLowerCase(),
     mention: String(r.mention || '').replace(/^@/, ''),
+    // The Buzz-side key(s) that sign THIS agent's own words in-channel. Distinct from npub_hex:
+    // npub_hex is the delivery address (the agent's real Nostr key, which the community relay
+    // will not serve), while an external agent's posts arrive signed by a Buzz-side key. Binding
+    // them makes "the agent's own messages" expressible for echo-skip WITHOUT the blanket
+    // signer-skip Neil/Dennis warned against: a bound author drives echo-skip only while it is
+    // UNIQUE to one entry (see PUB.sharedAuthorKeys below); a key shared across entries — today's
+    // single bridge key signs every agent's posts, reposts and quarantine headers — is ambiguous
+    // and defers to the per-event registry (agentAuthoredBy) instead. Optional; `author`/`authors`.
+    // The bridge key is filtered out here, at parse, mirroring scanAuthors' exclusion at :233.
+    // Binding it to an entry would make boundUnique fire on every bridge-signed message (today
+    // that is ALL of them — reposts and quarantine headers included), silently treating them as
+    // the agent's own words. Config can reach the key; the parser must not honor it. (Finding 1.)
+    authors: (Array.isArray(r.authors) ? r.authors : (r.author != null ? [r.author] : []))
+      .map(s => String(s || '').toLowerCase())
+      .filter(s => /^[0-9a-f]{64}$/.test(s) && s !== String(BRIDGE_PK || '').toLowerCase()),
   })).filter(r => /^[0-9a-f]{64}$/.test(r.npub_hex) && r.mention),
+  // Working channel(s) the return-lane detector scans for @mentions of, and replies to, an
+  // admitted agent. Resolved at boot like inbox/staging. DEFAULT EMPTY, and NEVER implicitly
+  // staging: pollCommands keeps reading staging alone for signed approval commands, and
+  // working-channel traffic must never reach handleCommand (a #connector post is not a console
+  // command). A name or a UUID; unresolvable names are fatal in buzz mode.
+  scanChannels: (cfg.public.scan_channels || []).map(v => String(v || '')).filter(Boolean),
+  // Signer gate on the scan carry-out — filled below, after approvers/grantors are known.
+  scanAuthors: [],
   // Keys whose signed 440/441 events the bridge honors for admission. Defaults to the
   // approvers set — the same authority that runs the quarantine console.
   grantors: (cfg.public.grantors || cfg.public.approvers || []).map(s => String(s).toLowerCase()),
 } : null
+
+// scan_authors — the SIGNER gate on the return-lane carry-out (§5 of the notify design: spam and
+// abuse control plus defense-in-depth, NOT the load-bearing safety property, which is the
+// wake/payload split in the action layer). Its own config key so widening the roster is config,
+// not code. Absent => the declared-trust FLOOR (same cascade shape as grantors→approvers above):
+// the keys the bridge is already configured to trust to write in. The live crew roster is supplied
+// via cfg.public.scan_authors and held durable by the read-box restore; if it is dropped, the gate
+// floors to declared trust rather than opening wide OR silently emptying. This repo commits no real
+// keys, so the roster lives in (gitignored) config, never as a literal in public source — code is
+// the mechanism, config is the trust set, exactly as for every other gate here. The bridge's own
+// key is never admitted: it is skip-self/echo, keyed through the registry, not this gate.
+if (PUB) {
+  const explicit = Array.isArray(cfg.public.scan_authors) && cfg.public.scan_authors.length
+  PUB.scanAuthors = (explicit
+    ? cfg.public.scan_authors.map(s => String(s).toLowerCase())
+    : [...new Set([...PUB.approvers, ...PUB.grantors, ...PUB.trustedRepliers])]
+  ).filter(k => /^[0-9a-f]{64}$/.test(k) && k !== String(BRIDGE_PK || '').toLowerCase())
+
+  // Author-binding consumption (finding #2). An entry's bound author key lets echo-skip fire on
+  // the agent's OWN in-channel posts even though they arrive signed by a Buzz-side key, not the
+  // delivery key. But skipping on a SHARED key would silently drop a second agent's cross-mention
+  // (Neil's forward hazard: today one bridge key signs everyone). So a bound author is honored for
+  // echo-skip only while UNIQUE to a single entry; a key bound to two or more entries is ambiguous
+  // and defers to the per-event registry. sharedAuthorKeys is that ambiguity set, computed once.
+  // Degrades correctly: the shared bridge key is ambiguous now → registry/gate handle echo; give
+  // each agent its own posting key later and its binding becomes unique and activates, no code
+  // change. Reply-attribution never uses this — a reply carries its parent's id, not its signer,
+  // so routing a reply to an agent's post can only come from the event-level registry.
+  const authorCounts = new Map()
+  for (const r of PUB.returnLane) for (const a of new Set(r.authors)) authorCounts.set(a, (authorCounts.get(a) || 0) + 1)
+  PUB.sharedAuthorKeys = new Set([...authorCounts].filter(([, n]) => n > 1).map(([a]) => a))
+}
 
 // Channel-name resolution: public.inbox / staging_inbox may be a Buzz channel NAME instead
 // of a UUID — resolved once at boot (and by tools) via `buzz channels list`, so config reads
 // as intent ("waggle-test") instead of hex. Unresolvable names are fatal in buzz mode.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 function resolveChannels(cb) {
-  const pending = PUB ? [PUB.inbox, PUB.staging].filter(v => v && !UUID_RE.test(v)) : []
+  const pending = PUB ? [PUB.inbox, PUB.staging, ...PUB.scanChannels].filter(v => v && !UUID_RE.test(v)) : []
   if (!pending.length) return cb()
   if (FORWARD_MODE !== 'buzz') { err(`WARN: channel name(s) ${pending.join(', ')} left unresolved in ${FORWARD_MODE} mode`); return cb() }
   execFile('buzz', ['channels', 'list'], (e, so) => {
@@ -217,6 +277,7 @@ function resolveChannels(cb) {
     }
     PUB.inbox = one(PUB.inbox, 'inbox')
     PUB.staging = one(PUB.staging, 'staging_inbox')
+    PUB.scanChannels = PUB.scanChannels.map((v, i) => one(v, `scan_channel[${i}]`))
     cb()
   })
 }
@@ -251,7 +312,12 @@ function markSeen(id) {
 // dest, ts} record per reposted public note, plus {id, deleted:true} once withdrawn — the
 // deleted marker makes a second, different kind:5 for the same target a no-op (the seen
 // set only dedups the SAME delete id re-served by another relay).
-const postedMap = new Map() // orig event id -> { author, buzz, dest, deleted }
+// `agent` (optional) is the return-lane delivery npub this bridge post was authored FOR — the
+// primitive both echo-skip and reply-to-agent detection read. Set when the bridge reposts an
+// admitted agent's own public note (author === a return_lane npub_hex). Keying on WHO the bridge
+// posted for — never on the shared bridge signing key — is what keeps a second agent's cross
+// mentions from being swept up as echoes when the roster grows.
+const postedMap = new Map() // orig event id -> { author, buzz, dest, deleted, agent }
 function loadPostedMap() {
   if (!existsSync(POSTED_MAP_PATH)) return
   const lines = readFileSync(POSTED_MAP_PATH, 'utf8').split('\n').filter(Boolean).slice(-POSTED_CAP)
@@ -260,15 +326,17 @@ function loadPostedMap() {
       const r = JSON.parse(line)
       if (!r || !r.id) continue
       if (r.deleted) { const e = postedMap.get(r.id); if (e) e.deleted = true; continue }
-      postedMap.set(r.id, { author: r.author, buzz: r.buzz || null, dest: r.dest, q: !!r.q, deleted: false })
-      if (r.buzz) stagingByBuzzId.set(r.buzz, { orig: r.id, author: r.author, dest: r.dest, q: !!r.q })
+      postedMap.set(r.id, { author: r.author, buzz: r.buzz || null, dest: r.dest, q: !!r.q, deleted: false, agent: r.agent || null })
+      if (r.buzz) stagingByBuzzId.set(String(r.buzz).toLowerCase(), { orig: r.id, author: r.author, dest: r.dest, q: !!r.q, agent: r.agent || null })
     } catch { err(`A7: skipping corrupt posted-map line`) }
   }
   if (postedMap.size) log(`A7: loaded ${postedMap.size} posted-map entries from ${POSTED_MAP_PATH}`)
 }
 function recordPosted(rec) {
-  postedMap.set(rec.id, { author: rec.author, buzz: rec.buzz || null, dest: rec.dest, q: !!rec.q, deleted: false })
-  if (rec.buzz) stagingByBuzzId.set(rec.buzz, { orig: rec.id, author: rec.author, dest: rec.dest, q: !!rec.q })
+  postedMap.set(rec.id, { author: rec.author, buzz: rec.buzz || null, dest: rec.dest, q: !!rec.q, deleted: false, agent: rec.agent || null })
+  // Keyed lowercase to match agentAuthoredBy's read (:972). A raw write against a lowercasing read
+  // fails closed silently on any uppercase id — return-lane reply/echo-attribution misses. (Finding 4.)
+  if (rec.buzz) stagingByBuzzId.set(String(rec.buzz).toLowerCase(), { orig: rec.id, author: rec.author, dest: rec.dest, q: !!rec.q, agent: rec.agent || null })
   try { mkdirSync(dirname(POSTED_MAP_PATH), { recursive: true }); appendFileSync(POSTED_MAP_PATH, JSON.stringify(rec) + '\n') }
   catch (e) { err(`A7: posted-map append failed for ${rec.id}: ${e.message}`) }
 }
@@ -577,6 +645,10 @@ export function renderReleased({ body, name, npubShort }) {
 // No unwrap label, no key — already-public content.
 async function forwardPublic(ev, why, dest, quarantine) {
   const author = ev.pubkey ? ev.pubkey.slice(0, 16) : '?'
+  // If this public note is an admitted agent's OWN words (author === a return_lane delivery key),
+  // record the repost as agent-authored so the return-lane detector never echoes it back and can
+  // resolve a later reply to it. Keyed on the agent's real key, never on the bridge that signs it.
+  const agent = PUB ? ((PUB.returnLane.find(r => r.npub_hex === String(ev.pubkey || '').toLowerCase()) || {}).npub_hex || null) : null
   const nowSec = Math.floor(Date.now() / 1000)
   const { clamped, outOfRange } = clampCreated(ev.created_at, nowSec)
   const when = new Date(clamped * 1000).toISOString()
@@ -607,7 +679,7 @@ async function forwardPublic(ev, why, dest, quarantine) {
   // exercises the same capture shape the live path records.
   if (process.env.WB_STUB_SEND) {
     log(`PUBLIC[stub] -> ${quarantine ? 'STAGING' : 'inbox'} ${dest}: kind1 ${ev.id.slice(0, 12)}… by ${author}… (${why})`)
-    recordPosted({ id: ev.id, author: ev.pubkey, buzz: ev.id.split('').reverse().join(''), dest, q: !!quarantine, ts: nowSec })
+    recordPosted({ id: ev.id, author: ev.pubkey, buzz: ev.id.split('').reverse().join(''), dest, q: !!quarantine, ts: nowSec, agent })
     return
   }
   execFile('buzz', ['messages', 'send', '--channel', dest, '--content', content], (e, so, se) => {
@@ -617,7 +689,7 @@ async function forwardPublic(ev, why, dest, quarantine) {
     // (stdout didn't carry one) degrades to the follow-up-tombstone tier — logged, safe.
     const buzzId = parseBuzzEventId(so)
     if (!buzzId) err(`A7 warn[no-id]: could not capture buzz event id for ${ev.id.slice(0, 12)}… — withdrawal will use follow-up tier`)
-    recordPosted({ id: ev.id, author: ev.pubkey, buzz: buzzId, dest, q: !!quarantine, ts: nowSec })
+    recordPosted({ id: ev.id, author: ev.pubkey, buzz: buzzId, dest, q: !!quarantine, ts: nowSec, agent })
     journalSend(buzzId, { kind: 9, dest, lane: 'public' })
   })
 }
@@ -785,7 +857,7 @@ async function handleCommand(m) {
     // answer, not silence. Multi-word replies are conversation — ignored.
     if (!raw.includes(' ') && raw.length <= 20) {
       const parentTry = (m.tags || []).filter(t => t[0] === 'e').map(t => t[1])[0]
-      const stTry = parentTry && stagingByBuzzId.get(parentTry)
+      const stTry = parentTry && stagingByBuzzId.get(String(parentTry).toLowerCase())
       if (stTry && (stTry.q || stTry.dest !== PUB.inbox) && !seen.has('cmd:' + m.id)) {
         markSeen('cmd:' + m.id)
         replyInStaging(m.id, `unrecognized command \`${raw}\` — try **approve** (or release), **follow**, **mute**, or **reject**.`)
@@ -794,7 +866,7 @@ async function handleCommand(m) {
     return
   }
   const parent = (m.tags || []).filter(t => t[0] === 'e').map(t => t[1])[0]
-  const st = parent && stagingByBuzzId.get(parent)
+  const st = parent && stagingByBuzzId.get(String(parent).toLowerCase())
   if (!st || !(st.q || st.dest !== PUB.inbox)) return // command must anchor to a QUARANTINED post (flag, or legacy staging dest)
   markSeen('cmd:' + m.id) // commit-before-dispatch: a crash can never double-execute a command
   log(`command '${word}' from approver ${m.pubkey.slice(0, 12)}… on ${st.orig.slice(0, 12)}…`)
@@ -843,10 +915,51 @@ async function handleCommand(m) {
 // Only mentions are carried, never the whole channel. Forwarding everything would turn the
 // bridge into a firehose pointed out of a private room, which is the exact opposite of the
 // consent the in door spends all its effort enforcing.
+// Return-lane dedup, durable and keyed per (source × recipient) — NOT per message. Finding #4:
+// keying on the source id alone (and `break`ing after the first match) delivers a "@a @b" message
+// to at most ONE recipient, then marks the whole message seen forever — silent under-delivery the
+// instant the roster grows past one. The composite key lets a message fan out to every mentioned
+// recipient, each carried exactly once; persistence makes that idempotent across a restart so a
+// bounce never re-delivers (finding #1). Same append-only/capped lifecycle as loadSeen/markSeen.
 const rlSeen = new Set()
+const rlKey = (srcId, recipHex) => String(srcId) + '\x1f' + String(recipHex)
+function loadRlSeen() {
+  if (!existsSync(RLSEEN_PATH)) { mkdirSync(dirname(RLSEEN_PATH), { recursive: true }); return }
+  const lines = readFileSync(RLSEEN_PATH, 'utf8').split('\n').filter(Boolean)
+  const kept = lines.slice(-RLSEEN_CAP)
+  for (const k of kept) rlSeen.add(k)
+  log(`return lane: loaded ${rlSeen.size} carried (source×recipient) keys from ${RLSEEN_PATH}${lines.length > kept.length ? ` (pruned ${lines.length - kept.length})` : ''}`)
+}
+function markRlSeen(key) {
+  rlSeen.add(key)
+  try { mkdirSync(dirname(RLSEEN_PATH), { recursive: true }); appendFileSync(RLSEEN_PATH, key + '\n') }
+  catch (e) { err(`return lane: dedup append failed for ${String(key).slice(0, 24)}…: ${e.message}`) }
+}
 
+// Drop-log dedup (finding #2). The signer-gate err() in scanReturnLane fires before the
+// per-recipient rlSeen check, so without this a STATIC backlog of non-admitted signers re-logs
+// every poll (15s at --limit 30 ≈ 172k lines/day) onto a box whose journals the tripwire reads.
+// A drop is a transient observation, not durable state — all we need is "have I already shouted
+// about THIS message id". Bounded, in-memory, insertion-ordered eviction keeps it capped.
+const rlDropLogged = new Set()
+const RL_DROP_LOG_CAP = Number(process.env.RL_DROP_LOG_CAP || 5000)
+function rlDropOnce(id) {
+  const k = String(id)
+  if (rlDropLogged.has(k)) return false
+  rlDropLogged.add(k)
+  if (rlDropLogged.size > RL_DROP_LOG_CAP) rlDropLogged.delete(rlDropLogged.values().next().value)
+  return true
+}
+
+// Returns true iff the seal was built, journaled and dispatched without throwing — the caller
+// commits dedup only then (finding #3). A false return (no key, or a seal/journal throw) leaves
+// the message un-marked so the next poll retries it, rather than committing rlSeen and losing the
+// mention forever. Relay-level delivery confirmation (a wrap dispatched to only dead sockets still
+// returns true) is deliberately out of scope here — that is the send-side no-miss follow-up (#117:
+// bounded retry queue, capped attempts/TTL, give-up alarm). This fix closes the swallowed-throw
+// path; #117 closes the dead-relay path. At-least-once on a notification lane beats at-most-once.
 function returnLaneSend(toHex, text, meta) {
-  if (!BRIDGE_SK) { err('return lane: no bridge key to seal with — skipping'); return }
+  if (!BRIDGE_SK) { err('return lane: no bridge key to seal with — skipping'); return false }
   const now = Math.floor(Date.now() / 1000)
   // NIP-59 backdating: randomise wrap and seal timestamps into the past so an observer cannot
   // correlate a channel message with a delivery by timing alone.
@@ -876,30 +989,87 @@ function returnLaneSend(toHex, text, meta) {
     // "it happens not to alarm" is a weaker property than "it is written down".
     journalSend(wrap.id, { kind: 1059, lane: 'return', to: toHex.slice(0, 12), ...meta })
     log(`RETURN -> ${toHex.slice(0, 12)}…: sealed ${String(text).length}B (wrap ${wrap.id.slice(0, 12)}…)`)
-  } catch (e) { err(`return lane: seal/send failed: ${e.message}`) }
+    return true
+  } catch (e) { err(`return lane: seal/send failed: ${e.message}`); return false }
 }
 
-function scanReturnLane(msgs) {
+// Which return-lane recipient (delivery npub) a given bridge-posted Buzz event was authored FOR,
+// or null. This is the agent-authored registry read: reply-to-agent and echo-skip both key on it,
+// never on the shared bridge signing key. Empty until the registry is fed (a repost of the agent's
+// own public note, or a future recorded bridge-write), and it fails CLOSED — an unrecorded event
+// resolves to null, never to a wrong recipient.
+function agentAuthoredBy(buzzId) {
+  const e = buzzId && stagingByBuzzId.get(String(buzzId).toLowerCase())
+  return e && e.agent ? e.agent : null
+}
+
+// Scan a batch of channel messages for return-lane triggers and carry each out — exactly once.
+// Two trigger types:
+//   • @mention — a resolved p-tag EXACTLY equal to the recipient's delivery key (Buzz resolves an
+//     @name to a server-side p-tag: exact match, survives display-name drift, no substring
+//     hazard), OR the literal @name word-boundary match in the body. Both, unioned: the p-tag is
+//     the reliable signal once the agent's key is a resolvable channel member, and the regex is
+//     the floor for the common external-agent case where an @name resolves to no member at all.
+//     Word boundary, not substring — "@claudex" must never deliver to "@claude"; a substring test
+//     would carry a private message to the wrong recipient, silently, the more likely the longer
+//     the roster.
+//   • reply-to-agent — a reply whose DIRECT parent (the `reply`-marked e-tag, not the thread root)
+//     is a bridge event the registry records as authored for this recipient. No body match needed.
+//
+// opts.authors, when supplied, is a SIGNER gate (spam/abuse control + defense-in-depth — NOT the
+// load-bearing safety property; that is the wake/payload split in the action layer). A message
+// whose signer is outside it is dropped, LOUDLY, before any carry-out. Supplying the option at all
+// makes the gate default-closed: an explicitly-empty gate passes nobody (a misconfiguration that
+// is WARNed at boot, never silent). The staging path passes no option and stays open — staging is
+// human-gated content already.
+//
+// The carried body is DATA, never instruction: it is quoted into a sealed 1059 delivered to the
+// recipient's own key. Nothing here starts a session, evaluates, or acts on the body — this lane
+// only ever moves bytes to an address. The one place a body could reach a prompt is the action
+// layer, where the wake is content-free and the body is read-plane data (design §5).
+function scanReturnLane(msgs, opts = {}) {
   if (!PUB.returnLane.length || !BRIDGE_SK) return
+  const gateActive = opts.authors !== undefined            // an explicit (even empty) gate is default-closed
+  const gate = gateActive ? new Set(opts.authors || []) : null
   for (const m of msgs || []) {
-    if (!m || !m.id || rlSeen.has(m.id)) continue
+    if (!m || !m.id) continue
+    const from = String(m.pubkey || '').toLowerCase()
+    if (gateActive && !gate.has(from)) {                   // signer gate — logged once per id, never silent
+      if (rlDropOnce(m.id)) err(`RETURN drop[author]: ${String(m.id).slice(0, 12)}… signer ${from.slice(0, 12)}… not in scan_authors`)
+      continue
+    }
     const body = String(m.content || '')
-    const from = String(m.pubkey || '')
+    const tags = Array.isArray(m.tags) ? m.tags : []
+    const ptags = tags.filter(t => t[0] === 'p' && t[1]).map(t => String(t[1]).toLowerCase())
+    // Direct parent(s) only — the `reply`-marked e-tag. NOT the `root` tag: matching root would
+    // deliver every message in a thread the agent started, not the replies actually to it.
+    const parents = tags.filter(t => t[0] === 'e' && t[1] && t[3] === 'reply').map(t => String(t[1]).toLowerCase())
+    // No break: one message fans out to EVERY matching recipient, each deduped on its own
+    // (source × recipient) key. "@a @b" reaching only one of them was finding #4.
     for (const r of PUB.returnLane) {
-      if (from === r.npub_hex) continue                                  // never echo their own words back
-      // Word-boundary match, not substring: "@claudex" must not deliver to "@claude". A
-      // substring test would carry a private message to someone it was never addressed to,
-      // silently, and the longer the roster the likelier it gets. The name may end at
-      // whitespace or ordinary punctuation, but not at another name character.
-      if (!new RegExp('@' + r.mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])', 'i').test(body)) continue
-      rlSeen.add(m.id)
-      returnLaneSend(r.npub_hex,
-        `📥 **${r.mention}** — you were mentioned in the community.\n\n> ` +
+      const key = rlKey(m.id, r.npub_hex)
+      if (rlSeen.has(key)) continue                        // this recipient already carried for this message
+      // Echo: never carry the recipient's own words back. Three forms, all the agent's own:
+      // direct-signer (r.npub_hex signed it), unique-bound-author (a Buzz-side key bound to only
+      // THIS entry signed it — never a shared bridge key, which would drop cross-mentions), or
+      // registry (the bridge posted this event FOR this recipient).
+      const boundUnique = r.authors.some(a => a === from && !PUB.sharedAuthorKeys.has(a))
+      if (from === r.npub_hex || boundUnique || agentAuthoredBy(m.id) === r.npub_hex) continue
+      const mentioned = ptags.includes(r.npub_hex) ||
+        new RegExp('@' + r.mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])', 'i').test(body)
+      const repliedTo = parents.some(pid => agentAuthoredBy(pid) === r.npub_hex)
+      if (!mentioned && !repliedTo) continue
+      // Commit-AFTER-send (finding #3): mark seen only once the seal succeeded. A seal/journal
+      // throw leaves the key un-marked so the next poll retries, instead of committing dedup and
+      // dropping the mention forever. A crash between send and mark re-delivers (at-least-once) —
+      // the correct failure for a notification lane whose design says silence must not look calm.
+      const sent = returnLaneSend(r.npub_hex,
+        `📥 **${r.mention}** — you were ${repliedTo && !mentioned ? 'replied to' : 'mentioned'} in the community.\n\n> ` +
         body.replace(/\r/g, '').split('\n').join('\n> ') +
         `\n\n_carried out by waggle's return lane. Replying to this message reaches nobody; ` +
         `post from your own key and the bridge brings it back in._`,
-        { src: m.id })
-      break
+        { src: m.id, why: repliedTo && !mentioned ? 'reply' : 'mention' })
+      if (sent) markRlSeen(key)
     }
   }
 }
@@ -914,6 +1084,25 @@ function pollCommands() {
     scanReturnLane(msgs)
     cmdCursor = Math.floor(Date.now() / 1000)
   })
+}
+
+// The WORKING-channel scan, deliberately separate from pollCommands. It carries out return-lane
+// mentions/replies from the configured scan channel(s) under the scan_authors signer gate — and it
+// NEVER calls handleCommand: a #connector post is not a signed console command, and only staging
+// is parsed for those. Keeping the two polls distinct is what stops working-channel chatter from
+// being interpreted as approval verbs. Dedup is rlSeen (shared with the staging path), keyed per
+// (source × recipient), so a message carried to a recipient once is never carried to them again —
+// regardless of which poll saw it first, and durable across a restart.
+function pollScanChannels() {
+  if (!PUB.scanChannels.length) return
+  for (const ch of PUB.scanChannels) {
+    execFile('buzz', ['messages', 'get', '--channel', ch, '--limit', '30'], (e, so) => {
+      if (e) return err(`scan: read failed for ${String(ch).slice(0, 8)}…: ${e.message}`)
+      let msgs
+      try { msgs = JSON.parse(String(so).slice(String(so).indexOf('['))) } catch { return err(`scan: unparseable read for ${String(ch).slice(0, 8)}…`) }
+      scanReturnLane(msgs, { authors: PUB.scanAuthors })
+    })
+  }
 }
 
 // --- relay connections ------------------------------------------------------
@@ -1067,12 +1256,13 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { returnLaneSend, scanReturnLane, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels }
+export { returnLaneSend, scanReturnLane, pollScanChannels, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
   loadSeen()
   loadPostedMap()
+  loadRlSeen()
   log(`waggle — mode=${FORWARD_MODE}, ${TARGETS.length} recipients, ${RELAYS.length} relays, ${PLANE_AUTHORS.length} channel plane(s), dm-since=${SINCE} (${SINCE_SECS}s), chan-since=${CHANNEL_SINCE} (${CHANNEL_SINCE_SECS}s)`)
   if (!SEALED_LANES) {
     log('sealed lanes: DISABLED (SEALED_LANES=off) — DM + Concord channel routing OFF; running PUBLIC read lane only')
@@ -1094,6 +1284,13 @@ if (!process.env.WB_NO_BOOT) {
     if (PUB.staging && PUB.approvers.length && FORWARD_MODE === 'buzz') {
       log(`approval console: watching staging for commands from ${PUB.approvers.length} approver(s)`)
       pollCommands(); setInterval(pollCommands, 15000)
+    }
+    if (PUB.scanChannels.length && PUB.returnLane.length && BRIDGE_SK && FORWARD_MODE === 'buzz') {
+      log(`return-lane scan: ${PUB.scanChannels.length} channel(s) · ${PUB.returnLane.length} recipient(s) · signer gate ${PUB.scanAuthors.length} key(s)`)
+      // Silence-is-not-calm: a configured scan with an empty gate routes NOTHING, so say so loudly
+      // rather than let it look like "no mentions." Set scan_authors (or declare approvers/grantors).
+      if (!PUB.scanAuthors.length) err('WARN: scan_channels configured but scan_authors gate is EMPTY — default-closed, NO mentions will route until the crew roster is set.')
+      pollScanChannels(); setInterval(pollScanChannels, 15000)
     }
     })
   } else {
