@@ -48,7 +48,11 @@ A3 watermark resumes where local stopped, and A2's seen-set makes the overlap a 
 5. **(box, as root — independent)** Refresh the sealed tree to the current build:
    `sh deploy/deploy.sh sealed <admin>@<host>`. Confirm its `config.json` has **no**
    `public` block; its boot log must read `public read lane: inactive`.
-6. **Harden LAST:** apply `nft -f deploy/nave-fw.nft` and persist it, then **prove it loaded**
+6. **Prove the routing policy is complete:** `sudo deploy/verify-config.sh`. `config.json` is
+   gitignored, so a host rebuilt from the example comes up structurally valid and behaviourally
+   wrong — the bridge starts, reports healthy, and quietly routes nothing. Exit 3 means it could
+   not read the file, which is **not** an all-clear.
+7. **Harden LAST:** apply `nft -f deploy/nave-fw.nft` and persist it, then **prove it loaded**
    with `sudo deploy/verify-firewall.sh` (exit 0 = verified; **3 = inconclusive, not an
    all-clear**). Applying is not loading: the correct ruleset once sat on a box for a day
    without ever entering the kernel, while NTP egress was dropped and the clock silently
