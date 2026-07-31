@@ -5,10 +5,12 @@
 // event into that agent's Buzz inbox so the buzz-acp harness wakes the agent to
 // unwrap it with its own in-runtime key.
 //
-// NON-CUSTODIAL: this process holds NO agent nsec and NEVER unwraps. It routes on
-// the public outer `p` tag only, and needs only its own Buzz posting identity
-// (BUZZ_PRIVATE_KEY) to post into the inbox channels. Safe on a server that holds
-// no agent keys.
+// NON-CUSTODIAL: this process holds NO agent nsec and never unwraps mail CARRIED FOR OTHERS —
+// a DM between two members, a Concord plane wrap — those it routes on the public outer `p` tag
+// only. It DOES unwrap gift-wraps addressed to its OWN key (the relay lane, DESIGN_RELAY_INGRESS
+// §2): opening your own mail is not opening someone else's. It needs its own Buzz posting identity
+// (BUZZ_PRIVATE_KEY) to post into channels, plus its own Nostr key (BRIDGE key) to open relay-lane
+// requests sealed to it. Safe on a server that holds no OTHER party's keys.
 //
 // Promoted from the .scratch prototype (the outbox engineer, 2026-07-24) by the read-lane engineer:
 //   - config externalized to config.json (relays + recipients + inbox UUIDs)
@@ -51,6 +53,11 @@ const SEEN_CAP = Number(process.env.SEEN_CAP || 100000)
 // carries out to every matching recipient exactly once and never re-delivers across a restart.
 const RLSEEN_PATH = process.env.RLSEEN_PATH || resolve(ROOT, 'data', 'return-lane-seen.log')
 const RLSEEN_CAP = Number(process.env.RLSEEN_CAP || 100000)
+// Relay-lane dedup store (DESIGN_RELAY_INGRESS §6): wraps addressed to waggle's OWN key that it
+// unwraps and relays into a channel. Its own append-only capped file — checked BEFORE decryption
+// (replay protection; a fresh-wrap flood misses here by design, the decrypt budget bounds that).
+const RELAYSEEN_PATH = process.env.RELAYSEEN_PATH || resolve(ROOT, 'data', 'relay-lane-seen.log')
+const RELAYSEEN_CAP = Number(process.env.RELAYSEEN_CAP || 100000)
 const FORWARD_MODE = process.env.FORWARD_MODE || 'buzz'
 // SEALED_LANES=off runs the PUBLIC read lane ONLY — no DM lane, no Concord channel lane. Use this
 // on a SECOND instance (e.g. a local read-lane host) when another instance already owns the sealed
@@ -213,6 +220,17 @@ const PUB = cfg.public ? {
   // working-channel traffic must never reach handleCommand (a #connector post is not a console
   // command). A name or a UUID; unresolvable names are fatal in buzz mode.
   scanChannels: (cfg.public.scan_channels || []).map(v => String(v || '')).filter(Boolean),
+  // Relay lane (DESIGN_RELAY_INGRESS): channels an admitted agent may inject into by sealing a
+  // request to waggle's OWN key, instead of publishing a public kind:1 first. DEFAULT EMPTY, and
+  // NEVER implicitly inbox — an unlisted destination is dropped loudly. Resolved at boot like
+  // inbox/staging. Conveys no capability beyond the public lane EXCEPT destination selection, which
+  // is exactly what this allowlist gates (§3).
+  relayChannels: (cfg.public.relay_channels || []).map(v => String(v || '')).filter(Boolean),
+  // §7 flood mitigations. The decrypt budget is the ONE load-bearing one: unwrapping is decryption
+  // work on UNAUTHENTICATED input (the outer wrap is ephemeral-signed, so sender limiting is
+  // useless pre-decrypt). Per-minute global cap; exhaustion drops pre-decrypt and UNACKABLY.
+  relayDecryptBudget: Number(cfg.public.relay_decrypt_budget != null ? cfg.public.relay_decrypt_budget : 120),
+  relayMaxWrapBytes: Number(cfg.public.relay_max_wrap_bytes != null ? cfg.public.relay_max_wrap_bytes : 65536),
   // Signer gate on the scan carry-out — filled below, after approvers/grantors are known.
   scanAuthors: [],
   // Keys whose signed 440/441 events the bridge honors for admission. Defaults to the
@@ -257,7 +275,7 @@ if (PUB) {
 // as intent ("waggle-test") instead of hex. Unresolvable names are fatal in buzz mode.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 function resolveChannels(cb) {
-  const pending = PUB ? [PUB.inbox, PUB.staging, ...PUB.scanChannels].filter(v => v && !UUID_RE.test(v)) : []
+  const pending = PUB ? [PUB.inbox, PUB.staging, ...PUB.scanChannels, ...PUB.relayChannels].filter(v => v && !UUID_RE.test(v)) : []
   if (!pending.length) return cb()
   if (FORWARD_MODE !== 'buzz') { err(`WARN: channel name(s) ${pending.join(', ')} left unresolved in ${FORWARD_MODE} mode`); return cb() }
   execFile('buzz', ['channels', 'list'], (e, so) => {
@@ -278,6 +296,7 @@ function resolveChannels(cb) {
     PUB.inbox = one(PUB.inbox, 'inbox')
     PUB.staging = one(PUB.staging, 'staging_inbox')
     PUB.scanChannels = PUB.scanChannels.map((v, i) => one(v, `scan_channel[${i}]`))
+    PUB.relayChannels = PUB.relayChannels.map((v, i) => one(v, `relay_channel[${i}]`))
     cb()
   })
 }
@@ -306,6 +325,23 @@ function loadSeen() {
 function markSeen(id) {
   seen.add(id)
   try { appendFileSync(SEEN_PATH, id + '\n') } catch (e) { err(`dedup: append failed for ${id}: ${e.message}`) }
+}
+
+// Relay-lane dedup — same append-only, capped lifecycle as seen-ids, a SEPARATE file. Marked on any
+// DETERMINISTIC outcome (posted, a reject, or a decrypt/verify failure that will never become
+// valid) so a relay re-serving that wrap is cheap; NOT marked on a transient budget drop, which may
+// succeed on retry. A wrap id here is never mixed into `seen` — the two stores never collide.
+const relaySeen = new Set()
+function loadRelaySeen() {
+  if (!existsSync(RELAYSEEN_PATH)) { mkdirSync(dirname(RELAYSEEN_PATH), { recursive: true }); return }
+  const lines = readFileSync(RELAYSEEN_PATH, 'utf8').split('\n').filter(Boolean)
+  const kept = lines.slice(-RELAYSEEN_CAP)
+  for (const id of kept) relaySeen.add(id)
+  log(`relay-lane dedup: loaded ${relaySeen.size} seen wrap ids from ${RELAYSEEN_PATH}${lines.length > kept.length ? ` (pruned ${lines.length - kept.length})` : ''}`)
+}
+function markRelaySeen(id) {
+  relaySeen.add(id)
+  try { appendFileSync(RELAYSEEN_PATH, id + '\n') } catch (e) { err(`relay-lane dedup: append failed for ${id}: ${e.message}`) }
 }
 
 // A7 posted-map: append-only JSONL, same lifecycle as seen-ids. One {id, author, buzz,
@@ -524,6 +560,10 @@ function route(ev) {
   }
 
   const ps = (ev.tags || []).filter(t => t[0] === 'p').map(t => t[1])
+  // Relay lane (DESIGN_RELAY_INGRESS): a wrap p-tagged to waggle's OWN key is mail for us to open,
+  // not a lane we carry for an agent — handled before the forward path, since our key is not in
+  // TARGETS. Fully inert while relay_channels is empty (default-closed).
+  if (BRIDGE_PK && PUB && PUB.relayChannels && PUB.relayChannels.length && ps.includes(BRIDGE_PK)) return handleRelayIngress(ev)
   const hits = ps.filter(p => TARGETS.includes(p))
   if (!hits.length) return // not for us; do NOT record — keep the dedup store to real deliveries
   // Record dedup ONLY for a genuinely committed delivery: buzz mode into at least
@@ -563,6 +603,37 @@ function rateOk(ev, dest, nowMs) {
   if (perR.length >= PUB.replierPerMin) { err(`PUBLIC drop[rate]: replier cap ${PUB.replierPerMin}/min for ${ev.pubkey.slice(0, 12)}… — ${ev.id.slice(0, 12)}…`); return false }
   lane.push(nowMs); perCh.push(nowMs); rlChannel.set(dest, perCh); perR.push(nowMs); rlReplier.set(ev.pubkey, perR)
   return true
+}
+
+// Relay-lane rate caps (DESIGN_RELAY_INGRESS MUST-FIX 2). rateOk above keys the replier cap on
+// ev.pubkey; on a gift wrap that is the EPHEMERAL key, fresh per wrap, so per-sender limiting there
+// is a no-op. The relay lane re-keys on the AUTHENTICATED seal.pubkey and so is POST-DECRYPT only —
+// a flood is bounded before this by the decrypt budget, not here. Separate counter maps so neither
+// lane starves the other. Same PUB.* caps as the public lane (§3: reuse, no new cap).
+const relayRlLane = []
+const relayRlChannel = new Map()
+const relayRlSender = new Map()
+function relayRateOk(sender, dest, nowMs) {
+  const lane = slide(relayRlLane, nowMs, 3600_000)
+  if (lane.length >= PUB.lanePerHour) { err(`RELAY drop[rate]: lane cap ${PUB.lanePerHour}/h — ${sender.slice(0, 12)}…`); return false }
+  const perCh = slide(relayRlChannel.get(dest) || [], nowMs, 60_000)
+  if (perCh.length >= PUB.channelPerMin) { err(`RELAY drop[rate]: channel cap ${PUB.channelPerMin}/min for ${dest} — ${sender.slice(0, 12)}…`); return false }
+  const perS = slide(relayRlSender.get(sender) || [], nowMs, 60_000)
+  if (perS.length >= PUB.replierPerMin) { err(`RELAY drop[rate]: sender cap ${PUB.replierPerMin}/min for ${sender.slice(0, 12)}…`); return false }
+  lane.push(nowMs); perCh.push(nowMs); relayRlChannel.set(dest, perCh); perS.push(nowMs); relayRlSender.set(sender, perS)
+  return true
+}
+
+// §7 decrypt-budget window + the pre-decrypt drop counter. The counter is LOUD by design: it is the
+// number the #116 silence/accept-count alarm watches, so a flood spikes a monitored signal rather
+// than a dead integer. The wire INTO the alarm lands once #116/#121 is in main (that seam does not
+// exist here yet); the counter and its accessor exist now so the alarm can subscribe without a
+// second edit to this path. `notRelay` is deliberately EXCLUDED from the flood total below — a
+// well-formed DM to waggle that simply isn't a relay request is not an attack signal.
+const relayDecWin = []
+const relayDropCounts = { budget: 0, size: 0, decrypt: 0, verify: 0, mismatch: 0, notRelay: 0 }
+function relayDropTotalPreAuth() {
+  return relayDropCounts.budget + relayDropCounts.size + relayDropCounts.decrypt + relayDropCounts.verify + relayDropCounts.mismatch
 }
 
 // Friendly names: best-effort kind:0 lookup on the public relays, cached with a TTL. A
@@ -1035,6 +1106,111 @@ async function returnLaneSend(toHex, text, meta, publish = publishWrapToRelays) 
   } catch (e) { err(`return lane: seal/send failed: ${e.message}`); return 0 }
 }
 
+// --- relay lane: an admitted agent speaks without speaking publicly (DESIGN_RELAY_INGRESS) ------
+// A gift-wrap addressed to waggle's OWN key. waggle opens ITS OWN mail (not a lane it carries for
+// others), proves the sender off the SIGNED seal, checks the same grantSet the public lane does,
+// renders with the same renderReleased, and posts kind:9 as the roster member it already is — then
+// seals an ack back, because the sender is not a member and cannot cold-read-back (§5).
+function relayDrop(reason, id, deterministic = true) {
+  // Pre-auth drop: UNACKABLE by construction (no verified seal.pubkey), so counted, never echoed
+  // (no payload in the log — §7). A deterministic drop marks seen (a replay is then cheap); a
+  // transient budget drop does NOT, so a re-served wrap may still succeed within a later window.
+  if (relayDropCounts[reason] !== undefined) relayDropCounts[reason]++
+  err(`RELAY drop[${reason}]: wrap ${String(id).slice(0, 12)}… (pre-auth, unackable)`)
+  if (deterministic) markRelaySeen(id)
+}
+function relayReject(sender, id, reason, wantCh) {
+  // Post-auth reject: the sender IS proven, so the refusal is ACKED — a drop and a silence must not
+  // look the same (§5). Marked seen: the decision is deterministic for this wrap id.
+  err(`RELAY reject: ${reason} — sender ${sender.slice(0, 12)}… -> '${wantCh}' (wrap ${String(id).slice(0, 12)}…)`)
+  markRelaySeen(id)
+  returnLaneSend(sender, JSON.stringify({ ok: false, reason, channel: wantCh, ts: Math.floor(Date.now() / 1000) }), { lane: 'relay-ack' })
+}
+function resolveRelayDest(wantCh) {
+  // Allowlist check against the resolved relay_channels (UUIDs at boot). DEFAULT EMPTY → nothing
+  // passes. Accepts a UUID already in the set (a name would have been resolved to one at boot).
+  const w = String(wantCh || '').toLowerCase()
+  for (const c of (PUB.relayChannels || [])) if (String(c).toLowerCase() === w) return c
+  return null
+}
+async function postRelay(ev, sender, dest, wantCh, body) {
+  // Render identically to the public lane; a granted sender earns live @mentions (#118). Attribution
+  // is the sender's own name + npub — this identity said this, and waggle carried it (§4).
+  let name = null
+  if (!process.env.WB_STUB_SEND) { try { name = await fetchProfileName(sender) } catch { name = null } }
+  let npub = null
+  try { npub = nip19.npubEncode(sender) } catch { npub = null }
+  const npubShort = npub ? `${npub.slice(0, 10)}…${npub.slice(-5)}` : sender.slice(0, 12) + '…'
+  const content = renderReleased({ body, name, npubShort, liveRefs: true })
+  const nowSec = Math.floor(Date.now() / 1000)
+  const ackOk = (buzzId) => returnLaneSend(sender, JSON.stringify({ ok: true, channel: dest, buzz_event_id: buzzId || null, ts: nowSec }), { lane: 'relay-ack' })
+  if (FORWARD_MODE !== 'buzz') {
+    log(`RELAY[dryrun] -> ${dest}: from ${sender.slice(0, 12)}… (${Buffer.byteLength(body)}B) :: ${JSON.stringify(body.slice(0, 80))}`)
+    return
+  }
+  if (process.env.WB_STUB_SEND) {
+    const fakeId = ev.id.split('').reverse().join('')
+    markRelaySeen(ev.id) // commit-after-"send"
+    recordPosted({ id: ev.id, author: sender, buzz: fakeId, dest, q: false, ts: nowSec, agent: sender })
+    journalSend(fakeId, { kind: 9, dest, lane: 'relay' })
+    ackOk(fakeId)
+    log(`RELAY[stub] -> ${dest}: from ${sender.slice(0, 12)}…`)
+    return
+  }
+  execFile('buzz', ['messages', 'send', '--channel', dest, '--content', content], (e, so, se) => {
+    // A channel waggle is not a member of fails HERE with a distinct RELAY[buzz] ERR — it can never
+    // masquerade as a §7 drop, and it is NOT marked seen, so it retries rather than dropping.
+    if (e) { err(`RELAY[buzz] ERR -> ${dest}: ${se || e.message} — NOT marked seen, will retry`); return }
+    // commit-AFTER-send (#114 finding-3): mark the wrap carried only once the kind:9 posted, so a
+    // transient failure retries. Residual: a crash after this post but before the mark re-posts on
+    // restart — kind:9 has no idempotency key, so the dup-on-crash residual stands (§6).
+    const buzzId = parseBuzzEventId(so)
+    markRelaySeen(ev.id)
+    recordPosted({ id: ev.id, author: sender, buzz: buzzId, dest, q: false, ts: nowSec, agent: sender })
+    journalSend(buzzId, { kind: 9, dest, lane: 'relay' })
+    ackOk(buzzId)
+    log(`RELAY[buzz] ok -> ${dest}: from ${sender.slice(0, 12)}… (wrap ${ev.id.slice(0, 12)}…)`)
+  })
+}
+function handleRelayIngress(ev) {
+  if (!BRIDGE_SK || !PUB) return
+  const nowMs = Date.now()
+  if (relaySeen.has(ev.id)) return                                          // §6 dedup BEFORE decrypt
+  const wrapBytes = Buffer.byteLength(JSON.stringify(ev))
+  if (wrapBytes > PUB.relayMaxWrapBytes) return relayDrop('size', ev.id)     // §7 hard cap, cheap
+  slide(relayDecWin, nowMs, 60_000)
+  if (relayDecWin.length >= PUB.relayDecryptBudget) return relayDrop('budget', ev.id, false) // §7, transient
+  relayDecWin.push(nowMs)
+  // ---- expensive step: decryption of UNAUTHENTICATED input (the §7 DoS surface) ----
+  let seal
+  try { seal = JSON.parse(nip44.decrypt(ev.content, nip44.getConversationKey(BRIDGE_SK, ev.pubkey))) }
+  catch { return relayDrop('decrypt', ev.id) }
+  let ok = false
+  try { ok = verifyEvent(seal) } catch { ok = false }
+  if (!ok || seal.kind !== 13) return relayDrop('verify', ev.id)            // authorship proof (§2.4)
+  let rumor
+  try { rumor = JSON.parse(nip44.decrypt(seal.content, nip44.getConversationKey(BRIDGE_SK, seal.pubkey))) }
+  catch { return relayDrop('decrypt', ev.id) }
+  if (!rumor || String(rumor.pubkey) !== String(seal.pubkey)) return relayDrop('mismatch', ev.id) // bind unsigned rumor
+  // ---- the sender is now AUTHENTICATED: every drop below is ACKED ----
+  const sender = String(seal.pubkey).toLowerCase()
+  const relayTag = (rumor.tags || []).find(t => t[0] === 'relay' && t[1])
+  // Routing discriminator: kind:14 + a well-formed `relay` tag IS this lane. Its absence is not an
+  // error — it is a real DM to waggle, which has no handler here; leave it silent, do not ack it as
+  // a failed relay request, and do not count it as a flood signal.
+  if (rumor.kind !== 14 || !relayTag) { relayDropCounts.notRelay++; markRelaySeen(ev.id); return }
+  const wantCh = String(relayTag[1])
+  const dest = resolveRelayDest(wantCh)
+  if (!dest) return relayReject(sender, ev.id, 'channel not allowlisted', wantCh)
+  if (!grantSet.has(sender)) return relayReject(sender, ev.id, 'not admitted', wantCh)
+  const body = String(rumor.content || '')
+  const bytes = Buffer.byteLength(body)
+  if (!bytes) return relayReject(sender, ev.id, 'empty body', wantCh)
+  if (bytes > PUB.maxContentBytes) return relayReject(sender, ev.id, `over ${PUB.maxContentBytes}B cap`, wantCh)
+  if (!relayRateOk(sender, dest, nowMs)) return relayReject(sender, ev.id, 'rate cap', wantCh)
+  postRelay(ev, sender, dest, wantCh, body)
+}
+
 // Which return-lane recipient (delivery npub) a given bridge-posted Buzz event was authored FOR,
 // or null. This is the agent-authored registry read: reply-to-agent and echo-skip both key on it,
 // never on the shared bridge signing key. Empty until the registry is fed (a repost of the agent's
@@ -1238,6 +1414,11 @@ function connect(url) {
       if (PLANE_AUTHORS.length) {
         ws.send(JSON.stringify(['REQ', 'wc', { kinds: [1059], authors: PLANE_AUTHORS, since: CHANNEL_SINCE }]))
       }
+      // Relay lane: 1059 wraps p-tagged to waggle's OWN key — requests it opens itself. Separate REQ
+      // so a relay serving one filter still serves the others. Only when relay_channels is set.
+      if (BRIDGE_PK && PUB && PUB.relayChannels && PUB.relayChannels.length) {
+        ws.send(JSON.stringify(['REQ', 'wr', { kinds: [1059], '#p': [BRIDGE_PK], since: SINCE }]))
+      }
     })
     ws.on('message', d => {
       let m
@@ -1374,13 +1555,14 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels }
+export { returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
   loadSeen()
   loadPostedMap()
   loadRlSeen()
+  loadRelaySeen()
   log(`waggle — mode=${FORWARD_MODE}, ${TARGETS.length} recipients, ${RELAYS.length} relays, ${PLANE_AUTHORS.length} channel plane(s), dm-since=${SINCE} (${SINCE_SECS}s), chan-since=${CHANNEL_SINCE} (${CHANNEL_SINCE_SECS}s)`)
   if (!SEALED_LANES) {
     log('sealed lanes: DISABLED (SEALED_LANES=off) — DM + Concord channel routing OFF; running PUBLIC read lane only')
@@ -1398,6 +1580,8 @@ if (!process.env.WB_NO_BOOT) {
     log(`public read lane -> inbox ${PUB.inbox}: ${PUB.relays.length} relay(s), ${PUB.authors.length} watched author(s), ${PUB.events.length} watched note(s), pub-since=${PUB.since} (${PUB_SINCE_SECS}s), watermark=${pubWatermark || 'none'}`)
     log(`  gates: staging=${PUB.staging || 'HOLD (none)'} · backfill<=${PUB.backfillLimit} · maxContent=${PUB.maxContentBytes}B · rate ${PUB.replierPerMin}/replier/min ${PUB.channelPerMin}/chan/min ${PUB.lanePerHour}/lane/h · deletes ${PUB.deletesPerHour}/h (A7)`)
     if (PUB.grantors.length) log(`  admission: ${PUB.grantors.length} grantor key(s); NIP-DA kinds ${NIPDA.grant}/${NIPDA.revocation}/${NIPDA.index}`)
+    if (PUB.relayChannels.length && BRIDGE_SK) log(`  relay lane: ${PUB.relayChannels.length} allowlisted channel(s); decrypt budget ${PUB.relayDecryptBudget}/min, wrap cap ${PUB.relayMaxWrapBytes}B — a channel waggle has not joined fails as RELAY[buzz] ERR, never a silent §7 drop`)
+    else if (PUB.relayChannels.length && !BRIDGE_SK) err('WARN: relay_channels configured but no BRIDGE key to open sealed requests — relay lane INERT.')
     PUB.relays.forEach(connectPublic)
     if (PUB.staging && PUB.approvers.length && FORWARD_MODE === 'buzz') {
       log(`approval console: watching staging for commands from ${PUB.approvers.length} approver(s)`)
