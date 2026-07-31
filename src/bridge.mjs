@@ -1195,6 +1195,12 @@ function scanChannel(ch, fetchPage = scanFetchPage) {
         if (added > 0 && (msgs || []).length >= SCAN_PAGE_LIMIT && Number.isFinite(oldest) && oldest > floor) return page(oldest)
         try { await scanReturnLane(acc, { authors: PUB.scanAuthors }) }
         catch (er) { err(`scan: return-lane carry failed for ${String(ch).slice(0, 8)}…: ${er.message}`) }
+        // The cursor advances regardless of any 0/N carry above (a dropped rlSeen key re-carries only
+        // while it stays inside the overlap window, and each such attempt is itself a loud 0/N). So the
+        // return-lane guarantee is: NO SILENT LOSS — loud, bounded retries within the overlap window;
+        // a carry is lost only after an outage sustained long enough to age it past the window. That
+        // send-side no-miss (retry independent of the cursor) is the pending-set follow-up, #117 — NOT
+        // a cursor-hold, which would pin the lane on one dead recipient and stall it for everyone.
         bumpScanCursor(ch, acc.reduce((mx, x) => Math.max(mx, Number(x && x.created_at) || 0), 0))
         resolve()
       })
