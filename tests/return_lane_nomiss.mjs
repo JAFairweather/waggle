@@ -104,13 +104,13 @@ ok('the newest page does not even contain the buried mention (hazard reproduced)
 // --- ATOMIC DRAIN: a read that fails mid-walk carries nothing and never advances the cursor -------
 // Page 1 succeeds (3 msgs, none a mention), page 2 errors → acc is dropped, cursor untouched.
 let before = journal().length
-scanChannel('failchan', makeFetch(2))
+await scanChannel('failchan', makeFetch(2))
 ok('a mid-drain read failure carries NOTHING', journal().length === before)
 ok('a failed drain never advances the cursor (next poll re-reads)', loadScanCursors().failchan === undefined)
 
 // --- NO-MISS: a clean paginated drain carries the buried mention despite the page limit -----------
 before = journal().length
-scanChannel('scanchan', makeFetch())
+await scanChannel('scanchan', makeFetch())
 let carried = journal().slice(before)
 const toBuried = carried.filter(e => e.to === short(claude))
 ok('the buried mention is delivered (no-miss across the backlog)',
@@ -125,7 +125,7 @@ ok('the next poll now reads from cursor-minus-overlap, not the 48h floor',
 // --- OVERLAP is a no-op: the re-read re-scans an already-carried mention, rlSeen suppresses it -----
 // scanSince is now (now-1)-5 = now-6, so the re-read window includes the RECENT mention (now-2).
 before = journal().length
-scanChannel('scanchan', makeFetch())
+await scanChannel('scanchan', makeFetch())
 ok('the overlap re-read carries nothing new (durable rlSeen suppresses the re-send)',
   journal().length === before)
 ok('the recent mention was inside the overlap window (the re-read really did re-scan it)',

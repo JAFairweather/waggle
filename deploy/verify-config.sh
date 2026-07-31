@@ -62,6 +62,38 @@ if missing_keys:
     print("  note     keys in config.example.json but not live: %s" % ", ".join(sorted(missing_keys)))
     print("           (not necessarily wrong — but confirm each is deliberate)")
 
+# ── return lane (mentions out to admitted guests): scan_authors + return_lane[].authors ──
+# These are the same failure class as watch_authors, but they never fail this check: each has a
+# valid empty state — scan_authors absent FLOORS to approvers+grantors+trusted_repliers, and a
+# return_lane entry with no authors shares the bridge key and defers echo-skip to the per-event
+# registry. What the repo cannot hold is a box-side WIDENING: set an explicit scan_authors or bind
+# an agent's own key on the box, and a rebuild from the example drops it silently — the gate
+# narrows to the floor, or echo-skip regresses, with no error and nothing at runtime to notice.
+# The generic shape-diff above cannot see return_lane[].authors at all (it is nested). So surface
+# both here — counts, never values — so a human confirms the live gate is the one they intend.
+scan_channels = live.get("scan_channels") or []
+return_lane   = live.get("return_lane") or []
+if scan_channels or return_lane:
+    print()
+    print("return lane (out to admitted guests) — live policy the repo cannot hold:")
+
+    sa = live.get("scan_authors")
+    if isinstance(sa, list) and sa:
+        print("  ok       scan_authors   %d explicit signer(s) — box-side policy a rebuild would drop" % len(sa))
+    else:
+        low = lambda xs: {str(x).lower() for x in (xs or [])}
+        floor = low(live.get("approvers")) | low(live.get("grantors") or live.get("approvers")) | low(live.get("trusted_repliers"))
+        armed = " — scan is ARMED" if scan_channels else ""
+        print("  ok       scan_authors   absent%s; trigger gate FLOORS to approvers+grantors+trusted_repliers (%d)" % (armed, len(floor)))
+        print("           (an explicit box-side widening would be lost here silently; confirm the floor is the intent)")
+
+    if return_lane:
+        bound = sum(1 for r in return_lane if isinstance(r, dict) and r.get("authors"))
+        print("  ok       return_lane    %d delivery target(s), %d with a bound echo-skip author" % (len(return_lane), bound))
+        if bound:
+            print("           (%d author-binding(s) are live policy off-repo — a rebuild drops them and" % bound)
+            print("            echo-skip falls back to the per-event registry; confirm each is deliberate)")
+
 print()
 if fail:
     print("FAILED — the bridge will start and route less than you think.")

@@ -43,35 +43,35 @@ const journal = () => existsSync(process.env.SEND_JOURNAL_PATH)
 
 ok('config parsed one return-lane participant', PUB.returnLane.length === 1 && PUB.returnLane[0].mention === 'claude')
 
-scanReturnLane([{ id: 'm1', pubkey: stranger, content: 'nothing to do with anyone' }])
+await scanReturnLane([{ id: 'm1', pubkey: stranger, content: 'nothing to do with anyone' }])
 ok('a message mentioning nobody is not carried out', journal().length === 0)
 
-scanReturnLane([{ id: 'm2', pubkey: stranger, content: 'hey @claude can you look at this' }])
+await scanReturnLane([{ id: 'm2', pubkey: stranger, content: 'hey @claude can you look at this' }])
 const afterMention = journal()
 ok('a mention IS carried out', afterMention.length === 1)
 ok('it is journaled as the return lane', afterMention[0]?.lane === 'return')
 ok('it is addressed to the participant', afterMention[0]?.to === participant.slice(0, 12))
 ok('it is a gift-wrap', afterMention[0]?.kind === 1059)
 
-scanReturnLane([{ id: 'm2', pubkey: stranger, content: 'hey @claude can you look at this' }])
+await scanReturnLane([{ id: 'm2', pubkey: stranger, content: 'hey @claude can you look at this' }])
 ok('the same message is not carried twice', journal().length === 1)
 
-scanReturnLane([{ id: 'm3', pubkey: participant, content: 'this is @claude speaking' }])
+await scanReturnLane([{ id: 'm3', pubkey: participant, content: 'this is @claude speaking' }])
 ok("a participant's own words are not echoed back to them", journal().length === 1)
 
-scanReturnLane([{ id: 'm4', pubkey: stranger, content: 'ask @CLAUDE about it' }])
+await scanReturnLane([{ id: 'm4', pubkey: stranger, content: 'ask @CLAUDE about it' }])
 ok('the mention match is case-insensitive', journal().length === 2)
 
 // The hazard a substring match would create: a different person whose name merely starts with
 // this one. Carrying a private message to the wrong recipient is the worst thing this lane can
 // do, and it would do it silently.
-scanReturnLane([{ id: 'm5', pubkey: stranger, content: 'ask @claudex instead' }])
+await scanReturnLane([{ id: 'm5', pubkey: stranger, content: 'ask @claudex instead' }])
 ok('a longer name starting with the mention does NOT match', journal().length === 2)
 
-scanReturnLane([{ id: 'm6', pubkey: stranger, content: 'thanks @claude!' }])
+await scanReturnLane([{ id: 'm6', pubkey: stranger, content: 'thanks @claude!' }])
 ok('a mention followed by punctuation still matches', journal().length === 3)
 
-scanReturnLane([{ id: 'm7', pubkey: stranger, content: '@claude' }])
+await scanReturnLane([{ id: 'm7', pubkey: stranger, content: '@claude' }])
 ok('a mention alone on the line matches', journal().length === 4)
 
 console.log(fails ? `\nRETURN LANE FAIL — ${fails}` : '\nRETURN LANE PASS — carries mentions out, and nothing else')

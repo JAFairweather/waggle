@@ -1021,6 +1021,14 @@ function loadRlSeen() {
   for (const k of kept) rlSeen.add(k)
   log(`return lane: loaded ${rlSeen.size} carried (source×recipient) keys from ${RLSEEN_PATH}${lines.length > kept.length ? ` (pruned ${lines.length - kept.length})` : ''}`)
 }
+// Persist-on-landed split (finding #2). addRlSeen suppresses a double-carry WITHIN a scan/overlap
+// immediately, in memory; the DURABLE append happens only once the seal actually reached a relay —
+// markRlSeen, called on ≥1 accept. A silent 0/N is rolled back with dropRlSeen so #5's overlap
+// re-read re-carries it, and — because it never reached disk — a restart (loadRlSeen) re-carries it
+// too. The earlier commit-before-send would instead durably suppress a mention that was never
+// delivered: #1's own durability then made the loss permanent and invisible.
+function addRlSeen(key) { rlSeen.add(key) }
+function dropRlSeen(key) { rlSeen.delete(key) }
 function markRlSeen(key) {
   rlSeen.add(key)
   try { mkdirSync(dirname(RLSEEN_PATH), { recursive: true }); appendFileSync(RLSEEN_PATH, key + '\n') }
@@ -1042,15 +1050,35 @@ function rlDropOnce(id) {
   return true
 }
 
-// Returns true iff the seal was built, journaled and dispatched without throwing — the caller
-// commits dedup only then (finding #3). A false return (no key, or a seal/journal throw) leaves
-// the message un-marked so the next poll retries it, rather than committing rlSeen and losing the
-// mention forever. Relay-level delivery confirmation (a wrap dispatched to only dead sockets still
-// returns true) is deliberately out of scope here — that is the send-side no-miss follow-up (#117:
-// bounded retry queue, capped attempts/TTL, give-up alarm). This fix closes the swallowed-throw
-// path; #117 closes the dead-relay path. At-least-once on a notification lane beats at-most-once.
-function returnLaneSend(toHex, text, meta) {
-  if (!BRIDGE_SK) { err('return lane: no bridge key to seal with — skipping'); return false }
+// Publish a wrap to the public relays, resolving to the count that returned OK-true. Per-relay OK is
+// the ONLY landing signal: a relay 503s or drops silently, and an explicit ["OK", id, false]
+// rejection used to read byte-identical to an accept (the loop counted any inbound frame). Finding
+// #2. Injectable (the `publish` seam on returnLaneSend) so the send-failure control can drive a
+// chosen accept-count with no socket — the same shape #5's scanChannel(fetchPage) uses. WB_STUB_SEND
+// keeps the socket-free tests honest: it means "assume it landed on every configured relay", so the
+// crypto still runs but the count is positive, never a spurious 0/N.
+function publishWrapToRelays(wrap) {
+  return new Promise((resolve) => {
+    if (process.env.WB_STUB_SEND) return resolve(PUB.relays.length || 1)
+    const relays = PUB.relays || []
+    if (!relays.length) return resolve(0)
+    let settled = 0, accepted = 0, done = false
+    const finish = () => { if (!done) { done = true; resolve(accepted) } }
+    const t = setTimeout(finish, 10000)                    // a relay that opens but never OKs is bounded here
+    const tally = () => { if (++settled >= relays.length) { clearTimeout(t); finish() } }
+    for (const url of relays) {
+      let w, counted = false
+      const one = (ok) => { if (counted) return; counted = true; if (ok) accepted++; try { w && w.close() } catch { /* */ } tally() }
+      try { w = new WebSocket(url) } catch { tally(); continue }
+      w.on('open', () => w.send(JSON.stringify(['EVENT', wrap])))
+      w.on('message', d => { try { const m = JSON.parse(d.toString()); if (m[0] === 'OK' && m[1] === wrap.id) one(!!m[2]) } catch { /* non-OK frame */ } })
+      w.on('error', () => one(false))
+    }
+  })
+}
+
+async function returnLaneSend(toHex, text, meta, publish = publishWrapToRelays) {
+  if (!BRIDGE_SK) { err('return lane: no bridge key to seal with — skipping'); return 0 }
   const now = Math.floor(Date.now() / 1000)
   // NIP-59 backdating: randomise wrap and seal timestamps into the past so an observer cannot
   // correlate a channel message with a delivery by timing alone.
@@ -1063,25 +1091,19 @@ function returnLaneSend(toHex, text, meta) {
     const wsk = generateSecretKey()
     const wrap = finalizeEvent({ kind: 1059, created_at: fuzzed(), tags: [['p', toHex]],
       content: nip44.encrypt(JSON.stringify(seal), nip44.getConversationKey(wsk, toHex)) }, wsk)
-    // Test seam: exercise sealing and journaling without opening a socket, the same shape the
-    // public lane uses. The crypto still runs — a stub that skipped it would prove nothing.
-    if (!process.env.WB_STUB_SEND) {
-      for (const url of PUB.relays) {
-        try {
-          const w = new WebSocket(url)
-          const t = setTimeout(() => { try { w.close() } catch { /* */ } }, 10000)
-          w.on('open', () => w.send(JSON.stringify(['EVENT', wrap])))
-          w.on('message', () => { clearTimeout(t); try { w.close() } catch { /* */ } })
-          w.on('error', () => clearTimeout(t))
-        } catch { /* dead relay */ }
-      }
-    }
-    // Journaled even though the wrap's author is ephemeral and so can never trip the tripwire:
-    // "it happens not to alarm" is a weaker property than "it is written down".
-    journalSend(wrap.id, { kind: 1059, lane: 'return', to: toHex.slice(0, 12), ...meta })
-    log(`RETURN -> ${toHex.slice(0, 12)}…: sealed ${String(text).length}B (wrap ${wrap.id.slice(0, 12)}…)`)
-    return true
-  } catch (e) { err(`return lane: seal/send failed: ${e.message}`); return false }
+    const relays = (PUB.relays || []).length
+    const accepted = await publish(wrap)
+    // Journal stamped with the accept-count so the durable record is landed-reality, not intent: a
+    // 0/N carry is written accepted:0, never a false "sent". The wrap's author is ephemeral and can
+    // never trip the tripwire, so this record is a written-down intent — worth making a truthful one;
+    // a landed carry (accepted ≥ 1) IS on a relay and so must be journaled for the tripwire.
+    journalSend(wrap.id, { kind: 1059, lane: 'return', to: toHex.slice(0, 12), accepted, relays, ...meta })
+    if (accepted < 1)
+      err(`RETURN 0/${relays} -> ${toHex.slice(0, 12)}…: seal reached NO relay — NOT marked sent, will re-carry (wrap ${wrap.id.slice(0, 12)}…)`)
+    else
+      log(`RETURN ${accepted}/${relays} -> ${toHex.slice(0, 12)}…: sealed ${String(text).length}B (wrap ${wrap.id.slice(0, 12)}…)`)
+    return accepted
+  } catch (e) { err(`return lane: seal/send failed: ${e.message}`); return 0 }
 }
 
 // --- relay lane: an admitted agent speaks without speaking publicly (DESIGN_RELAY_INGRESS) ------
@@ -1223,7 +1245,7 @@ function agentAuthoredBy(buzzId) {
 // recipient's own key. Nothing here starts a session, evaluates, or acts on the body — this lane
 // only ever moves bytes to an address. The one place a body could reach a prompt is the action
 // layer, where the wake is content-free and the body is read-plane data (design §5).
-function scanReturnLane(msgs, opts = {}) {
+async function scanReturnLane(msgs, opts = {}) {
   if (!PUB.returnLane.length || !BRIDGE_SK) return
   const gateActive = opts.authors !== undefined            // an explicit (even empty) gate is default-closed
   const gate = gateActive ? new Set(opts.authors || []) : null
@@ -1255,17 +1277,17 @@ function scanReturnLane(msgs, opts = {}) {
         new RegExp('@' + r.mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])', 'i').test(body)
       const repliedTo = parents.some(pid => agentAuthoredBy(pid) === r.npub_hex)
       if (!mentioned && !repliedTo) continue
-      // Commit-AFTER-send (finding #3): mark seen only once the seal succeeded. A seal/journal
-      // throw leaves the key un-marked so the next poll retries, instead of committing dedup and
-      // dropping the mention forever. A crash between send and mark re-delivers (at-least-once) —
-      // the correct failure for a notification lane whose design says silence must not look calm.
-      const sent = returnLaneSend(r.npub_hex,
+      addRlSeen(key)                                       // in-memory now: no double-carry within this scan/overlap
+      const accepted = await returnLaneSend(r.npub_hex,
         `📥 **${r.mention}** — you were ${repliedTo && !mentioned ? 'replied to' : 'mentioned'} in the community.\n\n> ` +
         body.replace(/\r/g, '').split('\n').join('\n> ') +
         `\n\n_carried out by waggle's return lane. Replying to this message reaches nobody; ` +
         `post from your own key and the bridge brings it back in._`,
-        { src: m.id, why: repliedTo && !mentioned ? 'reply' : 'mention' })
-      if (sent) markRlSeen(key)
+        { src: m.id, why: repliedTo && !mentioned ? 'reply' : 'mention' }, opts.publish)
+      // Persist-on-landed: durable dedup only once the seal reached a relay. A silent 0/N is rolled
+      // back so the overlap re-read (and a restart) re-carry it — a rare re-carry beats a lost mention.
+      if (accepted >= 1) markRlSeen(key)
+      else dropRlSeen(key)
     }
   }
 }
@@ -1277,7 +1299,7 @@ function pollCommands() {
     let msgs
     try { msgs = JSON.parse(String(so).slice(String(so).indexOf('['))) } catch { return err('commands: unparseable staging read') }
     for (const m of msgs) { if ((m.created_at || 0) >= cmdCursor - 300) handleCommand(m).catch(er => err(`commands: ${er.message}`)) }
-    scanReturnLane(msgs)
+    scanReturnLane(msgs).catch(er => err(`return lane: staging carry failed: ${er.message}`))
     cmdCursor = Math.floor(Date.now() / 1000)
   })
 }
@@ -1334,20 +1356,33 @@ function scanChannel(ch, fetchPage = scanFetchPage) {
   const floor = scanSince(ch)
   const acc = []
   const seenIds = new Set()
-  const page = (before) => {
-    fetchPage(ch, floor, before, (e, msgs) => {
-      if (e) return err(`scan: read failed for ${String(ch).slice(0, 8)}…: ${e.message}`) // no cursor advance — next poll retries
-      let added = 0
-      for (const m of (msgs || [])) { if (m && m.id && !seenIds.has(m.id)) { seenIds.add(m.id); acc.push(m); added++ } }
-      const oldest = (msgs || []).reduce((mn, x) => Math.min(mn, Number(x && x.created_at) || Infinity), Infinity)
-      // A full page still above the floor may be truncating the backlog — walk back. Stop once a
-      // page yields nothing new, so a same-timestamp cluster can never spin forever.
-      if (added > 0 && (msgs || []).length >= SCAN_PAGE_LIMIT && Number.isFinite(oldest) && oldest > floor) return page(oldest)
-      scanReturnLane(acc, { authors: PUB.scanAuthors })
-      bumpScanCursor(ch, acc.reduce((mx, x) => Math.max(mx, Number(x && x.created_at) || 0), 0))
-    })
-  }
-  page(null)
+  // Returns a Promise that settles once the whole drain — including the async carry-out — completes,
+  // so a caller (and a test) can await the sends actually landing. Resolves (never rejects) on a read
+  // failure too, leaving the cursor unmoved.
+  return new Promise((resolve) => {
+    const page = (before) => {
+      fetchPage(ch, floor, before, async (e, msgs) => {
+        if (e) { err(`scan: read failed for ${String(ch).slice(0, 8)}…: ${e.message}`); return resolve() } // no cursor advance — next poll retries
+        let added = 0
+        for (const m of (msgs || [])) { if (m && m.id && !seenIds.has(m.id)) { seenIds.add(m.id); acc.push(m); added++ } }
+        const oldest = (msgs || []).reduce((mn, x) => Math.min(mn, Number(x && x.created_at) || Infinity), Infinity)
+        // A full page still above the floor may be truncating the backlog — walk back. Stop once a
+        // page yields nothing new, so a same-timestamp cluster can never spin forever.
+        if (added > 0 && (msgs || []).length >= SCAN_PAGE_LIMIT && Number.isFinite(oldest) && oldest > floor) return page(oldest)
+        try { await scanReturnLane(acc, { authors: PUB.scanAuthors }) }
+        catch (er) { err(`scan: return-lane carry failed for ${String(ch).slice(0, 8)}…: ${er.message}`) }
+        // The cursor advances regardless of any 0/N carry above (a dropped rlSeen key re-carries only
+        // while it stays inside the overlap window, and each such attempt is itself a loud 0/N). So the
+        // return-lane guarantee is: NO SILENT LOSS — loud, bounded retries within the overlap window;
+        // a carry is lost only after an outage sustained long enough to age it past the window. That
+        // send-side no-miss (retry independent of the cursor) is the pending-set follow-up, #117 — NOT
+        // a cursor-hold, which would pin the lane on one dead recipient and stall it for everyone.
+        bumpScanCursor(ch, acc.reduce((mx, x) => Math.max(mx, Number(x && x.created_at) || 0), 0))
+        resolve()
+      })
+    }
+    page(null)
+  })
 }
 
 // The WORKING-channel scan, deliberately separate from pollCommands. It carries out return-lane
@@ -1357,9 +1392,11 @@ function scanChannel(ch, fetchPage = scanFetchPage) {
 // being interpreted as approval verbs. Dedup is rlSeen (shared with the staging path), keyed per
 // (source × recipient), so a message carried to a recipient once is never carried to them again —
 // regardless of which poll saw it first, and durable across a restart.
-function pollScanChannels() {
+async function pollScanChannels() {
   if (!PUB.scanChannels.length) return
-  for (const ch of PUB.scanChannels) scanChannel(ch)
+  for (const ch of PUB.scanChannels) {
+    try { await scanChannel(ch) } catch (e) { err(`scan: poll failed for ${String(ch).slice(0, 8)}…: ${e.message}`) }
+  }
 }
 
 // --- relay connections ------------------------------------------------------
@@ -1518,7 +1555,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { returnLaneSend, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
+export { returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
@@ -1555,7 +1592,8 @@ if (!process.env.WB_NO_BOOT) {
       // Silence-is-not-calm: a configured scan with an empty gate routes NOTHING, so say so loudly
       // rather than let it look like "no mentions." Set scan_authors (or declare approvers/grantors).
       if (!PUB.scanAuthors.length) err('WARN: scan_channels configured but scan_authors gate is EMPTY — default-closed, NO mentions will route until the crew roster is set.')
-      pollScanChannels(); setInterval(pollScanChannels, 15000)
+      pollScanChannels().catch(e => err(`scan: initial poll failed: ${e.message}`))
+      setInterval(() => pollScanChannels().catch(e => err(`scan: poll failed: ${e.message}`)), 15000)
     }
     })
   } else {
