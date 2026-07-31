@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>waggle console — who is admitted, and by whose signature</title>
+<title>waggle — who has access</title>
 <meta name="description" content="Read-only view of a waggle bridge's live admissions. Reads signed grants off the relays and verifies them in the page. No server, no keys, no privileged access.">
 <script type="importmap">
 { "imports": {
@@ -94,6 +94,8 @@
   .note{border:1px dashed var(--line-strong);border-radius:var(--r-md);padding:14px 16px;
     color:var(--dim);font-size:13.5px;margin-top:20px}
   .note b{color:var(--text)}
+  /* Secondary guidance inside a label: present, never competing with it. */
+  .hint{color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0;font-size:12px}
 
   /* waggle is a lowercase wordmark. The shared bar uppercases app names by default and paints
      them in --accent, which on this dark ground reads as a dim brown — legible enough for a
@@ -109,12 +111,13 @@
 <div id="titlebar" style="max-width:1000px;margin:0 auto;padding:0 20px"></div>
 
 <main>
-  <p class="sub" style="margin-top:26px">This page reads the signed grants off the public relays and <b>verifies every signature here, in
-  your browser</b>. It needs no access to your bridge host and no key of any kind — an admission is
-  a public signed event, so seeing the truth of it requires no privilege.</p>
+  <p class="sub" style="margin-top:26px">This page shows everyone who has been given access to your community, and who approved them.
+  <b>It checks every approval here, in your browser</b> — nothing is taken on trust from a server.
+  It needs no connection to your bridge and no password: an approval is a public, signed record, so
+  reading it requires no special access. <b>Sign in only when you want to give or remove access.</b></p>
 
   <div class="panel" id="auth" style="display:none">
-    <h2>Choose a signer</h2>
+    <h2>Sign in</h2>
     <p style="margin:0 0 12px;color:var(--dim);font-size:13.5px;max-width:74ch">
       Reading needs no key at all — leave this alone and use the lookup below. Sign in only to
       <b>act</b>: issue a grant, or revoke one. Your key never enters this page; it stays in your
@@ -145,14 +148,14 @@
   </div>
 
   <div class="panel" id="issue-panel" style="display:none">
-    <h2>Issue a grant</h2>
+    <h2>Give someone access</h2>
     <div class="row">
       <div>
-        <label for="g-to">Grantee — who is being admitted or authorised</label>
-        <input id="g-to" placeholder="npub1… or 64-hex" spellcheck="false">
+        <label for="g-to">Who are you giving access to?</label>
+        <input id="g-to" placeholder="their key (npub1…)" spellcheck="false">
       </div>
       <div>
-        <label for="g-subject">Subject — a channel UUID (admit) or an agent npub (task)</label>
+        <label for="g-subject">What are they getting access to? <span class="hint">a channel, or an agent you want to give tasks to</span></label>
         <input id="g-subject" placeholder="channel UUID, or agent npub" spellcheck="false">
       </div>
     </div>
@@ -170,37 +173,36 @@
   </div>
 
   <div class="panel">
-    <h2>Look up</h2>
+    <h2>Who has access</h2>
     <div class="row">
       <div>
-        <label for="grantor">Grantor — whose signature is the policy</label>
-        <input id="grantor" placeholder="npub1… or 64-hex" spellcheck="false">
+        <label for="grantor">Whose approvals do you want to see? <span class="hint">yours, once you sign in</span></label>
+        <input id="grantor" placeholder="paste a key (npub1…) — or just sign in" spellcheck="false">
       </div>
       <div>
-        <label for="subject">Subject — the channel id or agent npub a grant binds to (optional)</label>
-        <input id="subject" placeholder="channel UUID, or an agent npub" spellcheck="false">
+        <label for="subject">Narrow to one channel or agent <span class="hint">optional</span></label>
+        <input id="subject" placeholder="a channel id, or an agent's key" spellcheck="false">
       </div>
     </div>
-    <button class="btn" id="go">Read the grants</button>
+    <button class="btn" id="go">Show the access list</button>
     <div class="status" id="st"></div>
     <div class="rel" id="relays"></div>
   </div>
 
   <div class="panel">
-    <h2>Admissions</h2>
+    <h2>Access list</h2>
     <div class="tablewrap"><table id="tbl">
-      <thead><tr><th>Grantee</th><th>State</th><th>Capability</th><th>Scope</th><th>Issued</th><th>Grant</th><th></th></tr></thead>
-      <tbody id="rows"><tr><td colspan="7" class="empty">Nothing read yet.</td></tr></tbody>
+      <thead><tr><th>Who</th><th>Status</th><th>What they can do</th><th>Where</th><th>Given</th><th>Record</th><th></th></tr></thead>
+      <tbody id="rows"><tr><td colspan="7" class="empty">Sign in — or paste a key above — to see who has access.</td></tr></tbody>
     </table></div>
   </div>
 
   <div class="note">
-    <b>Why the scope column may say “opaque.”</b> A grant binds to its subject as a <i>salted hash</i>,
-    so a passer-by cannot tell which channel — or which agent — a grant is for, and two grants into
-    the same place cannot be linked. The salt rides publicly in the tag, so anyone who already knows
-    the subject can recompute the hash and confirm the match. Enter the subject above and matching
-    grants resolve; leave it blank and they stay opaque, which is the privacy property working
-    rather than a failure to load.
+    <b>Why “Where” often says Hidden.</b> Each approval records the channel it is for as a
+    scrambled fingerprint rather than a name. Anyone can see that you approved someone; nobody can
+    see <i>into what</i> — and two approvals into the same channel cannot be matched up by an
+    onlooker. If you already know the channel, type it in the box above and the matching rows fill
+    in. <b>Hidden is the privacy working, not something failing to load.</b>
   </div>
   <div class="note">
     <b>Read-only, and deliberately.</b> Issuing or revoking is a signing act and belongs where the
@@ -242,7 +244,7 @@ const toHex = (v) => {
   const s = String(v || '').trim()
   if (s.startsWith('npub1')) return decode(s).data
   if (/^[0-9a-f]{64}$/i.test(s)) return s.toLowerCase()
-  throw new Error(`not an npub or 64-hex key: ${s || '(empty)'}`)
+  throw new Error(`That does not look like a key. Paste an npub (starts with npub1…), or a 64-character hex key. Got: ${s || '(nothing)'}`)
 }
 const short = (h) => h ? `${h.slice(0, 8)}…${h.slice(-4)}` : '?'
 
@@ -269,20 +271,31 @@ function query(url, filter, ms = 9000) {
 
 // Rendering is separate from reading so signing in can re-draw the same data with actions
 // attached, without re-querying the relays.
+// Protocol vocabulary -> what the person actually gets. `admit` and `task` are meaningful
+// inside NIP-DA and meaningless to an administrator deciding whether to click Remove.
+const CAP_LABEL = {
+  'admit': 'Post into the channel',
+  'task': 'Take tasks from you',
+  'task+act': 'Take tasks, and act on them',
+}
+const capLabel = (c) => CAP_LABEL[c] || c
+
 let lastGrants = null, lastSubjectNote = '', lastGrantor = null
 function renderRows() {
   const rows = $('rows')
-  if (lastGrants === null) return              // never read yet — leave "Nothing read yet."
+  if (lastGrants === null) return              // never read yet — leave the "sign in to see" prompt
   if (!lastGrants.length) {
-    rows.innerHTML = `<tr><td colspan="7" class="empty">No grants from this key${lastSubjectNote}.</td></tr>`
+    rows.innerHTML = `<tr><td colspan="7" class="empty">Nobody has been given access by this key${lastSubjectNote}.</td></tr>`
     return
   }
   rows.innerHTML = lastGrants.map(g => `
       <tr>
         <td class="who">${short(g.grantee)}</td>
-        <td><span class="pill ${g.live ? 'live' : 'revoked'}">${g.live ? 'live' : 'revoked'}</span></td>
-        <td>${g.cap}</td>
-        <td>${g.scopeLabel}</td>
+        <td><span class="pill ${g.live ? 'live' : 'revoked'}">${g.live ? 'Active' : 'Removed'}</span></td>
+        <td>${capLabel(g.cap)}</td>
+        <td>${g.scopeLabel === 'opaque'
+              ? `<span title="This approval names its channel as a salted hash, so a passer-by cannot tell which one it is. Enter the channel above and it will resolve.">Hidden</span>`
+              : g.scopeLabel}</td>
         <td>${new Date(g.at * 1000).toISOString().slice(0, 16).replace('T', ' ')}</td>
         <td class="who">${short(g.id)}</td>
         <td>${g.live && signer && signerPk === lastGrantor
@@ -308,7 +321,7 @@ const WAGGLE_SEAL = `<svg viewBox="0 0 100 100" fill="none" aria-hidden="true">
 function drawTitlebar(npub, kind) {
   renderTitlebar(TB, {
     appName: 'waggle console',
-    tagline: 'who is admitted, and by whose signature',
+    tagline: 'who has access to your community',
     sealSvg: WAGGLE_SEAL,
     npub: npub || null,
     kind: kind || null,
