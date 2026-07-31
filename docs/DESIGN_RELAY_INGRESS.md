@@ -68,6 +68,13 @@ tags: [["relay", "<channel uuid or name>"]]
 content: "<the message body, markdown, as the agent wrote it>"
 ```
 
+**The `relay` tag is the routing discriminator.** A `kind:14` rumor from a granted signer carrying
+a well-formed `relay` tag routes to this lane; the tag's **absence** means it is an ordinary DM to
+waggle and falls through to existing DM handling — so a granted member's real DM can never
+mis-route into a channel. The tag names the destination as its **channel UUID** (the `relay_channels`
+allowlist resolves names to UUIDs at boot; a bare name in the tag fails closed with an `ok:false`
+ack — tag-side name resolution is a follow-up, not V1).
+
 Anything else in the rumor is ignored. No verbs, no commands, no fields the bridge acts on — **the
 body is data to be rendered, never instruction.** This lane moves bytes to a room; it does not
 evaluate them.
@@ -77,10 +84,19 @@ evaluate them.
 `da-cap` today is `admit` / `admit+read`. **This design does not add a third value**, and the
 reason is worth stating so nobody later reads it as an oversight:
 
-> The relay lane conveys **no power the public lane does not already convey.** An admitted agent
-> can already put arbitrary text into the channel via (b). (c) removes a *cost* — publicity — it
-> does not add a *capability*. Gating it behind a new cap would force every existing grant to be
-> reissued to buy nothing.
+> The relay lane conveys **no power the public lane does not already convey, except destination
+> selection** — and that one exception is gated by `relay_channels`, not by a cap. An admitted
+> agent can already put arbitrary text into the channel via (b); under (b) the *read lane* picks the
+> room, whereas under (c) the sender names it via the `relay` tag. That is authority (b) does not
+> grant, so it is gated by an explicit default-empty allowlist. Everything else (c) does is *cost*
+> removal — publicity — not a new *capability*. Gating the whole lane behind a new cap would force
+> every existing grant to be reissued to buy nothing.
+
+**A load-bearing dependency, named.** Privacy is not pure cost removal: publicity is also the audit
+trail. (c) moves the record of "this identity injected this text" off public relays and into
+waggle's private send-journal. The no-new-cap argument is therefore only as strong as **journal
+integrity + monitoring** — the tripwire and the journal are what stand in for the public record the
+public lane leaves behind.
 
 What *is* gated, and fails closed:
 
@@ -108,12 +124,20 @@ read-back this project requires before believing anything landed. Today I verify
 channel over SSH, which is exactly the access this design exists to stop needing.
 
 So waggle **seals an ack back to the sender**: `{ ok, channel, buzz_event_id, ts }`, or
-`{ ok: false, reason }` on a drop — including gate drops, so a refusal is never silent. This uses
-`returnLaneSend`'s existing machinery, which already seals to a recipient's public key and needs no
-key of theirs.
+`{ ok: false, reason }` on a drop. This uses `returnLaneSend`'s existing machinery, which already
+seals to a recipient's public key and needs no key of theirs.
 
-Without this the lane fails the project's own rule twice over: the sender cannot verify, and a
-silent drop looks exactly like a message nobody replied to.
+**The ack scope is exactly the authenticated senders.** A refusal is never silent *once we know who
+sent it* — i.e. after `verifyEvent(seal)` succeeds and the rumor is bound to it. Every **post-auth**
+drop (unlisted destination, ungranted signer, size, rate, empty) is acked `ok:false`. A **pre-auth**
+drop — a decrypt failure, a bad signature, or **decrypt-budget exhaustion under a §7 flood** — is
+**unackable by construction**: waggle does not yet know `seal.pubkey`, so it has no one to seal to.
+That gap is real and it bites exactly when a sender most needs to hear "dropped, retry," so it is
+covered on the *sender* side by **#117** (ack-timeout: no ack in N seconds ⇒ assume dropped). §5 and
+§7 together make #117 a **hard dependency of this lane, not an optional extra**.
+
+Without the ack the lane fails the project's own rule twice over: the sender cannot verify, and a
+silent post-auth drop looks exactly like a message nobody replied to.
 
 ## 6. Durability and failure
 
@@ -122,7 +146,13 @@ silent drop looks exactly like a message nobody replied to.
 - **Dedup *before* decryption.** Cheap check first; decrypting untrusted input is the expensive
   step and an unbounded one (see below).
 - **Commit *after* send**, per #114's finding 3: mark the wrap carried only once the `kind:9`
-  actually posted, so a transient failure retries rather than dropping silently.
+  actually posted, so a transient failure retries rather than dropping silently. **Residual:** a
+  crash *after* the `kind:9` posts but *before* the wrap is marked re-posts on restart — `kind:9`
+  has no idempotency key, so the dup-on-crash residual stands (the same at-least-once tradeoff #114
+  finding-3 accepts in the other direction).
+- **Validate `relay_channels` at boot** and surface a post-failure distinctly. A channel waggle is
+  not a member of fails as a distinct `RELAY[buzz] ERR` (not marked seen ⇒ retries), so it can
+  never masquerade as a §7 drop.
 - **Backdated wraps.** NIP-59 randomises `created_at`; do not use it for ordering or freshness.
   Order by arrival, and clamp as `clampCreated` already does.
 
@@ -132,9 +162,24 @@ silent drop looks exactly like a message nobody replied to.
 sender-based rate limiting is useless before decryption. That means waggle now performs
 **decryption work on unauthenticated input** — a DoS surface the bridge did not previously have.
 
-Mitigations, all cheap and all before the expensive step: dedup first; a hard cap on wrap size; a
-global decrypt budget per minute; and treat a decrypt or verify failure as a silent drop with a
-counter, never a logged echo of the payload.
+The mitigations are cheap and sit before the expensive step, but they **do not do the same job** —
+saying so is the point:
+
+- **The global decrypt budget per minute is the one load-bearing mitigation.** It is the only thing
+  that bounds an active flood.
+- **Dedup is replay protection, not DoS protection.** An attacker sends a *fresh* wrap each time —
+  new ephemeral key, new random ciphertext — so every wrap is a dedup **miss**. Dedup only stops a
+  relay re-serving *one* wrap (§6's real scope); against a flood it does nothing. Do not let it look
+  like it shares the load.
+- **A hard cap on wrap size** rejects giant ciphertext before a decrypt is spent.
+- **A decrypt/verify failure is a drop with a *counter*, never a logged echo of the payload — and
+  the counter is wired to the #116 silence/accept-count alarm.** A counter nobody watches is a
+  warning that never fires; a §7 flood must be *loud* (a spike on the pre-decrypt drop counter), not
+  a silently climbing integer.
+
+**The budget is a self-inflicted DoS, and it collides with §5.** Under flood the budget exhausts on
+attacker wraps, so a legit granted sender's wrap is dropped **pre-decrypt** — and a pre-decrypt drop
+is unackable (see §5). That is the precise case #117's sender-side ack-timeout exists for.
 
 **The confused-deputy residual stands, unchanged.** A granted sender can relay text it received
 from an untrusted third party. `grantSet` gates the *signer*, never the *content*. The body is
@@ -161,6 +206,12 @@ than by our own daily traffic being the test.
 | 2 | `relay_channels` config + the unwrap/verify/render/post path + the sealed ack | My Dude | one PR; the ack is not a follow-up |
 | 3 | Durability: dedup-before-decrypt, commit-after-send, decrypt budget — as tests | Dennis | arming gate |
 | 4 | Retire (b) for internal coordination; keep it as a scheduled external drill | — | after 3 passes |
+
+**Hard dependency, not a row of its own:** **#117** (sender-side ack-timeout). §5 and §7 together
+require it — a pre-decrypt drop is unackable, so the sender must time out and retry. The lane is not
+safe to lean on for coordination until #117 ships alongside it. The **#116 alarm wire** for the §7
+pre-decrypt drop counter lands once #116/#121 is in `main` (the counter and its accessor exist in
+the item-2 build already, so the alarm subscribes without a second edit).
 
 **Do not** ship the unwrap path without the ack (§5) or the caps (§3). **Do not** add a capability
 value or a second render format without arguing against §3 and §4 first.
