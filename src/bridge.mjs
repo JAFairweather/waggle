@@ -603,38 +603,54 @@ function clampCreated(ts, nowSec) {
 // A6: sliding-window rate limiters (public lane only). Every drop is LOGGED with a reason —
 // nothing is ever silently discarded. In-memory by design: a restart resets the windows, which
 // is safe because durable id-dedup (A2) still prevents re-delivery of any already-forwarded id.
-const rlReplier = new Map() // pubkey -> [tsMs...]
-const rlChannel = new Map() // inbox  -> [tsMs...]
-const rlLane = []           // [tsMs...] across the whole lane (hourly)
 const slide = (arr, nowMs, win) => { while (arr.length && arr[0] <= nowMs - win) arr.shift(); return arr }
-function rateOk(ev, dest, nowMs) {
-  const lane = slide(rlLane, nowMs, 3600_000)
-  if (lane.length >= PUB.lanePerHour) { err(`PUBLIC drop[rate]: lane cap ${PUB.lanePerHour}/h — ${ev.id.slice(0, 12)}…`); return false }
-  const perCh = slide(rlChannel.get(dest) || [], nowMs, 60_000)
-  if (perCh.length >= PUB.channelPerMin) { err(`PUBLIC drop[rate]: channel cap ${PUB.channelPerMin}/min for ${dest} — ${ev.id.slice(0, 12)}…`); return false }
-  const perR = slide(rlReplier.get(ev.pubkey) || [], nowMs, 60_000)
-  if (perR.length >= PUB.replierPerMin) { err(`PUBLIC drop[rate]: replier cap ${PUB.replierPerMin}/min for ${ev.pubkey.slice(0, 12)}… — ${ev.id.slice(0, 12)}…`); return false }
-  lane.push(nowMs); perCh.push(nowMs); rlChannel.set(dest, perCh); perR.push(nowMs); rlReplier.set(ev.pubkey, perR)
-  return true
+
+// One limiter, built twice. The public and relay lanes ran structurally identical checks — the
+// same three windows, the same `slide`, the same PUB.* caps, the same commit-on-pass ordering —
+// differing only in which counter maps they touched and how the drop line reads. That is an
+// argument for separate STATE, which the lanes genuinely need so neither can starve the other. It
+// was never an argument for separate LOGIC: a cap changed in one copy and not the other yields two
+// different policies with nothing to notice it, because each lane's suite exercises only its own.
+//
+// Every call to laneLimiter builds its OWN three counters, so the lanes stay exactly as independent
+// as they were. What they can no longer do is drift apart on policy.
+//
+// The drop lines are preserved byte-for-byte — operators grep these. `ref` is the trailing
+// identifier: the event id on the public lane, where the subject is the note's AUTHOR and the id
+// adds information; nothing on the relay lane, where the subject IS the sender and repeating it
+// would be noise, so the tail falls back to the subject itself exactly as before.
+function laneLimiter({ tag, subjectNoun }) {
+  const lane = [], byChannel = new Map(), bySubject = new Map()
+  return function ok(subject, dest, nowMs, ref = null) {
+    const who = String(subject).slice(0, 12)
+    const tail = ref ? ` — ${ref}` : ` — ${who}…`
+    const subjTail = ref ? ` — ${ref}` : ''   // its own line already names the subject
+    const l = slide(lane, nowMs, 3600_000)
+    if (l.length >= PUB.lanePerHour) { err(`${tag} drop[rate]: lane cap ${PUB.lanePerHour}/h${tail}`); return false }
+    const perCh = slide(byChannel.get(dest) || [], nowMs, 60_000)
+    if (perCh.length >= PUB.channelPerMin) { err(`${tag} drop[rate]: channel cap ${PUB.channelPerMin}/min for ${dest}${tail}`); return false }
+    const perS = slide(bySubject.get(subject) || [], nowMs, 60_000)
+    if (perS.length >= PUB.replierPerMin) { err(`${tag} drop[rate]: ${subjectNoun} cap ${PUB.replierPerMin}/min for ${who}…${subjTail}`); return false }
+    l.push(nowMs); perCh.push(nowMs); byChannel.set(dest, perCh); perS.push(nowMs); bySubject.set(subject, perS)
+    return true
+  }
 }
 
-// Relay-lane rate caps (DESIGN_RELAY_INGRESS MUST-FIX 2). rateOk above keys the replier cap on
-// ev.pubkey; on a gift wrap that is the EPHEMERAL key, fresh per wrap, so per-sender limiting there
-// is a no-op. The relay lane re-keys on the AUTHENTICATED seal.pubkey and so is POST-DECRYPT only —
-// a flood is bounded before this by the decrypt budget, not here. Separate counter maps so neither
-// lane starves the other. Same PUB.* caps as the public lane (§3: reuse, no new cap).
-const relayRlLane = []
-const relayRlChannel = new Map()
-const relayRlSender = new Map()
+const publicLimiter = laneLimiter({ tag: 'PUBLIC', subjectNoun: 'replier' })
+// Public lane. Signature unchanged: it passes the whole event because its drop line names the note
+// as well as the author.
+function rateOk(ev, dest, nowMs) {
+  return publicLimiter(ev.pubkey, dest, nowMs, `${ev.id.slice(0, 12)}…`)
+}
+
+// Relay lane (DESIGN_RELAY_INGRESS MUST-FIX 2). The public lane keys its subject cap on ev.pubkey;
+// on a gift wrap that is the EPHEMERAL key, fresh per wrap, so per-sender limiting there is a
+// no-op. This lane re-keys on the AUTHENTICATED seal.pubkey and so is POST-DECRYPT only — a flood
+// is bounded before it by the decrypt budget, not here. Same PUB.* caps (§3: reuse, no new cap),
+// its own counters.
+const relayLimiter = laneLimiter({ tag: 'RELAY', subjectNoun: 'sender' })
 function relayRateOk(sender, dest, nowMs) {
-  const lane = slide(relayRlLane, nowMs, 3600_000)
-  if (lane.length >= PUB.lanePerHour) { err(`RELAY drop[rate]: lane cap ${PUB.lanePerHour}/h — ${sender.slice(0, 12)}…`); return false }
-  const perCh = slide(relayRlChannel.get(dest) || [], nowMs, 60_000)
-  if (perCh.length >= PUB.channelPerMin) { err(`RELAY drop[rate]: channel cap ${PUB.channelPerMin}/min for ${dest} — ${sender.slice(0, 12)}…`); return false }
-  const perS = slide(relayRlSender.get(sender) || [], nowMs, 60_000)
-  if (perS.length >= PUB.replierPerMin) { err(`RELAY drop[rate]: sender cap ${PUB.replierPerMin}/min for ${sender.slice(0, 12)}…`); return false }
-  lane.push(nowMs); perCh.push(nowMs); relayRlChannel.set(dest, perCh); perS.push(nowMs); relayRlSender.set(sender, perS)
-  return true
+  return relayLimiter(sender, dest, nowMs)
 }
 
 // §7 decrypt-budget window + the pre-decrypt drop counter. The counter is LOUD by design: it is the

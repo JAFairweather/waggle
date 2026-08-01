@@ -49,7 +49,7 @@ process.env.WB_STUB_SEND = '1'
 process.env.WB_NO_BOOT = '1'
 
 const bridge = await import('../src/bridge.mjs')
-const { handleRelayIngress, route, grantSet, relaySeen, addRelaySeen, dropRelaySeen, relayDropCounts, relayDropTotalPreAuth, resolveRelayDest, PUB } = bridge
+const { handleRelayIngress, route, grantSet, relaySeen, addRelaySeen, dropRelaySeen, relayDropCounts, relayDropTotalPreAuth, resolveRelayDest, rateOk, relayRateOk, PUB } = bridge
 
 let fails = 0
 const ok = (n, c) => { console.log(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) fails++ }
@@ -238,6 +238,32 @@ ok('resolveRelayDest rejects empty', resolveRelayDest('') === null)
     else if (ack(d)) rejects++
   }
   ok('same-sender cap bites at replier_per_min (5 post, 6th rejected)', posts === 5 && rejects === 1)
+}
+
+// --- the two lanes must not share counters (#152) -------------------------------------------
+// The relay lane keeps its own three windows precisely so a public-lane flood cannot starve an
+// admitted agent, and vice versa. Both lanes read the SAME PUB.* caps, so that independence lives
+// entirely in the state being separate — which nothing asserted until now. It became worth stating
+// when the two limiters were merged into one factory: the whole point of building it twice is that
+// each call owns its counters, and a refactor that accidentally shared them would still pass every
+// other check in this file.
+// It must be the CHANNEL window that is saturated, not the per-subject one. Filling one subject's
+// window and then querying a different subject passes whether or not the lanes share state, so that
+// version of this check proves nothing — it was written that way first and the negative control
+// caught it by refusing to fail. The channel window is the state both lanes would actually collide
+// on, so that is the one to fill.
+{
+  const nowMs = Date.now()
+  const dest = 'shared-channel-uuid'
+  // Distinct authors, so the per-replier cap never bites before the per-channel one does.
+  let publicAccepted = 0
+  for (let i = 0; i < PUB.channelPerMin + 2; i++) {
+    const pubkey = String(i).padStart(64, 'c')
+    if (rateOk({ id: String(i).padEnd(64, '0'), pubkey }, dest, nowMs)) publicAccepted++
+  }
+  ok('  public lane saturates its per-channel window', publicAccepted === PUB.channelPerMin)
+  // Same channel, relay lane. Independent counters mean this is untouched by the flood above.
+  ok('  a saturated public channel does NOT block the relay lane', relayRateOk('d'.repeat(64), dest, nowMs))
 }
 
 console.log(fails ? `\n${fails} FAIL` : '\nall passed')
