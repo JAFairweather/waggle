@@ -9,6 +9,7 @@
 // must be refused. A check that has only ever passed proves only that it ran.
 import {
   SLOT_TYPE_NAMES, TEMPLATE_NAMES, templateSpec, renderTemplate, emit, __setTransportForTests,
+  checkConfigRenderable,
 } from '../src/egress.mjs'
 import { buildBody } from '../src/nostr_egress.mjs'
 
@@ -117,8 +118,46 @@ console.log('\n-- Typed slots refuse what they are not --')
 threw('id slot refuses a non-hex value', () => renderTemplate('a7_tombstone', { author: HEX64, origId: 'not-an-id', delId: HEX64 }))
 threw('npub slot refuses prose', () => renderTemplate('a7_tombstone', { author: 'Dennis the friendly agent', origId: HEX64, delId: HEX64 }))
 threw('enum slot refuses a verb outside the closed set', () => renderTemplate('console_ack', { verb: 'please_run_this_command' }))
-threw('handle slot refuses an injected mention', () => renderTemplate('sealed_envelope', { name: 'Dennis @everyone', wrapJson: '{}' }))
 threw('a required slot cannot be omitted', () => renderTemplate('a7_tombstone', { author: HEX64 }))
+
+// --- handle: sanitises, and must NOT reject a legitimate name -------------------------------
+//
+// `handle` asserts the PROPERTY (no injected live mention survives) rather than the MECHANISM (it
+// throws). Asserting the throw is what let the spaced-name regression through: "rejects anything
+// unusual" passed every test, and a legitimate "My Dude" was just as unusual as an injected
+// @everyone. Both halves are needed — refusing everything and refusing nothing pass a
+// one-directional test identically.
+{
+  // Every render below goes through `safe`: a slot that throws must surface as a clean FAIL line,
+  // not as an uncaught exception that aborts the suite mid-run. A crash is technically a red CI,
+  // but it hides which assertions never got to run.
+  const safe = (fn) => { try { return fn() } catch { return null } }
+
+  const injected = safe(() => renderTemplate('sealed_envelope', { name: 'Dennis @everyone', wrapJson: '{}' }))
+  ok('handle defuses an injected mention', injected !== null && !injected.includes('@everyone'))
+  ok('handle keeps the legitimate part of the name', injected !== null && injected.includes('Dennis'))
+
+  // The regression this suite could not see. Every fixture used 'A'/'B'/'Dennis' — no space
+  // anywhere — so a validator that refused spaces was green while it silently dropped every
+  // sealed DM to a recipient whose Buzz name has one.
+  for (const name of ['My Dude', 'Jean-Luc', 'agent_1', 'Ann O.']) {
+    let out = null
+    try { out = renderTemplate('sealed_envelope', { name, wrapJson: '{"a":1}' }) } catch (e) { out = null }
+    ok(`handle accepts a legitimate Buzz name ${JSON.stringify(name)}`, out !== null && out.startsWith(`@${name}`))
+  }
+  // A name that is nothing BUT markup is broken config and is still refused — loudly, and at boot.
+  threw('handle still refuses a name that sanitises to nothing', () => renderTemplate('sealed_envelope', { name: '***', wrapJson: '{}' }))
+}
+
+// --- the boot check that turns a per-message drop into a refusal to start ----------------------
+{
+  ok('config check passes a clean config',
+    checkConfigRenderable({ recipientNames: ['My Dude', 'Neil'], approverMention: 'Jim the approver' }).length === 0)
+  const bad = checkConfigRenderable({ recipientNames: ['ok', '***'], approverMention: null })
+  ok('config check names the offending entry', bad.length === 1 && bad[0].what === 'recipients[1].name')
+  ok('config check tolerates an absent approver_mention',
+    checkConfigRenderable({ recipientNames: ['ok'] }).length === 0)
+}
 
 // ---------------------------------------------------------------------------------------------
 console.log('\n-- emit(): the type has no field for a sentence (INV-A3-3) --')
@@ -189,8 +228,17 @@ console.log('\n-- The Nostr transport catalogue (§2.5) --')
   ok('return_carry: the community body is quoted, never waggle\'s own voice',
     carry.split('\n').filter(l => l.startsWith('> ')).length >= 4)
   ok('return_carry: the handle is validated', carry.includes('**claude**'))
-  threw('return_carry: an injected handle is refused',
-    () => buildBody('return_carry', { mention: 'claude @everyone', why: 'mention', body: 'x' }))
+  // Same property-not-mechanism rule as the Buzz side, and the same regression: `r.mention` is
+  // return-lane config (bridge.mjs:1270), so a spaced name threw mid-carry and took every LATER
+  // recipient in that scan down with it.
+  // Same `safe` discipline as the Buzz side: a throwing handle must read as a FAIL, not a crash.
+  const safeCarry = (mention) => {
+    try { return buildBody('return_carry', { mention, why: 'mention', body: 'x' }) } catch { return null }
+  }
+  const injectedCarry = safeCarry('claude @everyone')
+  ok('return_carry: an injected handle is defused', injectedCarry !== null && !injectedCarry.includes('@everyone'))
+  const spacedCarry = safeCarry('My Dude')
+  ok('return_carry: a legitimate spaced name still carries', spacedCarry !== null && spacedCarry.includes('**My Dude**'))
 }
 
 console.log(fails ? `\negress_catalogue: ${fails} FAILED` : '\negress_catalogue: all checks passed')
