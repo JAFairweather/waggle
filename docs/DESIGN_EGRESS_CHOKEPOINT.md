@@ -1,6 +1,7 @@
 # Design: the egress chokepoint — waggle carries, it never authors
 
-**Status:** proposed · **Tracks:** #134 A3, the structural half of the sev-1 · **Review:** @Dennis (adversarial), then build
+**Status:** proposed · **Tracks:** #134 A3, the structural half of the sev-1
+**Review:** adversarial review by Dennis returned on #140 — **verdict: sound, build it**, with five must-fixes; **this revision folds all five in**, plus his second-transport finding (§1.0). Re-review of the folded text is welcome but not gating.
 **Verified against:** `src/bridge.mjs` @ `bc5914e`, read line by line for every egress site, 2026-07-31.
 `origin/main` has since moved to `1a19c25`, which touches `CLAUDE.md` only — `src/bridge.mjs` is byte-identical, so every line citation below still resolves.
 
@@ -17,12 +18,39 @@ today held by *convention* — by every author so far having chosen to write a t
 convention is exactly what failed on 2026-07-31.
 
 The gap is not that a bad path exists. It is that **the good paths and a bad path are the same
-call.** Seven write sites each reach `execFile('buzz', …)` directly, and the CLI signs whatever
-string it is handed. There is no seam at which "is waggle allowed to say this?" could even be asked.
+call.** On the **Buzz egress**, seven write sites each reach `execFile('buzz', …)` directly and the
+CLI signs whatever string it is handed; on the **Nostr egress**, `BRIDGE_SK` signs in-process
+(§1.0). Neither has a seam at which "is waggle allowed to say this?" could even be asked.
 
-### 1.1 The seven egress sites, as they stand
+### 1.0 There are **two** egress transports, not one
 
-Read off `main` at `bc5914e`. This is the surface any fix has to cover — not a sample.
+The first draft enumerated the Buzz-CLI surface and treated the Nostr path as a footnote. That was
+the draft's real gap, and it is corrected here before anything else, because it changes what a ban
+test can even see.
+
+| transport | how bytes leave | signs with | covered by a `buzz`-grep? |
+|---|---|---|---|
+| **Buzz egress** | `execFile('buzz', …)` → the CLI signs a `kind:9` | `BUZZ_PRIVATE_KEY` (via the CLI) | yes |
+| **Nostr egress** | `finalizeEvent` → `publishWrapToRelays`, straight to relays | **`BRIDGE_SK`, in-process** | **no — structurally invisible to it** |
+
+The Nostr path is real and live: seal + wrap at `bridge.mjs:1098–1101`, relay-lane acks at
+`1136` / `1155`, sealed return-lane rumors at `1291`, all through `returnLaneSend()` (`1089`) and
+`publishWrapToRelays()` (`1069`). It never touches the CLI.
+
+It is **prose-free by shape, not by structure** — its bodies are JSON acks and envelopes today,
+with nothing preventing a future caller from putting a sentence in one.
+
+**Consequence for every claim in this doc:** the seven-site enumeration is complete **on the Buzz
+egress**, and that qualifier is load-bearing. "waggle cannot author" without naming the transport is
+the same overclaim as dropping "in-process" (§3). The `BRIDGE_SK` chokepoint is a **named sibling**
+— §2.5 — not a footnote.
+
+### 1.1 The seven Buzz-egress sites, as they stand
+
+Read off `main` at `bc5914e`. Complete on this transport, not a sample: `bridge.mjs` imports **only
+`execFile`** from `child_process` (line 39 — no `spawn`, no `exec`, no `execSync`, no shell), and
+there are exactly **10** `execFile('buzz', …)` call sites — the 7 writes below plus 3 reads. There
+is no 8th Buzz site, and no runtime-assembled argv that could hide one.
 
 | # | site | function | what composes the bytes | free-text reachable? |
 |---|---|---|---|---|
@@ -37,11 +65,19 @@ Read off `main` at `bc5914e`. This is the surface any fix has to cover — not a
 Read sites (`channels list` @281, `messages get` @1307, `scanFetchPage` @1352) author nothing and
 are out of scope.
 
-**Site 6 is the shape of the hole.** `replyInStaging` takes a `text: string`. Today all seven
-callers (`bridge.mjs:963, 974, 979, 987, 990, 991, 1000`) pass fixed literals with interpolated
-data, so it is *currently* benign — but its signature
-is an open invitation, and the next feature that wants to "just say something in the thread" will
-take it. **That is the impersonation vector, still open, as a function parameter.**
+**Site 6 is the shape of the hole.** `replyInStaging` takes a `text: string`. Its seven callers are
+`bridge.mjs:963, 974, 979, 987, 990, 991, 1000` — and the first draft called them all "fixed
+literals," which was wrong:
+
+```js
+// bridge.mjs:963 — the operator's own input, echoed back in waggle's voice
+replyInStaging(m.id, `unrecognized command \`${raw}\` — try **approve** …`)
+```
+
+`raw` is **runtime-variable text from an approver's channel message**. It is bounded (an approver is
+already trusted, and it lands inside backticks) — but it is the free-text path *already in use*, not
+a hypothetical one. **The hole is not merely a signature waiting to be abused; it has a live
+caller.** That is the strongest single argument for A3, and the draft undersold it.
 
 Sites 1, 3 and 5 are benign-but-hand-rolled: correct today, with nothing preventing the next edit
 from concatenating a caller's string into them.
@@ -79,14 +115,19 @@ The load-bearing choice: **`descriptor` is a tagged union, not a string.**
 ```
 { template: 'quarantine_header', dest, parentId?, slots: { … } }
 { template: 'released_post',     dest, slots: { body, name, npubShort, liveRefs } }
-{ template: 'console_ack',       dest, parentId, slots: { verb, author?, detail? } }
+{ template: 'console_ack',       dest, parentId, slots: { verb, author?, echo? } }
 { template: 'a7_tombstone',      dest, slots: { author, origId, delId } }
-{ template: 'sealed_envelope',   dest, slots: { name, label, wrapJson } }
+{ template: 'sealed_envelope',   dest, slots: { name, channel?, wrapJson } }
 ```
 
 `emit` resolves `template` against a **closed catalogue** compiled into the binary, renders the
 slots through per-slot typed escapers, and only then calls the signer. There is exactly one
 `execFile('buzz', …)` write in the tree, inside `emit`.
+
+**Two slot names changed from the first draft, both on review:**
+
+- `console_ack.detail?` → **`echo?`, typed `inline_token`** (§2.2), never a free string. `detail?` was the §1.1 hole re-entering through the catalogue's own front door — the one slot that would have had to carry `raw` from `bridge.mjs:963`. Naming it `echo` and typing it says what it is: a bounded echo of operator input, not a place to put a sentence.
+- `sealed_envelope.label` → **`channel?`, typed `channel`**. `label` was prose baked into the descriptor; the only variable in it is the channel name (`**${src.channel}**` at `bridge.mjs:530`). The surrounding words belong in the template, where they cannot be reached.
 
 A caller **cannot express** "send this sentence." The type has no field for it. That is the whole
 design: not a check that can be skipped, but a vocabulary with no word for the forbidden thing.
@@ -95,38 +136,90 @@ design: not a check that can be skipped, but a vocabulary with no word for the f
 
 A template language with a `{message}` slot is the original hole with extra steps. So:
 
+**The slot-type set is CLOSED.** These eight are the whole vocabulary:
+
 | slot type | admits | escaper |
 |---|---|---|
 | `id` / `npub` / `hex` | `^[0-9a-f]{n}$` | reject on mismatch |
 | `channel` | resolved channel handle or UUID | reject on mismatch |
 | `count` / `ts` | number | format only |
 | `enum` | one of a literal set (`approve`\|`follow`\|`mute`\|`reject`\|…) | reject on mismatch |
+| `inline_token` | short operator-supplied text, rendered **inside backticks** | strip backticks, newlines, `@`, and `*`/`_`; hard length cap; never leaves the code span |
 | `carried_body` | **untrusted** external content | `renderReleased` / `renderQuarantined` neutralization, unchanged |
 
-**`carried_body` is the only slot that accepts arbitrary bytes, and it is the only slot that runs
-the hostile-content renderer.** At most one per template. A template carrying two would be a way to
-smuggle prose past the renderer by splitting it.
+**Closing the *type* set is what makes this structural rather than conventional.** The first draft
+said "no template may have a prose slot" and left it to reviewers to notice one. Instead, the
+catalogue test asserts **every slot of every template declares one of the eight types above** — so a
+future `detail: string` fails by construction, as an *unknown slot type*, with no reviewer required.
+Adding a ninth type is then a deliberate spec change, which is exactly the friction wanted.
 
-**The rule that keeps this honest over time:** *no new slot type may accept unconstrained text
-without invoking a neutralizing renderer.* That is the invariant to write into `CLAUDE.md`, because
-it is the one a future contributor will be tempted to bend.
+`inline_token` exists **only** because `bridge.mjs:963` already echoes operator input and deleting
+that affordance would change behaviour. It is the narrowest thing that preserves it.
+
+**`carried_body` is the only slot that accepts arbitrary bytes**, and it runs the hostile-content
+renderer. The first draft capped it at one per template to stop prose being smuggled in by
+splitting. **On review, that cap is not the real guard and should not be leaned on:** the guard is
+the renderer plus external-author attribution. N carried bodies render as N *quoted-from-someone-
+else* blocks — never as waggle's own words. What A3 blocks is **authorship reconstruction**, and
+attribution blocks it at any N. Keep the cap as belt-and-braces; do not cite it as the reason.
 
 ### 2.3 Enforcement, so the catalogue cannot be routed around
 
-A chokepoint nobody is forced to use is a style guide. Two mechanical gates:
+A chokepoint nobody is forced to use is a style guide.
 
-1. **A ban test.** A suite greps the tree for `execFile('buzz'` / `spawn*` with a `messages send|edit|delete` argv outside `egress.mjs`, and fails on any hit. Bans the reintroduction, not just the instance.
-2. **A catalogue test.** Every template is rendered with hostile slot values; assert no slot escapes its frame, and assert no template exposes an unconstrained text slot.
+**Ban the capability, not the spelling.** The first draft proposed grepping for `execFile('buzz'`.
+That is the wrong axis and was rejected on review: it is evaded by aliasing the function, by a
+variable verb, by `spawn('sh', ['-c', …])` — and it is **structurally blind to the Nostr transport**
+(§1.0), which never spells `buzz` at all. Ban the *imports and signer symbols* instead:
+
+1. **An import/symbol ban test.** Only `egress.mjs` may import `child_process`; only the Nostr chokepoint (§2.5) may call `finalizeEvent` or reference `BRIDGE_SK`. Any other module touching those fails the suite. No argv reshaping evades this, and it covers **both** transports rather than one.
+2. **A catalogue test.** Every template rendered with hostile slot values: assert no slot escapes its frame, and assert **every slot declares one of the eight closed types** (§2.2).
+
+**Honest residual, stated rather than papered over:** `require('child_' + 'process')` still slips a
+static check, and a determined author with commit access can always route around a lint rule. An
+import ban raises the cost and reliably stops the **accident** — the next contributor who reaches
+for the convenient thing — which is the actual threat model. **It is not airtight, and no claim
+here should say it is.**
 
 **Both need a negative control before they count.** Per `CLAUDE.md`: *an alarm that always fires and
 one that never fires fail identically.* Land each gate with a commit that deliberately violates it,
 watch it go red, then revert. A ban test that has only ever passed proves only that it ran.
 
-### 2.4 Invariants
+### 2.4 The `wrapJson` single-line invariant
+
+Site 1 (`bridge.mjs:542`) embeds `JSON.stringify(ev)` inside a fenced code block. **Its safety is
+load-bearing on that JSON being single-line:** a ` ``` ` planted in an event field cannot reach the
+start of a line, so it cannot close the fence and escape into prose.
+
+That is currently true **by accident of formatting, not by rule.** A future
+`JSON.stringify(ev, null, 2)` — an entirely reasonable-looking readability change — silently reopens
+a fence-break. So:
+
+> **INV-A3-4 — the `wrapJson` slot is single-line by contract.** Never pretty-printed. The escaper
+> asserts the rendered value contains no newline and rejects it if it does, so the invariant is
+> enforced at render time rather than trusted to whoever edits the call site next.
+
+A catalogue test case plants a fence-and-newline payload in an event field and asserts the fence
+holds.
+
+### 2.5 The sibling: a Nostr-egress chokepoint
+
+Same shape, second transport (§1.0). All `BRIDGE_SK` signing moves behind one module exposing a
+single verb over a **closed set of envelope kinds** (`kind:13` seal, `kind:1059` wrap) and typed
+JSON ack bodies. No caller may hand it a free string either.
+
+Its bodies are machine JSON today, so this is **lower urgency than the Buzz chokepoint but not
+optional** — INV-A3-2 is false while a second signer path exists. §2.3's import ban covers both from
+day one, which is what stops the Nostr path drifting toward prose while the Buzz path is being
+fixed.
+
+### 2.6 Invariants
 
 - **INV-A3-1** — Every byte waggle emits is a source-literal template, a typed slot value, or a `carried_body` that went through a neutralizing renderer.
-- **INV-A3-2** — Exactly one function in the tree invokes the Buzz signer.
-- **INV-A3-3** — No caller can reach that function with a caller-composed string. Enforced by type shape, not by review.
+- **INV-A3-2** — Exactly one function per transport invokes a signer: one for Buzz, one for Nostr. No third.
+- **INV-A3-3** — No caller can reach either with a caller-composed string. Enforced by type shape, not by review.
+- **INV-A3-4** — `wrapJson` is single-line by contract (§2.4).
+- **INV-A3-5** — Every slot of every template declares one of the eight closed types (§2.2). A ninth requires a spec change.
 
 ---
 
@@ -138,7 +231,20 @@ and that claim is only worth something if its edges are honest.
 - **A4 — host-root.** An operator with root can invoke the `buzz` CLI directly under waggle's `EnvironmentFile` and sign anything. The chokepoint is *in-process*; it governs waggle's own code, not the host. The OS-level narrowing landed 2026-07-31; the structural answer is **#54** — the signer becomes a policy point that refuses to sign anything that is not a verified envelope or a catalogue template. **A3 without A4 means an in-process guarantee with an out-of-process bypass** — worth having, not sufficient alone.
 - **A6 — the key is not a persona.** Below, §4. A3 stops waggle *composing* prose; it does not stop the key being *read* as a colleague.
 - **A8 — native foreign-signed rendering.** Buzz still shows the bridge as author of a carried post (#55). Untouched, and unchanged by this.
-- **The out-of-process signer for Nostr.** `BRIDGE_SK` seals the return lane and relay acks (`bridge.mjs:1098–1102`). Those are already fixed-shape (`kind:13`/`1059` envelopes, JSON ack bodies) with no prose path, so they are **in scope for INV-A3-2's spirit but not urgent** — a second chokepoint for the Nostr signer is the natural follow-on. Flagging rather than folding in: bundling it would make one reviewable change into two.
+- **The Nostr transport** — no longer deferred. The first draft called it "in scope for INV-A3-2's spirit but not urgent"; review corrected that to a **named sibling chokepoint** (§1.0, §2.5), because a ban test scoped to the Buzz surface cannot see it at all.
+
+### 3.1 The wording rule: "closed **in-process**", never bare "closed"
+
+The qualifier is not throat-clearing — it is the difference between a true claim and a false one,
+and it must appear **at every site that restates the claim**: `README`, `SPEC_EXTERNAL`, #134's
+closing comment, and any release note. A half-qualified claim is worse than an unqualified one,
+because three clean copies of "waggle structurally cannot author" read as *corroboration* — the
+repo's own `CLAUDE.md` warns that these claims have each been wrong in a shipped artifact at least
+once, and this is exactly how that happens.
+
+**A3 earns: "waggle structurally cannot author free text *in-process*, on both egress transports."**
+**A4 (#54) earns the unqualified sentence.** Until then, anyone tempted to drop the qualifier should
+treat that impulse as the bug.
 
 ---
 
@@ -149,7 +255,7 @@ landing without the other, leaving the bypass structurally reachable."* A3 is ne
 sufficient — a key that cannot compose prose can still be *treated* as a colleague, and #134 records
 that this has recurred twice in two days, which makes it structural rather than incidental.
 
-The design position, for Dennis to attack:
+The design position (reviewed; §7-Q4 is the part left open):
 
 - The bridge-process identity **must not** double as an agent persona. If something should answer questions *about* the bridge, that is a **separate colleague with its own key and its own name** — a steward, not the gate.
 - Consequence worth naming: once A3 lands, a human addressing waggle in-channel gets **no reply**, because no template answers a question. That is correct — infrastructure does not converse — but it will read as broken to anyone expecting an answer. **The steward identity is what makes the silence legible**, which is an argument for building it *with* A3 rather than after it.
@@ -161,41 +267,53 @@ The design position, for Dennis to attack:
 
 | surface | risk | mitigation |
 |---|---|---|
-| the catalogue itself | a template added later with a loose slot silently reopens the hole | §2.3 catalogue test asserts no unconstrained slot; review rule in `CLAUDE.md` |
+| the catalogue itself | a template added later with a loose slot silently reopens the hole | **closed slot-*type* set** (§2.2) — an unknown type fails by construction, no reviewer required |
 | slot injection | attacker-controlled channel name / profile name rendered into a template frame | typed escapers; profile names are attacker-controlled today and already flow into `renderReleased` — same neutralization, now mandatory rather than incidental |
-| `carried_body` remains the wide door | unchanged from today — it must carry hostile bytes by design | `render_states` suite; no change in posture, no regression |
+| **fence break via `wrapJson`** | a pretty-printed envelope lets a planted ` ``` ` reach line-start and escape the code block | **INV-A3-4** (§2.4) — single-line by contract, asserted at render time, with a planted-payload test case |
+| **the second transport** | a Buzz-scoped ban test is blind to `BRIDGE_SK` → relays | §1.0 / §2.5 sibling chokepoint; the **import ban** (§2.3) covers both transports from day one |
+| `carried_body` remains the wide door | unchanged from today — it must carry hostile bytes by design | `render_states` suite + external-author attribution; no change in posture, no regression |
 | chokepoint as a single point of failure | a bug in `emit` breaks every lane at once | the flip side of the benefit: it is also the single place to fix, test, and audit. Net positive, but it raises the bar on `emit`'s own coverage |
-| false confidence | "waggle structurally cannot author" is only true in-process (§3, A4) | say *in-process* every time the claim is made, including in `README`/`SPEC` |
+| **static checks are evadable** | `require('child_' + 'process')` slips an import ban | **not airtight, and never claimed to be** (§2.3) — it stops the accident, which is the threat model |
+| false confidence | "waggle structurally cannot author" is only true in-process (§3.1, A4) | say *in-process* at **every** restatement site — a half-qualified claim reads as corroborated |
 
 ---
 
 ## 6. Sequencing and ownership
 
-Design → adversarial review → build, the way the relay lane was done.
+Design → adversarial review → build, the way the relay lane was done. **Step 1 is done** — Dennis
+reviewed against `src/bridge.mjs` and returned *sound, build it* with five must-fixes, all folded
+into this revision.
 
-| step | what | owner |
-|---|---|---|
-| 1 | **this doc**, adversarially reviewed — especially §2.2 (does a typed catalogue actually hold?) and §3 (is A3-without-A4 worth landing alone?) | @Dennis |
-| 2 | `egress.mjs` + catalogue + `emit`, no call sites moved yet | My Dude |
-| 3 | convert sites 1–7; **delete `replyInStaging`'s `text` parameter** — its seven literal call sites become named `console_ack` templates | My Dude |
-| 4 | ban test + catalogue test, **each with its negative control** (§2.3) | My Dude |
-| 5 | `waggle-sealed` non-root user (host change — needs the maintainer) | Neil |
-| 6 | the steward-identity question (§4) — separate issue, not this PR | maintainer's call |
+| step | what | owner | state |
+|---|---|---|---|
+| 1 | adversarial review of this doc | Dennis | ✅ **done** — verdict *build it*; five must-fixes folded in |
+| 2 | `egress.mjs` + catalogue + `emit`, no call sites moved yet | My Dude | build scope |
+| 3 | convert Buzz sites 1–7; **delete `replyInStaging`'s `text` parameter** — its seven call sites become `console_ack`, with `bridge.mjs:963`'s `raw` becoming an `inline_token` (§2.2) | My Dude | build scope |
+| 4 | import/symbol ban test + catalogue test (closed type set, fence-break case), **each with its negative control** (§2.3) | My Dude | build scope |
+| 5 | the Nostr sibling chokepoint (§2.5) — INV-A3-2 is false until it lands | My Dude | build scope |
+| 6 | `waggle-sealed` non-root user (host change — needs the maintainer) | Neil | blocked on host access |
+| 7 | the steward-identity question (§4) — separate issue | maintainer's call | open |
 
 **Not arming-relevant.** Nothing here changes what crosses; it changes what waggle can say.
 
 ---
 
-## 7. Open questions for review
+## 7. Questions, and how review answered them
 
-1. **Does the typed catalogue actually hold, or does it just relocate the hole?** The honest worry: a contributor who needs to say something new adds a template, and template #40 has a `{detail}` slot that is prose in all but name. Is the catalogue test enough, or does the slot vocabulary need to be closed too — a fixed set of slot *types*, no new ones without a spec change?
-2. **Is A3 worth landing without A4?** It converts "waggle can author" from *anyone with the codebase* to *anyone with host root*. That is a real reduction. But §3's caveat has to be said every time the claim is made, and #134 asks for *closed*. Does A3-alone let us say closed, or only "closed in-process"? **My read: only the latter, and we should say so** — but this is exactly the sort of claim this repo has got wrong before, so it should be Dennis's call, not mine.
-3. **Should the `BRIDGE_SK` Nostr egress get the same chokepoint now or next?** (§3, last bullet.)
-4. **Does the steward identity ship with A3 or after?** §4 argues *with*, on the grounds that silence needs to be legible. Weak conviction; happy to be wrong.
+The first draft's four open questions, with the answers now folded into the design:
+
+1. **Does the typed catalogue hold, or just relocate the hole?** *It relocates it unless the slot **type** set is closed.* Draft-me proposed "assert no template has an unconstrained slot," which still needs a reviewer to judge *unconstrained*. **Answered by §2.2:** eight types, closed; an unknown type fails by construction. This was the sharpest correction — it converts §7-Q1 from convention back into structure.
+2. **Is A3 worth landing without A4?** *Yes — and it earns only the qualified sentence.* **Answered by §3.1:** the qualifier must appear at every restatement site, because three unqualified copies read as corroboration. A4 (#54) earns the bare word.
+3. **Nostr chokepoint now or next?** *Neither — it was mis-scoped as a footnote.* **Answered by §1.0 / §2.5:** it is a second transport, and §2.3's import ban covers it from day one. INV-A3-2 is false until it lands.
+4. **Steward identity with A3 or after?** Still open (§6 step 7) — the one question review left to the maintainer.
+
+**Remaining for the maintainer, not the reviewer:** step 6 (`waggle-sealed` non-root) needs host
+access, and step 7 is a naming/identity call.
 
 ---
 
-*Written in a limited environment — repo surface only, no host access, no private brief. Every
-claim about current behaviour is grounded in `src/bridge.mjs` @ `bc5914e` and cited by line. Nothing
-here was verified against a running box, and §4's `waggle-sealed` privilege claim is taken from #134
-rather than observed.*
+*Written in a limited environment — repo surface only, no host access, no private brief. Every claim
+about current behaviour is grounded in `src/bridge.mjs` @ `bc5914e` and cited by line; Dennis
+independently re-derived the enumeration against the same file and it agreed (10 `execFile('buzz'…)`
+= 7 writes + 3 reads, `execFile` the only `child_process` import). Nothing here was verified against
+a running box, and §4's `waggle-sealed` privilege claim is taken from #134 rather than observed.*
