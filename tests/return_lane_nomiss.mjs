@@ -74,7 +74,7 @@ for (let i = 7; i >= 1; i--) {                 // created_at now-7 (oldest) .. n
   if (i === 2) content = '@claude one more recent thing'
   store.push({ id: `m${i}`, pubkey: crew, content, created_at: now - i, tags: [] })
 }
-const BURIED = `m7`, RECENT = `m2`
+const BURIED = `m7`
 
 // A relay-shaped page fetch honouring `--since floor`, `--before`, `--limit 3`, newest-first.
 // `failOn` makes the Nth call error, to model a mid-drain read failure.

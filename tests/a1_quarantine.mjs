@@ -50,7 +50,7 @@ PUB.authors.push(WATCHED_AUTHOR)
 
 // Capture everything the module logs while routing.
 let buf = ''
-const cap = (c => (...a) => { buf += a.join(' ') + '\n' })()
+const cap = (...a) => { buf += a.join(' ') + '\n' }
 console.log = cap
 console.error = cap
 

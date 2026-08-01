@@ -38,6 +38,12 @@ jobs:
       - name: Install from lockfile
         run: npm ci --no-audit --no-fund
 
+      - name: Lint
+        # Before the suite, because it is the cheaper failure and it catches a class the
+        # suite cannot: an identifier that does not exist on a path no test happens to take.
+        # Correctness rules only — no formatting opinions (see eslint.config.mjs).
+        run: npm run lint
+
       - name: Provide a config for the suite
         # config.json is gitignored — per-box routing policy lives on the host
         # (issue #104), not in git. The committed example carries the schema the
