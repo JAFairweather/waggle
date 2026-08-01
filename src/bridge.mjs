@@ -141,6 +141,19 @@ let pubWatermark = loadPubWatermark()
 // kind:5 lookback is intentionally LONGER than the kind:1 watermark: deletes are rare,
 // idempotent under dedup, and a delete issued while the lane was down must not be missed.
 const POSTED_MAP_PATH = process.env.POSTED_MAP_PATH || resolve(ROOT, 'data', 'posted-map.log')
+// #171 — the durable record of what did NOT get delivered.
+//
+// Both Buzz lanes commit the event id to durable dedup BEFORE the async send, deliberately:
+// "we favor never double-post (the §8 firehose line) over never drop" (routePublic). That
+// tradeoff is a real position and this does not reverse it — reversing it is a policy call for
+// the maintainer, not a bug fix (see #171).
+//
+// What it DOES fix is that the losing side of that trade was invisible. A failed send produced
+// one ERR line in a journal that rotates, and the message was gone with no record that it had
+// ever existed. On 2026-08-01 that made a config-validation regression indistinguishable from
+// silence until someone went looking. An append-only list of undelivered messages costs nothing,
+// changes no delivery behaviour, and turns "gone" into "recoverable, and countable".
+const UNDELIVERED_PATH = process.env.UNDELIVERED_PATH || resolve(ROOT, 'data', 'undelivered.log')
 // Tripwire send-journal: every event id THIS process publishes as the poster identity,
 // appended synchronously. An out-of-process watcher (tools/tripwire.mjs) diffs the poster's
 // on-relay events against this journal — any post signed by our key that is NOT here means
@@ -327,6 +340,27 @@ const seenStore = durableSet({ path: SEEN_PATH, cap: SEEN_CAP, label: 'dedup', n
 const seen = seenStore.mem
 const loadSeen = () => seenStore.load()
 const markSeen = (id) => seenStore.commit(id)
+
+// #171 — record a message that was accepted for delivery and then failed to land. The id is
+// already durably seen by the time this runs, so nothing will retry it: this file IS the message,
+// as far as any later recovery is concerned. Keep it machine-readable and append-only, for the
+// same reason the send-journal is: something else has to be able to read it without parsing prose.
+//
+// Deliberately never throws. A failure to record a failure must not take down the lane, and a
+// disk-full box should still deliver what it can — but it must SAY so, or the silence this exists
+// to end just moves one level up.
+function recordUndelivered({ lane, dest, recipient, id, author, reason }) {
+  const line = JSON.stringify({
+    ts: Math.floor(Date.now() / 1000), lane, dest, recipient: recipient || null,
+    id, author: author || null, reason: String(reason || '').slice(0, 300),
+  })
+  try {
+    mkdirSync(dirname(UNDELIVERED_PATH), { recursive: true })
+    appendFileSync(UNDELIVERED_PATH, line + '\n')
+  } catch (e) {
+    err(`UNDELIVERED: could not record the loss of ${String(id).slice(0, 12)}… — ${e.message}`)
+  }
+}
 
 // Relay-lane dedup — a SEPARATE file. Committed on any DETERMINISTIC outcome (posted, a reject, or
 // a decrypt/verify failure that will never become valid) so a relay re-serving that wrap is cheap;
@@ -535,7 +569,13 @@ function forward(rec, ev, src) {
   }).then(({ stdout }) => {
     log(`FORWARD[buzz] ok -> ${rec.name} inbox: ${src && src.channel ? `${src.channel} ` : 'DM '}1059 ${ev.id.slice(0, 12)}…`)
     journalSend(parseBuzzEventId(stdout), { kind: 9, dest: rec.inbox, lane: 'sealed' })
-  }).catch(e => err(`FORWARD[buzz] ERR -> ${rec.name}: ${e.message}`))
+  }).catch(e => {
+    err(`FORWARD[buzz] ERR -> ${rec.name}: ${e.message}`)
+    // The event was marked seen before this send (route()), and the mark is per EVENT, not per
+    // recipient — so on a plane fan-out the others received it and this one silently did not.
+    // That asymmetry is what made the 2026-08-01 loss read as "that agent isn't responding".
+    recordUndelivered({ lane: 'sealed', dest: rec.inbox, recipient: rec.name, id: ev.id, author: ev.pubkey, reason: e.message })
+  })
 }
 
 function route(ev) {
@@ -758,7 +798,10 @@ async function forwardPublic(ev, why, dest, quarantine) {
     if (!buzzId) err(`A7 warn[no-id]: could not capture buzz event id for ${ev.id.slice(0, 12)}… — withdrawal will use follow-up tier`)
     recordPosted({ id: ev.id, author: ev.pubkey, buzz: buzzId, dest, q: !!quarantine, ts: nowSec, agent })
     journalSend(buzzId, { kind: 9, dest, lane: 'public' })
-  }).catch(e => err(`PUBLIC[buzz] ERR -> ${dest}: ${e.message}`))
+  }).catch(e => {
+    err(`PUBLIC[buzz] ERR -> ${dest}: ${e.message}`)
+    recordUndelivered({ lane: 'public', dest, recipient: null, id: ev.id, author: ev.pubkey, reason: e.message })
+  })
 }
 
 function routePublic(ev) {
@@ -1555,7 +1598,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { durableSet, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
@@ -1563,6 +1606,15 @@ if (!process.env.WB_NO_BOOT) {
   loadPostedMap()
   loadRlSeen()
   loadRelaySeen()
+  // #171 — say it on every boot. A record of lost messages that nobody reads is the same silence
+  // it exists to end, one level further out. Non-fatal: these are past losses, not a reason to
+  // refuse to start now.
+  try {
+    if (existsSync(UNDELIVERED_PATH)) {
+      const n = readFileSync(UNDELIVERED_PATH, 'utf8').split('\n').filter(Boolean).length
+      if (n) err(`⚠ ${n} previously undelivered message(s) recorded in ${UNDELIVERED_PATH} — these were accepted, marked seen, and never landed. Nothing will retry them.`)
+    }
+  } catch { /* a boot log must never be the thing that stops a boot */ }
   // Every config-sourced typed slot is rendered ONCE here, before a single event is accepted. A
   // value that cannot render would otherwise throw inside a delivery path — and both delivery
   // paths markSeen before emit resolves, so that throw drops the message permanently for one ERR
