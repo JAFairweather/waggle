@@ -1,9 +1,9 @@
 # Design: the egress chokepoint — waggle carries, it never authors
 
 **Status:** proposed · **Tracks:** #134 A3, the structural half of the sev-1
-**Review:** adversarial review by Dennis returned on #140 — **verdict: sound, build it**, with five must-fixes; **this revision folds all five in**, plus his second-transport finding (§1.0). Re-review of the folded text is welcome but not gating.
-**Verified against:** `src/bridge.mjs` @ `bc5914e`, read line by line for every egress site, 2026-07-31.
-`origin/main` has since moved to `1a19c25`, which touches `CLAUDE.md` only — `src/bridge.mjs` is byte-identical, so every line citation below still resolves.
+**Review:** adversarial review returned on #140 — **verdict: sound, build it**, with five must-fixes; **this revision folds all five in**, plus his second-transport finding (§1.0). Re-review of the folded text is welcome but not gating.
+**Verified against:** `src/bridge.mjs`, read line by line for every egress site, 2026-07-31; re-verified against `main` @ `af7122f` on 2026-08-01.
+The refactors of #151–#153 have since moved every line in that file without touching an egress site, so citations here are by **function name, not line number** — see §1.1.
 
 > #134: *"Today waggle **can** emit arbitrary free text — the impersonation of 2026-07-31 was exactly
 > that, and the muted agent-persona is held by prompt, not structure. Make it impossible."*
@@ -33,9 +33,10 @@ test can even see.
 | **Buzz egress** | `execFile('buzz', …)` → the CLI signs a `kind:9` | `BUZZ_PRIVATE_KEY` (via the CLI) | yes |
 | **Nostr egress** | `finalizeEvent` → `publishWrapToRelays`, straight to relays | **`BRIDGE_SK`, in-process** | **no — structurally invisible to it** |
 
-The Nostr path is real and live: seal + wrap at `bridge.mjs:1098–1101`, relay-lane acks at
-`1136` / `1155`, sealed return-lane rumors at `1291`, all through `returnLaneSend()` (`1089`) and
-`publishWrapToRelays()` (`1069`). It never touches the CLI.
+The Nostr path is real and live: the seal + wrap construction in `returnLaneSend()`, the relay-lane
+acks in `relayReject()` / `postRelay()`, and the sealed return-lane rumors in `scanReturnLane()` — all
+through `returnLaneSend()` and
+`publishWrapToRelays()`. It never touches the CLI.
 
 It is **prose-free by shape, not by structure** — its bodies are JSON acks and envelopes today,
 with nothing preventing a future caller from putting a sentence in one.
@@ -47,30 +48,38 @@ the same overclaim as dropping "in-process" (§3). The `BRIDGE_SK` chokepoint is
 
 ### 1.1 The seven Buzz-egress sites, as they stand
 
-Read off `main` at `bc5914e`. Complete on this transport, not a sample: `bridge.mjs` imports **only
-`execFile`** from `child_process` (line 39 — no `spawn`, no `exec`, no `execSync`, no shell), and
-there are exactly **10** `execFile('buzz', …)` call sites — the 7 writes below plus 3 reads. There
-is no 8th Buzz site, and no runtime-assembled argv that could hide one.
+Read off `main` at `af7122f`. Complete on this transport, not a sample: `bridge.mjs` imports **only
+`execFile`** from `child_process` — no `spawn`, no `exec`, no `execSync`, no shell — and there are
+exactly **10** `execFile('buzz', …)` call sites: the 7 writes below plus 3 reads. There is no 8th
+Buzz site, and no runtime-assembled argv that could hide one.
 
-| # | site | function | what composes the bytes | free-text reachable? |
+Sites are named by **function and subcommand, never by line number**. This is a design document that
+will outlive several moves of `bridge.mjs`: the refactors of #151–#153 shifted every line in that
+file by 30–115 without touching a single egress site, and #154 will move them all again. What
+matters here is the seven sites and their shapes, not their coordinates. Please keep it that way.
+
+| # | site | `buzz` call | what composes the bytes | free-text reachable? |
 |---|---|---|---|---|
-| 1 | `bridge.mjs:542` | `forward()` | inline template + verbatim `1059` JSON | no — but hand-rolled |
-| 2 | `bridge.mjs:785` | `forwardPublic()` | `renderQuarantined()` / `renderReleased()` | **no — the good shape** |
-| 3 | `bridge.mjs:890` | `withdraw()` | inline tombstone template | no — but hand-rolled |
-| 4 | `bridge.mjs:895` | `withdraw()` | fixed `--public-reason` string | no |
-| 5 | `bridge.mjs:897` | `withdraw()` | inline tombstone template | no — but hand-rolled |
-| 6 | `bridge.mjs:943` | `replyInStaging(parentBuzzId, **text**)` | **whatever the caller passes** | **YES** |
-| 7 | `bridge.mjs:1169` | `postRelay()` | `renderReleased()` | **no — the good shape** |
+| 1 | `forward()` | `messages send` | inline template + verbatim `1059` JSON | no — but hand-rolled |
+| 2 | `forwardPublic()` | `messages send` | `renderQuarantined()` / `renderReleased()` | **no — the good shape** |
+| 3 | `withdraw()` — follow-up tier | `messages send` | inline tombstone template | no — but hand-rolled |
+| 4 | `withdraw()` — delete tier | `messages delete` | fixed `--public-reason` string | no |
+| 5 | `withdraw()` — edit tier | `messages edit` | inline tombstone template | no — but hand-rolled |
+| 6 | `replyInStaging(parentBuzzId, **text**)` | `messages send` | **whatever the caller passes** | **YES** |
+| 7 | `postRelay()` | `messages send` | `renderReleased()` | **no — the good shape** |
 
-Read sites (`channels list` @281, `messages get` @1307, `scanFetchPage` @1352) author nothing and
-are out of scope.
+`withdraw()`'s three tiers are separate rows because they are separate egress calls with different
+argv, not because they sat on different lines.
 
-**Site 6 is the shape of the hole.** `replyInStaging` takes a `text: string`. Its seven callers are
-`bridge.mjs:963, 974, 979, 987, 990, 991, 1000` — and the first draft called them all "fixed
-literals," which was wrong:
+Read sites — `resolveChannels`' `channels list`, `pollCommands`' `messages get`, and
+`scanFetchPage` — author nothing and are out of scope.
+
+**Site 6 is the shape of the hole.** `replyInStaging` takes a `text: string`, and all **seven** of
+its callers live in `handleCommand`. The first draft called them all "fixed literals," which was
+wrong:
 
 ```js
-// bridge.mjs:963 — the operator's own input, echoed back in waggle's voice
+// handleCommand, the unrecognized-verb reply — the operator's own input, echoed in waggle's voice
 replyInStaging(m.id, `unrecognized command \`${raw}\` — try **approve** …`)
 ```
 
@@ -126,8 +135,8 @@ slots through per-slot typed escapers, and only then calls the signer. There is 
 
 **Two slot names changed from the first draft, both on review:**
 
-- `console_ack.detail?` → **`echo?`, typed `inline_token`** (§2.2), never a free string. `detail?` was the §1.1 hole re-entering through the catalogue's own front door — the one slot that would have had to carry `raw` from `bridge.mjs:963`. Naming it `echo` and typing it says what it is: a bounded echo of operator input, not a place to put a sentence.
-- `sealed_envelope.label` → **`channel?`, typed `channel`**. `label` was prose baked into the descriptor; the only variable in it is the channel name (`**${src.channel}**` at `bridge.mjs:530`). The surrounding words belong in the template, where they cannot be reached.
+- `console_ack.detail?` → **`echo?`, typed `inline_token`** (§2.2), never a free string. `detail?` was the §1.1 hole re-entering through the catalogue's own front door — the one slot that would have had to carry `raw` from the unrecognized-verb reply. Naming it `echo` and typing it says what it is: a bounded echo of operator input, not a place to put a sentence.
+- `sealed_envelope.label` → **`channel?`, typed `channel`**. `label` was prose baked into the descriptor; the only variable in it is the channel name (`**${src.channel}**`, in `forward()`'s Concord label). The surrounding words belong in the template, where they cannot be reached.
 
 A caller **cannot express** "send this sentence." The type has no field for it. That is the whole
 design: not a check that can be skipped, but a vocabulary with no word for the forbidden thing.
@@ -153,7 +162,8 @@ catalogue test asserts **every slot of every template declares one of the eight 
 future `detail: string` fails by construction, as an *unknown slot type*, with no reviewer required.
 Adding a ninth type is then a deliberate spec change, which is exactly the friction wanted.
 
-`inline_token` exists **only** because `bridge.mjs:963` already echoes operator input and deleting
+`inline_token` exists **only** because `handleCommand`'s unrecognized-verb reply already echoes
+operator input, and deleting
 that affordance would change behaviour. It is the narrowest thing that preserves it.
 
 **`carried_body` is the only slot that accepts arbitrary bytes**, and it runs the hostile-content
@@ -187,7 +197,7 @@ watch it go red, then revert. A ban test that has only ever passed proves only t
 
 ### 2.4 The `wrapJson` single-line invariant
 
-Site 1 (`bridge.mjs:542`) embeds `JSON.stringify(ev)` inside a fenced code block. **Its safety is
+Site 1 (`forward()`) embeds `JSON.stringify(ev)` inside a fenced code block. **Its safety is
 load-bearing on that JSON being single-line:** a ` ``` ` planted in an event field cannot reach the
 start of a line, so it cannot close the fence and escape into prose.
 
@@ -280,18 +290,18 @@ The design position (reviewed; §7-Q4 is the part left open):
 
 ## 6. Sequencing and ownership
 
-Design → adversarial review → build, the way the relay lane was done. **Step 1 is done** — Dennis
+Design → adversarial review → build, the way the relay lane was done. **Step 1 is done** — the adversarial reviewer
 reviewed against `src/bridge.mjs` and returned *sound, build it* with five must-fixes, all folded
 into this revision.
 
 | step | what | owner | state |
 |---|---|---|---|
-| 1 | adversarial review of this doc | Dennis | ✅ **done** — verdict *build it*; five must-fixes folded in |
-| 2 | `egress.mjs` + catalogue + `emit`, no call sites moved yet | My Dude | build scope |
-| 3 | convert Buzz sites 1–7; **delete `replyInStaging`'s `text` parameter** — its seven call sites become `console_ack`, with `bridge.mjs:963`'s `raw` becoming an `inline_token` (§2.2) | My Dude | build scope |
-| 4 | import/symbol ban test + catalogue test (closed type set, fence-break case), **each with its negative control** (§2.3) | My Dude | build scope |
-| 5 | the Nostr sibling chokepoint (§2.5) — INV-A3-2 is false until it lands | My Dude | build scope |
-| 6 | `waggle-sealed` non-root user (host change — needs the maintainer) | Neil | blocked on host access |
+| 1 | adversarial review of this doc | the adversarial reviewer | ✅ **done** — verdict *build it*; five must-fixes folded in |
+| 2 | `egress.mjs` + catalogue + `emit`, no call sites moved yet | the bridge engineer | build scope |
+| 3 | convert Buzz sites 1–7; **delete `replyInStaging`'s `text` parameter** — its seven call sites become `console_ack`, with the unrecognized-verb reply's `raw` becoming an `inline_token` (§2.2) | the bridge engineer | build scope |
+| 4 | import/symbol ban test + catalogue test (closed type set, fence-break case), **each with its negative control** (§2.3) | the bridge engineer | build scope |
+| 5 | the Nostr sibling chokepoint (§2.5) — INV-A3-2 is false until it lands | the bridge engineer | build scope |
+| 6 | `waggle-sealed` non-root user (host change — needs the maintainer) | the read-lane engineer | blocked on host access |
 | 7 | the steward-identity question (§4) — separate issue | maintainer's call | open |
 
 **Not arming-relevant.** Nothing here changes what crosses; it changes what waggle can say.
@@ -313,7 +323,9 @@ access, and step 7 is a naming/identity call.
 ---
 
 *Written in a limited environment — repo surface only, no host access, no private brief. Every claim
-about current behaviour is grounded in `src/bridge.mjs` @ `bc5914e` and cited by line; Dennis
-independently re-derived the enumeration against the same file and it agreed (10 `execFile('buzz'…)`
-= 7 writes + 3 reads, `execFile` the only `child_process` import). Nothing here was verified against
+about current behaviour is grounded in `src/bridge.mjs` and was re-verified against `main` @
+`af7122f`; the adversarial reviewer independently re-derived the enumeration against the same file
+and it agreed (10 `execFile('buzz'…)` = 7 writes + 3 reads, `execFile` the only `child_process`
+import). That enumeration was re-run after #151–#153 landed and is unchanged — those refactors moved
+lines, never egress sites. Nothing here was verified against
 a running box, and §4's `waggle-sealed` privilege claim is taken from #134 rather than observed.*
