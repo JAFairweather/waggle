@@ -41,6 +41,12 @@ import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+// Extracted leaf modules (#154). Each is dependency-free of config and ambient state, which is why
+// these four came out first — the split is staged, not big-bang.
+import { log, err } from './log.mjs'
+import { durableSet } from './stores.mjs'
+import { fanout } from './fanout.mjs'
+import { defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased } from './render.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
@@ -73,8 +79,6 @@ const SINCE = Math.floor(Date.now() / 1000) - SINCE_SECS
 const CHANNEL_SINCE_SECS = process.env.CHANNEL_SINCE_SECS != null ? Number(process.env.CHANNEL_SINCE_SECS) : 3600 // 1h
 const CHANNEL_SINCE = Math.floor(Date.now() / 1000) - CHANNEL_SINCE_SECS
 
-const log = (...a) => console.log(new Date().toISOString(), ...a)
-const err = (...a) => console.error(new Date().toISOString(), ...a)
 
 // --- config -----------------------------------------------------------------
 if (!existsSync(CONFIG_PATH)) {
@@ -310,50 +314,6 @@ if (FORWARD_MODE === 'buzz' && !process.env.BUZZ_PRIVATE_KEY) {
   err('WARN: FORWARD_MODE=buzz but BUZZ_PRIVATE_KEY is unset — buzz sends will fail auth. Set the bridge identity.')
 }
 
-// --- durable dedup ----------------------------------------------------------
-// Three lanes each keep a durable "already handled this" set, and all three want the same three
-// things: an in-memory Set for the hot check, an append-only file so a restart cannot re-deliver,
-// and a cap so that file cannot grow forever. They were written three times, and they drifted —
-// only two grew the claim/rollback split that #121 added after one wrap posted twice, 423ms
-// apart, because the entry check and the durable write sat on opposite sides of an async send.
-// Whether the third is safe without it is a timing argument someone had to re-derive by hand on
-// every visit, which is exactly the kind of reasoning that decays.
-//
-// One primitive makes the whole vocabulary available to every lane. Which parts a lane USES stays
-// that lane's decision, argued at its own call sites — this changes what is *available*, never
-// what any lane currently does:
-//
-//   has       the hot check
-//   claim     in-memory only — suppress a duplicate while an async send is in flight
-//   rollback  undo a claim, so a failed send retries instead of being silently suppressed
-//   commit    claim + durable append — survives a restart
-//
-// `mem` is the Set itself, exposed because the lanes (and the suites) check it directly.
-function durableSet({ path, cap, label, noun }) {
-  const mem = new Set()
-  return {
-    mem,
-    has: (k) => mem.has(k),
-    claim: (k) => { mem.add(k) },
-    rollback: (k) => { mem.delete(k) },
-    commit(k) {
-      mem.add(k)
-      // Truncated at 64 so a full event id still prints whole, while a long composite key
-      // (source × recipient) cannot flood the journal the tripwire reads.
-      try { appendFileSync(path, k + '\n') }
-      catch (e) { err(`${label}: append failed for ${String(k).slice(0, 64)}: ${e.message}`) }
-    },
-    load() {
-      // The mkdir on the missing-file path is what guarantees the directory exists for every
-      // later append, which is why commit() does not repeat it per write.
-      if (!existsSync(path)) { mkdirSync(dirname(path), { recursive: true }); return }
-      const lines = readFileSync(path, 'utf8').split('\n').filter(Boolean)
-      const kept = lines.slice(-cap)
-      for (const k of kept) mem.add(k)
-      log(`${label}: loaded ${mem.size} ${noun} from ${path}${lines.length > kept.length ? ` (pruned ${lines.length - kept.length})` : ''}`)
-    },
-  }
-}
 
 // DM + public lane dedup: forwarded event ids, re-hydrated on boot so a bounce (or a SINCE
 // backfill) never re-delivers something already pushed. Commit-before-dispatch on the public
@@ -707,46 +667,6 @@ function cacheName(pubkey, name) {
   nameCache.set(pubkey, { name, ts: Date.now() })
   if (nameCache.size > NAME_CACHE_CAP) nameCache.delete(nameCache.keys().next().value)
 }
-// One-shot relay fan-out: open a socket per relay, race them, settle exactly once, close everything.
-// Written three times before this (#153), and the copies diverged with a bug — one closed its
-// sockets in finish(), another only on EOSE/error, so a relay that opened and never answered leaked
-// its socket forever precisely when the timeout won, which is the case the timeout exists for. That
-// fix had to be noticed and hand-applied to one copy. Here it cannot diverge: cleanup, timeout
-// arming and disarming, the settle-once guard, and the try/catch around construction are the shared
-// parts — and they are exactly the parts that went wrong.
-//
-// What is NOT shared is the settle RULE, because the three genuinely differ (first-match,
-// all-settled-with-a-count, best-effort-with-a-default) and flattening that would change behaviour.
-// `each(ws, done, settleNow)` wires one socket: call `done()` when that socket has nothing more to
-// give, or `settleNow()` to end the whole fan-out early. `collect()` returns the accumulated result.
-//
-// `mkSocket` is injectable so the settle rules are drivable with no network — the same seam shape
-// scanChannel(fetchPage) and returnLaneSend(publish) already use.
-function fanout(relays, { timeoutMs, each, collect, mkSocket = (url) => new WebSocket(url) }) {
-  return new Promise((resolve) => {
-    const socks = []
-    let pending = (relays || []).length
-    let settled = false
-    let timer = null
-    const finish = () => {
-      if (settled) return
-      settled = true
-      if (timer) clearTimeout(timer)
-      for (const w of socks) { try { w.close() } catch { /* already closed */ } }
-      resolve(collect())
-    }
-    if (!pending) return finish()
-    timer = setTimeout(finish, timeoutMs)
-    for (const url of relays) {
-      let ws
-      let spent = false
-      const done = () => { if (spent) return; spent = true; if (--pending <= 0) finish() }
-      try { ws = mkSocket(url) } catch { done(); continue }
-      socks.push(ws)
-      try { each(ws, done, finish) } catch { done() }
-    }
-  })
-}
 
 function fetchProfileName(pubkey, mkSocket) {
   const hit = nameCache.get(pubkey)
@@ -776,64 +696,6 @@ function fetchProfileName(pubkey, mkSocket) {
   })
 }
 
-// --- Presentation. Follows TRUST — but a quarantined message still has to be READ, because a
-// human is being asked to judge it. An earlier cut wrapped untrusted text in a code fence:
-// safe, and unusable. Fences don't wrap, so the message ran off the edge behind a line-number
-// gutter and truncated mid-sentence — we were asking for a decision about content the approver
-// could not see. The guard was doing its job at the expense of the job.
-//
-// So: NEUTRALISE rather than ENCASE. The escaping below was always what made untrusted text
-// safe; the fence was belt-and-braces charging legibility for it.
-const ZWSP = '​'
-// A zero-width space after @ and nostr: — the reference RENDERS but never resolves to a real
-// ping. Applied to every reposted body, vouched or not: nobody gets to summon a member.
-export const defuseRefs = (s) => String(s)
-  .replace(/@(?=[\w])/g, `@${ZWSP}`)
-  .replace(/\bnostr:/gi, `nostr${ZWSP}:`)
-// A zero-width space before line-leading markdown, so an unvouched sender can't mint headings,
-// rules, lists, tables or nested fences that imitate our own chrome. The impersonation that
-// matters is a quarantined note dressed up as an approval notice. Quarantined text only — a
-// vouched identity keeps its formatting.
-export const defuseMarkup = (s) => String(s)
-  .replace(/```/g, `\`${ZWSP}\`\``)
-  .replace(/^(\s*)([#>\-*+`|=~_]|\d+[.)])/gm, `$1${ZWSP}$2`)
-export const quoted = (s) => String(s).replace(/\r/g, '').split('\n').map(l => `> ${l}`).join('\n')
-
-// One unmistakable state line, then the MESSAGE — readable, wrapping, set apart as a quote —
-// then provenance and the actions. The old order buried the thing being judged under five
-// lines of instructions, which is backwards for a screen whose only job is a human decision.
-export function renderQuarantined({ body, mention = '', name, npub, when, claim = '', why, id }) {
-  return `${mention}⏳ **QUARANTINED** — external Nostr reply, held out of every channel until you approve it.\n\n` +
-    quoted(defuseMarkup(defuseRefs(body))) + '\n\n' +
-    `**from** ${name ? `**${name}** · ` : ''}\`${npub}\`  ·  ${when}${claim}  ·  _${why}_\n` +
-    `Reply **approve** · **follow** · **mute** · **reject** — or \`waggle-approve ${id}\``
-}
-
-// A vouched identity — released, granted, or a followed author. Reads as an ordinary message:
-// flowing text, no code bubble, no gutter. A8 (native foreign-signed rendering) is what finally
-// puts the participant's OWN avatar and name on it; until then this is a bridge-authored
-// message that reads as cleanly as a repost can.
-// `liveRefs` decides whether the body's @mentions survive (#94). Presentation follows trust, and
-// defuseMarkup already states the rule this completes: "a vouched identity keeps its formatting."
-// That exception was implemented for markup and never for refs, so EVERY reposted body had its
-// mentions killed — a signed, revocably-granted participant's included. The cost was not
-// cosmetic: an admitted agent could be carried into the room and still not wake a single
-// colleague, which is the entire point of being admitted. That is what pushed operators onto a
-// path that signs as the bridge instead. #94 diagnosed it exactly and was closed on a screenshot
-// taken from that other path, where defuseRefs never runs.
-//
-// DEFAULT FALSE — fail closed. Only a live NIP-DA grant (signed, scoped, revocable by a 441)
-// buys live refs. A mirrored feed does not: `watch_authors` streams an author's ENTIRE public
-// feed inward, so honouring refs there would let any watched note summon the room. Nor does a
-// standing follow (reply-trust is strictly narrower than admission), nor content a human released
-// from quarantine — approving a stranger's note means "this may be published", never "this may
-// summon people".
-export function renderReleased({ body, name, npubShort, liveRefs = false }) {
-  return `**${name || npubShort}**  ·  \`${npubShort}\`  ·  _via waggle_\n\n${liveRefs ? body : defuseRefs(body)}`
-}
-
-// Repost a PLAINTEXT public note into a Buzz channel. `dest` is the community inbox for a
-// trusted (allowlisted) note, or the STAGING inbox for a quarantined external reply (A1).
 // No unwrap label, no key — already-public content.
 async function forwardPublic(ev, why, dest, quarantine) {
   const author = ev.pubkey ? ev.pubkey.slice(0, 16) : '?'
@@ -1698,7 +1560,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { durableSet, fanout, fetchEventById, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
+export { durableSet, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
