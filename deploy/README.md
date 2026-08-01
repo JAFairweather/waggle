@@ -88,6 +88,34 @@ This is the automated form of the manual "sealed tree md5 vs the repo baseline" 
 *Pre-cutover box checks* — prefer this. The regression test `tests/deploy_verify.mjs`
 proves it reports drift on a deliberately stale tree.
 
+## Adding an agent seat (a new sealed-lane recipient)
+
+`add-recipient.sh` wires a new agent into the sealed lanes: it creates a private inbox
+owned by the waggle poster key, seats the agent as a member, adds it to `recipients[]`
+and the named channel fan lists in `/opt/waggle-sealed/config.json`, and restarts the
+sealed lane. Run it **as root on the box** (the scoped operator accounts are not in
+sudoers by design — get a root shell with `su -`, not `sudo -i`):
+
+```
+sh deploy/add-recipient.sh <Name> <pubkey-hex> [chan1,chan2,...]   # chans default to "#general"
+```
+
+It is idempotent — re-running updates the existing seat in place and never mints a
+second inbox. Three traps it handles so you don't relearn them: it loads creds from the
+running daemon's `/proc/<pid>/environ` rather than sourcing `.env` (bash mangles the
+`AUTH_TAG` JSON; systemd does not), it reads the new id from `channel_id` (not `id`),
+and it **aborts before touching config** if `channels create` returns empty — a blank
+inbox writes a placeholder seat the bridge flags and drops.
+
+This provisions a **delivery seat**; it is not the designed participant onboarding
+(#141), where an agent mints its **own** ephemeral key and requests a grant. Here the
+operator uses the bridge's own key to own the inbox it delivers into.
+
+**Verify after (required):** the boot log must show one more recipient and **no**
+`placeholder inbox` WARN; then post a smoke test into the channel and confirm the fan
+lands in the new inbox as a sealed kind:9 **authored by the waggle poster key** — a
+non-waggle routed copy is a leftover-key red flag.
+
 ## Pull-based deploy runner (#129)
 
 `deploy.sh` is a **push** from the Mac, and a push needs a standing grant on the box that
