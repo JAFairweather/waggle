@@ -37,7 +37,7 @@ import WebSocket from 'ws'
 // (A3 §2.5). Verification is a public-key operation and belongs wherever input is judged.
 import { verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
-import { emit, query } from './egress.mjs'
+import { emit, query, checkConfigRenderable } from './egress.mjs'
 import { bridgePubkey, hasBridgeKey, openSeal, openRumor, sealAndWrap } from './nostr_egress.mjs'
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs'
@@ -1563,6 +1563,24 @@ if (!process.env.WB_NO_BOOT) {
   loadPostedMap()
   loadRlSeen()
   loadRelaySeen()
+  // Every config-sourced typed slot is rendered ONCE here, before a single event is accepted. A
+  // value that cannot render would otherwise throw inside a delivery path — and both delivery
+  // paths markSeen before emit resolves, so that throw drops the message permanently for one ERR
+  // line. Failing at boot turns an invisible, per-message, unrecoverable loss into a loud refusal
+  // to start, which is the trade this repo always makes.
+  {
+    // TARGETS is a list of pubkey STRINGS (keys of RECIPIENTS), not records — reading `.name` off
+    // it yields undefined, and an undefined name fails `handle`, so a first draft of this check
+    // refused to boot on a perfectly good config. The boot suite caught it. Worth the comment:
+    // a fail-closed startup gate that is itself wrong turns a dropped message into a total
+    // outage, which is strictly worse than the bug it guards against.
+    const problems = checkConfigRenderable({
+      recipientNames: Object.values(RECIPIENTS).map(r => r.name),
+      approverMention: PUB && PUB.approverMention,
+    })
+    for (const p of problems) err(`FATAL: config value ${p.what} = ${JSON.stringify(p.value)} cannot be rendered — ${p.error}`)
+    if (problems.length) { err('FATAL: refusing to start — a value that cannot render would silently drop every message on that path.'); process.exit(1) }
+  }
   log(`waggle — mode=${FORWARD_MODE}, ${TARGETS.length} recipients, ${RELAYS.length} relays, ${PLANE_AUTHORS.length} channel plane(s), dm-since=${SINCE} (${SINCE_SECS}s), chan-since=${CHANNEL_SINCE} (${CHANNEL_SINCE_SECS}s)`)
   if (!SEALED_LANES) {
     log('sealed lanes: DISABLED (SEALED_LANES=off) — DM + Concord channel routing OFF; running PUBLIC read lane only')

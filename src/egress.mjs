@@ -86,9 +86,32 @@ const SLOT_TYPES = {
   // approver is the point of the quarantine header, and waking the recipient is the point of a
   // sealed-envelope delivery. Distinct from display_name for exactly that reason: this one is
   // trusted-by-provenance and keeps its @, so it must never be fed an external value.
+  //
+  // SANITISES, IT DOES NOT REJECT — and the difference is a production incident. An earlier form
+  // required /^[\w][\w.-]{0,63}$/, which refuses any name containing a SPACE. Buzz display names
+  // routinely have one ("My Dude" is a crew member named in #134), and `approver_mention` is
+  // documented in config.example.json as "<Buzz @name…>". A rejection here is not a caught error:
+  // both call sites mark the event seen BEFORE emit resolves (bridge.mjs:558 sealed, :781 public),
+  // so a throw logs one line and the message is gone — dropped from durable dedup, unrecoverable
+  // across restart. On the public lane a spaced approver_mention would have failed EVERY
+  // quarantined arrival.
+  //
+  // The prior code at both sites was a bare `@${name}` that accepted anything, so rejecting is a
+  // regression, not a tightening. What A3 actually needs from this slot is that a config value
+  // cannot break out of the template — not that it match an identifier grammar. So: strip what
+  // could escape (backtick, newline, markup, a second @), cap the length, keep everything else
+  // including spaces. A value that sanitises to nothing IS broken config and is still refused —
+  // loudly at boot now, via checkConfigRenderable() below, rather than per-message hours later.
   handle: (v) => {
-    const s = String(v == null ? '' : v).trim()
-    if (!/^[\w][\w.-]{0,63}$/.test(s)) reject('handle', `not a bare handle: ${JSON.stringify(s.slice(0, 32))}`)
+    const s = String(v == null ? '' : v)
+      .replace(/[`\r\n]/g, '')        // cannot open a code span, cannot reach a new line
+      // `_` is deliberately NOT stripped: the prior regex allowed it via \w, so `agent_1` is a
+      // legitimate handle and removing it would corrupt a real name to fix nothing. (display_name
+      // does strip it — that slot is attacker-controlled, this one is operator config.)
+      .replace(/[@[\]()*~]/g, '')     // no second mention, no link, no emphasis
+      .trim()
+      .slice(0, 64)
+    if (!s) reject('handle', `empty after sanitising: ${JSON.stringify(String(v).slice(0, 32))}`)
     return s
   },
   // The ONLY slot that accepts arbitrary bytes. It never renders as waggle's own words: the
@@ -270,6 +293,30 @@ function renderSlots(templateName, slots = {}) {
     if (!(given in spec.slots)) reject('slot', `template ${templateName} has no slot ${JSON.stringify(given)}`)
   }
   return { spec, values: out }
+}
+
+// --- Boot-time config check (the general fix behind the `handle` incident) --------------------
+//
+// The `handle` regression was one instance of a class: a config value that fails its slot type
+// throws INSIDE a delivery path, and both delivery paths mark the event seen before emit resolves.
+// The message is then gone, and the operator learns about it from one ERR line, per message,
+// hours after the deploy.
+//
+// So the escapers are run against config ONCE at boot, where a failure is loud and costs nothing:
+// a bad value refuses to start rather than silently eating traffic. This repo's posture is
+// default-closed and LOUD, and "being unable to check is not the same as being fine" — a bridge
+// that cannot render its own configured names should say so before it starts accepting events.
+//
+// Returns a list of {what, value, error}; empty means every config-sourced typed slot renders.
+export function checkConfigRenderable({ recipientNames = [], approverMention = null } = {}) {
+  const problems = []
+  const probe = (what, value, type) => {
+    try { SLOT_TYPES[type](value) } catch (e) { problems.push({ what, value: String(value).slice(0, 40), error: e.message }) }
+  }
+  for (const [i, n] of recipientNames.entries()) probe(`recipients[${i}].name`, n, 'handle')
+  // Absent is fine — the slot is optional and the caller passes undefined.
+  if (approverMention) probe('public.approver_mention', approverMention, 'handle')
+  return problems
 }
 
 // Exported so the catalogue test can drive rendering with hostile values without shelling out.

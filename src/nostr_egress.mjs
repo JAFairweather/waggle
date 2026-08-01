@@ -47,9 +47,23 @@ const hex64 = (v, what) => {
   return s
 }
 const num = (v, what) => { const n = Number(v); if (!Number.isFinite(n)) reject(`${what} is not a number`); return n }
+// Sanitises, does not reject — same reasoning as egress.mjs's `handle`, and the same incident.
+// `return_carry.mention` is fed `r.mention` from return-lane config (bridge.mjs:1270), so a
+// recipient configured with a spaced Buzz name would throw mid-carry. Milder than the Buzz side
+// (rlSeen is rolled back, so a restart re-carries) but it still aborts the carry loop, taking
+// every LATER recipient in that scan down with it.
+//
+// Kept as its own copy rather than imported from egress.mjs on purpose: this module owns the
+// Nostr transport and must not depend on the Buzz one. That duplication is why the bug existed in
+// two places at once — so if a third appears, the escapers should move to a shared module that
+// neither transport owns.
 const handle = (v) => {
-  const s = String(v == null ? '' : v).trim()
-  if (!/^[\w][\w.-]{0,63}$/.test(s)) reject(`not a bare handle: ${JSON.stringify(s.slice(0, 32))}`)
+  const s = String(v == null ? '' : v)
+    .replace(/[`\r\n]/g, '')
+    .replace(/[@[\]()*~]/g, '')   // `_` kept — legitimate in a handle, see egress.mjs
+    .trim()
+    .slice(0, 64)
+  if (!s) reject(`handle empty after sanitising: ${JSON.stringify(String(v).slice(0, 32))}`)
   return s
 }
 // The community's own words, carried out to a guest. Untrusted in the same sense as the Buzz
