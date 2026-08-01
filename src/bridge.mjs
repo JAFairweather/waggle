@@ -707,29 +707,57 @@ function cacheName(pubkey, name) {
   nameCache.set(pubkey, { name, ts: Date.now() })
   if (nameCache.size > NAME_CACHE_CAP) nameCache.delete(nameCache.keys().next().value)
 }
-function fetchProfileName(pubkey) {
+// One-shot relay fan-out: open a socket per relay, race them, settle exactly once, close everything.
+// Written three times before this (#153), and the copies diverged with a bug — one closed its
+// sockets in finish(), another only on EOSE/error, so a relay that opened and never answered leaked
+// its socket forever precisely when the timeout won, which is the case the timeout exists for. That
+// fix had to be noticed and hand-applied to one copy. Here it cannot diverge: cleanup, timeout
+// arming and disarming, the settle-once guard, and the try/catch around construction are the shared
+// parts — and they are exactly the parts that went wrong.
+//
+// What is NOT shared is the settle RULE, because the three genuinely differ (first-match,
+// all-settled-with-a-count, best-effort-with-a-default) and flattening that would change behaviour.
+// `each(ws, done, settleNow)` wires one socket: call `done()` when that socket has nothing more to
+// give, or `settleNow()` to end the whole fan-out early. `collect()` returns the accumulated result.
+//
+// `mkSocket` is injectable so the settle rules are drivable with no network — the same seam shape
+// scanChannel(fetchPage) and returnLaneSend(publish) already use.
+function fanout(relays, { timeoutMs, each, collect, mkSocket = (url) => new WebSocket(url) }) {
+  return new Promise((resolve) => {
+    const socks = []
+    let pending = (relays || []).length
+    let settled = false
+    let timer = null
+    const finish = () => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      for (const w of socks) { try { w.close() } catch { /* already closed */ } }
+      resolve(collect())
+    }
+    if (!pending) return finish()
+    timer = setTimeout(finish, timeoutMs)
+    for (const url of relays) {
+      let ws
+      let spent = false
+      const done = () => { if (spent) return; spent = true; if (--pending <= 0) finish() }
+      try { ws = mkSocket(url) } catch { done(); continue }
+      socks.push(ws)
+      try { each(ws, done, finish) } catch { done() }
+    }
+  })
+}
+
+function fetchProfileName(pubkey, mkSocket) {
   const hit = nameCache.get(pubkey)
   if (hit && Date.now() - hit.ts < NAME_TTL_MS) return Promise.resolve(hit.name)
-  return new Promise(res => {
-    let best = null, open = PUB.relays.length, done = false
-    // Sockets are tracked and closed by finish() — matching fetchEventById. Closing only in bye()
-    // left every socket of a relay that never answers open FOREVER when the 2s timeout won the
-    // race, which is exactly the case the timeout exists for.
-    const socks = []
-    const finish = () => {
-      if (done) return
-      done = true
-      for (const w of socks) { try { w.close() } catch { /* already closed */ } }
-      cacheName(pubkey, best)
-      res(best)
-    }
-    if (!open) return finish()
-    const t = setTimeout(finish, 2000)
-    for (const url of PUB.relays) {
-      let ws
-      try { ws = new WebSocket(url) } catch { if (--open === 0) { clearTimeout(t); finish() } continue }
-      socks.push(ws)
-      const bye = () => { try { ws.close() } catch { /* closed */ } if (--open === 0) { clearTimeout(t); finish() } }
+  // Best-effort: take the best name any relay offers; settle when all have answered or the 2s
+  // budget runs out. A relay that never replies costs the timeout, never a hang.
+  let best = null
+  return fanout(PUB.relays, {
+    timeoutMs: 2000,
+    mkSocket,
+    each: (ws, done) => {
       ws.on('open', () => ws.send(JSON.stringify(['REQ', 'nm', { kinds: [0], authors: [pubkey], limit: 1 }])))
       ws.on('message', d => {
         try {
@@ -739,11 +767,12 @@ function fetchProfileName(pubkey) {
             const raw = String(p.display_name || p.name || '').replace(/[`@\[\]()\n\r*_~]/g, '').trim().slice(0, 32)
             if (raw) best = raw
           }
-          if (m[0] === 'EOSE') bye()
+          if (m[0] === 'EOSE') done()
         } catch { /* ignore bad frames */ }
       })
-      ws.on('error', bye)
-    }
+      ws.on('error', done)
+    },
+    collect: () => { cacheName(pubkey, best); return best },
   })
 }
 
@@ -998,21 +1027,25 @@ function withdraw(origId, entry, delEv) {
 //   reject  — explicit no (records the decision; author stays quarantined)
 const stagingByBuzzId = new Map() // buzz event id of a staging post -> { orig, author, dest }
 
-function fetchEventById(id) {
-  return new Promise(res => {
-    const socks = []
-    let settled = false
-    const finish = ev => { if (settled) return; settled = true; for (const w of socks) { try { w.close() } catch { /* closed */ } } res(ev || null) }
-    setTimeout(() => finish(null), 10000)
-    for (const url of PUB.relays) {
-      try {
-        const w = new WebSocket(url)
-        socks.push(w)
-        w.on('open', () => w.send(JSON.stringify(['REQ', 'fx', { ids: [id] }])))
-        w.on('message', d => { try { const m = JSON.parse(d.toString()); if (m[0] === 'EVENT' && m[2] && m[2].id === id) finish(m[2]) } catch { /* ignore */ } })
-        w.on('error', () => { /* dead relay */ })
-      } catch { /* bad url */ }
-    }
+// First-match: the first relay to serve the event by id ends the whole fan-out. A relay that never
+// answers is not waited on beyond the budget. (The old copy never cleared its 10s timer, so the
+// process held it open after settling; fanout disarms it.)
+function fetchEventById(id, mkSocket) {
+  let found = null
+  return fanout(PUB.relays, {
+    timeoutMs: 10000,
+    mkSocket,
+    each: (ws, done, settleNow) => {
+      ws.on('open', () => ws.send(JSON.stringify(['REQ', 'fx', { ids: [id] }])))
+      ws.on('message', d => {
+        try {
+          const m = JSON.parse(d.toString())
+          if (m[0] === 'EVENT' && m[2] && m[2].id === id) { found = m[2]; settleNow() }
+        } catch { /* ignore */ }
+      })
+      ws.on('error', done)
+    },
+    collect: () => found || null,
   })
 }
 
@@ -1144,23 +1177,26 @@ function rlDropOnce(id) {
 // chosen accept-count with no socket — the same shape #5's scanChannel(fetchPage) uses. WB_STUB_SEND
 // keeps the socket-free tests honest: it means "assume it landed on every configured relay", so the
 // crypto still runs but the count is positive, never a spurious 0/N.
-function publishWrapToRelays(wrap) {
-  return new Promise((resolve) => {
-    if (process.env.WB_STUB_SEND) return resolve(PUB.relays.length || 1)
-    const relays = PUB.relays || []
-    if (!relays.length) return resolve(0)
-    let settled = 0, accepted = 0, done = false
-    const finish = () => { if (!done) { done = true; resolve(accepted) } }
-    const t = setTimeout(finish, 10000)                    // a relay that opens but never OKs is bounded here
-    const tally = () => { if (++settled >= relays.length) { clearTimeout(t); finish() } }
-    for (const url of relays) {
-      let w, counted = false
-      const one = (ok) => { if (counted) return; counted = true; if (ok) accepted++; try { w && w.close() } catch { /* */ } tally() }
-      try { w = new WebSocket(url) } catch { tally(); continue }
-      w.on('open', () => w.send(JSON.stringify(['EVENT', wrap])))
-      w.on('message', d => { try { const m = JSON.parse(d.toString()); if (m[0] === 'OK' && m[1] === wrap.id) one(!!m[2]) } catch { /* non-OK frame */ } })
-      w.on('error', () => one(false))
-    }
+function publishWrapToRelays(wrap, mkSocket) {
+  if (process.env.WB_STUB_SEND) return Promise.resolve(PUB.relays.length || 1)
+  // All-settled-with-a-count: per-relay OK-true is the ONLY landing signal. A relay that opens but
+  // never OKs is bounded by the budget, and an explicit ["OK", id, false] rejection must not read
+  // as an accept — counting any inbound frame was finding #2.
+  let accepted = 0
+  return fanout(PUB.relays || [], {
+    timeoutMs: 10000,
+    mkSocket,
+    each: (ws, done) => {
+      ws.on('open', () => ws.send(JSON.stringify(['EVENT', wrap])))
+      ws.on('message', d => {
+        try {
+          const m = JSON.parse(d.toString())
+          if (m[0] === 'OK' && m[1] === wrap.id) { if (m[2]) accepted++; done() }
+        } catch { /* non-OK frame */ }
+      })
+      ws.on('error', done)
+    },
+    collect: () => accepted,
   })
 }
 
@@ -1662,7 +1698,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { durableSet, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
+export { durableSet, fanout, fetchEventById, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
