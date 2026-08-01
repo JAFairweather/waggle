@@ -33,10 +33,12 @@
 // `since`, so a since=now subscription silently drops fresh DMs. We default the
 // lookback to 48h and lean on durable id-dedup to make re-delivery a no-op.
 import WebSocket from 'ws'
-import { verifyEvent, finalizeEvent, generateSecretKey, getEventHash, getPublicKey } from 'nostr-tools/pure'
-import * as nip44 from 'nostr-tools/nip44'
+// Only verifyEvent remains here: every signing symbol moved to nostr_egress.mjs with the key
+// (A3 §2.5). Verification is a public-key operation and belongs wherever input is judged.
+import { verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import { emit, query } from './egress.mjs'
+import { bridgePubkey, hasBridgeKey, openSeal, openRumor, sealAndWrap } from './nostr_egress.mjs'
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -153,12 +155,9 @@ function journalSend(id, meta) {
 // The bridge's own identity, used to SEAL outbound return-lane mail. A NIP-17 seal names its
 // real sender, so this has to be the bridge's key — the wrap around it is signed by a throwaway,
 // which is why this traffic never appears on the wire as the poster key.
-const BRIDGE_SK = (() => {
-  const raw = process.env.BUZZ_PRIVATE_KEY
-  if (!raw) return null
-  try { return raw.startsWith('nsec1') ? nip19.decode(raw).data : Uint8Array.from(Buffer.from(raw, 'hex')) } catch { return null }
-})()
-const BRIDGE_PK = BRIDGE_SK ? getPublicKey(BRIDGE_SK) : null
+// A3 §2.5: the key itself lives in nostr_egress.mjs — signing is not the only thing it does (the
+// relay lane unseals with it too), so one module owns it and hands out capabilities instead.
+const BRIDGE_PK = bridgePubkey()
 
 const POSTED_CAP = Number(process.env.POSTED_CAP || 100000)
 const DEL_SINCE_SECS = Number(process.env.DEL_SINCE_SECS || 172800) // 48h
@@ -1069,22 +1068,13 @@ function publishWrapToRelays(wrap, mkSocket) {
   })
 }
 
-async function returnLaneSend(toHex, text, meta, publish = publishWrapToRelays) {
-  if (!BRIDGE_SK) { err('return lane: no bridge key to seal with — skipping'); return 0 }
-  const now = Math.floor(Date.now() / 1000)
-  // NIP-59 backdating: randomise wrap and seal timestamps into the past so an observer cannot
-  // correlate a channel message with a delivery by timing alone.
-  const fuzzed = () => now - Math.floor(Math.random() * 172800)
+async function returnLaneSend(toHex, descriptor, meta, publish = publishWrapToRelays) {
+  if (!hasBridgeKey()) { err('return lane: no bridge key to seal with — skipping'); return 0 }
   try {
-    const rumor = { kind: 14, pubkey: BRIDGE_PK, created_at: now, tags: [['p', toHex]], content: text }
-    rumor.id = getEventHash(rumor)
-    const seal = finalizeEvent({ kind: 13, created_at: fuzzed(), tags: [],
-      content: nip44.encrypt(JSON.stringify(rumor), nip44.getConversationKey(BRIDGE_SK, toHex)) }, BRIDGE_SK)
-    const wsk = generateSecretKey()
-    const wrap = finalizeEvent({ kind: 1059, created_at: fuzzed(), tags: [['p', toHex]],
-      content: nip44.encrypt(JSON.stringify(seal), nip44.getConversationKey(wsk, toHex)) }, wsk)
     const relays = (PUB.relays || []).length
-    const accepted = await publish(wrap)
+    // A3 §2.5: the seal/wrap construction and the key both live in nostr_egress.mjs. `descriptor`
+    // is {template, slots} — there is no parameter here that could carry a composed sentence.
+    const { wrap, accepted, bytes } = await sealAndWrap({ template: descriptor.template, to: toHex, slots: descriptor.slots }, publish)
     // Journal stamped with the accept-count so the durable record is landed-reality, not intent: a
     // 0/N carry is written accepted:0, never a false "sent". The wrap's author is ephemeral and can
     // never trip the tripwire, so this record is a written-down intent — worth making a truthful one;
@@ -1093,7 +1083,7 @@ async function returnLaneSend(toHex, text, meta, publish = publishWrapToRelays) 
     if (accepted < 1)
       err(`RETURN 0/${relays} -> ${toHex.slice(0, 12)}…: seal reached NO relay — NOT marked sent, will re-carry (wrap ${wrap.id.slice(0, 12)}…)`)
     else
-      log(`RETURN ${accepted}/${relays} -> ${toHex.slice(0, 12)}…: sealed ${String(text).length}B (wrap ${wrap.id.slice(0, 12)}…)`)
+      log(`RETURN ${accepted}/${relays} -> ${toHex.slice(0, 12)}…: sealed ${bytes}B (wrap ${wrap.id.slice(0, 12)}…)`)
     return accepted
   } catch (e) { err(`return lane: seal/send failed: ${e.message}`); return 0 }
 }
@@ -1111,12 +1101,15 @@ function relayDrop(reason, id, deterministic = true) {
   err(`RELAY drop[${reason}]: wrap ${String(id).slice(0, 12)}… (pre-auth, unackable)`)
   if (deterministic) markRelaySeen(id)
 }
-function relayReject(sender, id, reason, wantCh) {
+function relayReject(sender, id, reason, wantCh, extra = {}) {
   // Post-auth reject: the sender IS proven, so the refusal is ACKED — a drop and a silence must not
   // look the same (§5). Marked seen: the decision is deterministic for this wrap id.
-  err(`RELAY reject: ${reason} — sender ${sender.slice(0, 12)}… -> '${wantCh}' (wrap ${String(id).slice(0, 12)}…)`)
+  err(`RELAY reject: ${reason}${extra.cap ? ` (${extra.cap}B)` : ''} — sender ${sender.slice(0, 12)}… -> '${wantCh}' (wrap ${String(id).slice(0, 12)}…)`)
   markRelaySeen(id)
-  returnLaneSend(sender, JSON.stringify({ ok: false, reason, channel: wantCh, ts: Math.floor(Date.now() / 1000) }), { lane: 'relay-ack' })
+  returnLaneSend(sender, {
+    template: 'relay_ack_err',
+    slots: { reason, channel: wantCh, ts: Math.floor(Date.now() / 1000), ...extra },
+  }, { lane: 'relay-ack' })
 }
 function resolveRelayDest(wantCh) {
   // Allowlist check against the resolved relay_channels (UUIDs at boot). DEFAULT EMPTY → nothing
@@ -1134,7 +1127,7 @@ async function postRelay(ev, sender, dest, wantCh, body) {
   try { npub = nip19.npubEncode(sender) } catch { npub = null }
   const npubShort = npub ? `${npub.slice(0, 10)}…${npub.slice(-5)}` : sender.slice(0, 12) + '…'
   const nowSec = Math.floor(Date.now() / 1000)
-  const ackOk = (buzzId) => returnLaneSend(sender, JSON.stringify({ ok: true, channel: dest, buzz_event_id: buzzId || null, ts: nowSec }), { lane: 'relay-ack' })
+  const ackOk = (buzzId) => returnLaneSend(sender, { template: 'relay_ack_ok', slots: { channel: dest, buzzEventId: buzzId || null, ts: nowSec } }, { lane: 'relay-ack' })
   if (FORWARD_MODE !== 'buzz') {
     log(`RELAY[dryrun] -> ${dest}: from ${sender.slice(0, 12)}… (${Buffer.byteLength(body)}B) :: ${JSON.stringify(body.slice(0, 80))}`)
     return
@@ -1166,7 +1159,7 @@ async function postRelay(ev, sender, dest, wantCh, body) {
   })
 }
 function handleRelayIngress(ev) {
-  if (!BRIDGE_SK || !PUB) return
+  if (!hasBridgeKey() || !PUB) return
   const nowMs = Date.now()
   if (relaySeen.has(ev.id)) return                                          // §6 dedup BEFORE decrypt
   const wrapBytes = Buffer.byteLength(JSON.stringify(ev))
@@ -1176,13 +1169,13 @@ function handleRelayIngress(ev) {
   relayDecWin.push(nowMs)
   // ---- expensive step: decryption of UNAUTHENTICATED input (the §7 DoS surface) ----
   let seal
-  try { seal = JSON.parse(nip44.decrypt(ev.content, nip44.getConversationKey(BRIDGE_SK, ev.pubkey))) }
+  try { seal = openSeal(ev) }
   catch { return relayDrop('decrypt', ev.id) }
   let ok = false
   try { ok = verifyEvent(seal) } catch { ok = false }
   if (!ok || seal.kind !== 13) return relayDrop('verify', ev.id)            // authorship proof (§2.4)
   let rumor
-  try { rumor = JSON.parse(nip44.decrypt(seal.content, nip44.getConversationKey(BRIDGE_SK, seal.pubkey))) }
+  try { rumor = openRumor(seal) }
   catch { return relayDrop('decrypt', ev.id) }
   if (!rumor || String(rumor.pubkey) !== String(seal.pubkey)) return relayDrop('mismatch', ev.id) // bind unsigned rumor
   // ---- the sender is now AUTHENTICATED: every drop below is ACKED ----
@@ -1199,7 +1192,7 @@ function handleRelayIngress(ev) {
   const body = String(rumor.content || '')
   const bytes = Buffer.byteLength(body)
   if (!bytes) return relayReject(sender, ev.id, 'empty body', wantCh)
-  if (bytes > PUB.maxContentBytes) return relayReject(sender, ev.id, `over ${PUB.maxContentBytes}B cap`, wantCh)
+  if (bytes > PUB.maxContentBytes) return relayReject(sender, ev.id, 'over cap', wantCh, { cap: PUB.maxContentBytes })
   if (!relayRateOk(sender, dest, nowMs)) return relayReject(sender, ev.id, 'rate cap', wantCh)
   addRelaySeen(ev.id)   // claim BEFORE the async send: a copy from another relay must not post again
   postRelay(ev, sender, dest, wantCh, body)
@@ -1240,7 +1233,7 @@ function agentAuthoredBy(buzzId) {
 // only ever moves bytes to an address. The one place a body could reach a prompt is the action
 // layer, where the wake is content-free and the body is read-plane data (design §5).
 async function scanReturnLane(msgs, opts = {}) {
-  if (!PUB.returnLane.length || !BRIDGE_SK) return
+  if (!PUB.returnLane.length || !hasBridgeKey()) return
   const gateActive = opts.authors !== undefined            // an explicit (even empty) gate is default-closed
   const gate = gateActive ? new Set(opts.authors || []) : null
   for (const m of msgs || []) {
@@ -1272,12 +1265,10 @@ async function scanReturnLane(msgs, opts = {}) {
       const repliedTo = parents.some(pid => agentAuthoredBy(pid) === r.npub_hex)
       if (!mentioned && !repliedTo) continue
       addRlSeen(key)                                       // in-memory now: no double-carry within this scan/overlap
-      const accepted = await returnLaneSend(r.npub_hex,
-        `📥 **${r.mention}** — you were ${repliedTo && !mentioned ? 'replied to' : 'mentioned'} in the community.\n\n> ` +
-        body.replace(/\r/g, '').split('\n').join('\n> ') +
-        `\n\n_carried out by waggle's return lane. Replying to this message reaches nobody; ` +
-        `post from your own key and the bridge brings it back in._`,
-        { src: m.id, why: repliedTo && !mentioned ? 'reply' : 'mention' }, opts.publish)
+      const accepted = await returnLaneSend(r.npub_hex, {
+        template: 'return_carry',
+        slots: { mention: r.mention, why: repliedTo && !mentioned ? 'reply' : 'mention', body },
+      }, { src: m.id, why: repliedTo && !mentioned ? 'reply' : 'mention' }, opts.publish)
       // Persist-on-landed: durable dedup only once the seal reached a relay. A silent 0/N is rolled
       // back so the overlap re-read (and a restart) re-carry it — a rare re-carry beats a lost mention.
       if (accepted >= 1) markRlSeen(key)
@@ -1589,14 +1580,14 @@ if (!process.env.WB_NO_BOOT) {
     log(`public read lane -> inbox ${PUB.inbox}: ${PUB.relays.length} relay(s), ${PUB.authors.length} watched author(s), ${PUB.events.length} watched note(s), pub-since=${PUB.since} (${PUB_SINCE_SECS}s), watermark=${pubWatermark || 'none'}`)
     log(`  gates: staging=${PUB.staging || 'HOLD (none)'} · backfill<=${PUB.backfillLimit} · maxContent=${PUB.maxContentBytes}B · rate ${PUB.replierPerMin}/replier/min ${PUB.channelPerMin}/chan/min ${PUB.lanePerHour}/lane/h · deletes ${PUB.deletesPerHour}/h (A7)`)
     if (PUB.grantors.length) log(`  admission: ${PUB.grantors.length} grantor key(s); NIP-DA kinds ${NIPDA.grant}/${NIPDA.revocation}/${NIPDA.index}`)
-    if (PUB.relayChannels.length && BRIDGE_SK) log(`  relay lane: ${PUB.relayChannels.length} allowlisted channel(s); decrypt budget ${PUB.relayDecryptBudget}/min, wrap cap ${PUB.relayMaxWrapBytes}B — a channel waggle has not joined fails as RELAY[buzz] ERR, never a silent §7 drop`)
-    else if (PUB.relayChannels.length && !BRIDGE_SK) err('WARN: relay_channels configured but no BRIDGE key to open sealed requests — relay lane INERT.')
+    if (PUB.relayChannels.length && hasBridgeKey()) log(`  relay lane: ${PUB.relayChannels.length} allowlisted channel(s); decrypt budget ${PUB.relayDecryptBudget}/min, wrap cap ${PUB.relayMaxWrapBytes}B — a channel waggle has not joined fails as RELAY[buzz] ERR, never a silent §7 drop`)
+    else if (PUB.relayChannels.length && !hasBridgeKey()) err('WARN: relay_channels configured but no BRIDGE key to open sealed requests — relay lane INERT.')
     PUB.relays.forEach(connectPublic)
     if (PUB.staging && PUB.approvers.length && FORWARD_MODE === 'buzz') {
       log(`approval console: watching staging for commands from ${PUB.approvers.length} approver(s)`)
       pollCommands(); setInterval(pollCommands, 15000)
     }
-    if (PUB.scanChannels.length && PUB.returnLane.length && BRIDGE_SK && FORWARD_MODE === 'buzz') {
+    if (PUB.scanChannels.length && PUB.returnLane.length && hasBridgeKey() && FORWARD_MODE === 'buzz') {
       log(`return-lane scan: ${PUB.scanChannels.length} channel(s) · ${PUB.returnLane.length} recipient(s) · signer gate ${PUB.scanAuthors.length} key(s)`)
       // Silence-is-not-calm: a configured scan with an empty gate routes NOTHING, so say so loudly
       // rather than let it look like "no mentions." Set scan_authors (or declare approvers/grantors).

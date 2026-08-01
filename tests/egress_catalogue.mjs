@@ -10,6 +10,7 @@
 import {
   SLOT_TYPE_NAMES, TEMPLATE_NAMES, templateSpec, renderTemplate, emit, __setTransportForTests,
 } from '../src/egress.mjs'
+import { buildBody } from '../src/nostr_egress.mjs'
 
 let fails = 0
 const ok = (name, cond) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${name}`); if (!cond) fails++ }
@@ -147,6 +148,49 @@ console.log('\n-- emit(): the type has no field for a sentence (INV-A3-3) --')
   ok('NEGATIVE CONTROL — emit refuses a template that is not in the catalogue', unknown)
 
   restore()
+}
+
+// ---------------------------------------------------------------------------------------------
+console.log('\n-- The Nostr transport catalogue (§2.5) --')
+
+{
+  // Acks are typed JSON, and their `reason` is a closed set — an ack that could carry an
+  // arbitrary reason string is a free-text path wearing a JSON hat.
+  const okBody = JSON.parse(buildBody('relay_ack_ok', { channel: 'c', buzzEventId: HEX64, ts: 1785537056 }))
+  ok('relay_ack_ok: typed JSON with the buzz id', okBody.ok === true && okBody.buzz_event_id === HEX64)
+
+  const errBody = JSON.parse(buildBody('relay_ack_err', { reason: 'over cap', cap: 16384, channel: 'c', ts: 1 }))
+  ok('relay_ack_err: the over-cap reason renders byte-identically to the pre-A3 wire',
+    errBody.reason === 'over 16384B cap')
+
+  threw('NEGATIVE CONTROL — an ack reason outside the closed set is refused',
+    () => buildBody('relay_ack_err', { reason: 'anything I feel like saying', channel: 'c', ts: 1 }))
+  threw('NEGATIVE CONTROL — a carry reason outside the closed set is refused',
+    () => buildBody('return_carry', { mention: 'claude', why: 'because I said so', body: 'x' }))
+  threw('NEGATIVE CONTROL — a template outside the Nostr catalogue is refused',
+    () => buildBody('freeform', { text: 'anything I feel like saying' }))
+
+  // A3 changes what waggle CAN say, never what crosses. The return lane's carried text moved from
+  // an inline template literal in bridge.mjs into the catalogue, so pin it byte-for-byte against
+  // the pre-#134 string — the existing return-lane suites assert only on WHETHER a carry happened,
+  // never on its bytes, so nothing else would have caught a drifted word here.
+  for (const [why, verb] of [['mention', 'mentioned'], ['reply', 'replied to']]) {
+    const body = 'line one\nline two'
+    const expected =
+      `📥 **claude** — you were ${verb} in the community.\n\n> ` +
+      body.replace(/\r/g, '').split('\n').join('\n> ') +
+      `\n\n_carried out by waggle's return lane. Replying to this message reaches nobody; ` +
+      `post from your own key and the bridge brings it back in._`
+    ok(`return_carry (${why}): byte-identical to the pre-A3 wire`,
+      buildBody('return_carry', { mention: 'claude', why, body }) === expected)
+  }
+
+  const carry = buildBody('return_carry', { mention: 'claude', why: 'mention', body: HOSTILE })
+  ok('return_carry: the community body is quoted, never waggle\'s own voice',
+    carry.split('\n').filter(l => l.startsWith('> ')).length >= 4)
+  ok('return_carry: the handle is validated', carry.includes('**claude**'))
+  threw('return_carry: an injected handle is refused',
+    () => buildBody('return_carry', { mention: 'claude @everyone', why: 'mention', body: 'x' }))
 }
 
 console.log(fails ? `\negress_catalogue: ${fails} FAILED` : '\negress_catalogue: all checks passed')

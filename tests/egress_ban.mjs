@@ -51,26 +51,26 @@ for (const f of files) {
 }
 
 // ---------------------------------------------------------------------------------------------
-console.log('\n-- Nostr transport: no NEW signer site may appear (INV-A3-2, ratcheted) --')
+console.log('\n-- Nostr transport: only nostr_egress.mjs may sign or hold the key (INV-A3-2) --')
 //
-// INV-A3-2 wants exactly one function per transport to invoke a signer. That is TRUE for Buzz as
-// of #134 and NOT YET TRUE for Nostr: the sibling chokepoint (§2.5) has not been built, so
-// `finalizeEvent` still lives in bridge.mjs. Asserting "only nostr.mjs may sign" today would be a
-// test that passes for the wrong reason.
-//
-// So this is a RATCHET rather than the final gate: the exact current signer sites are pinned, and
-// any new one fails. That keeps the Nostr path from drifting toward prose while the Buzz path is
-// being fixed — which §2.3 names as the whole point of covering both transports from day one —
-// and it converts to the strict single-module ban when §2.5 lands.
-const SIGNER_SITES_EXPECTED = {
-  'bridge.mjs': 2,   // returnLaneSend(): the kind:13 seal and the kind:1059 wrap
-}
+// INV-A3-2 wants exactly one function per transport to invoke a signer. Both halves now hold:
+// egress.mjs owns the Buzz CLI, nostr_egress.mjs owns the in-process NIP-59 signing AND the
+// bridge key itself. The key matters as much as the signer here — signing is not the only thing
+// a private key does (the relay lane unseals with it), and a ban on `finalizeEvent` alone would
+// leave BRIDGE_SK spread across the file with nothing stopping the next signer appearing beside
+// a decrypt.
 for (const f of files) {
   const text = readFileSync(join(SRC, f), 'utf8')
   // Count CALLS, not the import line: `finalizeEvent(` with a paren.
   const calls = (text.match(/finalizeEvent\s*\(/g) || []).length
-  const expected = SIGNER_SITES_EXPECTED[f] || 0
-  ok(`${f}: ${calls} finalizeEvent call site(s), pinned at ${expected}`, calls === expected)
+  const holdsKey = /BRIDGE_SK/.test(text)
+  if (f === 'nostr_egress.mjs') {
+    ok(`${f}: holds the signer (expected)`, calls > 0)
+    ok(`${f}: holds the bridge key (expected)`, holdsKey)
+  } else {
+    ok(`${f}: no finalizeEvent call site`, calls === 0)
+    ok(`${f}: never references BRIDGE_SK`, !holdsKey)
+  }
 }
 {
   const planted = 'const e = finalizeEvent({ kind: 1 }, sk)'
