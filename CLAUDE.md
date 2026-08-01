@@ -117,14 +117,14 @@ that merely ran.** The suite was green through all of them.
 
 ## Tests
 
-`npm test` — 17 suites, against the real exported functions with synthetic events. No sockets,
+`npm test` — 19 suites, against the real exported functions with synthetic events. No sockets,
 no production state, no writes outside a temp dir.
 
-boot · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant
+boot · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant
 admission · message rendering · deployed-build verification · return lane · return-lane scan ·
 return-lane no-miss · relay ingress · tripwire union · tripwire detection drill · deploy runner · console Host check
 
-CI runs them on push and PR. **If a run reports fewer than 17, the branch is on a stale base.**
+CI runs them on push and PR. **If a run reports fewer than 19, the branch is on a stale base.**
 The count of record is the `test` script in `package.json`; a prose count that disagrees with it
 is the prose being wrong.
 
