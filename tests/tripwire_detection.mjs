@@ -81,6 +81,45 @@ try {
 
   // A substituted run must never be mistakable for a live one in a log.
   check('a drill run announces that it is a drill', /DRILL/.test(pos.out))
+
+  // --- the size floor: a run that OBSERVED NOTHING has cleared nothing ---
+  //
+  // This is the case that was reporting green in production. With an empty observation set,
+  // "every on-relay post was emitted by our process" is vacuously true — every one of zero
+  // events was accounted for — so exit 0 reports our eyesight, not the world.
+  console.log('\nsize floor (0 observed must not be OK)')
+  const noEvents = resolve(dir, 'none.jsonl')
+  writeFileSync(noEvents, '')
+
+  const empty = run(full, noEvents)
+  check('0 observed + a non-empty journal -> INCONCLUSIVE, not OK', empty.code === 3, `exit ${empty.code}`)
+  check('it refuses to print OK', !/^OK/m.test(empty.out))
+  check('it says nothing was checked', /0 on-relay event\(s\) observed/.test(empty.out))
+  check('it names the read path as the suspect, not a quiet key',
+    /read path is not seeing/.test(empty.out))
+  check('it states plainly that this is not an all-clear', /NOT an all-clear/.test(empty.out))
+
+  // Both halves of the floor: an empty journal too is a quiet period, still not an all-clear.
+  const emptyJournal = resolve(dir, 'empty-journal.log')
+  writeFileSync(emptyJournal, '')
+  const quiet = run(emptyJournal, noEvents)
+  check('0 observed + an empty journal -> still INCONCLUSIVE', quiet.code === 3, `exit ${quiet.code}`)
+  check('it distinguishes a quiet period from a blind one', /may simply be a quiet period/.test(quiet.out))
+
+  // NEGATIVE CONTROL for the floor itself. A tool that returned INCONCLUSIVE unconditionally
+  // would pass every check above. The clean run at line ~79 is the counterpart — it observed
+  // two events and exited 0 — so assert the floor did not swallow it.
+  check('NEGATIVE CONTROL — a run that DID observe events still reports OK (exit 0)',
+    neg.code === 0 && /^OK/m.test(neg.out), `exit ${neg.code}`)
+  check('NEGATIVE CONTROL — the OK states how many events it actually checked',
+    /all 2 on-relay post\(s\)/.test(neg.out))
+
+  // --- alerting: an alarm with nowhere to go must say so ---
+  console.log('\nalarm delivery')
+  check('an unconfigured alarm path is reported on a CLEAN run, before an incident',
+    /no alarm delivery path configured/.test(neg.out))
+  check('a firing alarm with no delivery path says nobody was told',
+    /ALARM NOT DELIVERED/.test(pos.out))
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }

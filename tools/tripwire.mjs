@@ -116,8 +116,17 @@ function fetchPosterEvents() {
   }))).then(() => [...seen.values()])
 }
 
+// Is there anywhere for an alarm to GO? Detection that fires into the void is not detection, and
+// the absence of a delivery path is exactly the kind of thing discovered during an incident rather
+// than before one. Reported on every run, clean or not — a 30-minute timer saying so is cheap
+// compared to finding out when it matters.
+const alarmConfigured = () => !!(process.env.ALARM_NSEC && process.env.ALARM_TO)
+
 async function alarmDM(text) {
-  if (!process.env.ALARM_NSEC || !process.env.ALARM_TO) return
+  if (!alarmConfigured()) {
+    console.error('tripwire: ⚠ ALARM NOT DELIVERED — ALARM_NSEC/ALARM_TO are unset, so this alarm exists only in this log and data/tripwire-alarms.log. Nobody has been told.')
+    return
+  }
   try {
     const ask = process.env.ALARM_NSEC.startsWith('nsec1') ? nip19.decode(process.env.ALARM_NSEC).data : Uint8Array.from(Buffer.from(process.env.ALARM_NSEC, 'hex'))
     const to = process.env.ALARM_TO.startsWith('npub1') ? nip19.decode(process.env.ALARM_TO).data : process.env.ALARM_TO.toLowerCase()
@@ -127,9 +136,30 @@ async function alarmDM(text) {
     const seal = finalizeEvent({ kind: 13, created_at: now(), tags: [], content: nip44.encrypt(JSON.stringify(rumor), nip44.getConversationKey(ask, to)) }, ask)
     const wsk = generateSecretKey()
     const wrap = finalizeEvent({ kind: 1059, created_at: now(), tags: [['p', to]], content: nip44.encrypt(JSON.stringify(seal), nip44.getConversationKey(wsk, to)) }, wsk)
-    await Promise.all(loadRelays().map(url => new Promise(r => { let ws; try { ws = new WebSocket(url) } catch { return r() } const t = setTimeout(() => { try { ws.close() } catch { /* */ } r() }, 6000); ws.on('open', () => ws.send(JSON.stringify(['EVENT', wrap]))); ws.on('message', () => { clearTimeout(t); ws.close(); r() }); ws.on('error', () => { clearTimeout(t); r() }) })))
-    console.error('tripwire: alarm DM sent')
-  } catch (e) { console.error(`tripwire: alarm DM failed: ${e.message}`) }
+    // Count what was ACCEPTED, not what was attempted. The previous version resolved on the first
+    // frame of any kind — including an `["OK", id, false, "..."]` rejection — and on timeouts and
+    // socket errors too, then printed "alarm DM sent" unconditionally. That is the same
+    // relay-OK-is-not-proof trap the rest of this project is built around, in the one place where
+    // believing a false success is worst: the alarm.
+    const relays = loadRelays()
+    const results = await Promise.all(relays.map(url => new Promise(r => {
+      let ws
+      try { ws = new WebSocket(url) } catch { return r(false) }
+      const done = (v) => { clearTimeout(t); try { ws.close() } catch { /* */ } r(v) }
+      const t = setTimeout(() => done(false), 6000)
+      ws.on('open', () => ws.send(JSON.stringify(['EVENT', wrap])))
+      ws.on('message', (d) => {
+        let m
+        try { m = JSON.parse(d.toString()) } catch { return done(false) }
+        if (m[0] === 'OK' && m[1] === wrap.id) return done(m[2] === true)
+        // NOTICE or anything else: keep waiting for the OK until the timeout.
+      })
+      ws.on('error', () => done(false))
+    })))
+    const accepted = results.filter(Boolean).length
+    if (accepted > 0) console.error(`tripwire: alarm DM delivered ${accepted}/${relays.length} relay(s)`)
+    else console.error(`tripwire: ⚠ ALARM NOT DELIVERED — 0/${relays.length} relay(s) accepted the alarm DM. The alarm exists only in this log and data/tripwire-alarms.log.`)
+  } catch (e) { console.error(`tripwire: ⚠ ALARM NOT DELIVERED — alarm DM failed: ${e.message}`) }
 }
 
 // --- run ---
@@ -154,6 +184,11 @@ const iso = (s) => new Date(s * 1000).toISOString()
 
 console.error(`tripwire: poster ${posterHex.slice(0, 12)}… · window ${sinceMin}m · ${events.length} on-relay event(s) · ${journal.size} journaled across ${JOURNALS.length - missing.length}/${JOURNALS.length} lane(s) · ${anomalies.length} unaccounted`)
 
+// Said on EVERY run, not only when something fires. An operator who learns during an incident
+// that the alarm had nowhere to go has learned it too late, and a detector whose alarm is
+// undeliverable is a detector in name only.
+if (!alarmConfigured()) console.error('tripwire: ⚠ no alarm delivery path configured (ALARM_NSEC/ALARM_TO unset) — if this run had found something, nobody would have been told.')
+
 if (!anomalies.length) {
   // A half-synced union cannot produce an all-clear. With a lane's journal absent, "nothing
   // unaccounted" only means nothing was found in the part we could see, and reporting that as OK
@@ -162,7 +197,26 @@ if (!anomalies.length) {
     console.log(`INCONCLUSIVE — no anomalies found, but ${missing.length} of ${JOURNALS.length} lane journal(s) were missing:\n  ${missing.join('\n  ')}\nFix the sync before trusting this result. This is NOT an all-clear.`)
     process.exit(3)
   }
-  console.log('OK — every on-relay post by the poster key was emitted by our process.')
+  // SIZE FLOOR. A check that observed NOTHING has cleared nothing. "Every on-relay post was
+  // emitted by our process" is vacuously true over an empty set — every one of zero events was
+  // accounted for — so an all-clear here reports the strength of our eyesight, not the state of
+  // the world. It is the same shape as the scan of an empty file that once reported everything
+  // clean, and `CLAUDE.md` names it: put a size floor on fetched input.
+  //
+  // The journal count is the diagnostic that makes this actionable rather than merely cautious.
+  // Zero observed while the journal records sends in the same window does not mean the poster was
+  // quiet — it means the read path cannot see the surface the key is actually used on, and every
+  // OK it has ever printed was that blindness, not an assurance.
+  if (!events.length) {
+    console.log(
+      `INCONCLUSIVE — 0 on-relay event(s) observed in the last ${sinceMin}m, so nothing was checked.` +
+      (journal.size
+        ? `\nThe journal recorded ${journal.size} send(s) in the same period. Zero observed against a non-empty journal means the read path is not seeing the surface the poster key is used on — not that the key was idle.`
+        : `\nThe journal is also empty for this window, so this may simply be a quiet period — but a run that saw nothing still proves nothing about the read path.`) +
+      `\nThis is NOT an all-clear.`)
+    process.exit(3)
+  }
+  console.log(`OK — all ${events.length} on-relay post(s) by the poster key were emitted by our process.`)
   process.exit(0)
 }
 
