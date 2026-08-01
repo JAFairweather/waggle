@@ -31,9 +31,14 @@ const check = (name, cond, detail = '') => {
 // spawnSync, not execFileSync: the per-journal accounting is written to STDERR, and execFileSync
 // hands back only stdout on success — so a passing run looked like it had produced no summary at
 // all. Both streams are evidence here.
-function run(journals) {
+// `events` substitutes the wire (--events-from), as the detection drill does. Without it this
+// suite hit the real relays with a 1-minute window, observed nothing, and asserted OK on an empty
+// observation set — the very shape the size floor now refuses. It was also, incidentally, a
+// network-dependent unit test.
+function run(journals, events) {
   const args = ['--since-min', '1']
   for (const j of journals) args.push('--journal', j)
+  if (events) args.push('--events-from', events)
   const r = spawnSync('node', [TOOL, ...args],
     { env: { ...process.env, POSTER, ALARM_NSEC: '', ALARM_TO: '' }, encoding: 'utf8' })
   return { code: r.status, out: (r.stdout || '') + (r.stderr || '') }
@@ -49,21 +54,27 @@ try {
   writeFileSync(readJ, JSON.stringify({ id: id('a'), kind: 9, lane: 'public' }) + '\n')
   writeFileSync(sealedJ, JSON.stringify({ id: id('b'), kind: 9, lane: 'sealed' }) + '\n')
 
+  // One event on the wire, present in the read lane's journal. An OK now means something was
+  // actually checked and accounted for, rather than that nothing was seen.
+  const eventsFile = resolve(dir, 'events.jsonl')
+  writeFileSync(eventsFile, JSON.stringify({ id: id('a'), kind: 9, created_at: Math.floor(Date.now() / 1000), tags: [], content: 'ours' }) + '\n')
+
   console.log('tripwire union (#87)')
 
-  const both = run([readJ, sealedJ])
+  const both = run([readJ, sealedJ], eventsFile)
   check('unions every lane it is given', /2 journaled across 2\/2 lane\(s\)/.test(both.out),
     both.out.split('\n').find(l => l.includes('journaled')) || 'no summary line')
   check('a complete union can report OK', both.code === 0, `exit ${both.code}`)
+  check('...and the OK is over a non-empty observation set', /all 1 on-relay post\(s\)/.test(both.out))
 
   // The property that matters: a missing lane journal must NOT become an all-clear.
-  const half = run([readJ, resolve(dir, 'absent', 'send-journal.log')])
+  const half = run([readJ, resolve(dir, 'absent', 'send-journal.log')], eventsFile)
   check('a half-synced union does not exit clean', half.code === 3, `exit ${half.code}`)
   check('it says INCONCLUSIVE, not OK', /INCONCLUSIVE/.test(half.out) && !/^OK/m.test(half.out))
   check('it names the missing journal', /absent/.test(half.out))
 
   // Comma-separated form is accepted, since that is how a systemd unit will pass it.
-  const csv = run([`${readJ},${sealedJ}`])
+  const csv = run([`${readJ},${sealedJ}`], eventsFile)
   check('accepts comma-separated journals', /2\/2 lane\(s\)/.test(csv.out))
 } finally {
   rmSync(dir, { recursive: true, force: true })
