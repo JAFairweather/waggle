@@ -89,6 +89,18 @@ not in the source you edited.
   merge your own work unless asked, and never merge anything you would not want running in
   production that minute. If something must land without shipping, that is what pinning `WB_REF`
   to a tag is for.
+- **A substantive PR is read by someone who did not write it, before it is merged.** Not a style
+  preference — the merge button ships to production (above), so the author-reads-own-work path has
+  no second pair of eyes anywhere in it. Earned 2026-08-01: #168 was careful work that passed
+  review-by-CI with 18 green suites, and shipped a defect that permanently dropped every sealed
+  message to one recipient. The review that found it was posted 25 minutes after the merge. **CI
+  green is not a review** — every fixture in that suite used a name with no space in it, and the
+  bug was a name with a space. *Substantive* means: touches a delivery path, a gate, a key, or the
+  deploy runner. Docs and tests are exempt.
+- **Land the fix before the next thing.** Six merges went out in under an hour that day, three of
+  them shipping code and restarting production, and the incident was found in the middle of it.
+  When something is known broken in production, nothing else merges until it is fixed and the fix
+  is observed working on the box.
 - **Issues-first.** Every item becomes a GitHub issue before code.
 - **Check open PRs before starting an issue.** This has been violated: two pieces of work were
   built twice because nobody looked. `gh pr list --state open` costs nothing.
@@ -113,6 +125,13 @@ that merely ran.** The suite was green through all of them.
 - **Run the negative control.** A check that has only ever passed proves nothing. Make it fail on
   purpose once and watch it say so. An alarm that always fires and one that never fires fail
   identically.
+- **Assert the property, not the mechanism — and assert both directions.** A test that only checks
+  a guard *rejects* something cannot tell "refuses the dangerous thing" from "refuses everything".
+  2026-08-01: a slot validator was asserted to throw on `Dennis @everyone`; it also threw on
+  `My Dude`, a real recipient, and silently dropped every message to them. Green suite, live
+  outage. Pair every refusal assertion with one that a legitimate value still gets through, and
+  make the fixtures resemble production — every name in that suite was `A`, `B` or `Dennis`, so
+  nothing with a space was ever rendered.
 - **A command that prints nothing has told you nothing.** A send once failed silently because a
   path no longer existed; the exit status looked ordinary.
 - **Syntax valid ≠ works.** `node --check` has passed on code whose identifiers did not exist.
