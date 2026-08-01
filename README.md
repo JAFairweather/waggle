@@ -104,12 +104,12 @@ against what git says, because a stale build is invisible while every status sur
 
 ## Tests
 
-`npm test` runs 16 suites against the **real** exported functions with synthetic events — no
+`npm test` runs 17 suites against the **real** exported functions with synthetic events — no
 sockets, no production state:
 
 boot · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant
 admission · message rendering · deployed-build verification · return lane · return-lane scan ·
-return-lane no-miss · relay ingress · tripwire union · tripwire detection drill · deploy runner
+return-lane no-miss · relay ingress · tripwire union · tripwire detection drill · deploy runner · console Host check
 
 The rendering suite is the one to read if you are reviewing. It tests what the bridge **refuses**,
 not only what it does: a hostile note tries to ping the approver, mint an `APPROVED BY` heading,
