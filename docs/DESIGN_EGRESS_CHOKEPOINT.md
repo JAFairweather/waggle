@@ -1,6 +1,6 @@
 # Design: the egress chokepoint — waggle carries, it never authors
 
-**Status:** proposed · **Tracks:** #134 A3, the structural half of the sev-1
+**Status:** BUILT — §6 steps 2–5 implemented in #168 (INV-A3-1…5 hold, both transports); step 6 is a host change and step 7 is a maintainer call · **Tracks:** #134 A3, the structural half of the sev-1
 **Review:** adversarial review returned on #140 — **verdict: sound, build it**, with five must-fixes; **this revision folds all five in**, plus his second-transport finding (§1.0). Re-review of the folded text is welcome but not gating.
 **Verified against:** `src/bridge.mjs`, read line by line for every egress site, 2026-07-31; re-verified against `main` @ `af7122f` on 2026-08-01.
 The refactors of #151–#153 have since moved every line in that file without touching an egress site, so citations here are by **function name, not line number** — see §1.1.
@@ -98,11 +98,28 @@ output" — carrying untrusted text is the entire product. The real line:
 
 | | who wrote it | how it may appear |
 |---|---|---|
-| **carried body** | an external author, signature-verified | **only** inside a renderer that provably neutralizes it — quoted, inert, attributed to its author |
+| **carried body** | an external author, signature-verified | only inside a renderer that neutralizes it **to the degree its trust tier earns** — see below. Always quoted or attributed to its author, never as waggle's own voice |
 | **machine notice** | the source code | a fixed template, with **typed** data in slots |
 | **free prose** | a caller at runtime | **nowhere. No path.** |
 
-Row 1 is not a weakening. `renderReleased` is already the strongest thing here: the `render_states`
+**Neutralization is tiered, and that is deliberate** *(the maintainer's ruling, 2026-08-01 — an
+earlier draft of this row said "provably neutralizes it" flat, which read as though a vouched body
+were defanged as hard as a quarantined one; the code has never done that, and should not)*:
+
+- **Quarantined** — refs *and* markup defused. An unvouched note cannot mint headings, rules, lists
+  or nested fences, because the impersonation that matters is a pending note dressed up as an
+  approval notice.
+- **Vouched** (released, granted, followed, mirrored) — refs defused unless a live grant earns
+  them (#94); **markup preserved on purpose.** A vouched identity keeps its formatting: reading as
+  an ordinary message rather than a machine log is the entire point of releasing something, and
+  trust is trust.
+
+So a vouched author *can* render a heading or a fence. That is an accepted consequence of the trust
+tier, not an oversight — they still cannot ping the room without a grant, so the residue is
+chrome-imitation by an identity someone already vouched for. A3 governs what **waggle** may author;
+it does not re-litigate what a trusted participant may format.
+
+Row 1 is not a weakening. `renderQuarantined` is already the strongest thing here: the `render_states`
 suite tests what it **refuses** — a hostile note trying to ping the approver, mint an `APPROVED BY`
 heading, break its quote, open a code fence — and it must come out inert *and still readable*.
 Row 3 is the one with no legitimate instance, and it is the one to delete.
@@ -145,7 +162,12 @@ design: not a check that can be skipped, but a vocabulary with no word for the f
 
 A template language with a `{message}` slot is the original hole with extra steps. So:
 
-**The slot-type set is CLOSED.** These eight are the whole vocabulary:
+**The slot-type set is CLOSED.** The table below IS the vocabulary — deliberately stated as a list
+rather than a count. An earlier revision said "these eight are the whole vocabulary" over a table
+listing nine names (`id`/`npub`/`hex` is one row of three), and a number in prose falls out of sync
+with the list beneath it every time the list changes. The closed-ness is what carries the
+guarantee, and the catalogue test enforces membership against the code, so nothing depends on a
+number being right:
 
 | slot type | admits | escaper |
 |---|---|---|
@@ -154,13 +176,32 @@ A template language with a `{message}` slot is the original hole with extra step
 | `count` / `ts` | number | format only |
 | `enum` | one of a literal set (`approve`\|`follow`\|`mute`\|`reject`\|…) | reject on mismatch |
 | `inline_token` | short operator-supplied text, rendered **inside backticks** | strip backticks, newlines, `@`, and `*`/`_`; hard length cap; never leaves the code span |
+| `display_name` | an **external** author's `kind:0` name, rendered as chrome (bold, attribution line) | strip backticks, `@`, brackets, parens, newlines, `*`/`_`/`~`; hard cap |
+| `handle` | an **operator-configured** Buzz handle, rendered as a **live** `@mention` | reject anything that is not a bare handle |
 | `carried_body` | **untrusted** external content | `renderReleased` / `renderQuarantined` neutralization, unchanged |
+| `wrapJson` | a sealed envelope, embedded in a fence | reject on any newline (INV-A3-4) |
+
+**`display_name` and `handle` were added on 2026-08-01** under this section's own "a new type is a
+deliberate spec change" rule, and they are a matched pair — the reason for two is the reason either
+is safe:
+
+- **`display_name` carries a value its subject controls.** An author's `kind:0` name is
+  attacker-chosen and lands in waggle's *chrome*, not inside the quoted body — so `inline_token` is
+  the wrong type for it, since that type's contract is "never leaves the code span". The identical
+  strip already ran at the fetch site, which is why this was never a live hole; but it lived there
+  **by convention**, and a future caller sourcing a name from config or a cache would have got no
+  guard at all. Moving it into the type is this document's own thesis applied to the one untrusted
+  value that renders as chrome rather than as content.
+- **`handle` carries a value the operator controls, and must stay live.** A quarantine header opens
+  with `@approver` precisely so the approver is woken. Keeping it a *separate* type from
+  `display_name` is what guarantees an external value can never reach the slot that preserves its
+  `@`.
 
 **Closing the *type* set is what makes this structural rather than conventional.** The first draft
 said "no template may have a prose slot" and left it to reviewers to notice one. Instead, the
-catalogue test asserts **every slot of every template declares one of the eight types above** — so a
+catalogue test asserts **every slot of every template declares one of the types above** — so a
 future `detail: string` fails by construction, as an *unknown slot type*, with no reviewer required.
-Adding a ninth type is then a deliberate spec change, which is exactly the friction wanted.
+Adding a type is then a deliberate spec change, which is exactly the friction wanted.
 
 `inline_token` exists **only** because `handleCommand`'s unrecognized-verb reply already echoes
 operator input, and deleting
@@ -183,7 +224,7 @@ variable verb, by `spawn('sh', ['-c', …])` — and it is **structurally blind 
 (§1.0), which never spells `buzz` at all. Ban the *imports and signer symbols* instead:
 
 1. **An import/symbol ban test.** Only `egress.mjs` may import `child_process`; only the Nostr chokepoint (§2.5) may call `finalizeEvent` or reference `BRIDGE_SK`. Any other module touching those fails the suite. No argv reshaping evades this, and it covers **both** transports rather than one.
-2. **A catalogue test.** Every template rendered with hostile slot values: assert no slot escapes its frame, and assert **every slot declares one of the eight closed types** (§2.2).
+2. **A catalogue test.** Every template rendered with hostile slot values: assert no slot escapes its frame, and assert **every slot declares one of the closed types** (§2.2).
 
 **Honest residual, stated rather than papered over:** `require('child_' + 'process')` still slips a
 static check, and a determined author with commit access can always route around a lint rule. An
@@ -229,7 +270,7 @@ fixed.
 - **INV-A3-2** — Exactly one function per transport invokes a signer: one for Buzz, one for Nostr. No third.
 - **INV-A3-3** — No caller can reach either with a caller-composed string. Enforced by type shape, not by review.
 - **INV-A3-4** — `wrapJson` is single-line by contract (§2.4).
-- **INV-A3-5** — Every slot of every template declares one of the eight closed types (§2.2). A ninth requires a spec change.
+- **INV-A3-5** — Every slot of every template declares one of the closed types (§2.2). A new one requires a spec change.
 
 ---
 
@@ -312,7 +353,7 @@ into this revision.
 
 The first draft's four open questions, with the answers now folded into the design:
 
-1. **Does the typed catalogue hold, or just relocate the hole?** *It relocates it unless the slot **type** set is closed.* Draft-me proposed "assert no template has an unconstrained slot," which still needs a reviewer to judge *unconstrained*. **Answered by §2.2:** eight types, closed; an unknown type fails by construction. This was the sharpest correction — it converts §7-Q1 from convention back into structure.
+1. **Does the typed catalogue hold, or just relocate the hole?** *It relocates it unless the slot **type** set is closed.* Draft-me proposed "assert no template has an unconstrained slot," which still needs a reviewer to judge *unconstrained*. **Answered by §2.2:** a closed type set; an unknown type fails by construction. This was the sharpest correction — it converts §7-Q1 from convention back into structure.
 2. **Is A3 worth landing without A4?** *Yes — and it earns only the qualified sentence.* **Answered by §3.1:** the qualifier must appear at every restatement site, because three unqualified copies read as corroboration. A4 (#54) earns the bare word.
 3. **Nostr chokepoint now or next?** *Neither — it was mis-scoped as a footnote.* **Answered by §1.0 / §2.5:** it is a second transport, and §2.3's import ban covers it from day one. INV-A3-2 is false until it lands.
 4. **Steward identity with A3 or after?** Still open (§6 step 7) — the one question review left to the maintainer.
