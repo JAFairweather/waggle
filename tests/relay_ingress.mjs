@@ -1,6 +1,6 @@
 // Relay lane (DESIGN_RELAY_INGRESS, #122/#123) — an admitted agent seals a request to waggle's OWN
 // key and waggle relays it into an allowlisted channel as the member it already is, then seals an
-// ack back. This proves the parts the design and Dennis's review turn on:
+// ack back. This proves the parts the design and its adversarial review turn on:
 //
 //   • authorship proof: verifyEvent(seal) + rumor.pubkey === seal.pubkey (§2.4) — a bad signature
 //     or a rumor claiming a different author is dropped PRE-AUTH (counted, unackable, no post),

@@ -202,7 +202,7 @@ const PUB = cfg.public ? {
     // npub_hex is the delivery address (the agent's real Nostr key, which the community relay
     // will not serve), while an external agent's posts arrive signed by a Buzz-side key. Binding
     // them makes "the agent's own messages" expressible for echo-skip WITHOUT the blanket
-    // signer-skip Neil/Dennis warned against: a bound author drives echo-skip only while it is
+    // signer-skip flagged in review: a bound author drives echo-skip only while it is
     // UNIQUE to one entry (see PUB.sharedAuthorKeys below); a key shared across entries — today's
     // single bridge key signs every agent's posts, reposts and quarantine headers — is ambiguous
     // and defers to the per-event registry (agentAuthoredBy) instead. Optional; `author`/`authors`.
@@ -258,7 +258,7 @@ if (PUB) {
   // Author-binding consumption (finding #2). An entry's bound author key lets echo-skip fire on
   // the agent's OWN in-channel posts even though they arrive signed by a Buzz-side key, not the
   // delivery key. But skipping on a SHARED key would silently drop a second agent's cross-mention
-  // (Neil's forward hazard: today one bridge key signs everyone). So a bound author is honored for
+  // (the forward hazard raised in review: today one bridge key signs everyone). So a bound author is honored for
   // echo-skip only while UNIQUE to a single entry; a key bound to two or more entries is ambiguous
   // and defers to the per-event registry. sharedAuthorKeys is that ambiguity set, computed once.
   // Degrades correctly: the shared bridge key is ambiguous now → registry/gate handle echo; give
@@ -993,7 +993,7 @@ async function handleCommand(m) {
   const raw = String(m.content || '').trim().toLowerCase()
   let word = raw.split(/\s+/)[0]
   if (word === 'release') word = 'approve' // the labels say "released from quarantine" — honor the word
-  if (word === 'watch') word = 'follow'    // James's verb: follow (watch kept as alias)
+  if (word === 'watch') word = 'follow'    // the maintainer's verb: follow (watch kept as alias)
   if (!['approve', 'follow', 'mute', 'reject'].includes(word)) {
     // A single unrecognized word from an authorized approver on a pending post deserves an
     // answer, not silence. Multi-word replies are conversation — ignored.

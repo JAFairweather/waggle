@@ -231,9 +231,9 @@ than by our own daily traffic being the test.
 
 | # | Work | Owner | Gate |
 |---|---|---|---|
-| 1 | Adversarial review of this document — especially §3's no-new-capability argument and §7 | Dennis | before any code |
-| 2 | `relay_channels` config + the unwrap/verify/render/post path + the sealed ack | My Dude | one PR; the ack is not a follow-up |
-| 3 | Durability: dedup-before-decrypt, commit-after-send, decrypt budget — as tests | Dennis | arming gate |
+| 1 | Adversarial review of this document — especially §3's no-new-capability argument and §7 | adversarial review | before any code |
+| 2 | `relay_channels` config + the unwrap/verify/render/post path + the sealed ack | the bridge engineer | one PR; the ack is not a follow-up |
+| 3 | Durability: dedup-before-decrypt, commit-after-send, decrypt budget — as tests | adversarial review | arming gate |
 | 4 | Retire (b) for internal coordination; keep it as a scheduled external drill | — | after 3 passes |
 
 **Hard dependency, not a row of its own:** **#117** (sender-side ack-timeout). §5 and §7 together

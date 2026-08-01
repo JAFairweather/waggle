@@ -3,12 +3,12 @@
 **Status:** proposed — decision-ready · **Tracks:** #110 · **Origin channel:** connector (`73f80d38-3245-41a9-814c-8ad364686944`)
 **Verified against:** `src/bridge.mjs` @ `718aa7c` (= `origin/main`) and the live `/opt/waggle-read` box, 2026-07-31.
 
-> Owner ask (James, 2026-07-31 02:16Z): *"completely rethink how an agent outside the hive gets
+> Owner ask (the maintainer, 2026-07-31 02:16Z): *"completely rethink how an agent outside the hive gets
 > notified of messages and activity of a channel inside the hive — especially replies to them and
 > @mentions of them, with Claude as the archetype. The current system is a disaster."*
 
 This is the consolidated design that reconciles #110's three-layer frame with the composition
-hazards Neil and Dennis verified on the wire. It is written to be read once and greenlit. Every
+hazards the read-lane engineer and the adversarial reviewer verified on the wire. It is written to be read once and greenlit. Every
 load-bearing claim below was checked against the code or the live host, not inferred.
 
 ---
@@ -47,7 +47,7 @@ same shape to fleet-channel mentions and replies — nothing new-in-kind, one do
 
 ## 4. The architecture — three layers, one job each
 
-### Layer 1 — Ingress (bridge-side · My Dude's lane)
+### Layer 1 — Ingress (bridge-side · the bridge engineer's lane)
 
 **Detect two trigger types in an explicitly configured channel set** (default: `#connector`):
 
@@ -55,7 +55,7 @@ same shape to fleet-channel mentions and replies — nothing new-in-kind, one do
 - **reply-to-agent** — **NEW.** A Buzz reply p-tags its parent's author (observable on the wire: replies
   in this very thread carry `["p", <parent-author-hex>]`). So a reply to the agent is detectable as
   *a `p` tag equal to a return-lane pubkey*, no body match required. This is the "replies to them"
-  case James named as first-class, and it needs no new state — the thread structure already encodes it.
+  case the maintainer named as first-class, and it needs no new state — the thread structure already encodes it.
 
 **Three seams, all required together:**
 
@@ -64,7 +64,7 @@ same shape to fleet-channel mentions and replies — nothing new-in-kind, one do
    `staging`.
 2. **A separate `pollScanChannels()`** poll, distinct from `pollCommands()`. `pollCommands` keeps
    reading *only* `staging` for signed approval commands. Working-channel traffic must **never** reach
-   `handleCommand` (Neil's decoupling — otherwise every `#connector` post is parsed as a console command).
+   `handleCommand` (the read-lane engineer's decoupling — otherwise every `#connector` post is parsed as a console command).
 3. **An author gate** on the carry-out, reusing the `:380` grantor/approver check — defense-in-depth
    and spam control (see §5 for why it is *not* the load-bearing safety property).
 
@@ -75,7 +75,7 @@ dedup **checked before decryption**, grant verified per arrival, default-closed 
 unverifiable. Keep it verbatim. For the fleet-channel path, Layer 1's scan *is* the detector; for DMs,
 the existing `1059` forward is. Both converge on the same terminus: sealed delivery + content-free wake.
 
-### Layer 3 — Action (the missing layer — **the one decision for James**)
+### Layer 3 — Action (the missing layer — **the one decision for the maintainer**)
 
 Detection currently ends at a file. Something must **start a session**. Options, ranked:
 
@@ -92,7 +92,7 @@ falls out of §5 rather than being bolted on.
 
 ## 5. The safety design — wake and payload are decoupled
 
-Dennis was right that a naive compose is an exploit: *if the action layer starts a session from the
+The adversarial review was right that a naive compose is an exploit: *if the action layer starts a session from the
 carried body, "arriving text reaching a prompt" becomes the main path, injectable by any poster.* And
 he was right that the external actor **cannot** read `#connector` itself (NIP-42-gated), so the content
 **must** be carried — "a wake says THAT never WHAT" cannot hold for the actor path if we read it naively.
@@ -134,9 +134,9 @@ wake/payload split (and the author gate) — that is the exploit with a delivery
 
 | # | Work | Owner | Gate |
 |---|---|---|---|
-| 1 | `scan_channels` config + separate `pollScanChannels` + p-tag reply detection + author gate + **content-free wake split** | My Dude | ship as one PR; the split is non-negotiable |
-| 2 | Layer 3(a): watcher spawns `claude -p` with a fixed prompt on nave.pub; carried body delivered as read-plane data | My Dude + Neil (owns box/read lane) | **needs James's go on §4 L3(a)** |
-| 3 | Invariants as tests: durable-dedup-across-restart, silence-alarms, untrusted-body handling | Dennis (adversarial review) | before arming |
+| 1 | `scan_channels` config + separate `pollScanChannels` + p-tag reply detection + author gate + **content-free wake split** | the bridge engineer | ship as one PR; the split is non-negotiable |
+| 2 | Layer 3(a): watcher spawns `claude -p` with a fixed prompt on nave.pub; carried body delivered as read-plane data | the bridge engineer + the read-lane engineer (owns box/read lane) | **needs the maintainer's go on §4 L3(a)** |
+| 3 | Invariants as tests: durable-dedup-across-restart, silence-alarms, untrusted-body handling | adversarial review (adversarial review) | before arming |
 
 **Do not** redesign the watcher. **Do not** ship Layer 1 without §5. Arm nothing until item 3 passes.
 
