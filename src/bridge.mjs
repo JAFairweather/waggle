@@ -311,47 +311,75 @@ if (FORWARD_MODE === 'buzz' && !process.env.BUZZ_PRIVATE_KEY) {
 }
 
 // --- durable dedup ----------------------------------------------------------
-// Append-only log of forwarded event ids, loaded into memory on boot. On restart
-// we re-hydrate so a bounce (or SINCE backfill) never re-delivers a DM already
-// pushed. Pruned to SEEN_CAP most-recent on boot to bound the file.
-const seen = new Set()
-function loadSeen() {
-  if (!existsSync(SEEN_PATH)) { mkdirSync(dirname(SEEN_PATH), { recursive: true }); return }
-  const lines = readFileSync(SEEN_PATH, 'utf8').split('\n').filter(Boolean)
-  const kept = lines.slice(-SEEN_CAP)
-  for (const id of kept) seen.add(id)
-  log(`dedup: loaded ${seen.size} seen ids from ${SEEN_PATH}${lines.length > kept.length ? ` (pruned ${lines.length - kept.length})` : ''}`)
-}
-function markSeen(id) {
-  seen.add(id)
-  try { appendFileSync(SEEN_PATH, id + '\n') } catch (e) { err(`dedup: append failed for ${id}: ${e.message}`) }
+// Three lanes each keep a durable "already handled this" set, and all three want the same three
+// things: an in-memory Set for the hot check, an append-only file so a restart cannot re-deliver,
+// and a cap so that file cannot grow forever. They were written three times, and they drifted —
+// only two grew the claim/rollback split that #121 added after one wrap posted twice, 423ms
+// apart, because the entry check and the durable write sat on opposite sides of an async send.
+// Whether the third is safe without it is a timing argument someone had to re-derive by hand on
+// every visit, which is exactly the kind of reasoning that decays.
+//
+// One primitive makes the whole vocabulary available to every lane. Which parts a lane USES stays
+// that lane's decision, argued at its own call sites — this changes what is *available*, never
+// what any lane currently does:
+//
+//   has       the hot check
+//   claim     in-memory only — suppress a duplicate while an async send is in flight
+//   rollback  undo a claim, so a failed send retries instead of being silently suppressed
+//   commit    claim + durable append — survives a restart
+//
+// `mem` is the Set itself, exposed because the lanes (and the suites) check it directly.
+function durableSet({ path, cap, label, noun }) {
+  const mem = new Set()
+  return {
+    mem,
+    has: (k) => mem.has(k),
+    claim: (k) => { mem.add(k) },
+    rollback: (k) => { mem.delete(k) },
+    commit(k) {
+      mem.add(k)
+      // Truncated at 64 so a full event id still prints whole, while a long composite key
+      // (source × recipient) cannot flood the journal the tripwire reads.
+      try { appendFileSync(path, k + '\n') }
+      catch (e) { err(`${label}: append failed for ${String(k).slice(0, 64)}: ${e.message}`) }
+    },
+    load() {
+      // The mkdir on the missing-file path is what guarantees the directory exists for every
+      // later append, which is why commit() does not repeat it per write.
+      if (!existsSync(path)) { mkdirSync(dirname(path), { recursive: true }); return }
+      const lines = readFileSync(path, 'utf8').split('\n').filter(Boolean)
+      const kept = lines.slice(-cap)
+      for (const k of kept) mem.add(k)
+      log(`${label}: loaded ${mem.size} ${noun} from ${path}${lines.length > kept.length ? ` (pruned ${lines.length - kept.length})` : ''}`)
+    },
+  }
 }
 
-// Relay-lane dedup — same append-only, capped lifecycle as seen-ids, a SEPARATE file. Marked on any
-// DETERMINISTIC outcome (posted, a reject, or a decrypt/verify failure that will never become
-// valid) so a relay re-serving that wrap is cheap; NOT marked on a transient budget drop, which may
-// succeed on retry. A wrap id here is never mixed into `seen` — the two stores never collide.
-const relaySeen = new Set()
-function loadRelaySeen() {
-  if (!existsSync(RELAYSEEN_PATH)) { mkdirSync(dirname(RELAYSEEN_PATH), { recursive: true }); return }
-  const lines = readFileSync(RELAYSEEN_PATH, 'utf8').split('\n').filter(Boolean)
-  const kept = lines.slice(-RELAYSEEN_CAP)
-  for (const id of kept) relaySeen.add(id)
-  log(`relay-lane dedup: loaded ${relaySeen.size} seen wrap ids from ${RELAYSEEN_PATH}${lines.length > kept.length ? ` (pruned ${lines.length - kept.length})` : ''}`)
-}
-function markRelaySeen(id) {
-  relaySeen.add(id)
-  try { appendFileSync(RELAYSEEN_PATH, id + '\n') } catch (e) { err(`relay-lane dedup: append failed for ${id}: ${e.message}`) }
-}
-// Claim/rollback split, mirroring the return lane's addRlSeen/dropRlSeen (#121 finding #2).
-// The entry check `relaySeen.has(ev.id)` and the durable `markRelaySeen` sit on opposite sides of
-// an ASYNC buzz send. Without an in-memory claim taken synchronously at dispatch, every copy of
-// the same wrap arriving before the first send returns passes the check and posts again — and that
-// is not a rare race but the NORMAL case: a sender publishes to N relays and the bridge subscribes
-// to all of them. Observed on the lane's first live use: one wrap, two identical channel posts
-// 423ms apart. Claim on dispatch, persist on success, roll back on failure so it still retries.
-function addRelaySeen(id) { relaySeen.add(id) }
-function dropRelaySeen(id) { relaySeen.delete(id) }
+// DM + public lane dedup: forwarded event ids, re-hydrated on boot so a bounce (or a SINCE
+// backfill) never re-delivers something already pushed. Commit-before-dispatch on the public
+// lane is deliberate and stays that way — see routePublic: "never double-post" is chosen over
+// "never drop". The claim/rollback verbs exist here now; nothing calls them, on purpose.
+const seenStore = durableSet({ path: SEEN_PATH, cap: SEEN_CAP, label: 'dedup', noun: 'seen ids' })
+const seen = seenStore.mem
+const loadSeen = () => seenStore.load()
+const markSeen = (id) => seenStore.commit(id)
+
+// Relay-lane dedup — a SEPARATE file. Committed on any DETERMINISTIC outcome (posted, a reject, or
+// a decrypt/verify failure that will never become valid) so a relay re-serving that wrap is cheap;
+// NOT committed on a transient budget drop, which may succeed on retry. A wrap id here is never
+// mixed into `seen` — separate stores, they cannot collide.
+//
+// Claim/rollback (#121 finding #2): the entry check and the durable write sit on opposite sides of
+// an ASYNC buzz send, so without a claim taken synchronously at dispatch, every copy of the same
+// wrap arriving before the first send returns passes the check and posts again. That is not a rare
+// race but the NORMAL case — a sender publishes to N relays and the bridge subscribes to all of
+// them. Claim on dispatch, persist on success, roll back on failure so it still retries.
+const relaySeenStore = durableSet({ path: RELAYSEEN_PATH, cap: RELAYSEEN_CAP, label: 'relay-lane dedup', noun: 'seen wrap ids' })
+const relaySeen = relaySeenStore.mem
+const loadRelaySeen = () => relaySeenStore.load()
+const markRelaySeen = (id) => relaySeenStore.commit(id)
+const addRelaySeen = (id) => relaySeenStore.claim(id)
+const dropRelaySeen = (id) => relaySeenStore.rollback(id)
 
 // A7 posted-map: append-only JSONL, same lifecycle as seen-ids. One {id, author, buzz,
 // dest, ts} record per reposted public note, plus {id, deleted:true} once withdrawn — the
@@ -1063,28 +1091,20 @@ async function handleCommand(m) {
 // instant the roster grows past one. The composite key lets a message fan out to every mentioned
 // recipient, each carried exactly once; persistence makes that idempotent across a restart so a
 // bounce never re-delivers (finding #1). Same append-only/capped lifecycle as loadSeen/markSeen.
-const rlSeen = new Set()
-const rlKey = (srcId, recipHex) => String(srcId) + '\x1f' + String(recipHex)
-function loadRlSeen() {
-  if (!existsSync(RLSEEN_PATH)) { mkdirSync(dirname(RLSEEN_PATH), { recursive: true }); return }
-  const lines = readFileSync(RLSEEN_PATH, 'utf8').split('\n').filter(Boolean)
-  const kept = lines.slice(-RLSEEN_CAP)
-  for (const k of kept) rlSeen.add(k)
-  log(`return lane: loaded ${rlSeen.size} carried (source×recipient) keys from ${RLSEEN_PATH}${lines.length > kept.length ? ` (pruned ${lines.length - kept.length})` : ''}`)
-}
-// Persist-on-landed split (finding #2). addRlSeen suppresses a double-carry WITHIN a scan/overlap
+// Persist-on-landed split (finding #2). claim suppresses a double-carry WITHIN a scan/overlap
 // immediately, in memory; the DURABLE append happens only once the seal actually reached a relay —
-// markRlSeen, called on ≥1 accept. A silent 0/N is rolled back with dropRlSeen so #5's overlap
-// re-read re-carries it, and — because it never reached disk — a restart (loadRlSeen) re-carries it
-// too. The earlier commit-before-send would instead durably suppress a mention that was never
-// delivered: #1's own durability then made the loss permanent and invisible.
-function addRlSeen(key) { rlSeen.add(key) }
-function dropRlSeen(key) { rlSeen.delete(key) }
-function markRlSeen(key) {
-  rlSeen.add(key)
-  try { mkdirSync(dirname(RLSEEN_PATH), { recursive: true }); appendFileSync(RLSEEN_PATH, key + '\n') }
-  catch (e) { err(`return lane: dedup append failed for ${String(key).slice(0, 24)}…: ${e.message}`) }
-}
+// commit, called on ≥1 accept. A silent 0/N is rolled back so #5's overlap re-read re-carries it,
+// and — because it never reached disk — a restart re-carries it too. The earlier
+// commit-before-send would instead durably suppress a mention that was never delivered: #1's own
+// durability then made the loss permanent and invisible. This lane is the one that uses all four
+// verbs, which is why the primitive has them.
+const rlSeenStore = durableSet({ path: RLSEEN_PATH, cap: RLSEEN_CAP, label: 'return lane', noun: 'carried (source×recipient) keys' })
+const rlSeen = rlSeenStore.mem
+const rlKey = (srcId, recipHex) => String(srcId) + '\x1f' + String(recipHex)
+const loadRlSeen = () => rlSeenStore.load()
+const addRlSeen = (key) => rlSeenStore.claim(key)
+const dropRlSeen = (key) => rlSeenStore.rollback(key)
+const markRlSeen = (key) => rlSeenStore.commit(key)
 
 // Drop-log dedup (finding #2). The signer-gate err() in scanReturnLane fires before the
 // per-recipient rlSeen check, so without this a STATIC backlog of non-admitted signers re-logs
@@ -1626,7 +1646,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
+export { durableSet, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
