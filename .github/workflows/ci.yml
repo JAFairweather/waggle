@@ -1,11 +1,13 @@
 name: CI
 
-# Run the test suite on every PR and on pushes to main (issue #38). The four
-# suites — quarantine gating, deletion propagation, lane-2 rate caps, grant
-# admission — plus render/deploy-verify/return-lane are side-effect-free (temp
-# dirs, stubbed sends), so they are safe to run unattended. A visible green
-# check replaces "whoever remembered to run it locally", and is part of the
-# credibility story for a public repo.
+# Run the test suite on every PR and on pushes to main (issue #38). Every suite in
+# the `test` script is side-effect-free (temp dirs, stubbed sends), so they are safe
+# to run unattended. A visible green check replaces "whoever remembered to run it
+# locally", and is part of the credibility story for a public repo.
+#
+# Deliberately no suite count or roster here: package.json's `test` script is the only
+# place that knows it, and a restated count goes stale silently — this one drifted to
+# three different numbers in a day.
 
 on:
   push:
