@@ -82,10 +82,19 @@ not in the source you edited.
 
 ## How work happens here
 
+- **⚠ Merging to `main` deploys.** The pull-based deploy runner (`deploy/README.md`) polls `main`
+  and ships the first CI-green commit it finds to the production bridge, within minutes and with no
+  human step in between: **"merged + CI green" *is* the authorisation.** The review bar and the
+  merge button are therefore the same lever. Open a PR and let the maintainer merge it; do not
+  merge your own work unless asked, and never merge anything you would not want running in
+  production that minute. If something must land without shipping, that is what pinning `WB_REF`
+  to a tag is for.
 - **Issues-first.** Every item becomes a GitHub issue before code.
 - **Check open PRs before starting an issue.** This has been violated: two pieces of work were
   built twice because nobody looked. `gh pr list --state open` costs nothing.
-- **Code lands via PR that the maintainer merges.** Doc-only may go to `main` with an issue ref.
+- **Code lands via PR that the maintainer merges.** Doc-only may go to `main` with an issue ref —
+  though today even a docs-only commit triggers a deploy tick and restarts the lane (#162), so it
+  is less free than it sounds.
 - **Commit trailer is exactly `Co-Authored-By: Claude <noreply@anthropic.com>`** — no model
   identifiers anywhere, trailer included. PR bodies end *"Drafted with assistance from
   [Claude Code](https://claude.com/claude-code)"*.
