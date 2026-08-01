@@ -33,7 +33,7 @@ def load_env():
 
     # Standing convention, stated in Claude's own kind:0 metadata: coordination DMs are CC-d to
     # the operator. NVOY_DM_CC is NOT in the identity file — every historical call set it on the
-    # command line, and omitting it silently drops James off his own coordination. Resolved from
+    # command line, and omitting it silently drops the maintainer off their own coordination. Resolved from
     # the trust allowlist rather than typed: an npub typed from memory has been corrupted here.
     if "NVOY_DM_CC" not in env:
         trusted = json.loads(pathlib.Path(TRUST).read_text())["trusted"]

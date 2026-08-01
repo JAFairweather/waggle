@@ -65,13 +65,11 @@ const ok = (n, c) => { console.log(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) f
 const journal = () => existsSync(process.env.SEND_JOURNAL_PATH)
   ? readFileSync(process.env.SEND_JOURNAL_PATH, 'utf8').split('\n').filter(Boolean).map(JSON.parse) : []
 // Run a scan and return only the journal entries it produced.
-let cursor = 0
 async function scanDelta(msgs, opts) {
   const before = journal().length
   if (opts === undefined) await scanReturnLane(msgs)
   else await scanReturnLane(msgs, opts)
   const j = journal()
-  cursor = j.length
   return j.slice(before)
 }
 const toOf = e => e.to

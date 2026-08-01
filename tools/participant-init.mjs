@@ -23,7 +23,6 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { createHash } from 'node:crypto'
 import WebSocket from 'ws'
 import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
@@ -144,9 +143,6 @@ if (cmd === 'verify') {
   const keyPath = flag('--key')
   const { pk } = loadKey(keyPath)
   const grantor = toHex(flag('--grantor') || die('verify needs --grantor <npub|hex>'))
-  const scopeHash = (subject, salt) => createHash('sha256').update(Buffer.concat([
-    Buffer.from('waggle/da-scope/v1'), Buffer.from([0]), Buffer.from(String(subject)), Buffer.from(salt || '', 'hex'),
-  ])).digest('hex')
 
   say('')
   say(`  Participant ${nip19.npubEncode(pk)}`)

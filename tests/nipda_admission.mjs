@@ -43,7 +43,7 @@ process.env.SEEN_PATH = join(tmp, 'seen.log')
 process.env.PUB_WATERMARK_PATH = join(tmp, 'watermark')
 process.env.POSTED_MAP_PATH = join(tmp, 'posted-map.log')
 
-const { routePublic, processGrantEvent, grantSet, PUB } = await import('../src/bridge.mjs')
+const { routePublic, processGrantEvent, grantSet } = await import('../src/bridge.mjs')
 
 const wire = (ev) => JSON.parse(JSON.stringify(ev))
 const now = () => Math.floor(Date.now() / 1000)

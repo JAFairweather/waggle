@@ -12,7 +12,7 @@
 // Run: node tests/deploy_verify.mjs   (exit 0 = pass, 1 = fail)
 
 import { execFileSync, execSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, readdirSync, statSync, appendFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readdirSync, statSync, appendFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'

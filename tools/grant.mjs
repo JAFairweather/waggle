@@ -140,7 +140,6 @@ if (cmd === 'whoami') {
   const grantees = toRaw.split(',').map(s => s.trim()).filter(Boolean).map(t =>
     t.startsWith('npub1') ? nip19.decode(t).data : (HEX64.test(t) ? t.toLowerCase() : die(`--to entry is not an npub or 64-hex: ${t}`)))
   if (!grantees.length) die('issue needs at least one --to')
-  const grantee = grantees[0]
   // Two things can be granted, and they differ only in what the scope binds to:
   //   --channel <uuid>  cap admit  — this grantee may enter that channel  (the S3 tier)
   //   --agent <npub>    cap task   — this grantee may TASK that agent     (attention as a scope)

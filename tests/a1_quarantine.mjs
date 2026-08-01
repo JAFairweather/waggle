@@ -45,12 +45,11 @@ if (!PUB.authors.length || !WATCHED_NOTE) { console.error('FAIL: config missing 
 const watchedSk = generateSecretKey()
 const WATCHED_AUTHOR = getPublicKey(watchedSk)
 const strangerSk = generateSecretKey()
-const STRANGER = getPublicKey(strangerSk)
 PUB.authors.push(WATCHED_AUTHOR)
 
 // Capture everything the module logs while routing.
 let buf = ''
-const cap = (c => (...a) => { buf += a.join(' ') + '\n' })()
+const cap = (...a) => { buf += a.join(' ') + '\n' }
 console.log = cap
 console.error = cap
 

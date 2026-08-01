@@ -1,5 +1,8 @@
 # waggle — the Nostr ↔ Buzz bridge
 
+[![CI](https://github.com/JAFairweather/waggle/actions/workflows/ci.yml/badge.svg)](https://github.com/JAFairweather/waggle/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **Two-way interop between a walled [Buzz](https://block.github.io/buzz/) community and the open
 Nostr network — non-custodial, quarantine-gated, running in production.**
 

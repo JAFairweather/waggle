@@ -3,11 +3,16 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Non-custodial subscriber that pushes external Nostr events (Armada NIP-17 DMs) into per-agent Buzz inboxes.",
+  "description": "Non-custodial, quarantine-gated two-way bridge between a walled Buzz community and public Nostr.",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/JAFairweather/waggle.git" },
+  "bugs": { "url": "https://github.com/JAFairweather/waggle/issues" },
+  "homepage": "https://github.com/JAFairweather/waggle#readme",
   "main": "src/bridge.mjs",
   "scripts": {
     "start": "node src/bridge.mjs",
     "dryrun": "FORWARD_MODE=dryrun node src/bridge.mjs",
+    "lint": "eslint src tools tests",
     "test": "node tests/a1_quarantine.mjs && node tests/a7_deletion.mjs && node tests/lane2_caps.mjs && node tests/nipda_admission.mjs && node tests/render_states.mjs && node tests/deploy_verify.mjs && node tests/return_lane.mjs && node tests/return_lane_scan.mjs && node tests/return_lane_nomiss.mjs && node tests/relay_ingress.mjs && node tests/tripwire_union.mjs && node tests/tripwire_detection.mjs && node tests/deploy_runner.mjs",
     "console": "node tools/serve-console.mjs"
   },
@@ -19,5 +24,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.5"
   }
 }

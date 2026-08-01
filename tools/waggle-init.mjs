@@ -43,7 +43,6 @@ const bad = (s) => say(`    ${c.bad}✗${c.off} ${s}`)
 const note = (s) => say(`      ${c.dim}${s}${c.off}`)
 
 const HEX64 = /^[0-9a-f]{64}$/i
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const toHex = (v) => {
   const s = String(v || '').trim()
   if (s.startsWith('npub1')) return nip19.decode(s).data
