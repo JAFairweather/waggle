@@ -67,6 +67,11 @@ not in the source you edited.
 - **A granted participant *posts in* as a first-class member.** The write half is exact. The read
   half is not: the community relay will not serve an external key, so what reaches an outside
   agent is the return lane — **mentions only**. Do not claim read.
+- **You act as your OWN participant key, never as the bridge.** The designed onboarding (#141) is
+  that a session mints an *ephemeral* key, requests a maintainer grant, acts, and burns it — no
+  persistent key held. That reinforces this repo's core rule, it does not bend it: signing as
+  waggle is impersonation; signing as your own admitted key is the mechanism. (Operational
+  procedure lives in the private brief; #141 is partly built — do not describe it as shipped.)
 - **Shipped is never blurred with designed.** If a thing is landed-but-undeployed, say so.
 - **`waggle` is always lowercase.** Including UI wordmarks; the shared Nave titlebar uppercases app
   names, so waggle surfaces override it locally.
