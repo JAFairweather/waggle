@@ -159,6 +159,72 @@ try {
   } catch (e) { dc = e.status ?? 1; dOut = (e.stdout || '') + (e.stderr || '') }
   check(dc === 0, 'WB_TREE unset + DRY_RUN -> exit 0 (no set -e trip on the override guard)')
   check(/DRY_RUN/.test(dOut) && /waggle-read/.test(dOut), 'unset WB_TREE -> tree defaults to /opt/waggle-read')
+
+  // (8) the no-op gate (#162): a commit that changes NO shipped file must not restart the lane.
+  //
+  // The runner deploys `main` HEAD, and most merges here are docs. Without this gate each one
+  // rsyncs byte-identical content, runs npm ci and bounces the bridge — dropping every relay
+  // subscription to change nothing. The cases below run on the SAME tree in sequence, because
+  // the gate is about the transition from one deployed SHA to the next.
+  const tick = (tree, ref, marker, extraEnv = {}) => {
+    let c = 0, o = ''
+    try {
+      o = execFileSync('sh', ['-c', `sh "${SCRIPT}" read 2>&1`], {
+        cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, WB_HUB: hub, WB_TREE: tree, WB_REF: ref, WB_NO_FETCH: '1',
+               STUB_CI_STATE: 'success', WB_CI_STATE_CMD: 'echo "$STUB_CI_STATE" #',
+               WB_NPM_CMD: ':', WB_RESTART_CMD: `touch "${marker}" #`, ...extraEnv },
+      })
+    } catch (e) { c = e.status ?? 1; o = (e.stdout || '') + (e.stderr || '') }
+    return { code: c, out: o }
+  }
+
+  // Two commits on top of TARGET in the hub: one touching only an unshipped path, one touching
+  // a shipped one. Made on a detached HEAD so the hub's own checkout state is irrelevant.
+  const inHub = (cmd) => execSync(`git -C "${hub}" ${cmd}`, { encoding: 'utf8' }).trim()
+  inHub(`-c advice.detachedHead=false checkout --quiet --detach ${TARGET}`)
+  writeFileSync(join(hub, 'README.md'), readFileSync(join(hub, 'README.md'), 'utf8') + '\n<!-- docs-only -->\n')
+  inHub('add README.md')
+  inHub('-c user.email=t@t -c user.name=t commit --quiet -m "docs only"')
+  const DOCS_SHA = inHub('rev-parse HEAD')
+  writeFileSync(join(hub, 'src', 'log.mjs'), readFileSync(join(hub, 'src', 'log.mjs'), 'utf8') + '\n// shipped change\n')
+  inHub('add src/log.mjs')
+  inHub('-c user.email=t@t -c user.name=t commit --quiet -m "code change"')
+  const CODE_SHA = inHub('rev-parse HEAD')
+
+  const nt = join(work, 'tree-noop')
+  mkdirSync(nt, { recursive: true })
+  const nm = join(nt, '.restarted')
+
+  const base = tick(nt, TARGET, nm)
+  check(base.code === 0 && existsSync(nm), 'no-op gate: baseline deploy restarts, as before')
+
+  rmSync(nm, { force: true })
+  const docsTick = tick(nt, DOCS_SHA, nm)
+  check(docsTick.code === 0, 'docs-only commit -> exit 0')
+  check(!existsSync(nm), 'docs-only commit -> lane NOT restarted')
+  check(/no shipped files changed/.test(docsTick.out), 'docs-only -> says why it skipped, never silently')
+  check(readFileSync(join(nt, 'DEPLOYED_SHA'), 'utf8').trim() === DOCS_SHA,
+    'docs-only -> SHA still recorded, so the next tick is not re-evaluated')
+  check(/verified/.test(docsTick.out), 'docs-only -> tree still VERIFIED, not merely assumed')
+
+  // NEGATIVE CONTROL. The checks above pass just as happily if the gate skipped everything
+  // unconditionally — a runner that never restarts and one that restarts only when needed are
+  // indistinguishable until a real code change is put through it.
+  rmSync(nm, { force: true })
+  const codeTick = tick(nt, CODE_SHA, nm)
+  check(codeTick.code === 0, 'NEGATIVE CONTROL — shipped-file change -> exit 0')
+  check(existsSync(nm), 'NEGATIVE CONTROL — shipped-file change DOES restart the lane')
+  check(!/no shipped files changed/.test(codeTick.out), 'NEGATIVE CONTROL — did not take the no-op path')
+  check(/\/\/ shipped change/.test(readFileSync(join(nt, 'src', 'log.mjs'), 'utf8')),
+    'NEGATIVE CONTROL — the new code actually reached the tree')
+
+  // Being unable to answer the question is not a reason to skip work: a recorded SHA the hub
+  // does not have (force-push, rebase, a restored tree) must fall through to a full deploy.
+  rmSync(nm, { force: true })
+  writeFileSync(join(nt, 'DEPLOYED_SHA'), 'f'.repeat(40) + '\n')
+  const orphan = tick(nt, CODE_SHA, nm)
+  check(orphan.code === 0 && existsSync(nm), 'unknown recorded SHA -> falls through to a full deploy')
 } finally {
   rmSync(work, { recursive: true, force: true })
 }

@@ -127,6 +127,35 @@ if [ -n "$DRY_RUN" ]; then
   exit 0
 fi
 
+# --- no-op gate: did anything we actually SHIP change? (#162) ----------------------------
+# The SHA comparison above answers "is there a new commit", not "is there new CODE". Docs,
+# CI config and deploy/ are not in the ship list, so a docs-only merge would otherwise rsync
+# byte-identical content, run npm ci, and RESTART THE LANE — dropping every relay
+# subscription and re-running backfill to change nothing. Most merges on this repo are docs.
+#
+# Skipping the restart is only safe if the tree really is already correct for the new commit,
+# so this does not merely assume it: the SHA is recorded and verify-deployed.sh is still run.
+# A drift alarms exactly as it would after a full deploy.
+#
+# Falls through to a full deploy whenever the question cannot be answered — no DEPLOYED_SHA
+# (first run), or a recorded SHA the hub does not have (force-push, rebase, restored tree).
+# Being unable to check is not a reason to skip work.
+if [ "$DEPLOYED_SHA" != "none" ] && git -C "$HUB" cat-file -e "${DEPLOYED_SHA}^{commit}" 2>/dev/null; then
+  # shellcheck disable=SC2086  # SHIP is an intentional word list
+  CHANGED=$(git -C "$HUB" diff --name-only "$DEPLOYED_SHA" "$TARGET_SHA" -- $SHIP 2>/dev/null || echo '?')
+  if [ -z "$CHANGED" ]; then
+    log "no shipped files changed between $(git -C "$HUB" rev-parse --short "$DEPLOYED_SHA") and $SHORT — recording without restarting"
+    printf '%s\n' "$TARGET_SHA" > "$TREE/DEPLOYED_SHA.tmp" && mv "$TREE/DEPLOYED_SHA.tmp" "$TREE/DEPLOYED_SHA"
+    if sh "$HUB/deploy/verify-deployed.sh" "$LANE" "$TREE" "$TARGET_SHA"; then
+      log "no-op deploy OK — $TREE already matches $SHORT, verified, lane untouched"
+      exit 0
+    else
+      alarm "no-op deploy: tree does NOT match $SHORT despite no shipped file changing — investigate now"
+      exit 1
+    fi
+  fi
+fi
+
 # --- deploy: check out the exact sha in the hub, ship code-only into the tree ------------
 git -C "$HUB" checkout --quiet --detach "$TARGET_SHA" \
   || { alarm "could not check out $SHORT in hub"; exit 2; }
