@@ -33,10 +33,12 @@
 // `since`, so a since=now subscription silently drops fresh DMs. We default the
 // lookback to 48h and lean on durable id-dedup to make re-delivery a no-op.
 import WebSocket from 'ws'
-import { verifyEvent, finalizeEvent, generateSecretKey, getEventHash, getPublicKey } from 'nostr-tools/pure'
-import * as nip44 from 'nostr-tools/nip44'
+// Only verifyEvent remains here: every signing symbol moved to nostr_egress.mjs with the key
+// (A3 §2.5). Verification is a public-key operation and belongs wherever input is judged.
+import { verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
-import { execFile } from 'node:child_process'
+import { emit, query } from './egress.mjs'
+import { bridgePubkey, hasBridgeKey, openSeal, openRumor, sealAndWrap } from './nostr_egress.mjs'
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -153,12 +155,9 @@ function journalSend(id, meta) {
 // The bridge's own identity, used to SEAL outbound return-lane mail. A NIP-17 seal names its
 // real sender, so this has to be the bridge's key — the wrap around it is signed by a throwaway,
 // which is why this traffic never appears on the wire as the poster key.
-const BRIDGE_SK = (() => {
-  const raw = process.env.BUZZ_PRIVATE_KEY
-  if (!raw) return null
-  try { return raw.startsWith('nsec1') ? nip19.decode(raw).data : Uint8Array.from(Buffer.from(raw, 'hex')) } catch { return null }
-})()
-const BRIDGE_PK = BRIDGE_SK ? getPublicKey(BRIDGE_SK) : null
+// A3 §2.5: the key itself lives in nostr_egress.mjs — signing is not the only thing it does (the
+// relay lane unseals with it too), so one module owns it and hands out capabilities instead.
+const BRIDGE_PK = bridgePubkey()
 
 const POSTED_CAP = Number(process.env.POSTED_CAP || 100000)
 const DEL_SINCE_SECS = Number(process.env.DEL_SINCE_SECS || 172800) // 48h
@@ -282,8 +281,7 @@ function resolveChannels(cb) {
   const pending = PUB ? [PUB.inbox, PUB.staging, ...PUB.scanChannels, ...PUB.relayChannels].filter(v => v && !UUID_RE.test(v)) : []
   if (!pending.length) return cb()
   if (FORWARD_MODE !== 'buzz') { err(`WARN: channel name(s) ${pending.join(', ')} left unresolved in ${FORWARD_MODE} mode`); return cb() }
-  execFile('buzz', ['channels', 'list'], (e, so) => {
-    if (e) { err(`FATAL: cannot resolve channel names — 'buzz channels list' failed: ${e.message}`); process.exit(1) }
+  query('channels_list').then((so) => {
     const byName = new Map()
     try {
       for (const c of JSON.parse(String(so).slice(String(so).indexOf('[')))) {
@@ -302,6 +300,12 @@ function resolveChannels(cb) {
     PUB.scanChannels = PUB.scanChannels.map((v, i) => one(v, `scan_channel[${i}]`))
     PUB.relayChannels = PUB.relayChannels.map((v, i) => one(v, `relay_channel[${i}]`))
     cb()
+  }).catch((e) => {
+    // Unresolvable channel names are FATAL in buzz mode — booting with a name we could not
+    // resolve would route nowhere, silently. Default closed: refuse to start rather than run
+    // half-addressed. (process.exit inside `one` throws past this catch by design; re-exit.)
+    err(`FATAL: cannot resolve channel names — 'buzz channels list' failed: ${e.message}`)
+    process.exit(1)
   })
 }
 
@@ -519,23 +523,19 @@ function forward(rec, ev, src) {
   // runtime lacks that root cannot open it; say so, rather than "go unwrap," so a missing
   // Concord grant reads as a provisioning gap instead of a bad route. (Cost six confused
   // rounds with a team member, 2026-07-24, before this said so.)
-  const label = src && src.channel
-    ? `New Concord channel post on **${src.channel}** — its outer \`p\` tag is a random decoy, not a recipient. ` +
-      `Decrypt with the plane key you derive from the **${src.channel} community_root** ` +
-      `(publicChannel(root, channel_id, epoch).conv); do NOT re-seal. If your runtime holds no Concord grant for ` +
-      `this channel, you cannot open it yet — that's a provisioning gap, flag it and hold:`
-    : `New Armada DM — sealed, unwrap with your key:`
   if (FORWARD_MODE !== 'buzz') {
     log(`FORWARD[dryrun] -> ${rec.name} inbox ${rec.inbox}: ${src && src.channel ? `channel ${src.channel}` : 'DM'} 1059 ${ev.id.slice(0, 12)}… (${JSON.stringify(ev).length} B)`)
     return
   }
-  const content = `@${rec.name}\n\n${label}\n\n\`\`\`json\n${JSON.stringify(ev)}\n\`\`\`\n`
   if (process.env.WB_STUB_SEND) { log(`FORWARD[stub] -> ${rec.name} inbox ${rec.inbox}: 1059 ${ev.id.slice(0, 12)}…`); return }
-  execFile('buzz', ['messages', 'send', '--channel', rec.inbox, '--content', content], (e, so, se) => {
-    if (e) return err(`FORWARD[buzz] ERR -> ${rec.name}: ${se || e.message}`)
+  emit({
+    template: 'sealed_envelope',
+    dest: rec.inbox,
+    slots: { name: rec.name, channel: (src && src.channel) || undefined, wrapJson: JSON.stringify(ev) },
+  }).then(({ stdout }) => {
     log(`FORWARD[buzz] ok -> ${rec.name} inbox: ${src && src.channel ? `${src.channel} ` : 'DM '}1059 ${ev.id.slice(0, 12)}…`)
-    journalSend(parseBuzzEventId(so), { kind: 9, dest: rec.inbox, lane: 'sealed' })
-  })
+    journalSend(parseBuzzEventId(stdout), { kind: 9, dest: rec.inbox, lane: 'sealed' })
+  }).catch(e => err(`FORWARD[buzz] ERR -> ${rec.name}: ${e.message}`))
 }
 
 function route(ev) {
@@ -705,9 +705,6 @@ async function forwardPublic(ev, why, dest, quarantine) {
   const agent = PUB ? ((PUB.returnLane.find(r => r.npub_hex === String(ev.pubkey || '').toLowerCase()) || {}).npub_hex || null) : null
   const nowSec = Math.floor(Date.now() / 1000)
   const { clamped, outOfRange } = clampCreated(ev.created_at, nowSec)
-  const when = new Date(clamped * 1000).toISOString()
-  const claim = outOfRange && ev.created_at
-    ? `  ·  ⚠︎ author-claimed \`${new Date((Number(ev.created_at) || 0) * 1000).toISOString()}\` (clamped)` : ''
   if (FORWARD_MODE !== 'buzz') {
     log(`PUBLIC[dryrun] -> ${quarantine ? 'STAGING' : 'inbox'} ${dest}: kind1 ${ev.id.slice(0, 12)}… by ${author}… (${why})${outOfRange ? ' [clamped]' : ''} :: ${JSON.stringify((ev.content || '').slice(0, 80))}`)
     return
@@ -715,7 +712,6 @@ async function forwardPublic(ev, why, dest, quarantine) {
   // Reposted content is untrusted public text. It is delivered as a fenced block so a note
   // that happens to contain "@Name" or markdown can't inject a Buzz mention/format.
   const body = String(ev.content || '')
-  const mention = quarantine && PUB.approverMention ? `@${PUB.approverMention} ` : ''
   // Friendly author identity: display name from the author's public kind:0 (UNTRUSTED text —
   // sanitized, rendered outside the fence) plus the npub, which is what a reader can
   // actually paste into a client. Best-effort with a 2s budget; falls back to npub alone.
@@ -730,9 +726,22 @@ async function forwardPublic(ev, why, dest, quarantine) {
   // same act that removes admission — no second switch to forget. Every other reason a note
   // reaches here (mirrored feed, standing follow, human-released quarantine) stays defused.
   const liveRefs = !quarantine && !!ev.pubkey && grantSet.has(String(ev.pubkey).toLowerCase())
-  const content = quarantine
-    ? renderQuarantined({ body, mention, name, npub: npub || ev.pubkey, when, claim, why, id: ev.id })
-    : renderReleased({ body, name, npubShort, liveRefs })
+  const descriptor = quarantine
+    ? {
+      template: 'quarantine_header',
+      dest,
+      slots: {
+        body,
+        approver: (quarantine && PUB.approverMention) || undefined,
+        name,
+        npub: npub || ev.pubkey,
+        ts: clamped,
+        claimedTs: outOfRange && ev.created_at ? Number(ev.created_at) : undefined,
+        why,
+        id: ev.id,
+      },
+    }
+    : { template: 'released_post', dest, slots: { body, name, npubShort, liveRefs } }
   // Test seam: exercise the full buzz-mode path (markSeen/watermark/posted-map) without a
   // network send. The synthetic buzz id (orig id reversed — still 64 hex, still unique)
   // exercises the same capture shape the live path records.
@@ -741,16 +750,15 @@ async function forwardPublic(ev, why, dest, quarantine) {
     recordPosted({ id: ev.id, author: ev.pubkey, buzz: ev.id.split('').reverse().join(''), dest, q: !!quarantine, ts: nowSec, agent })
     return
   }
-  execFile('buzz', ['messages', 'send', '--channel', dest, '--content', content], (e, so, se) => {
-    if (e) return err(`PUBLIC[buzz] ERR -> ${dest}: ${se || e.message}`)
+  return emit(descriptor).then(({ stdout }) => {
     log(`PUBLIC[buzz] ok -> ${quarantine ? 'STAGING' : 'inbox'} ${dest}: kind1 ${ev.id.slice(0, 12)}… by ${author}… (${why})`)
     // A7: record the repost so the author's later kind:5 can withdraw it. A null buzz id
     // (stdout didn't carry one) degrades to the follow-up-tombstone tier — logged, safe.
-    const buzzId = parseBuzzEventId(so)
+    const buzzId = parseBuzzEventId(stdout)
     if (!buzzId) err(`A7 warn[no-id]: could not capture buzz event id for ${ev.id.slice(0, 12)}… — withdrawal will use follow-up tier`)
     recordPosted({ id: ev.id, author: ev.pubkey, buzz: buzzId, dest, q: !!quarantine, ts: nowSec, agent })
     journalSend(buzzId, { kind: 9, dest, lane: 'public' })
-  })
+  }).catch(e => err(`PUBLIC[buzz] ERR -> ${dest}: ${e.message}`))
 }
 
 function routePublic(ev) {
@@ -859,23 +867,17 @@ function routeDelete(ev) {
 // when we never captured a buzz id or both mutations fail.
 function withdraw(origId, entry, delEv) {
   const done = (tier) => { recordWithdrawn(origId); log(`A7 ok[${tier}]: withdrew ${origId.slice(0, 12)}… per kind5 ${delEv.id.slice(0, 12)}…`) }
-  const tombstone =
-    `🗑 **Withdrawn by author** — NIP-09 deletion\n` +
-    `author \`${entry.author}\` · original \`${origId}\` · delete \`${delEv.id}\`\n` +
-    `_Content removed at the author's request._\n`
+  const stone = { author: entry.author, origId, delId: delEv.id }
   if (process.env.WB_STUB_SEND) { done(entry.buzz ? 'stub-delete' : 'stub-post'); return }
-  const followUp = () => execFile('buzz', ['messages', 'send', '--channel', entry.dest, '--content', tombstone], (e3) => {
-    if (e3) return err(`A7 ERR[all-tiers]: could not withdraw ${origId.slice(0, 12)}…: ${e3.message}`)
-    done('follow-up')
-  })
+  const followUp = () => emit({ template: 'a7_tombstone', dest: entry.dest, slots: stone })
+    .then(() => done('follow-up'))
+    .catch(e3 => err(`A7 ERR[all-tiers]: could not withdraw ${origId.slice(0, 12)}…: ${e3.message}`))
   if (!entry.buzz) return followUp()
-  execFile('buzz', ['messages', 'delete', '--event', entry.buzz, '--reason-code', 'nip09', '--public-reason', 'withdrawn by author (NIP-09)'], (e1) => {
-    if (!e1) return done('delete')
-    execFile('buzz', ['messages', 'edit', '--event', entry.buzz, '--content', tombstone], (e2) => {
-      if (!e2) return done('edit')
-      followUp()
-    })
-  })
+  emit({ template: 'a7_delete', targetId: entry.buzz, slots: {} })
+    .then(() => done('delete'))
+    .catch(() => emit({ template: 'a7_tombstone_edit', targetId: entry.buzz, slots: stone })
+      .then(() => done('edit'))
+      .catch(() => followUp()))
 }
 
 // --- In-Buzz approval console -------------------------------------------------
@@ -920,10 +922,13 @@ function mutateConfig(fn) {
   } catch (e) { err(`commands: config write failed: ${e.message}`); return false }
 }
 
-function replyInStaging(parentBuzzId, text) {
-  execFile('buzz', ['messages', 'send', '--channel', PUB.staging, '--reply-to', parentBuzzId, '--content', text], (e) => {
-    if (e) err(`commands: confirmation reply failed: ${e.message}`)
-  })
+// A3: this took a `text: string` until #134, and its unrecognized-verb caller passed runtime
+// operator input straight through — the free-text path that already had a live caller, not a
+// hypothetical one. It now takes a VERB from the catalogue's closed set; the words live in
+// egress.mjs where no caller can reach them.
+function replyInStaging(parentBuzzId, verb, slots = {}) {
+  emit({ template: verb, dest: PUB.staging, parentId: parentBuzzId, slots })
+    .catch(e => err(`commands: confirmation reply failed: ${e.message}`))
 }
 
 async function handleCommand(m) {
@@ -941,7 +946,7 @@ async function handleCommand(m) {
       const stTry = parentTry && stagingByBuzzId.get(String(parentTry).toLowerCase())
       if (stTry && (stTry.q || stTry.dest !== PUB.inbox) && !seen.has('cmd:' + m.id)) {
         markSeen('cmd:' + m.id)
-        replyInStaging(m.id, `unrecognized command \`${raw}\` — try **approve** (or release), **follow**, **mute**, or **reject**.`)
+        replyInStaging(m.id, 'console_ack', { verb: 'unrecognized', echo: raw })
       }
     }
     return
@@ -952,12 +957,12 @@ async function handleCommand(m) {
   markSeen('cmd:' + m.id) // commit-before-dispatch: a crash can never double-execute a command
   log(`command '${word}' from approver ${m.pubkey.slice(0, 12)}… on ${st.orig.slice(0, 12)}…`)
 
-  if (word === 'reject') return replyInStaging(m.id, `🚫 rejected — no action taken; the author remains quarantined.`)
+  if (word === 'reject') return replyInStaging(m.id, 'console_ack', { verb: 'rejected' })
 
   if (word === 'mute') {
     if (!PUB.muted.includes(st.author)) PUB.muted.push(st.author)
     mutateConfig(c => { c.public.muted_authors = Array.from(new Set([...(c.public.muted_authors || []), st.author])) })
-    return replyInStaging(m.id, `🔇 muted \`${st.author.slice(0, 12)}…\` — their replies will no longer reach staging.`)
+    return replyInStaging(m.id, 'console_ack', { verb: 'muted', author: st.author })
   }
 
   // approve / watch — release the note (refusing duplicates), then grant trust if asked.
@@ -965,20 +970,21 @@ async function handleCommand(m) {
   const alreadyReleased = prior && !prior.deleted && prior.dest === PUB.inbox && !prior.q
   if (!alreadyReleased) {
     const ev = await fetchEventById(st.orig)
-    if (!ev) return replyInStaging(m.id, `⚠️ could not fetch the original from any relay — nothing released.`)
+    if (!ev) return replyInStaging(m.id, 'console_ack', { verb: 'no_original' })
     let ok = false
     try { ok = verifyEvent(ev) } catch { ok = false }
-    if (!ok) return replyInStaging(m.id, `⚠️ signature verification FAILED — refusing to release.`)
-    if (!rateOk(ev, PUB.inbox, Date.now())) return replyInStaging(m.id, `⚠️ rate cap would be exceeded — try again later.`)
+    if (!ok) return replyInStaging(m.id, 'console_ack', { verb: 'bad_signature' })
+    if (!rateOk(ev, PUB.inbox, Date.now())) return replyInStaging(m.id, 'console_ack', { verb: 'rate_capped' })
     forwardPublic(ev, 'released from quarantine', PUB.inbox, false)
   }
-  let granted = ''
+  let granted = false
   if (word === 'follow') {
     if (!PUB.trustedRepliers.includes(st.author)) PUB.trustedRepliers.push(st.author)
     mutateConfig(c => { c.public.trusted_repliers = Array.from(new Set([...(c.public.trusted_repliers || []), st.author])) })
-    granted = ` · standing follow granted (their replies now skip the queue)`
+    granted = true
   }
-  replyInStaging(m.id, `✅ ${alreadyReleased ? 'already released earlier' : 'released to the community channel'}${granted}`)
+  replyInStaging(m.id, alreadyReleased ? 'console_ack_already' : 'console_ack',
+    alreadyReleased ? { granted } : { verb: 'released', granted })
 }
 
 // --- Return lane (#40) ------------------------------------------------------------------------
@@ -1062,22 +1068,13 @@ function publishWrapToRelays(wrap, mkSocket) {
   })
 }
 
-async function returnLaneSend(toHex, text, meta, publish = publishWrapToRelays) {
-  if (!BRIDGE_SK) { err('return lane: no bridge key to seal with — skipping'); return 0 }
-  const now = Math.floor(Date.now() / 1000)
-  // NIP-59 backdating: randomise wrap and seal timestamps into the past so an observer cannot
-  // correlate a channel message with a delivery by timing alone.
-  const fuzzed = () => now - Math.floor(Math.random() * 172800)
+async function returnLaneSend(toHex, descriptor, meta, publish = publishWrapToRelays) {
+  if (!hasBridgeKey()) { err('return lane: no bridge key to seal with — skipping'); return 0 }
   try {
-    const rumor = { kind: 14, pubkey: BRIDGE_PK, created_at: now, tags: [['p', toHex]], content: text }
-    rumor.id = getEventHash(rumor)
-    const seal = finalizeEvent({ kind: 13, created_at: fuzzed(), tags: [],
-      content: nip44.encrypt(JSON.stringify(rumor), nip44.getConversationKey(BRIDGE_SK, toHex)) }, BRIDGE_SK)
-    const wsk = generateSecretKey()
-    const wrap = finalizeEvent({ kind: 1059, created_at: fuzzed(), tags: [['p', toHex]],
-      content: nip44.encrypt(JSON.stringify(seal), nip44.getConversationKey(wsk, toHex)) }, wsk)
     const relays = (PUB.relays || []).length
-    const accepted = await publish(wrap)
+    // A3 §2.5: the seal/wrap construction and the key both live in nostr_egress.mjs. `descriptor`
+    // is {template, slots} — there is no parameter here that could carry a composed sentence.
+    const { wrap, accepted, bytes } = await sealAndWrap({ template: descriptor.template, to: toHex, slots: descriptor.slots }, publish)
     // Journal stamped with the accept-count so the durable record is landed-reality, not intent: a
     // 0/N carry is written accepted:0, never a false "sent". The wrap's author is ephemeral and can
     // never trip the tripwire, so this record is a written-down intent — worth making a truthful one;
@@ -1086,7 +1083,7 @@ async function returnLaneSend(toHex, text, meta, publish = publishWrapToRelays) 
     if (accepted < 1)
       err(`RETURN 0/${relays} -> ${toHex.slice(0, 12)}…: seal reached NO relay — NOT marked sent, will re-carry (wrap ${wrap.id.slice(0, 12)}…)`)
     else
-      log(`RETURN ${accepted}/${relays} -> ${toHex.slice(0, 12)}…: sealed ${String(text).length}B (wrap ${wrap.id.slice(0, 12)}…)`)
+      log(`RETURN ${accepted}/${relays} -> ${toHex.slice(0, 12)}…: sealed ${bytes}B (wrap ${wrap.id.slice(0, 12)}…)`)
     return accepted
   } catch (e) { err(`return lane: seal/send failed: ${e.message}`); return 0 }
 }
@@ -1104,12 +1101,15 @@ function relayDrop(reason, id, deterministic = true) {
   err(`RELAY drop[${reason}]: wrap ${String(id).slice(0, 12)}… (pre-auth, unackable)`)
   if (deterministic) markRelaySeen(id)
 }
-function relayReject(sender, id, reason, wantCh) {
+function relayReject(sender, id, reason, wantCh, extra = {}) {
   // Post-auth reject: the sender IS proven, so the refusal is ACKED — a drop and a silence must not
   // look the same (§5). Marked seen: the decision is deterministic for this wrap id.
-  err(`RELAY reject: ${reason} — sender ${sender.slice(0, 12)}… -> '${wantCh}' (wrap ${String(id).slice(0, 12)}…)`)
+  err(`RELAY reject: ${reason}${extra.cap ? ` (${extra.cap}B)` : ''} — sender ${sender.slice(0, 12)}… -> '${wantCh}' (wrap ${String(id).slice(0, 12)}…)`)
   markRelaySeen(id)
-  returnLaneSend(sender, JSON.stringify({ ok: false, reason, channel: wantCh, ts: Math.floor(Date.now() / 1000) }), { lane: 'relay-ack' })
+  returnLaneSend(sender, {
+    template: 'relay_ack_err',
+    slots: { reason, channel: wantCh, ts: Math.floor(Date.now() / 1000), ...extra },
+  }, { lane: 'relay-ack' })
 }
 function resolveRelayDest(wantCh) {
   // Allowlist check against the resolved relay_channels (UUIDs at boot). DEFAULT EMPTY → nothing
@@ -1126,9 +1126,8 @@ async function postRelay(ev, sender, dest, wantCh, body) {
   let npub = null
   try { npub = nip19.npubEncode(sender) } catch { npub = null }
   const npubShort = npub ? `${npub.slice(0, 10)}…${npub.slice(-5)}` : sender.slice(0, 12) + '…'
-  const content = renderReleased({ body, name, npubShort, liveRefs: true })
   const nowSec = Math.floor(Date.now() / 1000)
-  const ackOk = (buzzId) => returnLaneSend(sender, JSON.stringify({ ok: true, channel: dest, buzz_event_id: buzzId || null, ts: nowSec }), { lane: 'relay-ack' })
+  const ackOk = (buzzId) => returnLaneSend(sender, { template: 'relay_ack_ok', slots: { channel: dest, buzzEventId: buzzId || null, ts: nowSec } }, { lane: 'relay-ack' })
   if (FORWARD_MODE !== 'buzz') {
     log(`RELAY[dryrun] -> ${dest}: from ${sender.slice(0, 12)}… (${Buffer.byteLength(body)}B) :: ${JSON.stringify(body.slice(0, 80))}`)
     return
@@ -1142,10 +1141,7 @@ async function postRelay(ev, sender, dest, wantCh, body) {
     log(`RELAY[stub] -> ${dest}: from ${sender.slice(0, 12)}…`)
     return
   }
-  execFile('buzz', ['messages', 'send', '--channel', dest, '--content', content], (e, so, se) => {
-    // A channel waggle is not a member of fails HERE with a distinct RELAY[buzz] ERR — it can never
-    // masquerade as a §7 drop, and it is NOT marked seen, so it retries rather than dropping.
-    if (e) { dropRelaySeen(ev.id); err(`RELAY[buzz] ERR -> ${dest}: ${se || e.message} — claim rolled back, will retry`); return }
+  return emit({ template: 'released_post', dest, slots: { body, name, npubShort, liveRefs: true } }).then(({ stdout: so }) => {
     // commit-AFTER-send (#114 finding-3): mark the wrap carried only once the kind:9 posted, so a
     // transient failure retries. Residual: a crash after this post but before the mark re-posts on
     // restart — kind:9 has no idempotency key, so the dup-on-crash residual stands (§6).
@@ -1155,10 +1151,15 @@ async function postRelay(ev, sender, dest, wantCh, body) {
     journalSend(buzzId, { kind: 9, dest, lane: 'relay' })
     ackOk(buzzId)
     log(`RELAY[buzz] ok -> ${dest}: from ${sender.slice(0, 12)}… (wrap ${ev.id.slice(0, 12)}…)`)
+  }).catch(e => {
+    // A channel waggle is not a member of fails HERE with a distinct RELAY[buzz] ERR — it can never
+    // masquerade as a §7 drop, and it is NOT marked seen, so it retries rather than dropping.
+    dropRelaySeen(ev.id)
+    err(`RELAY[buzz] ERR -> ${dest}: ${e.message} — claim rolled back, will retry`)
   })
 }
 function handleRelayIngress(ev) {
-  if (!BRIDGE_SK || !PUB) return
+  if (!hasBridgeKey() || !PUB) return
   const nowMs = Date.now()
   if (relaySeen.has(ev.id)) return                                          // §6 dedup BEFORE decrypt
   const wrapBytes = Buffer.byteLength(JSON.stringify(ev))
@@ -1168,13 +1169,13 @@ function handleRelayIngress(ev) {
   relayDecWin.push(nowMs)
   // ---- expensive step: decryption of UNAUTHENTICATED input (the §7 DoS surface) ----
   let seal
-  try { seal = JSON.parse(nip44.decrypt(ev.content, nip44.getConversationKey(BRIDGE_SK, ev.pubkey))) }
+  try { seal = openSeal(ev) }
   catch { return relayDrop('decrypt', ev.id) }
   let ok = false
   try { ok = verifyEvent(seal) } catch { ok = false }
   if (!ok || seal.kind !== 13) return relayDrop('verify', ev.id)            // authorship proof (§2.4)
   let rumor
-  try { rumor = JSON.parse(nip44.decrypt(seal.content, nip44.getConversationKey(BRIDGE_SK, seal.pubkey))) }
+  try { rumor = openRumor(seal) }
   catch { return relayDrop('decrypt', ev.id) }
   if (!rumor || String(rumor.pubkey) !== String(seal.pubkey)) return relayDrop('mismatch', ev.id) // bind unsigned rumor
   // ---- the sender is now AUTHENTICATED: every drop below is ACKED ----
@@ -1191,7 +1192,7 @@ function handleRelayIngress(ev) {
   const body = String(rumor.content || '')
   const bytes = Buffer.byteLength(body)
   if (!bytes) return relayReject(sender, ev.id, 'empty body', wantCh)
-  if (bytes > PUB.maxContentBytes) return relayReject(sender, ev.id, `over ${PUB.maxContentBytes}B cap`, wantCh)
+  if (bytes > PUB.maxContentBytes) return relayReject(sender, ev.id, 'over cap', wantCh, { cap: PUB.maxContentBytes })
   if (!relayRateOk(sender, dest, nowMs)) return relayReject(sender, ev.id, 'rate cap', wantCh)
   addRelaySeen(ev.id)   // claim BEFORE the async send: a copy from another relay must not post again
   postRelay(ev, sender, dest, wantCh, body)
@@ -1232,7 +1233,7 @@ function agentAuthoredBy(buzzId) {
 // only ever moves bytes to an address. The one place a body could reach a prompt is the action
 // layer, where the wake is content-free and the body is read-plane data (design §5).
 async function scanReturnLane(msgs, opts = {}) {
-  if (!PUB.returnLane.length || !BRIDGE_SK) return
+  if (!PUB.returnLane.length || !hasBridgeKey()) return
   const gateActive = opts.authors !== undefined            // an explicit (even empty) gate is default-closed
   const gate = gateActive ? new Set(opts.authors || []) : null
   for (const m of msgs || []) {
@@ -1264,12 +1265,10 @@ async function scanReturnLane(msgs, opts = {}) {
       const repliedTo = parents.some(pid => agentAuthoredBy(pid) === r.npub_hex)
       if (!mentioned && !repliedTo) continue
       addRlSeen(key)                                       // in-memory now: no double-carry within this scan/overlap
-      const accepted = await returnLaneSend(r.npub_hex,
-        `📥 **${r.mention}** — you were ${repliedTo && !mentioned ? 'replied to' : 'mentioned'} in the community.\n\n> ` +
-        body.replace(/\r/g, '').split('\n').join('\n> ') +
-        `\n\n_carried out by waggle's return lane. Replying to this message reaches nobody; ` +
-        `post from your own key and the bridge brings it back in._`,
-        { src: m.id, why: repliedTo && !mentioned ? 'reply' : 'mention' }, opts.publish)
+      const accepted = await returnLaneSend(r.npub_hex, {
+        template: 'return_carry',
+        slots: { mention: r.mention, why: repliedTo && !mentioned ? 'reply' : 'mention', body },
+      }, { src: m.id, why: repliedTo && !mentioned ? 'reply' : 'mention' }, opts.publish)
       // Persist-on-landed: durable dedup only once the seal reached a relay. A silent 0/N is rolled
       // back so the overlap re-read (and a restart) re-carry it — a rare re-carry beats a lost mention.
       if (accepted >= 1) markRlSeen(key)
@@ -1280,8 +1279,7 @@ async function scanReturnLane(msgs, opts = {}) {
 
 let cmdCursor = 0
 function pollCommands() {
-  execFile('buzz', ['messages', 'get', '--channel', PUB.staging, '--limit', '30'], (e, so) => {
-    if (e) return err(`commands: staging read failed: ${e.message}`)
+  query('messages_get', { channel: PUB.staging, limit: 30 }).then((so) => {
     let msgs
     try { msgs = JSON.parse(String(so).slice(String(so).indexOf('['))) } catch { return err('commands: unparseable staging read') }
     for (const m of msgs) { if ((m.created_at || 0) >= cmdCursor - 300) handleCommand(m).catch(er => err(`commands: ${er.message}`)) }
@@ -1323,14 +1321,11 @@ function bumpScanCursor(ch, ts) {
 // no-miss logic is drivable by a test with synthetic pages — the scan test drives scanReturnLane
 // directly; this lets #5 drive the window and pagination the same way, no socket.
 function scanFetchPage(ch, floor, before, cb) {
-  const args = ['messages', 'get', '--channel', ch, '--limit', String(SCAN_PAGE_LIMIT), '--since', String(floor)]
-  if (before) args.push('--before', String(before))
-  execFile('buzz', args, (e, so) => {
-    if (e) return cb(e)
+  query('messages_get', { channel: ch, limit: SCAN_PAGE_LIMIT, since: floor, before: before || undefined }).then((so) => {
     let msgs
     try { msgs = JSON.parse(String(so).slice(String(so).indexOf('['))) } catch { return cb(new Error('unparseable read')) }
     cb(null, msgs)
-  })
+  }).catch(e => cb(e))
 }
 
 // Drain one scan channel: page back from newest to the cursor floor, then route the whole set once
@@ -1585,14 +1580,14 @@ if (!process.env.WB_NO_BOOT) {
     log(`public read lane -> inbox ${PUB.inbox}: ${PUB.relays.length} relay(s), ${PUB.authors.length} watched author(s), ${PUB.events.length} watched note(s), pub-since=${PUB.since} (${PUB_SINCE_SECS}s), watermark=${pubWatermark || 'none'}`)
     log(`  gates: staging=${PUB.staging || 'HOLD (none)'} · backfill<=${PUB.backfillLimit} · maxContent=${PUB.maxContentBytes}B · rate ${PUB.replierPerMin}/replier/min ${PUB.channelPerMin}/chan/min ${PUB.lanePerHour}/lane/h · deletes ${PUB.deletesPerHour}/h (A7)`)
     if (PUB.grantors.length) log(`  admission: ${PUB.grantors.length} grantor key(s); NIP-DA kinds ${NIPDA.grant}/${NIPDA.revocation}/${NIPDA.index}`)
-    if (PUB.relayChannels.length && BRIDGE_SK) log(`  relay lane: ${PUB.relayChannels.length} allowlisted channel(s); decrypt budget ${PUB.relayDecryptBudget}/min, wrap cap ${PUB.relayMaxWrapBytes}B — a channel waggle has not joined fails as RELAY[buzz] ERR, never a silent §7 drop`)
-    else if (PUB.relayChannels.length && !BRIDGE_SK) err('WARN: relay_channels configured but no BRIDGE key to open sealed requests — relay lane INERT.')
+    if (PUB.relayChannels.length && hasBridgeKey()) log(`  relay lane: ${PUB.relayChannels.length} allowlisted channel(s); decrypt budget ${PUB.relayDecryptBudget}/min, wrap cap ${PUB.relayMaxWrapBytes}B — a channel waggle has not joined fails as RELAY[buzz] ERR, never a silent §7 drop`)
+    else if (PUB.relayChannels.length && !hasBridgeKey()) err('WARN: relay_channels configured but no BRIDGE key to open sealed requests — relay lane INERT.')
     PUB.relays.forEach(connectPublic)
     if (PUB.staging && PUB.approvers.length && FORWARD_MODE === 'buzz') {
       log(`approval console: watching staging for commands from ${PUB.approvers.length} approver(s)`)
       pollCommands(); setInterval(pollCommands, 15000)
     }
-    if (PUB.scanChannels.length && PUB.returnLane.length && BRIDGE_SK && FORWARD_MODE === 'buzz') {
+    if (PUB.scanChannels.length && PUB.returnLane.length && hasBridgeKey() && FORWARD_MODE === 'buzz') {
       log(`return-lane scan: ${PUB.scanChannels.length} channel(s) · ${PUB.returnLane.length} recipient(s) · signer gate ${PUB.scanAuthors.length} key(s)`)
       // Silence-is-not-calm: a configured scan with an empty gate routes NOTHING, so say so loudly
       // rather than let it look like "no mentions." Set scan_authors (or declare approvers/grantors).
