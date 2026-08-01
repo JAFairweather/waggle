@@ -124,22 +124,40 @@ alarms):
 
 The runner removes *standing* write; installing it is a *bounded, one-time* privileged act.
 
-1. **Hub clone** the box pulls into (never a lane tree): `git clone <repo> /opt/waggle-hub`,
-   owned by the deploy identity. The runner only `fetch`es and `checkout --detach`s here.
+**One hub clone per lane** (`/opt/waggle-hub-read`, `/opt/waggle-hub-sealed`) — not one
+shared hub. The two instances run as different users and a git worktree cannot be fetched
+and `checkout --detach`ed by both; they also tick on the same cadence, so a shared worktree
+could be rsynced by one instance while the other had just moved it to a different commit
+(#158). Each hub is owned by exactly the user its instance runs as.
+
+0. **Verify before installing** — the grant the runner depends on, which predates the repo
+   rename (#112): `sudo -l -U bridge` must show `systemctl restart waggle-read.service`
+   *under that exact unit name*. If it still names `west-bridge-read.service`, reinstall
+   `deploy/sudoers-bridge` (`visudo -cf` it first) or the runner's restart step is denied.
+1. **Hub clone** the lane pulls into (never a lane tree):
+   `git clone <repo> /opt/waggle-hub-read && chown -R bridge:bridge /opt/waggle-hub-read`.
+   The runner only `fetch`es and `checkout --detach`s here.
 2. **Units:** `sudo cp deploy/deploy-runner@.{service,timer} /etc/systemd/system/` then
    `sudo systemctl daemon-reload`.
-3. **read lane:** `sudo systemctl enable --now deploy-runner@read.timer`. It runs as
+3. **Rehearse one tick by hand, before any timer is enabled.** `DRY_RUN=1` resolves the
+   target commit and runs the CI-green gate while changing nothing:
+   `sudo -u bridge env DRY_RUN=1 WB_HUB=/opt/waggle-hub-read /bin/sh
+   /opt/waggle-hub-read/deploy/deploy-runner.sh read`. Then run it for real, once, and read
+   the output — a first deploy is the wrong thing to discover from a timer's journal.
+4. **read lane:** `sudo systemctl enable --now deploy-runner@read.timer`. It runs as
    `bridge`, which already owns `/opt/waggle-read` and holds the scoped `sudo systemctl
    restart waggle-read.service` grant (`deploy/sudoers-bridge`). No new authority.
-4. **sealed lane — get it off root in the same pass.** `/opt/waggle-sealed` is administered
+5. **sealed lane — get it off root in the same pass.** `/opt/waggle-sealed` is administered
    as **root** today; do not deploy it as root. Create a scoped `deploy` user that owns the
-   sealed tree + hub and holds *only* `sudo systemctl restart waggle-sealed.service`, add the
-   drop-in from the unit header (`User=deploy`), then
+   sealed tree and `/opt/waggle-hub-sealed`, holding *only* `sudo systemctl restart
+   waggle-sealed.service`, add the drop-in from the unit header (`User=deploy`), then
    `sudo systemctl enable --now deploy-runner@sealed.timer`. Now neither lane is deployed by
    root, and no principal holds a general shell on production.
-5. Confirm: `systemctl list-timers 'deploy-runner@*'`.
+6. Confirm — by reading the result, not the exit code: `systemctl list-timers
+   'deploy-runner@*'`, `cat /opt/waggle-<lane>/DEPLOYED_SHA`, and a green
+   `verify-deployed.sh <lane> /opt/waggle-<lane> <sha>`.
 
-For a **private** repo, drop a read-only token in `/opt/waggle-hub/deploy-runner.env`
+For a **private** repo, drop a read-only token in `/opt/waggle-hub-<lane>/deploy-runner.env`
 (`GH_TOKEN=…`, `0600`, never committed) — a read cap, still no write authority on the box.
 
 Nothing arms until it passes a review and a green `verify-deployed.sh` against the box.
