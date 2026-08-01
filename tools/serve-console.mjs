@@ -25,7 +25,35 @@ const PORT = Number(process.env.PORT || 8080)
 const TYPES = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml' }
 
-createServer(async (req, res) => {
+// #145 — DNS rebinding. Binding to 127.0.0.1 decides WHICH INTERFACE accepts a connection; it
+// decides nothing about WHICH ORIGIN the browser believes it is talking to. A hostile page can
+// re-resolve its own domain to 127.0.0.1 and then issue *same-origin* requests here: the connection
+// genuinely arrives on loopback, so the bind is satisfied, and the attacker's script reads every
+// response. Loopback binding is not a weak defence against this — it is the wrong instrument.
+//
+// `Host` is what separates the two cases, because it carries the name the browser used. An operator
+// who typed the documented URL sends `127.0.0.1:8080`; a rebound page sends its own domain. The
+// attacker cannot forge it — a browser sets `Host` from the origin it fetched, so sending
+// `127.0.0.1` would require the page to genuinely be on 127.0.0.1, which is what we are allowing.
+//
+// Exact match, not a prefix or substring: `startsWith('localhost')` also accepts
+// `localhost.evil.com`, an ordinary registrable domain an attacker can point wherever they like.
+export function hostAllowed(host, port) {
+  // HTTP/1.1 requires Host. Absent means we cannot tell which origin this is — default closed.
+  if (typeof host !== 'string' || host === '') return false
+  // A trailing dot is the DNS root form of the SAME name and some clients send it, but it is also a
+  // stock allowlist bypass. Normalise it away rather than letting one host have two spellings.
+  const h = host.toLowerCase().replace(/\.(?=:|$)/, '')
+  // A browser omits the port only when it is the scheme default, so the bare form is accepted only
+  // when 80 is genuinely what we are listening on.
+  return ['127.0.0.1', 'localhost', '[::1]'].some(n => h === `${n}:${port}` || (port === 80 && h === n))
+}
+
+export const handler = async (req, res) => {
+  if (!hostAllowed(req.headers?.host, PORT)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' })
+    return res.end('forbidden: unrecognised Host — reach the console as 127.0.0.1 or localhost\n')
+  }
   const url = (req.url || '/').split('?')[0]
   // Decode first, so a percent-encoded separator cannot hide from the normalisation below. A
   // malformed escape throws here rather than rejecting inside the handler and hanging the request.
@@ -46,8 +74,18 @@ createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': TYPES[extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-store' })
     res.end(body)
   } catch { res.writeHead(404); res.end('not found') }
-}).listen(PORT, '127.0.0.1', () => {
-  console.log(`\n  waggle console  →  http://127.0.0.1:${PORT}/console/\n`)
-  console.log('  Bound to loopback: served from this machine only, so nobody else chooses the')
-  console.log('  JavaScript that shows you what you are about to sign. Ctrl-C when finished.\n')
-})
+}
+
+// Only listen when run as a program. Importing this file — which the test does, to drive `handler`
+// with synthetic requests — must not open a socket: the suite's standing rule is no sockets and no
+// production state, and a test that binds 8080 fails on any machine already serving the console.
+const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+if (invokedDirectly) {
+  createServer(handler).listen(PORT, '127.0.0.1', () => {
+    console.log(`\n  waggle console  →  http://127.0.0.1:${PORT}/console/\n`)
+    console.log('  Bound to loopback: served from this machine only, so nobody else chooses the')
+    console.log('  JavaScript that shows you what you are about to sign. Ctrl-C when finished.\n')
+    console.log(`  Requests are accepted only as 127.0.0.1:${PORT} or localhost:${PORT} — a page that`)
+    console.log('  rebinds its own domain to loopback gets 403, not the console.\n')
+  })
+}
