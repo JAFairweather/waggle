@@ -76,8 +76,14 @@ case "$DEST_KIND" in
   remote)
     # stderr is NOT swallowed: it carries the ssh failure, the host-key prompt, and the remote
     # shell's own complaint. Hiding it is how "cannot reach the box" becomes "exited 3".
-    if ! ssh "$DEST" "$REMOTE_SCAN" > "$ACT"; then
-      RC=$?
+    # `RC=$?` inside `if ! ssh …; then` reads the status of the NEGATION, which is 0 whenever the
+    # branch is taken — so every failure reported "exit 0" and the two diagnoses below (tree
+    # missing, host unreachable) could never fire. Capture the real status with `|| RC=$?`, which
+    # also keeps `set -e` from killing the script before we can explain what went wrong. Same
+    # family as the pipeline `$?` trap in CLAUDE.md's verification discipline.
+    RC=0
+    ssh "$DEST" "$REMOTE_SCAN" > "$ACT" || RC=$?
+    if [ "$RC" -ne 0 ]; then
       case "$RC" in
         3) echo "  ✗ deployed tree $TREE does not exist on $DEST" ;;
         255) echo "  ✗ could not reach $DEST over ssh — check the host, the alias, or your key" ;;

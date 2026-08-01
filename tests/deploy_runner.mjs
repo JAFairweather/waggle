@@ -27,6 +27,17 @@ const SCRIPT = 'deploy/deploy-runner.sh'
 let failed = 0
 const check = (cond, msg) => { if (!cond) { console.error('  ✗', msg); failed++ } else { console.log('  ✓', msg) } }
 
+// The runner ships with rsync, so without it every deploy-path case fails — eleven red checks
+// that read as eleven regressions and are really one missing binary. Say which it is: exit 3 =
+// INCONCLUSIVE, the same signal tripwire.mjs and verify-firewall.sh use. NOT an all-clear, and
+// not a pass — a suite that cannot run must never look like a suite that ran.
+try { execFileSync('sh', ['-c', 'command -v rsync'], { stdio: 'ignore' }) }
+catch {
+  console.error('deploy_runner: INCONCLUSIVE — rsync is not installed, so the deploy path cannot be')
+  console.error('  exercised at all. This is NOT an all-clear. Install rsync and re-run.')
+  process.exit(3)
+}
+
 const work = mkdtempSync(join(tmpdir(), 'wb-runner-'))
 // One hub clone shared across cases (the runner only reads + detaches within it).
 const hub = join(work, 'hub')

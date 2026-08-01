@@ -247,6 +247,14 @@ const toHex = (v) => {
   throw new Error(`That does not look like a key. Paste an npub (starts with npub1…), or a 64-character hex key. Got: ${s || '(nothing)'}`)
 }
 const short = (h) => h ? `${h.slice(0, 8)}…${h.slice(-4)}` : '?'
+// Everything a grant carries is chosen by whoever SIGNED it, and the grantor key is typed into
+// this page by the operator — inspecting a stranger's key is a supported thing to do here ("who
+// has access by this key"), so "signed" is not "trusted". A `p` or `da-cap` tag holding markup
+// would otherwise be written straight into the table by innerHTML, on the one page that holds a
+// live signing session. Verifying a signature proves who wrote a value, never that it is safe to
+// render.
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
 // One relay. Reports whether it actually answered — a refusal is not an absence, and a count
 // built on silent failures would misreport "nobody is admitted".
@@ -290,16 +298,16 @@ function renderRows() {
   }
   rows.innerHTML = lastGrants.map(g => `
       <tr>
-        <td class="who">${short(g.grantee)}</td>
+        <td class="who">${esc(short(g.grantee))}</td>
         <td><span class="pill ${g.live ? 'live' : 'revoked'}">${g.live ? 'Active' : 'Removed'}</span></td>
-        <td>${capLabel(g.cap)}</td>
+        <td>${esc(capLabel(g.cap))}</td>
         <td>${g.scopeLabel === 'opaque'
               ? `<span title="This approval names its channel as a salted hash, so a passer-by cannot tell which one it is. Enter the channel above and it will resolve.">Hidden</span>`
               : g.scopeLabel}</td>
         <td>${new Date(g.at * 1000).toISOString().slice(0, 16).replace('T', ' ')}</td>
         <td class="who">${short(g.id)}</td>
         <td>${g.live && signer && signerPk === lastGrantor
-            ? `<button class="btn ghost" style="margin:0;padding:5px 12px;font-size:12.5px" onclick="__revoke('${g.id}','${short(g.grantee)}')">Revoke</button>`
+            ? `<button class="btn ghost" style="margin:0;padding:5px 12px;font-size:12.5px" onclick="__revoke('${esc(g.id)}','${esc(short(g.grantee))}')">Revoke</button>`
             : ''}</td>
       </tr>`).join('')
 }
