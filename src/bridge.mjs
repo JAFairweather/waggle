@@ -443,7 +443,11 @@ function l2Drop(reason, plane, ev) {
 }
 // Plane + global gate. Returns false (and logs) when the event must not fan out at all.
 function l2PlaneOk(plane, ev, nowMs) {
-  if (JSON.stringify(ev).length > L2.perPlane.maxEventBytes) { l2Drop('size', plane, ev); return false }
+  // byteLength, not .length: the cap is named maxEventBytes and every other size gate here
+  // (public content, relay wrap, relay body) measures bytes. String .length counts UTF-16 code
+  // units, so non-ASCII content sails past a cap it should have hit — the one lane where the
+  // measure disagreed with the name.
+  if (Buffer.byteLength(JSON.stringify(ev)) > L2.perPlane.maxEventBytes) { l2Drop('size', plane, ev); return false }
   const boot = l2BootRemaining > 0
   const mins = slide(l2PlaneMin.get(plane) || [], nowMs, 60_000)
   if (!boot && mins.length >= L2.perPlane.postsPerMinute) { l2Drop('plane-per-min', plane, ev); return false }
@@ -650,17 +654,37 @@ function relayDropTotalPreAuth() {
 // markdown/mention/link characters are stripped and the length capped before use.
 const nameCache = new Map() // pubkey -> { name: string|null, ts }
 const NAME_TTL_MS = 3600_000
+// Bounded like every other in-memory store here (rlDropLogged, seen, relaySeen). The TTL only
+// decides when an entry is re-fetched, never when it leaves — so without a cap the map grows one
+// entry per distinct author ever reposted, on a process meant to run for months. Insertion-ordered
+// eviction, same shape as rlDropOnce.
+const NAME_CACHE_CAP = Number(process.env.NAME_CACHE_CAP || 5000)
+function cacheName(pubkey, name) {
+  nameCache.set(pubkey, { name, ts: Date.now() })
+  if (nameCache.size > NAME_CACHE_CAP) nameCache.delete(nameCache.keys().next().value)
+}
 function fetchProfileName(pubkey) {
   const hit = nameCache.get(pubkey)
   if (hit && Date.now() - hit.ts < NAME_TTL_MS) return Promise.resolve(hit.name)
   return new Promise(res => {
     let best = null, open = PUB.relays.length, done = false
-    const finish = () => { if (done) return; done = true; nameCache.set(pubkey, { name: best, ts: Date.now() }); res(best) }
+    // Sockets are tracked and closed by finish() — matching fetchEventById. Closing only in bye()
+    // left every socket of a relay that never answers open FOREVER when the 2s timeout won the
+    // race, which is exactly the case the timeout exists for.
+    const socks = []
+    const finish = () => {
+      if (done) return
+      done = true
+      for (const w of socks) { try { w.close() } catch { /* already closed */ } }
+      cacheName(pubkey, best)
+      res(best)
+    }
     if (!open) return finish()
     const t = setTimeout(finish, 2000)
     for (const url of PUB.relays) {
       let ws
       try { ws = new WebSocket(url) } catch { if (--open === 0) { clearTimeout(t); finish() } continue }
+      socks.push(ws)
       const bye = () => { try { ws.close() } catch { /* closed */ } if (--open === 0) { clearTimeout(t); finish() } }
       ws.on('open', () => ws.send(JSON.stringify(['REQ', 'nm', { kinds: [0], authors: [pubkey], limit: 1 }])))
       ws.on('message', d => {
@@ -796,6 +820,24 @@ async function forwardPublic(ev, why, dest, quarantine) {
 
 function routePublic(ev) {
   if (!ev || !ev.id || ev.kind !== 1 || seen.has(ev.id)) return
+  // Signature verification is MANDATORY, and it comes BEFORE the trust classification below —
+  // because that classification reads `ev.pubkey`, which is just a claim until the signature
+  // proves it. A relay is not a trusted party: the lane holds open REQs to several public ones,
+  // and ONE hostile or compromised relay is enough to serve a note that says whatever it likes
+  // under a watched author's key. Unverified, the highest-trust paths were the unguarded ones —
+  // 'mirrored feed' and 'granted participant' route STRAIGHT to the community channel, skipping
+  // the quarantine a stranger gets, and a granted author additionally earns live @mentions
+  // (liveRefs below), so a forgery could summon the room. The release path already verified
+  // (handleCommand), and so did routeDelete and processGrantEvent; this path did not, which
+  // inverted the gradient — the more we trusted an identity, the less we checked it.
+  // markSeen so the same forgery re-served by another relay is dropped cheaply.
+  let okSig = false
+  try { okSig = verifyEvent(ev) } catch { okSig = false }
+  if (!okSig) {
+    err(`PUBLIC drop[bad-signature]: kind1 ${ev.id.slice(0, 12)}… claims ${String(ev.pubkey || '?').slice(0, 12)}…`)
+    if (FORWARD_MODE === 'buzz') markSeen(ev.id)
+    return
+  }
   // A1: classify by TRUST, not just by match. An allowlisted watched author is trusted; a
   // reply from anyone else is an untrusted stranger and is quarantined.
   const trusted = PUB.authors.includes(ev.pubkey)
