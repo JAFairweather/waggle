@@ -53,8 +53,12 @@
     margin:10px 0 5px;text-transform:uppercase;letter-spacing:.1em}
   input{width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);
     border-radius:var(--r-sm);padding:10px 12px;font-family:var(--mono);font-size:13px}
-  .row{display:flex;gap:12px;flex-wrap:wrap}
-  .row > div{flex:1;min-width:260px}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:stretch}
+  /* Columns line up on their INPUTS, not on the tops of their labels. A two-line label beside a
+     one-line one otherwise staggers the fields, which reads as a broken layout rather than as the
+     different label lengths it actually is. */
+  .row > div{flex:1;min-width:260px;display:flex;flex-direction:column}
+  .row > div > input{margin-top:auto}
   .btn{background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--r-sm);
     padding:10px 18px;font-weight:700;font-size:15px;font-family:inherit;cursor:pointer;margin-top:14px}
   .btn:hover{background:var(--accent-bright)}
@@ -87,6 +91,10 @@
     text-transform:uppercase;padding:2px 8px;border-radius:999px;border:1px solid}
   .pill.live{color:var(--good);border-color:var(--good)}
   .pill.revoked{color:var(--critical);border-color:var(--critical);text-decoration:line-through}
+  /* A WARNING is not a cancellation. `revoked` strikes its text through, which is right for
+     "this access was removed" and exactly wrong for "read this before you approve" — struck-out
+     text reads as already-dealt-with, and it is the one line on the card that must be read. */
+  .pill.warn{color:var(--warn);border-color:var(--warn)}
   .tablewrap{overflow-x:auto}
   .empty{color:var(--faint);font-size:14px;padding:14px 0}
   .rel{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin-top:12px;line-height:1.8}
@@ -96,6 +104,11 @@
   .note b{color:var(--text)}
   /* Secondary guidance inside a label: present, never competing with it. */
   .hint{color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0;font-size:12px}
+  /* Inside a LABEL the hint gets its own line. Trailing a sentence-case hint after uppercase,
+     letter-spaced text wraps mid-phrase at ordinary widths — the two collide and the label reads
+     as one run-on string. On its own line it stays legible and the wrap becomes predictable.
+     Scoped to labels so an h2's inline hint is untouched. */
+  label .hint{display:block;margin-top:4px;line-height:1.4}
 
   /* waggle is a lowercase wordmark. The shared bar uppercases app names by default and paints
      them in --accent, which on this dark ground reads as a dim brown — legible enough for a
@@ -579,7 +592,7 @@ async function loadRequests() {
           r.channel ? ` to <span class="who">${esc(r.channel)}</span>` : ''}</div>
         <div style="margin:7px 0;color:var(--dim)">&ldquo;${esc(r.purpose)}&rdquo;</div>
         ${r.granteeIsSender ? '' :
-          `<div><span class="pill revoked">asked by ${esc(short(r.from))}, not the key being admitted</span></div>`}
+          `<div><span class="pill warn">asked by ${esc(short(r.from))}, not the key being admitted</span></div>`}
         <div style="margin-top:9px">
           <button class="btn" style="margin:0;padding:5px 12px;font-size:12.5px"
             onclick="__admit('${esc(r.id)}')">Admit</button>
