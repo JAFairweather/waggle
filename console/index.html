@@ -147,6 +147,15 @@
     <div class="status" id="authst"></div>
   </div>
 
+  <div class="panel" id="req-panel" style="display:none">
+    <h2>Waiting for you <span class="hint">sessions that have asked to be let in</span></h2>
+    <div class="note">Nothing listed here has any access. A request is a stranger asking — anyone
+      can send one — and approving it is the only thing that admits them. Read the reason before
+      you decide, and remember it was written by whoever is asking.</div>
+    <div id="reqlist"></div>
+    <div class="status" id="reqst"></div>
+  </div>
+
   <div class="panel" id="issue-panel" style="display:none">
     <h2>Give someone access</h2>
     <div class="row">
@@ -341,6 +350,10 @@ function drawTitlebar(npub, kind) {
       signer = null; signerPk = null
       $('issue-panel').style.display = 'none'
       $('confirm-panel').style.display = 'none'
+      // Requests were decrypted with the key that just left. Drop both the panel and the parsed
+      // copies — a list of who is asking must not outlive the session that could act on it.
+      $('req-panel').style.display = 'none'
+      $('reqlist').innerHTML = ''; lastRequests = []
       setAuth('')
       drawTitlebar(null, null); renderRows()
     } : undefined,
@@ -367,6 +380,8 @@ async function adopt(s, label) {
   // Convenience only: the grantor field is what you sign as, so default it to the signed-in key.
   if (!$('grantor').value.trim()) { $('grantor').value = nip19.npubEncode(signerPk); $('go').click() }
   renderRows()
+  // Requests are addressed to the signed-in key, so they can only be read once there is one.
+  loadRequests()
 }
 const nc = () => import('./vendor/nave-connect.mjs')
 
@@ -468,6 +483,117 @@ $('g-preview').addEventListener('click', async () => {
       : `This admits ${short(grantee)} to the channel ${subjRaw}. The channel id never rides publicly — it is stored as a salted hash that only someone who already knows the channel can match.`)
   } catch (e) { st.className = 'status err'; st.textContent = e.message }
 })
+
+// ── Pending requests (#186) ─────────────────────────────────────────────────────────────────
+// A session that wants in gift-wraps a request to the maintainer's key. Reading them here is what
+// removes the retyping step — and retyping is where an operator either gives up or stops reading.
+// Provenance and parsing live in requests.mjs; this file owns the DOM and the signing, so that a
+// change to what counts as a valid request is testable without a browser.
+import { readRequests } from './requests.mjs'
+
+// "Not now" is a local judgement, stored on this machine and published nowhere. A public denial
+// would name the stranger who asked — the same optics own-goal the spec's moderation section
+// gives for keeping mutes and rejects local. Dismissing is reversible by clearing site data.
+const DISMISS_KEY = 'waggle-console-dismissed-requests'
+const dismissedIds = () => {
+  try { return new Set(JSON.parse(localStorage.getItem(DISMISS_KEY) || '[]')) } catch { return new Set() }
+}
+let lastRequests = []
+
+window.__dismissReq = (id) => {
+  const s = dismissedIds(); s.add(id)
+  localStorage.setItem(DISMISS_KEY, JSON.stringify([...s]))
+  loadRequests()
+}
+
+// Admit — the one action. It does NOT sign here: it routes into the same confirm panel every
+// other signing act uses, so the operator still sees the exact event before it is signed. A
+// one-click path that skipped that would be the approve-first-read-never habit this page exists
+// to prevent, dressed up as convenience.
+window.__admit = async (id) => {
+  const st = $('reqst')
+  const r = lastRequests.find(x => x.id === id)
+  if (!r) return
+  if (!signer) { st.className = 'status err'; st.textContent = 'Sign in first — admitting is a signing act.'; return }
+  if (!r.channel) {
+    // The request named no channel and we will not invent one. Hand it to the issue panel with
+    // the grantee filled in so the operator chooses the subject deliberately.
+    $('g-to').value = nip19.npubEncode(r.grantee)
+    $('g-subject').value = ''
+    $('issue-panel').scrollIntoView({ behavior: 'smooth', block: 'center' })
+    st.className = 'status'
+    st.textContent = 'That request did not name a channel — choose one below before signing.'
+    return
+  }
+  const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)))
+  const hash = await scopeHash(r.channel.toLowerCase(), salt)
+  proposeSigning({
+    kind: 440, created_at: Math.floor(Date.now() / 1000),
+    tags: [['p', r.grantee], ['da-scope', hash, salt], ['da-cap', r.cap]], content: '',
+  }, `This admits ${short(r.grantee)} to the channel ${r.channel}. The channel id never rides `
+   + `publicly — it is stored as a salted hash only someone who already knows the channel can match.`
+   + (r.granteeIsSender ? ''
+      : ` — WARNING: the key being admitted is NOT the key that asked. ${short(r.from)} is asking on `
+      + `behalf of ${short(r.grantee)}. Admit only if you expected someone to request on another key's behalf.`))
+}
+
+async function loadRequests() {
+  if (!signer || !signerPk) { $('req-panel').style.display = 'none'; return }
+  $('req-panel').style.display = ''
+  const st = $('reqst'), list = $('reqlist')
+
+  // A signer that cannot decrypt cannot read requests at all. Saying "no pending requests" here
+  // would be a claim about the world; the truth is a claim about our eyesight. Same rule the
+  // tripwire learned (exit 3 = INCONCLUSIVE): being unable to check is not being fine.
+  if (typeof signer.nip44Decrypt !== 'function') {
+    list.innerHTML = `<div class="empty">This sign-in method cannot decrypt, so requests cannot be
+      read here. Nothing is shown because nothing could be <i>read</i> — which is not the same as
+      "nobody is asking". Sign in with a browser extension or a remote signer to see them.</div>`
+    st.className = 'status'; st.textContent = ''
+    return
+  }
+
+  st.className = 'status'; st.textContent = 'Reading requests…'
+  const results = await Promise.all(RELAYS.map(u => query(u, { kinds: [1059], '#p': [signerPk], limit: 300 })))
+  const answered = results.filter(r => r.answered)
+  const byId = new Map()
+  for (const r of results) for (const e of r.out) byId.set(e.id, e)
+
+  const { requests, skipped, failed } = await readRequests([...byId.values()], {
+    decrypt: (pk, ct) => signer.nip44Decrypt(pk, ct),
+    verifyEvent, decodeNpub: decode,
+  })
+  const hidden = dismissedIds()
+  lastRequests = requests.filter(r => !hidden.has(r.id))
+
+  if (!lastRequests.length) {
+    list.innerHTML = `<div class="empty">${answered.length
+      ? 'No requests waiting.'
+      : 'No relay answered, so nothing could be read — this is not the same as "no requests".'}</div>`
+  } else {
+    // Every string below is attacker-chosen: the purpose is free text written by whoever asked.
+    // esc() on all of it, on the one page that holds a live signing session.
+    list.innerHTML = lastRequests.map(r => `
+      <div class="note" style="margin-bottom:10px">
+        <div><span class="who">${esc(short(r.grantee))}</span> asks to be admitted${
+          r.channel ? ` to <span class="who">${esc(r.channel)}</span>` : ''}</div>
+        <div style="margin:7px 0;color:var(--dim)">&ldquo;${esc(r.purpose)}&rdquo;</div>
+        ${r.granteeIsSender ? '' :
+          `<div><span class="pill revoked">asked by ${esc(short(r.from))}, not the key being admitted</span></div>`}
+        <div style="margin-top:9px">
+          <button class="btn" style="margin:0;padding:5px 12px;font-size:12.5px"
+            onclick="__admit('${esc(r.id)}')">Admit</button>
+          <button class="btn ghost" style="margin:0 0 0 8px;padding:5px 12px;font-size:12.5px"
+            onclick="__dismissReq('${esc(r.id)}')">Not now</button>
+        </div>
+      </div>`).join('')
+  }
+
+  st.className = 'status ' + (answered.length ? 'ok' : 'err')
+  st.textContent = `${lastRequests.length} waiting · ${answered.length}/${RELAYS.length} relays answered`
+    + (skipped ? ` · ${skipped} wrap(s) were not requests` : '')
+    + (failed ? ` · ${failed} could not be read` : '')
+}
 
 $('go').addEventListener('click', async () => {
   const st = $('st'); const rows = $('rows')
