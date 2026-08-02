@@ -11,14 +11,15 @@
 # IDENTITY (the point of #129 — no standing write, scoped per tree):
 #   read   -> runs as 'bridge', which already holds scoped `sudo systemctl restart
 #             waggle-read.service` (deploy/sudoers-bridge) and owns /opt/waggle-read.
-#   sealed -> /opt/waggle-sealed runs as ROOT today; do NOT run its deploy as root. Create a
-#             scoped 'deploy' user that owns /opt/waggle-sealed + /opt/waggle-hub-sealed and
-#             holds ONLY `sudo systemctl restart waggle-sealed.service`, then add an override
+#   sealed -> the lane itself runs as the 'sealed' user (deploy/waggle-sealed.service). Its
+#             deploy must not run as root either. The same user owns
+#             /opt/waggle-sealed + /opt/waggle-hub-sealed and holds ONLY the scoped
+#             `sudo systemctl restart waggle-sealed.service` grant (deploy/sudoers-sealed), then add an override
 #             so this instance runs as that user:
 #               /etc/systemd/system/deploy-runner@sealed.service.d/override.conf
 #                 [Service]
-#                 User=deploy
-#                 Group=deploy
+#                 User=sealed
+#                 Group=sealed
 #             Getting sealed off a root deploy path is the same-pass hardening the issue asks
 #             for — landing it here means neither lane is deployed by root.
 #

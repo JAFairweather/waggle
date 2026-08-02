@@ -175,12 +175,10 @@ could be rsynced by one instance while the other had just moved it to a differen
 4. **read lane:** `sudo systemctl enable --now deploy-runner@read.timer`. It runs as
    `bridge`, which already owns `/opt/waggle-read` and holds the scoped `sudo systemctl
    restart waggle-read.service` grant (`deploy/sudoers-bridge`). No new authority.
-5. **sealed lane — get it off root in the same pass.** `/opt/waggle-sealed` is administered
-   as **root** today; do not deploy it as root. Create a scoped `deploy` user that owns the
-   sealed tree and `/opt/waggle-hub-sealed`, holding *only* `sudo systemctl restart
-   waggle-sealed.service`, add the drop-in from the unit header (`User=deploy`), then
-   `sudo systemctl enable --now deploy-runner@sealed.timer`. Now neither lane is deployed by
-   root, and no principal holds a general shell on production.
+5. **sealed lane — see "Sealed lane: off root, and its deploy runner" below.** It is a
+   separate pass with its own ordering (create the user, hand it the tree, restart the lane
+   as that user, *then* arm its runner), because moving a running lane off root is the part
+   that can leave it down if the steps are taken out of order.
 6. Confirm — by reading the result, not the exit code: `systemctl list-timers
    'deploy-runner@*'`, `cat /opt/waggle-<lane>/DEPLOYED_SHA`, and a green
    `verify-deployed.sh <lane> /opt/waggle-<lane> <sha>`.
@@ -189,6 +187,36 @@ For a **private** repo, drop a read-only token in `/opt/waggle-hub-<lane>/deploy
 (`GH_TOKEN=…`, `0600`, never committed) — a read cap, still no write authority on the box.
 
 Nothing arms until it passes a review and a green `verify-deployed.sh` against the box.
+
+## Sealed lane: off root, and its deploy runner
+
+The read lane has run as `bridge` since the Phase-1 migration. The sealed lane did not: it had no
+`User=` at all, so it ran as **root** — the last principal holding that privilege on production,
+and the reason "no principal holds a general shell here" was not yet true.
+
+Order matters. Each step leaves the lane in a working state, so a stop anywhere is safe.
+
+1. **Create the user** (no login, no home of its own beyond the tree):
+   `sudo useradd --system --home-dir /opt/waggle-sealed --shell /usr/sbin/nologin sealed`
+2. **Hand it the tree**, and re-assert the key's mode under its new owner:
+   `sudo chown -R sealed:sealed /opt/waggle-sealed` then `sudo chmod 0600 /opt/waggle-sealed/.env`.
+   **Do NOT make the tree group-writable** to let anything else ship into it — directory write
+   grants *rename* of entries whatever their own modes are, which is exactly the privesc closed on
+   the read tree on 2026-08-01. Own it, do not share it.
+3. **Scoped sudo**, validated before install:
+   `sudo visudo -cf deploy/sudoers-sealed && sudo install -m 0440 -o root -g root deploy/sudoers-sealed /etc/sudoers.d/sealed`
+4. **Install the unit and restart the lane as its new user:**
+   `sudo cp deploy/waggle-sealed.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart waggle-sealed.service`.
+   Confirm by reading, not by exit code: `systemctl show waggle-sealed.service -p User --value`
+   must print `sealed`, and the journal must show the lane resubscribing.
+5. **Only then, its deploy runner.** Hub clone owned by the same user:
+   `sudo git clone <repo> /opt/waggle-hub-sealed && sudo chown -R sealed:sealed /opt/waggle-hub-sealed`,
+   the drop-in from the unit header (`User=sealed`, `Group=sealed`), a hand-run
+   `DRY_RUN=1` tick, one real tick read by eye, and then
+   `sudo systemctl enable --now deploy-runner@sealed.timer`.
+
+**The tripwire is unaffected.** It merges both lanes' send-journals in an `ExecStartPre` that runs
+as root, so it keeps reading `/opt/waggle-sealed/data/send-journal.log` whoever owns it.
 
 ## ⚠ Root-SSH disable is lockout-sensitive
 
