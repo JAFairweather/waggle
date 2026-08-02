@@ -361,6 +361,7 @@ function drawTitlebar(npub, kind) {
       // Signed out means signed out: drop the signer, hide the actions, and re-draw the rows
       // without them. A control plane must never leave an action visible that it cannot perform.
       signer = null; signerPk = null
+      saveSession(null)   // and stay signed out across reloads — logout that a refresh undoes is not logout
       $('issue-panel').style.display = 'none'
       $('confirm-panel').style.display = 'none'
       // Requests were decrypted with the key that just left. Drop both the panel and the parsed
@@ -381,10 +382,24 @@ drawTitlebar(null, null)
 // is not walled out, not because it is the good option.
 let signer = null, signerPk = null
 
+// ── Staying signed in ───────────────────────────────────────────────────────────────────────
+// The persistence machinery lives in nave-connect (serializeSession / parseSession /
+// signerFromSession); this page just never used it, so every reload started signed-out. What is
+// remembered is deliberately NOT a key: for a browser signer it is the single word 'nip07' (the
+// extension holds the key), and for a remote signer it is the bunker URI plus the pairing's client
+// key (a transport key, the thing nave-connect's own comment says to persist). The local-key path
+// is never remembered — writing a raw nsec into localStorage is exactly the exposure this page
+// avoids everywhere else, and signerFromSession refuses to rebuild it anyway.
+const SESSION_KEY = 'waggle-console-session'
+const saveSession = (str) => { try { str ? localStorage.setItem(SESSION_KEY, str) : localStorage.removeItem(SESSION_KEY) } catch { /* private mode */ } }
+const readSession = () => { try { return localStorage.getItem(SESSION_KEY) } catch { return null } }
+
 const setAuth = (msg, cls = '') => { const s = $('authst'); s.className = 'status ' + cls; s.textContent = msg }
-async function adopt(s, label) {
+// `remember` is the already-serialized session string, or null to persist nothing (the local path).
+async function adopt(s, label, remember = null) {
   signer = s
   signerPk = await s.getPublicKey()
+  saveSession(remember)
   setAuth('')
   $('auth').style.display = 'none'
   $('local-row').style.display = 'none'
@@ -399,17 +414,22 @@ async function adopt(s, label) {
 const nc = () => import('./vendor/nave-connect.mjs')
 
 $('si-ext').addEventListener('click', async () => {
-  try { const { nip07Signer } = await nc(); await adopt(nip07Signer(), 'a browser signer') }
-  catch (e) { setAuth(e.message, 'err') }
+  try {
+    const { nip07Signer, serializeSession } = await nc()
+    await adopt(nip07Signer(), 'a browser signer', serializeSession('nip07'))
+  } catch (e) { setAuth(e.message, 'err') }
 })
 $('si-local').addEventListener('click', () => { $('local-row').style.display = '' })
 $('si-bunker-go').addEventListener('click', async () => {
   setAuth('connecting — approve the request in your signer…')
   try {
-    const { nip46Signer } = await nc()
-    const s = await nip46Signer($('bunker').value.trim())
+    const { nip46Signer, serializeSession } = await nc()
+    const uri = $('bunker').value.trim()
+    const s = await nip46Signer(uri)
     $('bunker').value = ''      // do not leave the token sitting in the DOM
-    await adopt(s, 'a remote signer')
+    // The pairing survives a reload only if the client key is kept — the signer exposes it, and
+    // reusing it is what makes the bunker see the reloaded page as the same app, not a new stranger.
+    await adopt(s, 'a remote signer', serializeSession('nip46', { uri, clientSecretHex: s.clientSecretHex }))
   } catch (e) { setAuth(e.message, 'err') }
 })
 $('si-local-go').addEventListener('click', async () => {
@@ -417,9 +437,25 @@ $('si-local-go').addEventListener('click', async () => {
     const { localSigner } = await nc()
     const s = localSigner($('localkey').value.trim())
     $('localkey').value = ''
-    await adopt(s, 'a local key')
+    await adopt(s, 'a local key')     // no remember arg — a local key is never written to storage
   } catch (e) { setAuth(e.message, 'err') }
 })
+
+// Restore a saved session on load. A browser signer rebuilds silently (the extension is present or
+// it is not — a failure just clears the slot and shows signed-out). A remote signer reconnects
+// lazily on first use. The local path is never restored: signerFromSession returns null for it,
+// so a stale 'local' slot simply falls through to signed-out rather than resurrecting a key.
+;(async () => {
+  const saved = readSession()
+  if (!saved) return
+  try {
+    const { parseSession, signerFromSession } = await nc()
+    const sess = parseSession(saved)
+    const s = signerFromSession(sess)
+    if (!s) { saveSession(null); return }
+    await adopt(s, sess.kind === 'nip46' ? 'a remote signer' : 'a browser signer', saved)
+  } catch { saveSession(null) }   // the signer went away; do not keep pretending it is here
+})()
 
 // Publish to every relay, and report each one. A write that "succeeded" because one relay
 // accepted it and three were never asked is not a fact worth showing.
