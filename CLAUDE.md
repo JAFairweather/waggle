@@ -148,7 +148,7 @@ that merely ran.** The suite was green through all of them.
 `npm test` — 22 suites, against the real exported functions with synthetic events. No sockets,
 no production state, no writes outside a temp dir.
 
-suite roster · boot · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant
+boot · suite roster · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant
 admission · message rendering · deployed-build verification · return lane · return-lane scan ·
 return-lane no-miss · return-lane pending · relay ingress · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record
 
