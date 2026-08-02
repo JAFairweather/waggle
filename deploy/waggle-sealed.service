@@ -1,34 +1,40 @@
-# Sealed-lane unit (DM + Concord planes) — the EXISTING production service, checked in.
-# Runs as root today; migrating it off root is out of scope for Phase 1 (see deploy/README.md).
-# Its config.json must have NO "public" block — boot log must read:
-#   "public read lane: inactive (no cfg.public.inbox)"
-# The read lane runs separately as waggle-read.service under the 'bridge' user.
+# waggle — sealed lanes (Armada DMs + Concord planes → Buzz inboxes).
+#
+# Runs as a DEDICATED NON-ROOT USER (#134 step 6). Until 2026-08-02 this unit had no `User=` at
+# all, so the sealed lane ran as root: the one lane still holding that privilege, and the reason
+# "no principal holds a general shell on production" was not yet true. The read lane has run as
+# `bridge` since the Phase-1 migration; this is the same treatment for the same reason.
+#
+# The lane terminates untrusted network input and shells out to the `buzz` CLI. Neither wants root.
+#
+#   sudo useradd --system --home-dir /opt/waggle-sealed --shell /usr/sbin/nologin sealed
+#   sudo chown -R sealed:sealed /opt/waggle-sealed
+#   sudo chmod 0600 /opt/waggle-sealed/.env      # the poster key — owner-only, and the owner is now `sealed`
+#   sudo install -m 0440 -o root -g root deploy/sudoers-sealed /etc/sudoers.d/sealed
+#
+# See deploy/README.md → "Sealed lane: off root, and its deploy runner".
 [Unit]
 Description=waggle — sealed lanes (Armada DMs + Concord planes → Buzz inboxes)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
+User=sealed
+Group=sealed
 WorkingDirectory=/opt/waggle-sealed
 ExecStart=/usr/bin/node src/bridge.mjs
 EnvironmentFile=/opt/waggle-sealed/.env
-# Sealed alternative (docs/KEY_CUSTODY.md). systemd-creds keeps the key encrypted at rest,
-# bound to this host, so a stolen disk or a leaked backup yields ciphertext:
-#
-#   systemd-creds encrypt --name=buzzkey /dev/stdin /etc/credstore.encrypted/buzzkey
-#
-# then swap the line above for the two below and have the service read the key from
-# $CREDENTIALS_DIRECTORY/buzzkey instead of BUZZ_PRIVATE_KEY:
-#
-#   LoadCredentialEncrypted=buzzkey:/etc/credstore.encrypted/buzzkey
-#   Environment=BUZZ_PRIVATE_KEY_FILE=%d/buzzkey
-#
-# This protects the COLD copy only. The process still holds the plaintext in memory to sign,
-# so it does nothing against a live host compromise - that answer is the disposable identity,
-# the tripwire, and rotation. See docs/KEY_CUSTODY.md before choosing.
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=5
+# Same sandbox as the read lane. ReadWritePaths is data/ ONLY: the lane's durable state (dedup
+# sets, watermarks, posted-map, send-journal) lives there, and nothing it does at runtime should
+# be able to rewrite its own code — the shape of the privesc closed on the read tree.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/waggle-sealed/data
+ProtectHome=yes
+PrivateTmp=yes
 
 [Install]
 WantedBy=multi-user.target

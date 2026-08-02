@@ -1,0 +1,5 @@
+# Installed to /etc/sudoers.d/sealed. Validate with `visudo -cf` BEFORE installing.
+# EXACT commands only, no wildcards — the sealed user can manage its own unit and nothing else.
+# This is what lets the deploy runner restart the lane after shipping, without any principal
+# holding a general shell on production.
+sealed ALL=(root) NOPASSWD: /usr/bin/systemctl start waggle-sealed.service, /usr/bin/systemctl stop waggle-sealed.service, /usr/bin/systemctl restart waggle-sealed.service, /usr/bin/systemctl status waggle-sealed.service
