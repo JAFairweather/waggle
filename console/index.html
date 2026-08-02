@@ -53,8 +53,12 @@
     margin:10px 0 5px;text-transform:uppercase;letter-spacing:.1em}
   input{width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);
     border-radius:var(--r-sm);padding:10px 12px;font-family:var(--mono);font-size:13px}
-  .row{display:flex;gap:12px;flex-wrap:wrap}
-  .row > div{flex:1;min-width:260px}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:stretch}
+  /* Columns line up on their INPUTS, not on the tops of their labels. A two-line label beside a
+     one-line one otherwise staggers the fields, which reads as a broken layout rather than as the
+     different label lengths it actually is. */
+  .row > div{flex:1;min-width:260px;display:flex;flex-direction:column}
+  .row > div > input{margin-top:auto}
   .btn{background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--r-sm);
     padding:10px 18px;font-weight:700;font-size:15px;font-family:inherit;cursor:pointer;margin-top:14px}
   .btn:hover{background:var(--accent-bright)}
@@ -87,6 +91,10 @@
     text-transform:uppercase;padding:2px 8px;border-radius:999px;border:1px solid}
   .pill.live{color:var(--good);border-color:var(--good)}
   .pill.revoked{color:var(--critical);border-color:var(--critical);text-decoration:line-through}
+  /* A WARNING is not a cancellation. `revoked` strikes its text through, which is right for
+     "this access was removed" and exactly wrong for "read this before you approve" — struck-out
+     text reads as already-dealt-with, and it is the one line on the card that must be read. */
+  .pill.warn{color:var(--warn);border-color:var(--warn)}
   .tablewrap{overflow-x:auto}
   .empty{color:var(--faint);font-size:14px;padding:14px 0}
   .rel{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin-top:12px;line-height:1.8}
@@ -96,6 +104,11 @@
   .note b{color:var(--text)}
   /* Secondary guidance inside a label: present, never competing with it. */
   .hint{color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0;font-size:12px}
+  /* Inside a LABEL the hint gets its own line. Trailing a sentence-case hint after uppercase,
+     letter-spaced text wraps mid-phrase at ordinary widths — the two collide and the label reads
+     as one run-on string. On its own line it stays legible and the wrap becomes predictable.
+     Scoped to labels so an h2's inline hint is untouched. */
+  label .hint{display:block;margin-top:4px;line-height:1.4}
 
   /* waggle is a lowercase wordmark. The shared bar uppercases app names by default and paints
      them in --accent, which on this dark ground reads as a dim brown — legible enough for a
@@ -145,6 +158,15 @@
       <button class="btn" id="si-local-go">Use this key</button>
     </div>
     <div class="status" id="authst"></div>
+  </div>
+
+  <div class="panel" id="req-panel" style="display:none">
+    <h2>Waiting for you <span class="hint">sessions that have asked to be let in</span></h2>
+    <div class="note">Nothing listed here has any access. A request is a stranger asking — anyone
+      can send one — and approving it is the only thing that admits them. Read the reason before
+      you decide, and remember it was written by whoever is asking.</div>
+    <div id="reqlist"></div>
+    <div class="status" id="reqst"></div>
   </div>
 
   <div class="panel" id="issue-panel" style="display:none">
@@ -341,6 +363,10 @@ function drawTitlebar(npub, kind) {
       signer = null; signerPk = null
       $('issue-panel').style.display = 'none'
       $('confirm-panel').style.display = 'none'
+      // Requests were decrypted with the key that just left. Drop both the panel and the parsed
+      // copies — a list of who is asking must not outlive the session that could act on it.
+      $('req-panel').style.display = 'none'
+      $('reqlist').innerHTML = ''; lastRequests = []
       setAuth('')
       drawTitlebar(null, null); renderRows()
     } : undefined,
@@ -367,6 +393,8 @@ async function adopt(s, label) {
   // Convenience only: the grantor field is what you sign as, so default it to the signed-in key.
   if (!$('grantor').value.trim()) { $('grantor').value = nip19.npubEncode(signerPk); $('go').click() }
   renderRows()
+  // Requests are addressed to the signed-in key, so they can only be read once there is one.
+  loadRequests()
 }
 const nc = () => import('./vendor/nave-connect.mjs')
 
@@ -432,7 +460,13 @@ $('confirm-go').addEventListener('click', async () => {
     st.className = 'status ' + (okCount ? 'ok' : 'err')
     st.textContent = `${okCount}/${results.length} relays accepted · ${results.join(' · ')}`
     pendingTemplate = null
-    setTimeout(() => { $('confirm-panel').style.display = 'none'; $('go').click() }, 1800)
+    // Re-read BOTH lists. Refreshing only the access list was the visible half of a bug: an
+    // admitted request stayed on screen, so the operator could not tell the signature had taken.
+    setTimeout(() => {
+      $('confirm-panel').style.display = 'none'
+      $('go').click()
+      loadRequests()
+    }, 1800)
   } catch (e) { st.className = 'status err'; st.textContent = e.message }
 })
 
@@ -468,6 +502,156 @@ $('g-preview').addEventListener('click', async () => {
       : `This admits ${short(grantee)} to the channel ${subjRaw}. The channel id never rides publicly — it is stored as a salted hash that only someone who already knows the channel can match.`)
   } catch (e) { st.className = 'status err'; st.textContent = e.message }
 })
+
+// ── Pending requests (#186) ─────────────────────────────────────────────────────────────────
+// A session that wants in gift-wraps a request to the maintainer's key. Reading them here is what
+// removes the retyping step — and retyping is where an operator either gives up or stops reading.
+// Provenance and parsing live in requests.mjs; this file owns the DOM and the signing, so that a
+// change to what counts as a valid request is testable without a browser.
+import { readRequests } from './requests.mjs'
+
+// "Not now" is a local judgement, stored on this machine and published nowhere. A public denial
+// would name the stranger who asked — the same optics own-goal the spec's moderation section
+// gives for keeping mutes and rejects local. Dismissing is reversible by clearing site data.
+const DISMISS_KEY = 'waggle-console-dismissed-requests'
+const dismissedIds = () => {
+  try { return new Set(JSON.parse(localStorage.getItem(DISMISS_KEY) || '[]')) } catch { return new Set() }
+}
+let lastRequests = []
+
+window.__dismissReq = (id) => {
+  const s = dismissedIds(); s.add(id)
+  localStorage.setItem(DISMISS_KEY, JSON.stringify([...s]))
+  loadRequests()
+}
+
+// Admit — the one action. It does NOT sign here: it routes into the same confirm panel every
+// other signing act uses, so the operator still sees the exact event before it is signed. A
+// one-click path that skipped that would be the approve-first-read-never habit this page exists
+// to prevent, dressed up as convenience.
+window.__admit = async (id) => {
+  const st = $('reqst')
+  const r = lastRequests.find(x => x.id === id)
+  if (!r) return
+  if (!signer) { st.className = 'status err'; st.textContent = 'Sign in first — admitting is a signing act.'; return }
+  if (!r.channel) {
+    // The request named no channel and we will not invent one. Hand it to the issue panel with
+    // the grantee filled in so the operator chooses the subject deliberately.
+    $('g-to').value = nip19.npubEncode(r.grantee)
+    $('g-subject').value = ''
+    $('issue-panel').scrollIntoView({ behavior: 'smooth', block: 'center' })
+    st.className = 'status'
+    st.textContent = 'That request did not name a channel — choose one below before signing.'
+    return
+  }
+  const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)))
+  const hash = await scopeHash(r.channel.toLowerCase(), salt)
+  proposeSigning({
+    kind: 440, created_at: Math.floor(Date.now() / 1000),
+    tags: [['p', r.grantee], ['da-scope', hash, salt], ['da-cap', r.cap]], content: '',
+  }, `This admits ${short(r.grantee)} to the channel ${r.channel}. The channel id never rides `
+   + `publicly — it is stored as a salted hash only someone who already knows the channel can match.`
+   + (r.granteeIsSender ? ''
+      : ` — WARNING: the key being admitted is NOT the key that asked. ${short(r.from)} is asking on `
+      + `behalf of ${short(r.grantee)}. Admit only if you expected someone to request on another key's behalf.`))
+}
+
+async function loadRequests() {
+  if (!signer || !signerPk) { $('req-panel').style.display = 'none'; return }
+  $('req-panel').style.display = ''
+  const st = $('reqst'), list = $('reqlist')
+
+  // A signer that cannot decrypt cannot read requests at all. Saying "no pending requests" here
+  // would be a claim about the world; the truth is a claim about our eyesight. Same rule the
+  // tripwire learned (exit 3 = INCONCLUSIVE): being unable to check is not being fine.
+  if (typeof signer.nip44Decrypt !== 'function') {
+    list.innerHTML = `<div class="empty">This sign-in method cannot decrypt, so requests cannot be
+      read here. Nothing is shown because nothing could be <i>read</i> — which is not the same as
+      "nobody is asking". Sign in with a browser extension or a remote signer to see them.</div>`
+    st.className = 'status'; st.textContent = ''
+    return
+  }
+
+  st.className = 'status'; st.textContent = 'Reading requests…'
+  const results = await Promise.all(RELAYS.map(u => query(u, { kinds: [1059], '#p': [signerPk], limit: 300 })))
+  const answered = results.filter(r => r.answered)
+  const byId = new Map()
+  for (const r of results) for (const e of r.out) byId.set(e.id, e)
+
+  const { requests, other, skipped, failed } = await readRequests([...byId.values()], {
+    decrypt: (pk, ct) => signer.nip44Decrypt(pk, ct),
+    verifyEvent, decodeNpub: decode,
+  })
+
+  // A request is a DM, and a DM lives on the relays forever — admitting someone does not delete
+  // the message that asked. So "pending" has to mean NOT YET GRANTED, not "a message exists", or
+  // the queue never empties and the operator learns to ignore it. Cross-reference the live grants
+  // by this signer: same grantee, and a scope that recomputes to the channel being asked for.
+  // Doing it against the RELAYS rather than against what this tab just published also means a
+  // grant issued from the CLI, or from another device, correctly clears the card here.
+  const gRes = await Promise.all(RELAYS.map(u =>
+    query(u, { kinds: [KIND.grant, KIND.revocation], authors: [signerPk], limit: 500 })))
+  const gById = new Map()
+  for (const r of gRes) for (const e of r.out) gById.set(e.id, e)
+  const gValid = [...gById.values()].filter(e => e.pubkey === signerPk && verifyEvent(e))
+  const gRevoked = new Set(gValid.filter(e => e.kind === KIND.revocation)
+    .flatMap(e => e.tags.filter(t => t[0] === 'e').map(t => t[1])))
+  const live = gValid.filter(e => e.kind === KIND.grant && !gRevoked.has(e.id))
+  const isSatisfied = async (r) => {
+    for (const g of live) {
+      if (g.tags.find(t => t[0] === 'p')?.[1] !== r.grantee) continue
+      const sc = g.tags.find(t => t[0] === TAG.scope)
+      if (!sc) continue
+      // Recompute with THAT grant's salt. A revoked grant does not count, so re-asking after a
+      // revocation correctly shows up again — the card tracks access, not history.
+      if (await scopeHash(String(r.channel).toLowerCase(), sc[2]) === sc[1]) return true
+    }
+    return false
+  }
+
+  const hidden = dismissedIds()
+  const open = []
+  let granted = 0
+  for (const r of requests) {
+    if (hidden.has(r.id)) continue
+    if (await isSatisfied(r)) { granted++; continue }
+    open.push(r)
+  }
+  lastRequests = open
+
+  if (!lastRequests.length) {
+    list.innerHTML = `<div class="empty">${answered.length
+      ? 'No requests waiting.'
+      : 'No relay answered, so nothing could be read — this is not the same as "no requests".'}</div>`
+  } else {
+    // Every string below is attacker-chosen: the purpose is free text written by whoever asked.
+    // esc() on all of it, on the one page that holds a live signing session.
+    list.innerHTML = lastRequests.map(r => `
+      <div class="note" style="margin-bottom:10px">
+        <div><span class="who">${esc(short(r.grantee))}</span> asks to be admitted to
+          <span class="who">${esc(r.channel)}</span></div>
+        <div style="margin:7px 0;color:var(--dim)">&ldquo;${esc(r.purpose)}&rdquo;</div>
+        ${r.granteeIsSender ? '' :
+          `<div><span class="pill warn">asked by ${esc(short(r.from))}, not the key being admitted</span></div>`}
+        <div style="margin-top:9px">
+          <button class="btn" style="margin:0;padding:5px 12px;font-size:12.5px"
+            onclick="__admit('${esc(r.id)}')">Admit</button>
+          <button class="btn ghost" style="margin:0 0 0 8px;padding:5px 12px;font-size:12.5px"
+            onclick="__dismissReq('${esc(r.id)}')">Not now</button>
+        </div>
+      </div>`).join('')
+  }
+
+  st.className = 'status ' + (answered.length ? 'ok' : 'err')
+  st.textContent = `${lastRequests.length} waiting · ${answered.length}/${RELAYS.length} relays answered`
+    + (granted ? ` · ${granted} already granted` : '')
+    // Nvoy's own credential delegations are access_requests too. They are readable and real —
+    // they simply are not channel admissions, and this console cannot act on them. Counted rather
+    // than dropped: "not mine to act on" is a different claim from "nothing there".
+    + (other.length ? ` · ${other.length} for Nvoy (no channel named)` : '')
+    + (skipped ? ` · ${skipped} wrap(s) were not requests` : '')
+    + (failed ? ` · ${failed} could not be read` : '')
+}
 
 $('go').addEventListener('click', async () => {
   const st = $('st'); const rows = $('rows')
