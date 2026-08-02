@@ -49,6 +49,7 @@ import { log, err } from './log.mjs'
 import { durableSet, durableQueue } from './stores.mjs'
 import { fanout } from './fanout.mjs'
 import { defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased } from './render.mjs'
+import { hex as concordHex, publicChannel, openChannelWrap } from './concord_lib.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
@@ -101,20 +102,60 @@ const TARGETS = Object.keys(RECIPIENTS)
 // --- Concord channel planes (additive; empty => pure DM bridge, no behavior change) --------
 // A public Concord channel's chat is a stream of kind:1059 wraps authored BY the channel's
 // derived plane pubkey (Concord inverts NIP-59: the outer p-tag is random, routing is by
-// `authors`). We forward each sealed wrap to every configured member's inbox; the agent
-// derives the plane key from ITS OWN community_root (held in-runtime) and decrypts.
-// NON-CUSTODIAL: we hold the plane PUBKEY only — a public address, never community_root.
+// `authors`). Two delivery modes, one gate:
+//
+//   DEFAULT (no read-key): forward the SEALED wrap to every member's inbox; the agent derives
+//   the plane key from ITS OWN community_root (held in-runtime) and decrypts. NON-CUSTODIAL: we
+//   hold the plane PUBKEY only — a public address, never community_root.
+//
+//   OPT-IN (#191, option 1): if the box is given the community read-key WB_COMMUNITY_ROOT and a
+//   channel carries a channel_id, we DERIVE the plane key here and deliver PLAINTEXT — the seat
+//   never touches Concord. This is a DELIBERATE, reversible READ concession for that channel: the
+//   box can now read it. It is a read-only trade — no member's SIGNING key is ever held (that
+//   invariant is unchanged; seal-back stays in each seat's own runtime). Pull the env var and
+//   redeploy to return to sealed-forward. Absent the root, absent a channel_id, or on ANY
+//   derivation mismatch, every channel falls back to the sealed-forward behavior above, byte for
+//   byte — so a wrong or missing read-key can only ever be as safe as today, never worse.
+//
 // config.channels[]: { name, plane_pubkey, channel_id?, epoch?, recipients: [<recipient name>...] }
-const PLANES = {} // plane_pubkey_hex -> { name, recipients: [ {name, inbox} ] }
+// community_root is a SECRET read-capability — it arrives ONLY via the WB_COMMUNITY_ROOT env var,
+// never config.json, and is never logged.
+const PLANES = {} // plane_pubkey_hex -> { name, recipients, channelId?, epoch?, planeKey? }
 const NAME_TO_REC = {}
 for (const hex of TARGETS) NAME_TO_REC[RECIPIENTS[hex].name] = RECIPIENTS[hex]
+// Decode the read-key once, loudly. A malformed value disables decrypt (sealed-forward) rather
+// than crashing the bridge — the concord_lib guards throw on a bad root, and we catch that here.
+let COMMUNITY_ROOT = null
+if (process.env.WB_COMMUNITY_ROOT) {
+  try { COMMUNITY_ROOT = concordHex(process.env.WB_COMMUNITY_ROOT) }
+  catch (e) { err(`WARN: WB_COMMUNITY_ROOT is set but not valid hex (${e.message}) — inbound decrypt DISABLED, forwarding SEALED`) }
+}
 for (const c of cfg.channels || []) {
   if (!c.plane_pubkey) { err(`WARN: channel '${c.name}' has no plane_pubkey — skipping`); continue }
   const recips = (c.recipients || []).map(n => NAME_TO_REC[n]).filter(Boolean)
   const missing = (c.recipients || []).filter(n => !NAME_TO_REC[n])
   if (missing.length) err(`WARN: channel '${c.name}' names unknown recipient(s): ${missing.join(', ')}`)
   if (!recips.length) { err(`WARN: channel '${c.name}' has no resolvable recipients — skipping`); continue }
-  PLANES[c.plane_pubkey.toLowerCase()] = { name: c.name, recipients: recips }
+  const planePk = c.plane_pubkey.toLowerCase()
+  const entry = { name: c.name, recipients: recips, channelId: c.channel_id || null, epoch: c.epoch ?? null }
+  // Opt-in decrypt: derive the plane key and PROVE it against the configured plane_pubkey before
+  // trusting it. A mismatch means the read-key, channel_id, or epoch is wrong — we then decline to
+  // decrypt (sealed-forward) rather than deliver something derived from a bad key. This is the
+  // guard James and Neil signed off: the box only reads a channel it can prove it has the key for.
+  if (COMMUNITY_ROOT && entry.channelId) {
+    try {
+      const pk = publicChannel(COMMUNITY_ROOT, concordHex(entry.channelId), entry.epoch ?? 0)
+      if (pk.pub !== planePk) {
+        err(`WARN: channel '${c.name}' derived plane ${pk.pub.slice(0, 12)}… != configured ${planePk.slice(0, 12)}… — read-key/channel_id/epoch mismatch; forwarding SEALED (no decrypt)`)
+      } else {
+        entry.planeKey = pk
+        log(`channel '${c.name}': inbound decrypt ENABLED — box holds the read-key, deliveries are PLAINTEXT (reversible read concession)`)
+      }
+    } catch (e) {
+      err(`WARN: channel '${c.name}' plane derivation failed (${e.message}) — forwarding SEALED (no decrypt)`)
+    }
+  }
+  PLANES[planePk] = entry
 }
 const PLANE_AUTHORS = Object.keys(PLANES)
 
@@ -567,12 +608,36 @@ function forward(rec, ev, src) {
     return
   }
   if (process.env.WB_STUB_SEND) { log(`FORWARD[stub] -> ${rec.name} inbox ${rec.inbox}: 1059 ${ev.id.slice(0, 12)}…`); return }
-  emit({
-    template: 'sealed_envelope',
-    dest: rec.inbox,
-    slots: { name: rec.name, channel: (src && src.channel) || undefined, wrapJson: JSON.stringify(ev) },
-  }).then(({ stdout }) => {
-    log(`FORWARD[buzz] ok -> ${rec.name} inbox: ${src && src.channel ? `${src.channel} ` : 'DM '}1059 ${ev.id.slice(0, 12)}…`)
+
+  // #191 option 1: if the box holds this channel's plane key, decrypt HERE and deliver plaintext.
+  // Any failure — a malformed wrap, an epoch we can't open — falls back to the sealed_envelope
+  // below rather than dropping the message. The fallback is load-bearing: both this and route()
+  // mark the event seen before the send resolves, so a throw that reached emit would lose the
+  // message permanently. Decrypt-or-seal is decided synchronously, before that point.
+  let descriptor = null
+  let decrypted = false
+  if (src && src.planeKey) {
+    try {
+      const { rumor } = openChannelWrap(src.planeKey, ev)
+      descriptor = {
+        template: 'channel_plaintext',
+        dest: rec.inbox,
+        slots: { channel: src.channel, sender: rumor.pubkey, body: String(rumor.content == null ? '' : rumor.content), replyTo: ev.id },
+      }
+      decrypted = true
+    } catch (e) {
+      err(`FORWARD decrypt ERR -> ${rec.name}: ${e.message} — sealed fallback for ${ev.id.slice(0, 12)}…`)
+    }
+  }
+  if (!descriptor) {
+    descriptor = {
+      template: 'sealed_envelope',
+      dest: rec.inbox,
+      slots: { name: rec.name, channel: (src && src.channel) || undefined, wrapJson: JSON.stringify(ev) },
+    }
+  }
+  emit(descriptor).then(({ stdout }) => {
+    log(`FORWARD[buzz] ok -> ${rec.name} inbox: ${decrypted ? 'plaintext ' : ''}${src && src.channel ? `${src.channel} ` : 'DM '}1059 ${ev.id.slice(0, 12)}…`)
     journalSend(parseBuzzEventId(stdout), { kind: 9, dest: rec.inbox, lane: 'sealed' })
   }).catch(e => {
     err(`FORWARD[buzz] ERR -> ${rec.name}: ${e.message}`)
@@ -601,7 +666,7 @@ function route(ev) {
     // provisioned inbox, so a dryrun or a placeholder inbox never suppresses later backfill.
     const willDeliver = FORWARD_MODE === 'buzz' && recips.some(r => !r.inbox.startsWith('INBOX_UUID_'))
     if (willDeliver) markSeen(ev.id)
-    for (const r of recips) forward(r, ev, { channel: plane.name })
+    for (const r of recips) forward(r, ev, { channel: plane.name, planeKey: plane.planeKey })
     return
   }
 

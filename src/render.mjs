@@ -58,5 +58,19 @@ export function renderReleased({ body, name, npubShort, liveRefs = false }) {
   return `**${name || npubShort}**  ·  \`${npubShort}\`  ·  _via waggle_\n\n${liveRefs ? body : defuseRefs(body)}`
 }
 
+// Inbound Concord channel post (#191, option 1), delivered DECRYPTED into a seat's inbox because
+// the box holds the community read-key. The seat reads plaintext and — if it chooses to answer —
+// runs the deterministic seal-back keyed on `reply-to`. The body was authored by whoever posted
+// in the channel, so it is NEUTRALISED (defuseRefs): a #general post containing "@someone" must
+// not spuriously ping a Buzz member in the seat's inbox. `sender` is the rumor author's real
+// pubkey (the routing invariant already proved the wrap was authored by the channel plane).
+// `replyTo` is the inbound wrap id, surfaced verbatim so the seat can seal a reply to it.
+export function renderChannelPlain({ channel, sender, body, replyTo }) {
+  const who = String(sender).slice(0, 12)
+  return `**#${channel}** · \`${who}…\` · _via waggle (decrypted)_\n\n` +
+    defuseRefs(body) +
+    `\n\n\`reply-to: ${replyTo}\``
+}
+
 // Repost a PLAINTEXT public note into a Buzz channel. `dest` is the community inbox for a
 // trusted (allowlisted) note, or the STAGING inbox for a quarantined external reply (A1).

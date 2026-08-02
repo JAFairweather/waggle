@@ -137,6 +137,26 @@ export const guestbookPlane = (root, cid, epoch) => groupKey('concord/guestbook'
 export const publicChannel  = (root, channelId, rootEpoch) => groupKey('concord/channel', sec32(root, 'publicChannel'), channelId, rootEpoch);
 export const privateChannel = (channelKey, channelId, channelEpoch) => groupKey('concord/channel', sec32(channelKey, 'privateChannel'), channelId, channelEpoch);
 
+// Unwrap a public-channel Concord wrap (kind:1059) with a plane key from publicChannel().
+// CORD-03 §1: the channel stream is SELF-ADDRESSED — the seal and the inner rumor both open
+// with the plane's OWN conversation key (getConversationKey(plane_sk, plane_pub)), NOT an ECDH
+// seal to the outer p-tag (which is a random decoy). Two shapes per CORD-01: a kind:20013
+// seal carries an encrypted rumor in `content`; anything else carries the rumor as plaintext
+// JSON. Returns { seal, rumor }.
+//
+// The author check is the ROUTING invariant, not a nicety: a wrap is attributed to this channel
+// ONLY because its author IS the derived plane pubkey. Skipping it would let a wrap authored by
+// any other key be decrypted-and-attributed here the moment its content happened to open — so the
+// caller must never render a rumor whose wrap failed this check.
+export function openChannelWrap(planeKey, ev) {
+  if (!ev || ev.pubkey !== planeKey.pub) {
+    throw new Error(`wrap author ${String(ev && ev.pubkey).slice(0, 12)}… is not the plane pubkey ${planeKey.pub.slice(0, 12)}…`);
+  }
+  const seal = JSON.parse(nip44.v2.decrypt(ev.content, planeKey.conv));
+  const rumor = seal.kind === 20013 ? JSON.parse(nip44.v2.decrypt(seal.content, planeKey.conv)) : JSON.parse(seal.content);
+  return { seal, rumor };
+}
+
 // --- keyless control-entity coordinates (CORD-04/05). These are the ones the old
 //     omit-the-id helper silently got wrong. They are `eid`s carried by editions ON
 //     the Control Plane (CORD-04 §4, examples.md:464-466) — raw 32-byte values, not
