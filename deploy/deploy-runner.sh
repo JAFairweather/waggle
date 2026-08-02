@@ -170,19 +170,34 @@ log "shipping code into $TREE"
 log "installing deps in $TREE"
 ( cd "$TREE" && sh -c "$NPM_CMD" ) || { alarm "dependency install failed in $TREE"; exit 1; }
 
-# record the SHA atomically BEFORE restart, so a crash mid-restart still leaves the tree's
-# provenance truthful for the next verify.
-printf '%s\n' "$TARGET_SHA" > "$TREE/DEPLOYED_SHA.tmp" && mv "$TREE/DEPLOYED_SHA.tmp" "$TREE/DEPLOYED_SHA"
-
 log "restarting $UNIT"
 sh -c "$RESTART_CMD \"$UNIT\"" || { alarm "restart of $UNIT failed"; exit 1; }
 
 # --- post-deploy: what is on disk MUST equal git at the sha we shipped -------------------
 log "verifying deployed tree against $SHORT"
 if sh "$HUB/deploy/verify-deployed.sh" "$LANE" "$TREE" "$TARGET_SHA"; then
+  # DEPLOYED_SHA is written ONLY here — after verify passes (#136).
+  #
+  # It used to be written before the restart, reasoning that a crash mid-restart should still
+  # leave the tree's provenance truthful. That ordering costs more than it buys: if verify FAILS,
+  # the file already claims success, so the next tick reads "already current", skips, and a
+  # PERSISTENT DRIFT ALARMS EXACTLY ONCE. An alarm that fires once for an ongoing fault reads as
+  # handled — the same shape this repo keeps re-learning.
+  #
+  # Writing it only on a verified deploy self-heals instead. A crash anywhere before this line
+  # leaves the old SHA, so the next tick re-deploys: rsync is idempotent, the dep install is
+  # idempotent, and a redundant restart costs seconds. The tree is re-verified and the alarm
+  # repeats every tick until someone fixes it, which is what a standing fault should do.
+  #
+  # The trade, stated: provenance becomes "last VERIFIED sha" rather than "last shipped sha".
+  # That is the more useful of the two — it is the question verify-deployed.sh asks anyway.
+  printf '%s\n' "$TARGET_SHA" > "$TREE/DEPLOYED_SHA.tmp" && mv "$TREE/DEPLOYED_SHA.tmp" "$TREE/DEPLOYED_SHA"
   log "deploy OK — $TREE now at $SHORT, verified"
   exit 0
 else
   alarm "post-deploy drift at $SHORT — deployed tree does NOT match git; investigate now"
+  # Deliberately does not quote the skip-path wording: a log line that contains the phrase a
+  # grep looks for is a log line that defeats the grep.
+  alarm "DEPLOYED_SHA left unchanged, so the next tick re-deploys and re-alarms rather than skipping this tree as up to date"
   exit 1
 fi
