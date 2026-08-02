@@ -15,7 +15,7 @@
 // INV-A3-4  wrapJson is single-line by contract (§2.4), enforced at render time
 // INV-A3-5  every slot of every template declares one of the closed slot types
 import { execFile } from 'node:child_process'
-import { renderQuarantined, renderReleased } from './render.mjs'
+import { renderQuarantined, renderReleased, renderChannelPlain } from './render.mjs'
 
 // --- The closed slot-type set (§2.2, INV-A3-5) -----------------------------------------------
 //
@@ -154,6 +154,18 @@ const CATALOGUE = {
         : `New Armada DM — sealed, unwrap with your key:`
       return `@${name}\n\n${label}\n\n\`\`\`json\n${wrapJson}\n\`\`\`\n`
     },
+  },
+
+  // Site 1b — forward(), inbound Concord DECRYPT (#191, option 1). When the box holds the
+  // community read-key, a channel wrap is delivered as PLAINTEXT instead of a sealed_envelope, so
+  // the seat reads it without touching Concord. `body` is `carried_body` — the ONLY slot that
+  // accepts arbitrary bytes, neutralised by the renderer and attributed to its channel author, so
+  // a hostile #general post cannot reconstruct waggle's own words or ping a member in the inbox.
+  // `sender` is the rumor author's real pubkey; `replyTo` is the inbound wrap id for seal-back.
+  channel_plaintext: {
+    action: 'send',
+    slots: { channel: 'channel', sender: 'npub', body: 'carried_body', replyTo: 'id' },
+    render: (s) => renderChannelPlain(s),
   },
 
   // Site 2a — forwardPublic(), quarantined. The renderer is the guard; it is unchanged.
