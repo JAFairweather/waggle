@@ -27,6 +27,7 @@ const POSTER = 'npub1s36nypljc6h88tey0kshf688eyd8myu636ctfs4e3d2w54nhsmnqfhaent'
 // operator is meant to trust; a test must not leave fake alarms in it.
 let ALARMS
 
+const quiet0 = (out) => !/^QUIET/m.test(out)
 let failures = 0
 const check = (name, cond, detail = '') => {
   if (cond) return console.log(`  ok   ${name}`)
@@ -97,14 +98,22 @@ try {
   check('it says nothing was checked', /0 on-relay event\(s\) observed/.test(empty.out))
   check('it names the read path as the suspect, not a quiet key',
     /read path is not seeing/.test(empty.out))
+  // The two cases must not collapse back together: blind still nags, quiet does not.
+  check('blind (journal non-empty) and quiet (journal empty) get DIFFERENT exit codes',
+    empty.code === 3 && quiet0(empty.out), 'both must not be 3')
   check('it states plainly that this is not an all-clear', /NOT an all-clear/.test(empty.out))
 
   // Both halves of the floor: an empty journal too is a quiet period, still not an all-clear.
   const emptyJournal = resolve(dir, 'empty-journal.log')
   writeFileSync(emptyJournal, '')
   const quiet = run(emptyJournal, noEvents)
-  check('0 observed + an empty journal -> still INCONCLUSIVE', quiet.code === 3, `exit ${quiet.code}`)
-  check('it distinguishes a quiet period from a blind one', /may simply be a quiet period/.test(quiet.out))
+  // #176: an idle hour must NOT fail the unit, or the detector cries wolf every tick and gets
+  // muted — the same end state as having no detector. But exit 0 here must never read like the
+  // OK it sits next to: no evidence of wrongdoing is not evidence of no wrongdoing.
+  check('0 observed + an EMPTY journal -> QUIET, exit 0 (no alert fatigue)', quiet.code === 0, `exit ${quiet.code}`)
+  check('the quiet line does not claim an all-clear', /not an all-clear/.test(quiet.out))
+  check('the quiet line says nothing was checked or claimed', /nothing is claimed/.test(quiet.out))
+  check('QUIET is visibly distinct from OK', /^QUIET/m.test(quiet.out) && !/^OK/m.test(quiet.out))
 
   // NEGATIVE CONTROL for the floor itself. A tool that returned INCONCLUSIVE unconditionally
   // would pass every check above. The clean run at line ~79 is the counterpart — it observed
