@@ -88,7 +88,6 @@ try { sk = raw.startsWith('nsec1') ? nip19.decode(raw).data : Uint8Array.from(Bu
 if (!sk || sk.length !== 32) die('NACT_AUTH_NSEC is not a 32-byte key')
 const authPk = getPublicKey(sk)
 const url = `${NACT}/api/propose`
-const path = new URL(url).pathname
 const payload = createHash('sha256').update(body).digest('hex')
 const authEv = finalizeEvent({ kind: 27235, created_at: Math.floor(Date.now() / 1000),
   tags: [['u', url], ['method', 'POST'], ['payload', payload]], content: '' }, sk)
