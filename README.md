@@ -104,7 +104,7 @@ against what git says, because a stale build is invisible while every status sur
 
 ## Tests
 
-`npm test` runs 19 suites against the **real** exported functions with synthetic events — no
+`npm test` runs 20 suites against the **real** exported functions with synthetic events — no
 sockets, no production state:
 
 boot · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant
