@@ -147,6 +147,36 @@ try {
   check(d.code === 1, 'post-deploy drift -> exit 1')
   check(/ALARM/.test(d.out) && /drift/i.test(d.out), 'drift -> ALARM emitted, not a silent pass')
 
+  // (6b) #136 — a FAILED verify must NOT record the SHA, and the fault must alarm on EVERY tick.
+  //
+  // This is the property the whole issue rests on. The SHA used to be written before verify, so
+  // a tree that failed verification still claimed success: the next tick read "already current",
+  // skipped, and a standing drift alarmed exactly ONCE. An alarm that fires once for an ongoing
+  // fault is indistinguishable from one that was handled.
+  check(!existsSync(join(d.tree, 'DEPLOYED_SHA')),
+    'drift -> DEPLOYED_SHA NOT recorded (an unverified deploy is not a deploy)')
+
+  // Second tick against the SAME broken tree: it must re-deploy and re-alarm, never go quiet.
+  const d2 = (() => {
+    const env = {
+      ...process.env, WB_HUB: hub, WB_TREE: d.tree, WB_REF: TARGET, WB_NO_FETCH: '1',
+      STUB_CI_STATE: 'success', WB_CI_STATE_CMD: 'echo "$STUB_CI_STATE" #',
+      WB_NPM_CMD: 'printf "\\n// injected drift\\n" >> src/bridge.mjs',
+      WB_RESTART_CMD: 'true #',
+    }
+    try {
+      return { code: 0, out: execFileSync('sh', ['-c', `sh "${SCRIPT}" read 2>&1`], { cwd: REPO, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) }
+    } catch (e) { return { code: e.status ?? 1, out: (e.stdout || '') + (e.stderr || '') } }
+  })()
+  check(d2.code === 1, 'drift, second tick -> STILL exit 1 (a standing fault keeps failing)')
+  check(/ALARM/.test(d2.out), 'drift, second tick -> alarms AGAIN, not once')
+  // Assert the POSITIVE — that it re-shipped — rather than the absence of the skip wording. A
+  // first draft checked !/already current/ and failed against the runner's own alarm text, which
+  // quotes that phrase: a negative string assertion is only as good as every other string in the
+  // output, and this repo has an alarm whose job is to mention the thing it prevented.
+  check(/shipping code into/.test(d2.out),
+    'drift, second tick -> re-deploys instead of skipping the tree as up to date')
+
   // (7) WB_TREE unset (every production run) must not trip `set -e` on the override guard.
   // DRY_RUN so it resolves + gates green, then reports, without writing to the real /opt tree.
   let dc = 0, dOut = ''
