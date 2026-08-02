@@ -460,7 +460,13 @@ $('confirm-go').addEventListener('click', async () => {
     st.className = 'status ' + (okCount ? 'ok' : 'err')
     st.textContent = `${okCount}/${results.length} relays accepted · ${results.join(' · ')}`
     pendingTemplate = null
-    setTimeout(() => { $('confirm-panel').style.display = 'none'; $('go').click() }, 1800)
+    // Re-read BOTH lists. Refreshing only the access list was the visible half of a bug: an
+    // admitted request stayed on screen, so the operator could not tell the signature had taken.
+    setTimeout(() => {
+      $('confirm-panel').style.display = 'none'
+      $('go').click()
+      loadRequests()
+    }, 1800)
   } catch (e) { st.className = 'status err'; st.textContent = e.message }
 })
 
@@ -572,12 +578,46 @@ async function loadRequests() {
   const byId = new Map()
   for (const r of results) for (const e of r.out) byId.set(e.id, e)
 
-  const { requests, skipped, failed } = await readRequests([...byId.values()], {
+  const { requests, other, skipped, failed } = await readRequests([...byId.values()], {
     decrypt: (pk, ct) => signer.nip44Decrypt(pk, ct),
     verifyEvent, decodeNpub: decode,
   })
+
+  // A request is a DM, and a DM lives on the relays forever — admitting someone does not delete
+  // the message that asked. So "pending" has to mean NOT YET GRANTED, not "a message exists", or
+  // the queue never empties and the operator learns to ignore it. Cross-reference the live grants
+  // by this signer: same grantee, and a scope that recomputes to the channel being asked for.
+  // Doing it against the RELAYS rather than against what this tab just published also means a
+  // grant issued from the CLI, or from another device, correctly clears the card here.
+  const gRes = await Promise.all(RELAYS.map(u =>
+    query(u, { kinds: [KIND.grant, KIND.revocation], authors: [signerPk], limit: 500 })))
+  const gById = new Map()
+  for (const r of gRes) for (const e of r.out) gById.set(e.id, e)
+  const gValid = [...gById.values()].filter(e => e.pubkey === signerPk && verifyEvent(e))
+  const gRevoked = new Set(gValid.filter(e => e.kind === KIND.revocation)
+    .flatMap(e => e.tags.filter(t => t[0] === 'e').map(t => t[1])))
+  const live = gValid.filter(e => e.kind === KIND.grant && !gRevoked.has(e.id))
+  const isSatisfied = async (r) => {
+    for (const g of live) {
+      if (g.tags.find(t => t[0] === 'p')?.[1] !== r.grantee) continue
+      const sc = g.tags.find(t => t[0] === TAG.scope)
+      if (!sc) continue
+      // Recompute with THAT grant's salt. A revoked grant does not count, so re-asking after a
+      // revocation correctly shows up again — the card tracks access, not history.
+      if (await scopeHash(String(r.channel).toLowerCase(), sc[2]) === sc[1]) return true
+    }
+    return false
+  }
+
   const hidden = dismissedIds()
-  lastRequests = requests.filter(r => !hidden.has(r.id))
+  const open = []
+  let granted = 0
+  for (const r of requests) {
+    if (hidden.has(r.id)) continue
+    if (await isSatisfied(r)) { granted++; continue }
+    open.push(r)
+  }
+  lastRequests = open
 
   if (!lastRequests.length) {
     list.innerHTML = `<div class="empty">${answered.length
@@ -588,8 +628,8 @@ async function loadRequests() {
     // esc() on all of it, on the one page that holds a live signing session.
     list.innerHTML = lastRequests.map(r => `
       <div class="note" style="margin-bottom:10px">
-        <div><span class="who">${esc(short(r.grantee))}</span> asks to be admitted${
-          r.channel ? ` to <span class="who">${esc(r.channel)}</span>` : ''}</div>
+        <div><span class="who">${esc(short(r.grantee))}</span> asks to be admitted to
+          <span class="who">${esc(r.channel)}</span></div>
         <div style="margin:7px 0;color:var(--dim)">&ldquo;${esc(r.purpose)}&rdquo;</div>
         ${r.granteeIsSender ? '' :
           `<div><span class="pill warn">asked by ${esc(short(r.from))}, not the key being admitted</span></div>`}
@@ -604,6 +644,11 @@ async function loadRequests() {
 
   st.className = 'status ' + (answered.length ? 'ok' : 'err')
   st.textContent = `${lastRequests.length} waiting · ${answered.length}/${RELAYS.length} relays answered`
+    + (granted ? ` · ${granted} already granted` : '')
+    // Nvoy's own credential delegations are access_requests too. They are readable and real —
+    // they simply are not channel admissions, and this console cannot act on them. Counted rather
+    // than dropped: "not mine to act on" is a different claim from "nothing there".
+    + (other.length ? ` · ${other.length} for Nvoy (no channel named)` : '')
     + (skipped ? ` · ${skipped} wrap(s) were not requests` : '')
     + (failed ? ` · ${failed} could not be read` : '')
 }

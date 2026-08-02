@@ -106,21 +106,34 @@ export async function parseRequest(wrap, deps) {
 }
 
 /**
- * Parse a batch of wraps. Returns { requests, skipped, failed } — newest first.
+ * Parse a batch of wraps. Returns { requests, other, skipped, failed } — newest first.
  *
- * `skipped` and `failed` are reported, never swallowed. A console that shows "0 pending" after
- * silently failing to decrypt 40 wraps has told the operator the opposite of the truth, which is
- * the failure mode nvoy's own notice reader carries a comment about. Same rule as the rest of this
- * repo: being unable to check is not the same as being fine.
+ * THE SPLIT MATTERS, and it was found by looking at the rendered page rather than the code.
+ * Reading nvoy's vocabulary (REQUEST_TYPES above) is what lets one request serve both consoles —
+ * but it also means this console sees nvoy's OWN traffic: credential delegations ("a Gemini API
+ * key", "a BotFather token") are `access_request`s too, and have nothing to do with channel
+ * admission. Rendered together they read as "asks to be admitted" above a button that issues a
+ * CHANNEL grant — a label that does not match what the button does, which is precisely the defect
+ * this project files against other people's approval surfaces.
+ *
+ * The discriminator is the payload, not the vocabulary: a channel admission names a channel; an
+ * nvoy credential request never does. `requests` is therefore what this console can actually act
+ * on, and `other` is everything readable that belongs in Nvoy instead.
+ *
+ * `other`, `skipped` and `failed` are all REPORTED, never swallowed. A console that shows "0
+ * pending" after failing to decrypt forty wraps has told the operator the opposite of the truth.
+ * Being unable to check is not the same as being fine — and neither is "not mine to act on".
  */
 export async function readRequests(wraps, deps) {
-  const requests = []
+  const requests = [], other = []
   let skipped = 0, failed = 0
   for (const w of wraps || []) {
     let r = null
     try { r = await parseRequest(w, deps) } catch { failed++; continue }
-    if (r) requests.push(r); else skipped++
+    if (!r) { skipped++; continue }
+    ;(r.channel ? requests : other).push(r)
   }
-  requests.sort((a, b) => b.at - a.at)
-  return { requests, skipped, failed }
+  const newest = (a, b) => b.at - a.at
+  requests.sort(newest); other.sort(newest)
+  return { requests, other, skipped, failed }
 }

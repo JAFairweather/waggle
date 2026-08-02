@@ -172,6 +172,27 @@ const PURPOSE = "review #140's egress design with the crew <please>"
   ok('  …and counts the wrap it could not, rather than hiding it', skipped === 1)
 }
 
+// --- 6b. NVOY'S OWN TRAFFIC IS SPLIT OUT, NOT MISLABELLED ---------------------------------------
+// Found by looking at the rendered page, not the code. Reading nvoy's vocabulary is what lets one
+// request serve both consoles — and it means this console also sees nvoy's credential delegations.
+// Those are real, readable access_requests that are NOT channel admissions; rendering them as
+// "asks to be admitted" above a button that issues a CHANNEL grant is a label that does not match
+// what the button does. Both directions asserted: the admission still gets through.
+{
+  const nvoyish = wrapFor(generateSecretKey(), {
+    type: 'access_request', scope_name: 'gemini-api-key',
+    purpose: 'Gemini API key for the PRIMARY engine model — proxied egress (M6)',
+  })
+  const admission = wrapFor(sessionSk, { type: 'access_request', channel: CHANNEL, purpose: PURPOSE })
+  const { requests, other } = await readRequests([nvoyish, admission], deps)
+  ok('a channel admission still lands in requests', requests.length === 1)
+  ok('  …and it is the one naming a channel', requests[0]?.channel === CHANNEL)
+  ok('an nvoy credential request does NOT land in requests',
+    !requests.some(r => /Gemini/.test(r.purpose)))
+  ok('  …it is reported in `other`, never silently dropped', other.length === 1)
+  ok('  …with its purpose intact, so the count can be explained', /Gemini/.test(other[0]?.purpose || ''))
+}
+
 // --- 7. ORDERING ---------------------------------------------------------------------------------
 {
   const a = wrapFor(generateSecretKey(), { type: 'access_request', channel: CHANNEL, purpose: 'older' })
