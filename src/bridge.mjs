@@ -46,7 +46,7 @@ import { fileURLToPath } from 'node:url'
 // Extracted leaf modules (#154). Each is dependency-free of config and ambient state, which is why
 // these four came out first — the split is staged, not big-bang.
 import { log, err } from './log.mjs'
-import { durableSet } from './stores.mjs'
+import { durableSet, durableQueue } from './stores.mjs'
 import { fanout } from './fanout.mjs'
 import { defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased } from './render.mjs'
 
@@ -60,6 +60,11 @@ const SEEN_CAP = Number(process.env.SEEN_CAP || 100000)
 // its keys are (source_id × recipient) composites, not bare event ids, so one community message
 // carries out to every matching recipient exactly once and never re-delivers across a restart.
 const RLSEEN_PATH = process.env.RLSEEN_PATH || resolve(ROOT, 'data', 'return-lane-seen.log')
+const RLPENDING_PATH = process.env.RLPENDING_PATH || resolve(ROOT, 'data', 'return-lane-pending.log')
+// Bounded, or one permanently-unreachable recipient retries forever. On the ~4-minute scan poll
+// this is roughly two hours of outage before a carry is dead-lettered — long enough to ride out a
+// relay flap, short enough that a dead key is surfaced the same day.
+const RLPENDING_MAX_ATTEMPTS = Number(process.env.RLPENDING_MAX_ATTEMPTS || 30)
 const RLSEEN_CAP = Number(process.env.RLSEEN_CAP || 100000)
 // Relay-lane dedup store (DESIGN_RELAY_INGRESS §6): wraps addressed to waggle's OWN key that it
 // unwraps and relays into a channel. Its own append-only capped file — checked BEFORE decryption
@@ -1061,6 +1066,14 @@ async function handleCommand(m) {
 const rlSeenStore = durableSet({ path: RLSEEN_PATH, cap: RLSEEN_CAP, label: 'return lane', noun: 'carried (source×recipient) keys' })
 const rlSeen = rlSeenStore.mem
 const rlKey = (srcId, recipHex) => String(srcId) + '\x1f' + String(recipHex)
+
+// #117: the un-landed carries. rlSeen answers "already carried"; this answers "still owed", and
+// the difference matters because the scan cursor advances whether or not a carry landed. A 0/N is
+// loud and retried by the overlap re-read, but only while the message stays inside that window —
+// an outage sustained past it used to age the carry out and lose it. This queue retries from
+// durable storage instead of from the window, so the cursor keeps advancing (no lane-wide stall
+// from one dead recipient) and the carry survives anyway.
+const rlPending = durableQueue({ path: RLPENDING_PATH, cap: 5000, label: 'return lane pending' })
 const loadRlSeen = () => rlSeenStore.load()
 const addRlSeen = (key) => rlSeenStore.claim(key)
 const dropRlSeen = (key) => rlSeenStore.rollback(key)
@@ -1314,10 +1327,57 @@ async function scanReturnLane(msgs, opts = {}) {
       }, { src: m.id, why: repliedTo && !mentioned ? 'reply' : 'mention' }, opts.publish)
       // Persist-on-landed: durable dedup only once the seal reached a relay. A silent 0/N is rolled
       // back so the overlap re-read (and a restart) re-carry it — a rare re-carry beats a lost mention.
-      if (accepted >= 1) markRlSeen(key)
-      else dropRlSeen(key)
+      if (accepted >= 1) {
+        markRlSeen(key)
+        rlPending.remove(key)                              // landed: no longer owed
+      } else {
+        dropRlSeen(key)
+        // Owed, durably. The overlap re-read may still catch it first; enqueue is idempotent and
+        // does not reset the attempt count, so the two paths cannot inflate each other.
+        rlPending.enqueue(key, { to: r.npub_hex, mention: r.mention, why: repliedTo && !mentioned ? 'reply' : 'mention', body, src: m.id })
+      }
     }
   }
+}
+
+// #117: retry what is still owed, INDEPENDENT of the scan cursor. This is the half that makes
+// the pending queue worth having — the cursor has long since moved past these messages, so
+// nothing else will ever look at them again.
+//
+// Bounded, then dead-lettered. An unbounded retry against a permanently-dead recipient is the
+// same failure as the rejected cursor-hold, just quieter: work that never completes and never
+// stops. The bound converts it into a loud, dated, per-recipient report — and a dead-letter that
+// is logged and dropped, never a queue that grows forever.
+async function retryPendingCarries(opts = {}) {
+  if (!PUB || !PUB.returnLane.length || !hasBridgeKey()) return
+  const owed = rlPending.entries()
+  if (!owed.length) return
+  let landed = 0, dead = 0
+  for (const { key, item, attempts } of owed) {
+    if (!item || !item.to) { rlPending.remove(key); continue }   // unparseable record: drop, do not loop
+    if (attempts >= RLPENDING_MAX_ATTEMPTS) {
+      // DEAD LETTER. Loud, and it names the recipient and the source, because a carry the
+      // community believes was delivered and never was is exactly the silence this lane exists
+      // to prevent. Dropped from the queue so one dead key cannot pin the lane.
+      err(`RETURN dead-letter: gave up carrying ${String(item.src).slice(0, 12)}… to ${String(item.to).slice(0, 12)}… after ${attempts} attempt(s) — the recipient has been unreachable throughout. This carry is LOST and will not be retried.`)
+      rlPending.remove(key)
+      dead++
+      continue
+    }
+    const n = rlPending.attempt(key)                            // recorded BEFORE the send
+    const accepted = await returnLaneSend(item.to, {
+      template: 'return_carry',
+      slots: { mention: item.mention, why: item.why, body: item.body },
+    }, { src: item.src, why: item.why, retry: n }, opts.publish)
+    if (accepted >= 1) {
+      markRlSeen(key)
+      rlPending.remove(key)
+      landed++
+      log(`RETURN retry ok: carried ${String(item.src).slice(0, 12)}… to ${String(item.to).slice(0, 12)}… on attempt ${n}`)
+    }
+  }
+  if (landed || dead) log(`return lane pending: ${landed} landed, ${dead} dead-lettered, ${rlPending.size()} still owed`)
+  else if (owed.length) log(`return lane pending: ${owed.length} still owed, none landed this pass`)
 }
 
 let cmdCursor = 0
@@ -1326,7 +1386,9 @@ function pollCommands() {
     let msgs
     try { msgs = JSON.parse(String(so).slice(String(so).indexOf('['))) } catch { return err('commands: unparseable staging read') }
     for (const m of msgs) { if ((m.created_at || 0) >= cmdCursor - 300) handleCommand(m).catch(er => err(`commands: ${er.message}`)) }
-    scanReturnLane(msgs).catch(er => err(`return lane: staging carry failed: ${er.message}`))
+    scanReturnLane(msgs)
+      .then(() => retryPendingCarries())                  // #117: owed carries, independent of the cursor
+      .catch(er => err(`return lane: staging carry failed: ${er.message}`))
     cmdCursor = Math.floor(Date.now() / 1000)
   })
 }
@@ -1598,13 +1660,14 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
   loadSeen()
   loadPostedMap()
   loadRlSeen()
+  rlPending.load()
   loadRelaySeen()
   // #171 — say it on every boot. A record of lost messages that nobody reads is the same silence
   // it exists to end, one level further out. Non-fatal: these are past losses, not a reason to

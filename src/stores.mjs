@@ -50,4 +50,70 @@ function durableSet({ path, cap, label, noun }) {
   }
 }
 
-export { durableSet }
+// --- durable QUEUE ----------------------------------------------------------
+// The sibling of durableSet, for the case a set cannot serve: work that must OUTLIVE the window
+// it was discovered in. A set remembers "already handled"; this remembers "still owed", which
+// needs the payload, an attempt count, and a way to give up.
+//
+// The return lane is the motivating case (#117). A carry that reaches 0 relays is rolled back so
+// the overlap re-read retries it — but the scan cursor advances regardless, so that retry only
+// happens while the message stays inside the overlap window. An outage sustained past it ages the
+// carry out and it is lost, silently, after having been loud for a while.
+//
+// Holding the cursor instead was considered and rejected upstream: one permanently-unreachable
+// recipient would pin the cursor forever and stall the lane for EVERYONE — a rare, loud,
+// per-recipient miss traded for an unbounded, silent, lane-wide stall. A queue keeps liveness
+// (cursor advances) and no-miss (retries come from durable storage, not from the window).
+//
+// Append-only JSONL, replayed in order, exactly like durableSet: {k, v} enqueues, {k, a} records
+// an attempt, {k, d:1} tombstones. Last-write-wins on replay, so a compaction is just a truncation
+// to the last `cap` records.
+function durableQueue({ path, cap, label }) {
+  const mem = new Map()   // key -> { item, attempts }
+  const append = (rec) => {
+    try { appendFileSync(path, JSON.stringify(rec) + '\n') }
+    catch (e) { err(`${label}: append failed for ${String(rec.k).slice(0, 64)}: ${e.message}`) }
+  }
+  return {
+    mem,
+    size: () => mem.size,
+    has: (k) => mem.has(k),
+    entries: () => [...mem.entries()].map(([k, v]) => ({ key: k, item: v.item, attempts: v.attempts })),
+    enqueue(k, item) {
+      if (mem.has(k)) return                       // already owed; do not reset its attempt count
+      mem.set(k, { item, attempts: 0 })
+      append({ k, v: item })
+    },
+    // Recording the attempt BEFORE the retry is deliberate: a crash mid-retry must not buy a free
+    // attempt, or a permanently-failing item could loop forever across restarts and never reach
+    // the dead-letter bound that exists to stop exactly that.
+    attempt(k) {
+      const e = mem.get(k)
+      if (!e) return 0
+      e.attempts += 1
+      append({ k, a: e.attempts })
+      return e.attempts
+    },
+    remove(k) {
+      if (!mem.delete(k)) return false
+      append({ k, d: 1 })
+      return true
+    },
+    load() {
+      if (!existsSync(path)) { mkdirSync(dirname(path), { recursive: true }); return }
+      const lines = readFileSync(path, 'utf8').split('\n').filter(Boolean)
+      const kept = lines.slice(-cap)
+      for (const line of kept) {
+        let r
+        try { r = JSON.parse(line) } catch { continue }   // a torn final write is skipped, not fatal
+        if (!r || !r.k) continue
+        if (r.d) { mem.delete(r.k); continue }
+        if (r.v !== undefined) { mem.set(r.k, { item: r.v, attempts: 0 }); continue }
+        if (r.a !== undefined && mem.has(r.k)) mem.get(r.k).attempts = r.a
+      }
+      log(`${label}: loaded ${mem.size} owed item(s) from ${path}${lines.length > kept.length ? ` (pruned ${lines.length - kept.length})` : ''}`)
+    },
+  }
+}
+
+export { durableSet, durableQueue }
