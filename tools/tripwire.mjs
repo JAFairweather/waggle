@@ -208,13 +208,32 @@ if (!anomalies.length) {
   // quiet — it means the read path cannot see the surface the key is actually used on, and every
   // OK it has ever printed was that blindness, not an assurance.
   if (!events.length) {
+    // BLIND vs QUIET — the same observation, two very different meanings, and #176 is right that
+    // collapsing them costs the alarm its credibility. An INCONCLUSIVE on every idle hour is a
+    // detector crying wolf, and this repo already knows where that ends: it gets muted, which is
+    // the same end state as having no detector at all.
+    //
+    // The journal is what separates them, and the tool already computed it — it was in the
+    // message text and not in the exit code.
+    if (journal.size) {
+      // Sends recorded, nothing seen on the wire: the read path is not looking at the surface the
+      // poster key is used on. Not a quiet key — a blind check. This is the one that must nag.
+      console.log(
+        `INCONCLUSIVE — 0 on-relay event(s) observed in the last ${sinceMin}m, so nothing was checked, ` +
+        `while the journal recorded ${journal.size} send(s) in the same period.\n` +
+        `Zero observed against a non-empty journal means the read path is not seeing the surface the ` +
+        `poster key is used on. This is NOT an all-clear.`)
+      process.exit(3)
+    }
+    // Nothing sent, nothing seen: consistent with a genuinely idle window. Exit 0 so an idle
+    // bridge does not fail its unit every tick — but say plainly that nothing was CLEARED. The
+    // distinction the wording has to carry: "no evidence of wrongdoing" is not "evidence of no
+    // wrongdoing", and this line must never read like the OK below it.
     console.log(
-      `INCONCLUSIVE — 0 on-relay event(s) observed in the last ${sinceMin}m, so nothing was checked.` +
-      (journal.size
-        ? `\nThe journal recorded ${journal.size} send(s) in the same period. Zero observed against a non-empty journal means the read path is not seeing the surface the poster key is used on — not that the key was idle.`
-        : `\nThe journal is also empty for this window, so this may simply be a quiet period — but a run that saw nothing still proves nothing about the read path.`) +
-      `\nThis is NOT an all-clear.`)
-    process.exit(3)
+      `QUIET — 0 on-relay event(s) observed and 0 journaled in the last ${sinceMin}m. ` +
+      `Consistent with an idle poster key.\nNothing was checked and nothing is claimed: this is ` +
+      `not an all-clear, it is an absence of activity to clear.`)
+    process.exit(0)
   }
   console.log(`OK — all ${events.length} on-relay post(s) by the poster key were emitted by our process.`)
   process.exit(0)
