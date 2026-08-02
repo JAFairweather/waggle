@@ -1,11 +1,41 @@
 # In-door consent — the participant must agree to be brought in
 
-**Status:** DESIGN, for crew review (#131 + #132 as one story; #133 framed and recommended-against).
-Nothing here is built. The build is a separate PR after this design is reviewed and accepted.
+**Status:** DESIGN, **reviewed by the crew 2026-08-02** (#131 + #132 as one story; #133 framed and
+recommended-against). Nothing is built beyond the reference primitive (`src/consent.mjs`, §11). The
+build is a separate PR after acceptance.
 
 > Leads named on the issues: **@Dennis** — prior art + the consent-record primitive (the inverted
 > grant). **@Kerouac** — the participant-facing request + the ToS language. **@My Dude** — spec
 > synthesis + the `bridge.mjs` enforcement point. **@Neil** — the config/enforcement surface.
+
+## 0. Review outcome (2026-08-02) — folded in below, each item verified against source
+
+- **Mechanism decided — Candidate A (Dennis).** Participant-issued `440`, `da-cap:mirror`. Dennis
+  verified the reference primitive (`tests/consent.mjs` 15/15; `scopeHash` byte-matches
+  `bridge.mjs:561`). **Binding safety condition:** `mirror` is a **reserved capability estate-wide**
+  — every `440` reader disambiguates on `cap == 'mirror' && grantee == bridge && author == subject`
+  and never treats it as a data delegation (§4, §8).
+- **Two errors corrected (My Dude, verified).** (1) The disclosure DM rides **`nostr_egress.mjs`**
+  (sealed lane), not `egress.mjs` (Buzz-only) — §5. (2) The consent set **cannot reuse `grantSet`'s
+  builder** — `processGrantEvent:569` drops non-maintainer authors; it needs its own subscription,
+  and revocation its own lane — §8.
+- **The prefill-signer (Dennis, resolving Kerouac's flag).** A stranger won't hand-roll a `440`, so
+  the bridge/console emits the **fully-formed `440` minus the signature** (scope hash precomputed
+  with the bridge's salt, `da-cap:mirror`, `tos`); the participant only **signs and publishes**. Two
+  surfaces, byte-identical events: a console one-click, and a `nostrconnect:`/NIP-07 deep-link in the
+  DM. The signature is still theirs — the whole primitive (§5).
+- **ToS drafted (Kerouac)** — cover line + canonical block, all five §7 points, in
+  `~/.buzz/OUTBOX/CONSENT_TOS_S7.md`. **Hash convention (required, not tidy):** hash the **canonical
+  block only**, target npub **excluded** (keeps `expectedTosHash` one-per-community, O(1)); with
+  `{COMMUNITY}`/`{TERMS_URL}` and a literal **`v1`** *inside* the hash (§7).
+- **The send-side durable ask-record (My Dude add).** §6's anti-spam gate needs a durable record
+  (same class as `RLSEEN_PATH`/`UNDELIVERED_PATH`) checked **before** emitting the beat-2 DM — no
+  emit without an ask-record check (§6, §8).
+- **⚠ Two policy calls flagged for @James** (mechanism can't close them): the **ToS-version** rule
+  (a material `v1→v2` permits *one* fresh ask per target for the new version; an explicit **no is
+  permanent across all versions**; key asked/consented on `(target, tosVersion)`, declined on
+  `target` alone), and the fact that the disclosure DM is waggle's **first unsolicited outbound seal
+  to a stranger**, so §6's gate is load-bearing (§6).
 
 ---
 
@@ -157,15 +187,21 @@ question, flagged for the crew. The request is not *content authored into the co
 **operational disclosure to an external party about the bridge's own operation** — closer to a
 service ToS notice than to speech. Two options:
 - **(a) the bridge sends it**, as a strictly templated, non-conversational disclosure (no free
-  text — it rides the `src/egress.mjs` closed-slot machinery, so it can carry only the fixed ToS
-  template + the target npub). This keeps "never authors" intact because there is no authored
-  content, only a fixed form.
+  text — a fixed form, no free-prose slot). This keeps "never authors" intact because there is no
+  authored content, only a fixed form.
 - **(b) the maintainer sends it** as themselves. Cleanest against the immutable, but it re-couples
   the flow to a human per target and loses the automation the intention asks for.
 
-Recommendation: **(a)**, precisely because the closed-slot egress (`#134` A3) already exists to make
-"the bridge emits only fixed forms, never free text" enforceable — a consent-request template is a
-natural new slot type. **My Dude / Neil to confirm against the egress catalogue.**
+Recommendation: **(a)** — but on the **right transport, corrected in review (My Dude, verified
+against source).** The disclosure DM does **not** ride `src/egress.mjs`: that module speaks only
+Buzz channel posts (every template ends at `buzz messages send`). The beat-2 ask is a **NIP-17
+sealed `1059` to an external npub** — a different transport, which already exists with the same
+closed-slot discipline as **`src/nostr_egress.mjs`** (`sealAndWrap({template, to, slots})`, its own
+closed `NOSTR_TEMPLATE_NAMES` catalogue, and it *refuses a string body* at `:161`). So the mechanism
+is a **new `consent_request` template in `nostr_egress.mjs`'s catalogue**, not a slot type in
+`egress.mjs`. The intent (fixed form, "carries never authors" held by type) is exactly right; the
+module was wrong. **This is also waggle's first *unsolicited* outbound seal to a stranger — its
+safety lives entirely in the §6 anti-spam gate.**
 
 ---
 
@@ -229,17 +265,34 @@ Grounded in the live code (`src/bridge.mjs`):
 - `routePublic(ev)` (`:877`) classifies each caught public note; `forwardPublic(ev, …)` (`:810`)
   does the repost. `grantSet` (`:565`) is the admitted-participant set (from `440`s), already
   consulted at `:902` and for live `@mention` refs at `:838`.
-- **#131 feed-mirror:** add a **consent set** alongside `grantSet` — `mirrorConsent: participantPub
-  → {recordId, tosHash}`, built from verified participant-issued `mirror` `440`s exactly as
-  `grantSet` is built from admission `440`s (`:590`). In `routePublic`, a `watch_authors` match
-  forwards **only if** `mirrorConsent.has(ev.pubkey)`; else it is dropped and logged
-  (`no consent — held`, never a silent drop, per §7's firehose discipline).
+- **#131 feed-mirror:** add a **consent set** `mirrorConsent: participantPub → {recordId, tosHash}`.
+  **Corrected in review (My Dude, verified against source): it CANNOT reuse `grantSet`'s builder.**
+  `processGrantEvent` rejects any `440` whose author is not a maintainer grantor (`bridge.mjs:569`,
+  `if (!grantors.includes(ev.pubkey)) return`) — and consent authors are *external participants*, so
+  every consent would drop at `:569` before it was read. The consent set needs its **own
+  subscription** — a REQ for `440`s p-tagging the bridge with `da-cap:mirror`, from **any** author —
+  feeding `readConsents()`, a separate lane from `grantSet` by construction. In `routePublic`, a
+  `watch_authors` match forwards **only if** `mirrorConsent.has(ev.pubkey)`; else dropped and logged
+  (`no consent — held`, never a silent drop).
+  - *Why this is still safe against the `440` overload (Dennis + My Dude):* inside `bridge.mjs`,
+    `grantSet`'s builder uses a **positive cap allowlist** (`:589 cap !== 'admit' && cap !==
+    'admit+read'`), so a `mirror` `440` falls through and never pollutes `grantSet`. bridge.mjs is
+    safe as written. The *reserve-`mirror`-estate-wide* requirement (Dennis) therefore binds
+    **blocklist-shaped** consumers — `capgrants.mjs`, any future `440` reader — which must
+    disambiguate on the full tuple `cap == 'mirror' && grantee == bridge && author == subject` and
+    never treat `mirror` as a data delegation.
 - **#132 reply lane:** the `watch_events` catch is held in the new **invisible** pre-consent state
   (§6 ordering) until `mirrorConsent.has(ev.pubkey)`; on consent it is handed to the existing §4
   quarantine (A1) for the community gate. Two independent gates, both must pass, participant first.
-- **Revocation** rides the existing `441` path (`:575` already removes a grantee from `grantSet` on
-  a matching `441`) — the same handler drops the consent record, and the mirror stops on the next
-  read. No restart.
+- **Revocation — its own lane, not the existing `441` path (corrected, My Dude).** The `:575`
+  handler matches on `grantId` only and is reached solely past the `:569` grantor gate — i.e.
+  maintainer-authored `441`s. Consent revocation has the stricter rule the primitive already
+  enforces (`consent.mjs`: a `441` counts *only if signed by the same participant who granted*), so
+  it lives in the same separate `readConsents` lane. Mirror stops on the next read. No restart.
+- **The scope landmine (Dennis, confirmed):** `verifyConsent`/`readConsents` must be called with
+  `communityId = PUB.inbox` — the exact secret admissions scope to (`bridge.mjs:588`,
+  `scopeHash(PUB.inbox, …)`), byte-identical to `consent.mjs`'s `scopeHash`. Any other value and
+  every consent fails closed on scope.
 - **Config coupling (Neil):** `watch_authors` / `watch_events` entries outside the roster are inert
   until a consent record exists — so an operator *adding* an author is no longer the moment content
   flows; the participant's *consent* is. Findable and flowing stay two switches, as §3.5 already
@@ -292,16 +345,20 @@ possibly no build ever.** Its own epic if it ever moves.
 
 ## 11. Deliverable status and the build that follows
 
-This document is the **design** the issues asked for: intention, handshake, consent record, ToS,
-enforcement point, and revocation, with the mechanism weighed. It is **not built.**
+This document is the **design** the issues asked for, **reviewed and its mechanism decided** (§0).
+The reference primitive is built; the rest is not.
 
-The build, in order, after this is reviewed and accepted:
-1. the consent record + verification (a `consent.mjs` primitive, pure and tested, mirroring
-   `capgrants.mjs` — verify a participant `mirror` `440`, resolve its `441`);
-2. the request/disclosure DM as a closed-slot egress template (§5a), rate-limited and once-per-target;
-3. the `mirrorConsent` set and the two enforcement gates in `bridge.mjs` (§8) — **security-relevant
-   lane logic; lands as its own PR with adversarial review, never a tack-on**;
-4. the ToS text (§7), Kerouac.
+The build, in order, after acceptance:
+1. **✅ the consent record + verification** — `src/consent.mjs`, pure and tested (`tests/consent.mjs`,
+   15/15), crew-verified. **Done** as the reference deliverable.
+2. the request/disclosure DM as a **new `consent_request` template in `src/nostr_egress.mjs`** (the
+   sealed lane — *not* `egress.mjs`, §5), gated by the §6 durable ask-record, once-per-target
+   (@My Dude owns this + item 3).
+3. the `mirrorConsent` set + its **own** subscription and the two enforcement gates in `bridge.mjs`
+   (§8) — **security-relevant lane logic; its own PR with adversarial review, never a tack-on**.
+4. the ToS text — **✅ drafted** (`~/.buzz/OUTBOX/CONSENT_TOS_S7.md`, @Kerouac); wire in the §7 hash
+   convention when item 2 lands.
+5. **@James** — the two policy calls in §0 (ToS-version ask rule; first-unsolicited-seal posture).
 
 Default-closed until it lands: **do not point `watch_authors` or a `#p`/`watch_events` widen at
 anyone outside the consenting crew in the meantime.**
