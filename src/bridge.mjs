@@ -631,6 +631,19 @@ function processGrantEvent(ev) {
 // mirror_require_consent is on. Off (the default), this set is built for observability and gates
 // nothing, so the deploy changes no behaviour.
 const mirrorConsent = new Map() // participant pubkey -> { recordId, tosHash, at }
+// `pmc` finds consents because a 440 p-tags the bridge. A participant's later 441 need not
+// repeat that p-tag, though, so it would otherwise be invisible and leave consent fail-open.
+// Every live public socket registers a refresher that subscribes by the accepted 440 ids (the
+// `e` tags a valid revocation must carry). Batching keeps each relay filter modest while retaining
+// coverage for every active consent record.
+const CONSENT_REVOCATION_BATCH = 100
+const CONSENT_REFRESHERS = new Set()
+function consentRecordIds() {
+  return Array.from(new Set(Array.from(mirrorConsent.values()).map(r => r.recordId))).sort()
+}
+function refreshConsentRevocations() {
+  for (const f of CONSENT_REFRESHERS) { try { f() } catch (e) { err(`consent: revocation refresh failed: ${e?.message || '?'}`) } }
+}
 function processConsentEvent(ev) {
   if (!ev || !ev.id || !PUB || !BRIDGE_PK) return
   if (ev.kind === NIPDA.revocation) {
@@ -642,6 +655,7 @@ function processConsentEvent(ev) {
     const targets = (ev.tags || []).filter(t => t[0] === 'e').map(t => t[1])
     if (targets.includes(held.recordId)) {
       mirrorConsent.delete(author)
+      refreshConsentRevocations()
       log(`mirror consent revoked: ${author.slice(0, 12)}… (441 ${ev.id.slice(0, 12)}…)`)
     }
     return
@@ -652,6 +666,7 @@ function processConsentEvent(ev) {
   const prev = mirrorConsent.get(v.participant)
   if (!prev || ev.created_at >= prev.at) {   // newest active consent per participant wins
     mirrorConsent.set(v.participant, { recordId: ev.id, tosHash: v.tosHash, at: ev.created_at })
+    refreshConsentRevocations()
     log(`mirror consent: ${v.participant.slice(0, 12)}… → ${String(PUB.inbox).slice(0, 8)}… (440 ${ev.id.slice(0, 12)}…)`)
   }
 }
@@ -1189,8 +1204,13 @@ function addWatchAuthor(pk) {
   const hex = String(pk || '').trim().toLowerCase()
   if (!/^[0-9a-f]{64}$/.test(hex)) return { ok: false, reason: 'not a 64-hex pubkey' }
   if (PUB.authors.includes(hex)) return { ok: true, already: true }
+  // Persistence is the commit point.  A runtime-only addition would work until the next
+  // restart, then silently disappear — worse than refusing the operator's request.  Write
+  // first; only a durable success may alter the active filter.
+  if (!mutateConfig(c => { c.public.watch_authors = Array.from(new Set([...(c.public.watch_authors || []).map(s => String(s).toLowerCase()), hex])) })) {
+    return { ok: false, reason: 'could not persist watchlist' }
+  }
   PUB.authors.push(hex)
-  mutateConfig(c => { c.public.watch_authors = Array.from(new Set([...(c.public.watch_authors || []).map(s => String(s).toLowerCase()), hex])) })
   refreshWatched()
   log(`watchlist: +${hex.slice(0, 12)}… — now ${PUB.authors.length} watched, subscription updated (no restart)`)
   return { ok: true, added: true }
@@ -1200,8 +1220,12 @@ function removeWatchAuthor(pk) {
   if (!/^[0-9a-f]{64}$/.test(hex)) return { ok: false, reason: 'not a 64-hex pubkey' }
   const i = PUB.authors.indexOf(hex)
   if (i === -1) return { ok: true, already: true }
+  // Same transaction boundary as add: do not let a failed write create a temporary live
+  // removal that a restart reverses.
+  if (!mutateConfig(c => { c.public.watch_authors = (c.public.watch_authors || []).map(s => String(s).toLowerCase()).filter(a => a !== hex) })) {
+    return { ok: false, reason: 'could not persist watchlist' }
+  }
   PUB.authors.splice(i, 1)
-  mutateConfig(c => { c.public.watch_authors = (c.public.watch_authors || []).map(s => String(s).toLowerCase()).filter(a => a !== hex) })
   refreshWatched()
   log(`watchlist: -${hex.slice(0, 12)}… — now ${PUB.authors.length} watched, subscription updated (no restart)`)
   return { ok: true, removed: true }
@@ -1216,11 +1240,47 @@ function replyInStaging(parentBuzzId, verb, slots = {}) {
     .catch(e => err(`commands: confirmation reply failed: ${e.message}`))
 }
 
+// #206 stage 2. The staging channel is the signed operator console: an approver may manage the
+// feed watchlist without a root shell, but only through an explicit two-word namespace so ordinary
+// conversation cannot resemble a command. `watch` remains an alias for the DIFFERENT `follow`
+// action below; whole-feed mirroring uses `waggle mirror` / `waggle unmirror`.
+function watchlistTarget(raw) {
+  const value = String(raw || '').trim().toLowerCase()
+  if (/^[0-9a-f]{64}$/.test(value)) return value
+  if (!value.startsWith('npub1')) return null
+  try {
+    const decoded = nip19.decode(value)
+    return decoded.type === 'npub' && typeof decoded.data === 'string' && /^[0-9a-f]{64}$/.test(decoded.data)
+      ? decoded.data.toLowerCase() : null
+  } catch { return null }
+}
+function handleWatchlistCommand(m, words) {
+  const action = words[1]
+  if (!['mirror', 'unmirror'].includes(action) || words.length !== 3) return false
+  const target = watchlistTarget(words[2])
+  if (!target) {
+    markSeen('cmd:' + m.id)
+    replyInStaging(m.id, 'watchlist_ack', { verb: 'bad_target' })
+    return true
+  }
+  const result = action === 'mirror' ? addWatchAuthor(target) : removeWatchAuthor(target)
+  markSeen('cmd:' + m.id) // command is durable before its acknowledgement can be retried
+  if (!result.ok) replyInStaging(m.id, 'watchlist_ack', { verb: 'persist_failed' })
+  else if (result.added) replyInStaging(m.id, 'watchlist_ack', { verb: 'added', author: target })
+  else if (result.removed) replyInStaging(m.id, 'watchlist_ack', { verb: 'removed', author: target })
+  else replyInStaging(m.id, 'watchlist_ack', { verb: action === 'mirror' ? 'already' : 'not_watched', author: target })
+  return true
+}
+
 async function handleCommand(m) {
   if (!m || !m.id || seen.has('cmd:' + m.id)) return
   if (!PUB.approvers.includes(String(m.pubkey || '').toLowerCase())) return // not an approver: not a command
   const raw = String(m.content || '').trim().toLowerCase()
-  let word = raw.split(/\s+/)[0]
+  const words = raw.split(/\s+/)
+  // Explicit signed watchlist administration, only from the staging poller that calls this
+  // function. It has no quarantine parent because it manages the list itself, not one note.
+  if (words[0] === 'waggle' && handleWatchlistCommand(m, words)) return
+  let word = words[0]
   if (word === 'release') word = 'approve' // the labels say "released from quarantine" — honor the word
   if (word === 'watch') word = 'follow'    // the maintainer's verb: follow (watch kept as alias)
   if (!['approve', 'follow', 'mute', 'reject'].includes(word)) {
@@ -1766,6 +1826,10 @@ function connectPublic(url) {
   // fans a watchlist change out through this so the relay filter updates without a restart.
   let watchedRefresher = null
   WATCH_REFRESHERS.add(() => { if (watchedRefresher) watchedRefresher() })
+  // #204: p-tag filtering finds participant-issued 440 consents but not necessarily their 441
+  // withdrawals. The latter are subscribed by the consent-record ids they must e-tag.
+  let consentRevocationRefresher = null
+  CONSENT_REFRESHERS.add(() => { if (consentRevocationRefresher) consentRevocationRefresher() })
   const open = () => {
     ws = new WebSocket(url)
     // A5: buffer the pre-EOSE backfill and deliver it in CLAMPED-created_at order, so a batch
@@ -1811,6 +1875,23 @@ function connectPublic(url) {
       } catch (e) { err(`[pub ${url}] could not update watched-author subscription: ${e?.message || '?'}`) }
     }
     watchedRefresher = subscribeWatched
+    let consentRevocationKeys = []
+    const subscribeConsentRevocations = () => {
+      const batches = []
+      const ids = consentRecordIds()
+      for (let i = 0; i < ids.length; i += CONSENT_REVOCATION_BATCH) batches.push(ids.slice(i, i + CONSENT_REVOCATION_BATCH))
+      const nextKeys = batches.map(ids => ids.join(','))
+      try {
+        for (let i = 0; i < batches.length; i++) {
+          if (nextKeys[i] === consentRevocationKeys[i]) continue
+          ws.send(JSON.stringify(['REQ', `pmr-${i}`, { kinds: [NIPDA.revocation], '#e': batches[i], limit: 500 }]))
+        }
+        for (let i = batches.length; i < consentRevocationKeys.length; i++) ws.send(JSON.stringify(['CLOSE', `pmr-${i}`]))
+        consentRevocationKeys = nextKeys
+        if (batches.length) log(`[pub ${url}] consent-revocation subscription -> ${ids.length} active consent record(s)`)
+      } catch (e) { err(`[pub ${url}] could not subscribe to consent revocations: ${e?.message || '?'}`) }
+    }
+    consentRevocationRefresher = subscribeConsentRevocations
     const flush = (reason) => {
       if (eosed) return
       eosed = true
@@ -1866,6 +1947,9 @@ function connectPublic(url) {
       // standing consent must survive any restart (stateless consumption). Dispatched to
       // processConsentEvent alongside processGrantEvent below.
       if (BRIDGE_PK) { ws.send(JSON.stringify(['REQ', 'pmc', { kinds: [NIPDA.grant, NIPDA.revocation], '#p': [BRIDGE_PK], limit: 500 }])) }
+      // Re-open the record-id subscriptions on reconnect. New 440s refresh this live after
+      // verification; these existing ids cover a revocation that arrives without a bridge p-tag.
+      subscribeConsentRevocations()
       // Relay lane (DESIGN_RELAY_INGRESS): wraps p-tagged to waggle's OWN key. This REQ lives HERE,
       // not in the sealed connect block, because the handler needs PUB state that only this
       // instance has: `grantSet` (populated by the `pg` subscription above), `relayChannels`, and
@@ -1937,7 +2021,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, processConsentEvent, mirrorConsent, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, processConsentEvent, mirrorConsent, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {

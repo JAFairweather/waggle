@@ -11,7 +11,7 @@
 //
 //   node tests/watchlist.mjs
 
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure'
@@ -20,9 +20,10 @@ const tmp = mkdtempSync(join(tmpdir(), 'wb-watchlist-'))
 const CHAN = '77777777-7777-7777-7777-777777777777'
 const CFG = join(tmp, 'config.json')
 const existing = getPublicKey(generateSecretKey())   // a pre-existing static watch author
+const approverSk = generateSecretKey(), approver = getPublicKey(approverSk)
 writeFileSync(CFG, JSON.stringify({
   relays: [], recipients: [],
-  public: { relays: [], inbox: CHAN, staging_inbox: CHAN, watch_authors: [existing], watch_events: [], grantors: [] },
+  public: { relays: [], inbox: CHAN, staging_inbox: CHAN, watch_authors: [existing], watch_events: [], approvers: [approver], grantors: [] },
 }))
 process.env.WB_NO_BOOT = '1'
 process.env.FORWARD_MODE = 'dryrun'
@@ -31,7 +32,7 @@ process.env.SEEN_PATH = join(tmp, 'seen.log')
 process.env.PUB_WATERMARK_PATH = join(tmp, 'wm')
 process.env.POSTED_MAP_PATH = join(tmp, 'pm.log')
 
-const { addWatchAuthor, removeWatchAuthor, WATCH_REFRESHERS, PUB, routePublic } = await import('../src/bridge.mjs')
+const { addWatchAuthor, removeWatchAuthor, WATCH_REFRESHERS, PUB, routePublic, handleCommand } = await import('../src/bridge.mjs')
 
 const realLog = console.log.bind(console)
 let n = 0, pass = 0
@@ -82,6 +83,38 @@ t('  X\'s feed post is no longer mirrored', !mirrored(routeOf(feedPost(sk))))
 
 // --- 5. the pre-existing static author is untouched throughout ---------------------------------
 t('the original watch_authors entry survived every mutation', cfgAuthors().includes(existing) && PUB.authors.includes(existing))
+
+// --- 6. persistence failure is fail-closed ----------------------------------------------------
+// The config write is the commit point: a temporary live mutation would lie to the operator and
+// reverse at the next restart. Remove write permission from the file, then prove neither add nor
+// remove changes the active set or triggers a relay re-subscribe.
+const Y = getPublicKey(generateSecretKey())
+chmodSync(CFG, 0o444)
+const beforeFailedAdd = fired
+const failedAdd = addWatchAuthor(Y)
+t('a failed persist refuses an add', failedAdd.ok === false)
+t('  a failed persist does NOT alter the live watched set', !PUB.authors.includes(Y))
+t('  a failed persist does NOT refresh relay filters', fired === beforeFailedAdd)
+const beforeFailedRemove = fired
+const failedRemove = removeWatchAuthor(existing)
+t('a failed persist refuses a removal', failedRemove.ok === false)
+t('  a failed removal does NOT alter the live watched set', PUB.authors.includes(existing))
+t('  a failed removal does NOT refresh relay filters', fired === beforeFailedRemove)
+chmodSync(CFG, 0o644)
+
+// --- 7. signed staging-console commands -------------------------------------------------------
+// `watch` already means reply-follow, so whole-feed administration is explicitly namespaced:
+// `waggle mirror` / `waggle unmirror`. Only a configured approver may operate it.
+const Z = getPublicKey(generateSecretKey())
+await handleCommand({ id: 'a'.repeat(64), pubkey: approver, tags: [], content: `waggle mirror ${Z}` })
+t('an approver can mirror a feed with the explicit console command', PUB.authors.includes(Z) && cfgAuthors().includes(Z))
+await handleCommand({ id: 'b'.repeat(64), pubkey: approver, tags: [], content: `waggle unmirror ${Z}` })
+t('an approver can unmirror a feed with the explicit console command', !PUB.authors.includes(Z) && !cfgAuthors().includes(Z))
+const outsiderTarget = getPublicKey(generateSecretKey())
+await handleCommand({ id: 'c'.repeat(64), pubkey: outsiderTarget, tags: [], content: `waggle mirror ${outsiderTarget}` })
+t('a non-approver cannot change the watchlist', !PUB.authors.includes(outsiderTarget))
+await handleCommand({ id: 'd'.repeat(64), pubkey: approver, tags: [], content: 'waggle mirror definitely-not-a-key' })
+t('a malformed console target changes nothing', !PUB.authors.includes('definitely-not-a-key'))
 
 realLog(`\n${pass}/${n} passed`)
 process.exit(pass === n ? 0 : 1)

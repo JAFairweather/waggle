@@ -86,6 +86,13 @@ git-ignored and holds **no secrets** — those live in `.env`. The values you'll
   `public.watch_authors` — pubkeys that publish straight through without quarantine.
 - `public.relays` — which public relays to read and write.
 
+**Managing whole-feed watches without SSH.** In the signed staging console, an approver can post
+`waggle mirror <npub>` to add a public feed, or `waggle unmirror <npub>` to remove it. This is
+deliberately not `watch`: that existing reply command means a narrower *follow* (trust replies to
+our own note), while `mirror` subscribes to an author's whole feed. A watch only chooses what the
+community wants to hear; with consent enforcement enabled, the author still has to issue their own
+mirror-consent before anything crosses.
+
 **Runtime behavior** (`.env`):
 
 | Var | Default | Why you'd change it |

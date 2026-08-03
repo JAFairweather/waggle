@@ -78,6 +78,11 @@ administrator seats credentials directly — and it never takes a secret as a co
 The console is served from your own machine on purpose. Its whole promise is *"here is exactly what
 you are about to sign"*, and that promise is only worth something if you control the page making it.
 
+For whole-feed watches, an authorized approver can also use the signed in-Buzz staging console:
+`waggle mirror <npub>` adds a feed and `waggle unmirror <npub>` removes it. This is a plain
+director-curated watchlist, not a grant; the watched person’s separate mirror-consent is what
+authorizes ingestion when consent enforcement is enabled.
+
 ## Configuration
 
 `config.json` (git-ignored) holds the relay set, the channels messages land in, the watch tiers, the
