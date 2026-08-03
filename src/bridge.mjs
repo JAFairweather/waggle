@@ -97,8 +97,8 @@ if (!existsSync(CONFIG_PATH)) {
 }
 const cfg = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'))
 const RELAYS = cfg.relays || []
-const RECIPIENTS = {} // hex -> { name, inbox }
-for (const r of cfg.recipients || []) RECIPIENTS[r.npub_hex] = { name: r.name, inbox: r.inbox }
+const RECIPIENTS = {} // hex -> { name, inbox, npub_hex }
+for (const r of cfg.recipients || []) RECIPIENTS[r.npub_hex] = { name: r.name, inbox: r.inbox, npub_hex: String(r.npub_hex || '').toLowerCase() }
 const TARGETS = Object.keys(RECIPIENTS)
 
 // --- Concord channel planes (additive; empty => pure DM bridge, no behavior change) --------
@@ -738,6 +738,17 @@ function forward(rec, ev, src) {
         template: 'channel_plaintext',
         dest: rec.inbox,
         slots: { channel: src.channel, sender: rumor.pubkey, body: String(rumor.content == null ? '' : rumor.content), replyTo: ev.id },
+      }
+      // Wake gate (#dead-wake, 2026-08-03): buzz-acp's `subscribe=Mentions` fires a seat wake ONLY
+      // on a message carrying that seat's p-tag. A forward is authored by the bridge key and its
+      // display body is de-fanged, so with no explicit recipient p-tag the seat never wakes on a
+      // #general post that named it — the crew went silent on the plane for ~10 h on 2026-08-03.
+      // Propagate the ORIGINAL rumor's p-tags: wake this recipient IFF the post actually p-tagged
+      // them, so a post addressing nobody wakes nobody (no fan-out storm — safe now that meh=queue
+      // means a mid-turn wake queues rather than cancel+merge-restarts). The @name in the body
+      // stays de-fanged; the wake rides the explicit --mention p-tag, not the rendered text.
+      if (rec.npub_hex && (rumor.tags || []).some(t => t[0] === 'p' && String(t[1] || '').toLowerCase() === rec.npub_hex)) {
+        descriptor.mention = rec.npub_hex
       }
       decrypted = true
     } catch (e) {

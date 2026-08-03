@@ -190,6 +190,45 @@ console.log('\n-- emit(): the type has no field for a sentence (INV-A3-3) --')
 }
 
 // ---------------------------------------------------------------------------------------------
+// #dead-wake (2026-08-03): a forwarded #general post must carry the recipient's p-tag as an
+// explicit --mention, or buzz-acp's `subscribe=Mentions` never wakes the seat (the crew went
+// silent on the plane for ~10 h). The p-tag is a TYPED descriptor field, never a rendered slot,
+// so it reaches argv and never the de-fanged display body.
+console.log('\n-- emit(): a recipient wake p-tag rides argv, never the body --')
+
+{
+  const calls = []
+  const restore = __setTransportForTests(async (argv) => { calls.push(argv); return JSON.stringify({ event_id: HEX64 }) })
+  const WAKE = 'b'.repeat(64)
+  const chan = () => ({
+    template: 'channel_plaintext', dest: '11111111-1111-1111-1111-111111111111',
+    slots: { channel: 'general', sender: HEX64, body: 'testing the room', replyTo: 'e'.repeat(64) },
+  })
+
+  // Addressed recipient: the post p-tagged them, so the forward carries the wake p-tag.
+  await emit({ ...chan(), mention: WAKE })
+  const withM = calls[0] || []
+  const mi = withM.indexOf('--mention')
+  ok('channel_plaintext with a recipient wakes the seat via --mention', mi !== -1 && withM[mi + 1] === WAKE)
+  const body = withM[withM.indexOf('--content') + 1]
+  ok('the wake p-tag rides argv, not the de-fanged display body', typeof body === 'string' && !body.includes(WAKE))
+
+  // Not-addressed recipient: no p-tag, so a post that named nobody wakes nobody — the mention-gate
+  // that keeps the de-fanged notification-storm bug closed.
+  calls.length = 0
+  await emit(chan())
+  ok('channel_plaintext with no recipient p-tag carries no --mention (no wake-all storm)', !(calls[0] || []).includes('--mention'))
+
+  // NEGATIVE CONTROL — the mention is a typed pubkey, so a caller string (an injected @everyone,
+  // a label) cannot ride --mention into argv the way a rendered slot's text could.
+  let rejectedMention = false
+  try { await emit({ ...chan(), mention: 'not-a-key @everyone' }) } catch { rejectedMention = true }
+  ok('NEGATIVE CONTROL — a non-pubkey mention is refused, never passed to argv', rejectedMention)
+
+  restore()
+}
+
+// ---------------------------------------------------------------------------------------------
 console.log('\n-- The Nostr transport catalogue (§2.5) --')
 
 {

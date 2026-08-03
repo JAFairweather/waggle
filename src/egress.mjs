@@ -380,7 +380,15 @@ export function query(name, params = {}) {
 
 function argvFor(spec, descriptor, content) {
   switch (spec.action) {
-    case 'send':   return ['messages', 'send', '--channel', SLOT_TYPES.channel(descriptor.dest), '--content', content]
+    case 'send': {
+      const a = ['messages', 'send', '--channel', SLOT_TYPES.channel(descriptor.dest), '--content', content]
+      // A recipient p-tag (the seat wake trigger) is a TYPED descriptor field, never a rendered
+      // slot: it must reach argv as --mention, not the body. Opt-in — only forward() sets it, to
+      // wake a seat on a #general post that p-tagged it. Validated as a pubkey; the body stays
+      // de-fanged so the wake rides this explicit p-tag, not the display text.
+      if (descriptor.mention != null) a.push('--mention', SLOT_TYPES.npub(descriptor.mention))
+      return a
+    }
     case 'reply':  return ['messages', 'send', '--channel', SLOT_TYPES.channel(descriptor.dest), '--reply-to', SLOT_TYPES.id(descriptor.parentId), '--content', content]
     case 'edit':   return ['messages', 'edit', '--event', SLOT_TYPES.id(descriptor.targetId), '--content', content]
     case 'delete': return ['messages', 'delete', '--event', SLOT_TYPES.id(descriptor.targetId), '--reason-code', 'nip09', '--public-reason', 'withdrawn by author (NIP-09)']
