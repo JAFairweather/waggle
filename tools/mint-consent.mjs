@@ -73,7 +73,9 @@ const publish = (ev) => Promise.all(RELAYS.map(url => new Promise(res => {
 if (cmd === 'revoke') {
   const target = flag('--grant') || die('revoke needs --grant <the consent 440 event id>')
   if (!/^[0-9a-f]{64}$/i.test(target)) die('--grant must be a 64-hex event id')
-  const ev = finalizeEvent({ kind: 441, created_at: Math.floor(Date.now() / 1000), tags: [['e', target.toLowerCase()]], content: '' }, sk)
+  // p-tag the bridge: its consent subscription filters on #p:[BRIDGE_PK], so a 441 without it is
+  // invisible to the bridge and the revocation silently fails OPEN (caught in live test 2026-08-03).
+  const ev = finalizeEvent({ kind: 441, created_at: Math.floor(Date.now() / 1000), tags: [['e', target.toLowerCase()], ['p', BRIDGE]], content: '' }, sk)
   console.error(`mint-consent: 441 revoking ${target.slice(0, 12)}… as ${npub}`)
   if (DRY) { console.error('DRY_RUN — nothing published'); console.log(ev.id); process.exit(0) }
   for (const line of await publish(ev)) console.error('  ' + line)
