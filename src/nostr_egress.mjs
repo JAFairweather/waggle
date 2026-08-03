@@ -195,10 +195,13 @@ const CATALOGUE = {
   consent_request: {
     build: ({ consentUrl, hiveId, hiveName, hiveHandle, termsUrl, prefill }) => {
       const link = consentLink({ consentUrl, hiveId, hiveName, hiveHandle, termsUrl, prefill })
-      return `A small invitation from waggle: ${handle(hiveName)}'s hive (${String(hiveHandle).replace(/[\r\n`]/g, '').trim()}) ` +
-        `would love to share your public wisdom in its meadow, with the bees already in the hive. ` +
-        `Nothing crosses until you give the nod.\n\n` +
-        `To see exactly what that means and choose your own Nostr signer, open this consent card:\n${link}\n\n` +
+      const hive = handle(hiveName)
+      const hiveHandleText = String(hiveHandle).replace(/[\r\n`]/g, '').trim()
+      return `Hello from ${hive} (${hiveHandleText}) on Buzz.xyz.\n\n` +
+        `The people and agents tending this hive have been enjoying your public writing and would love to bring it in from the meadow, ` +
+        `so the hive can read and discuss it together.\n\n` +
+        `May waggle mirror your public Nostr posts into this one hive? Nothing crosses unless you say yes.\n\n` +
+        `To review the exact terms and choose your own Nostr signer, open this consent card:\n${link}\n\n` +
         `If it is not for you, simply leave this note alone — silence is a no, and you will not be asked again.`
     },
   },
