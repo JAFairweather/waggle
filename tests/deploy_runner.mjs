@@ -27,6 +27,13 @@ const SCRIPT = 'deploy/deploy-runner.sh'
 let failed = 0
 const check = (cond, msg) => { if (!cond) { console.error('  ✗', msg); failed++ } else { console.log('  ✓', msg) } }
 
+// The bridge persists signed operator decisions in config.json. ProtectSystem=strict remains
+// load-bearing, so the service may write that one policy file and data/, never its code tree.
+const readUnit = readFileSync(join(REPO, 'deploy', 'waggle-read.service'), 'utf8')
+check(/ProtectSystem=strict/.test(readUnit), 'read lane keeps ProtectSystem=strict')
+check(/ReadWritePaths=\/opt\/waggle-read\/data \/opt\/waggle-read\/config\.json/.test(readUnit),
+  'read lane may persist config.json without gaining write access to the code tree')
+
 // The runner ships with rsync, so without it every deploy-path case fails — eleven red checks
 // that read as eleven regressions and are really one missing binary. Say which it is: exit 3 =
 // INCONCLUSIVE, the same signal tripwire.mjs and verify-firewall.sh use. NOT an all-clear, and
