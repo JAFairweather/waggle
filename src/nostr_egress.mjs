@@ -86,21 +86,28 @@ const url = (v, what) => {
 // by construction), and the literal `v1` marker so a wording revision is a new hash, never silent.
 // Exported so bridge.mjs computes `expectedTosHash` from this SAME producer — one canonicalization,
 // three consumers (the block shown, the prefilled 440's `tos` tag, the bridge's expected hash).
-export function consentTosBlock({ community, termsUrl }) {
-  const c = handle(community)
+export function consentTosBlock({ hiveId, hiveName, hiveHandle, termsUrl }) {
+  const id = hex64(hiveId, 'hiveId')
+  const name = handle(hiveName)
+  // A hive handle is explanatory text, not an executable address. Keep its familiar `@` rather
+  // than running it through `handle()` (which intentionally removes markup punctuation).
+  const h = String(hiveHandle == null ? '' : hiveHandle).replace(/[\r\n`]/g, '').trim().slice(0, 128)
+  if (!h) reject('hiveHandle empty')
   const terms = url(termsUrl, 'termsUrl')
   return [
     `**waggle — mirror consent (v1)**`,
     ``,
-    `The private Buzz community **${c}** would like to mirror your public Nostr posts into it. Here is exactly what you'd be agreeing to.`,
+    `Hello from waggle. ${name}'s hive (${h}) would love to share your public wisdom in its meadow — with the bees already in the hive. Nothing crosses unless you say yes.`,
     ``,
-    `1. **What happens.** Your public Nostr content would be reposted into ${c} — a private, invite-walled Buzz community you are not a member of.`,
-    `2. **Who sees it.** Only members of ${c}, inside their space, under that community's own terms (${terms}).`,
+    `1. **What happens.** Your public Nostr content would be reposted into ${name} (${h}) — a private, invite-walled Buzz hive you are not a member of.`,
+    `2. **Who sees it.** Only members of ${name}, inside their space, under that hive's own terms (${terms}).`,
     `3. **How it's posted, honestly.** Today the mirror reposts your content under the bridge's own key, attributed to you — not as your own signed event. Until that limitation is fixed, moderation and the platform's content license attach to the operator's copy, not to you.`,
-    `4. **Your public self is untouched.** Your notes stay yours on the open network. This covers only the mirrored copy inside ${c}; it does not change, claim, or move your originals.`,
+    `4. **Your public self is untouched.** Your notes stay yours on the open network. This covers only the mirrored copy inside ${name}; it does not change, claim, or move your originals.`,
     `5. **You can stop it anytime.** Revoke and no new content crosses — a \`441\`, or ask the operator / use the console. Content already seen can't be un-seen; that's physics, not a permission you're giving.`,
     ``,
-    `**To agree:** return a signed \`440\` naming waggle, capability \`mirror\`, scoped to ${c}, carrying the hash of these terms. **To decline:** ignore this — silence is a no, and you won't be asked again. An explicit no is honored permanently.`,
+    `**The boundary.** Your consent is for this one hive, not for one chat channel: \`community_id:${id}\`. The director may route a consented feed to one or more channels inside this hive; moving it between those channels does not widen your consent.`,
+    ``,
+    `**To agree:** return a signed \`440\` naming waggle, capability \`mirror\`, scoped to this hive, carrying the hash of these terms. **To decline:** ignore this — silence is a no, and you won't be asked again. An explicit no is honored permanently.`,
     ``,
     `Nothing of yours crosses until you say yes.`,
   ].join('\n')
@@ -176,13 +183,13 @@ const CATALOGUE = {
   // this at all lives in bridge.mjs's §6 once-per-target ask-record — the catalogue only fixes the
   // FORM so the bridge can never author free text at a stranger.
   consent_request: {
-    build: ({ community, termsUrl, prefill }) =>
-      `Hi — this is the waggle bridge. Your public Nostr posts came up to be mirrored into a ` +
-      `private Buzz community, and nothing of yours crosses until you agree. The exact terms are ` +
-      `below. If this isn't for you, just ignore it — you won't be asked again.\n\n` +
-      consentTosBlock({ community, termsUrl }) +
+    build: ({ hiveId, hiveName, hiveHandle, termsUrl, prefill }) =>
+      `A small invitation from waggle: your public posts may be welcome in a private Buzz hive. ` +
+      `The bees do not carry a single word across until you give the nod. If it is not for you, ` +
+      `simply leave this note alone — silence is a no, and you will not be asked again.\n\n` +
+      consentTosBlock({ hiveId, hiveName, hiveHandle, termsUrl }) +
       `\n\n---\nTo agree, sign and publish this exact event (it names waggle, capability \`mirror\`, ` +
-      `scoped to this community, and carries the hash of the terms above — your signature is the ` +
+      `scoped to this hive, and carries the hash of the terms above — your signature is the ` +
       `whole consent):\n\n\`\`\`json\n${prefill440(prefill)}\n\`\`\``,
   },
 }

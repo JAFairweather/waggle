@@ -16,7 +16,8 @@ import { randomBytes, createHash } from 'node:crypto'
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure'
 
 const tmp = mkdtempSync(join(tmpdir(), 'wb-consent-gate-'))
-const CHAN = '55555555-5555-5555-5555-555555555555'   // the community inbox (== the consent scope)
+const CHAN = '55555555-5555-5555-5555-555555555555'   // one routing channel inside the hive
+const HIVE = 'a'.repeat(64)                            // stable Concord community_id: the consent scope
 const STAGE = '66666666-6666-6666-6666-666666666666'
 const POC = 'e'.repeat(64)                            // one of our own notes; replies to it are watched
 
@@ -32,6 +33,7 @@ writeFileSync(join(tmp, 'config.json'), JSON.stringify({
     relays: [], inbox: CHAN, staging_inbox: STAGE,
     watch_authors: [participant, grandpa], watch_events: [POC], grantors: [],
     mirror_grandfathered: [grandpa],
+    mirror_consent_hive_id: HIVE,
   },
 }))
 process.env.WB_NO_BOOT = '1'
@@ -54,7 +56,7 @@ const salted = (subject) => {
   return [hash, salt]
 }
 // a participant-issued mirror consent (grantee = the bridge; scope = the community)
-const consent = (sk, { community = CHAN, cap = 'mirror', grantee = bridgePk, tos = 't'.repeat(64) } = {}) => wire(finalizeEvent({
+const consent = (sk, { community = HIVE, cap = 'mirror', grantee = bridgePk, tos = 't'.repeat(64) } = {}) => wire(finalizeEvent({
   kind: 440, created_at: now(),
   tags: [['p', grantee], ['da-scope', ...salted(community)], ['da-cap', cap], ['tos', tos]], content: '',
 }, sk))
