@@ -30,6 +30,6 @@ table inet nave_fw {
     tcp dport 80 accept                     # apt mirrors are commonly plain http
     tcp dport 443 accept                    # outbound wss: public trio + Armada relays + fleet relay
   }
-  # No per-IP relay pinning on purpose: damus/nos.lol/primal sit behind churning CDN IPs;
+  # No per-IP relay pinning on purpose: public relays sit behind churning CDN IPs;
   # a port-level allowlist is the honest design.
 }

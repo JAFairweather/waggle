@@ -38,7 +38,7 @@ const HIVE = (flag('--hive', flag('--community-id', process.env.MIRROR_CONSENT_H
 if (!/^[0-9a-f]{64}$/.test(HIVE)) die('--hive must be the hive\'s 64-hex Concord community_id (consent never scopes to a channel)')
 const BRIDGE = (flag('--bridge', process.env.WAGGLE_BRIDGE_PUBKEY ||
   '84753207f2c6ae73af247da174e8e7c91a7d939a8eb0b4c2b98b54ea567786e6')).toLowerCase()
-const RELAYS = (process.env.RELAY_RELAYS || 'wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net')
+const RELAYS = (process.env.RELAY_RELAYS || 'wss://nos.lol,wss://relay.primal.net')
   .split(',').map(s => s.trim()).filter(Boolean)
 const DRY = !!process.env.DRY_RUN
 

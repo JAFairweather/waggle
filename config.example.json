@@ -3,8 +3,7 @@
     "wss://relay.ditto.pub",
     "wss://relay.dreamith.to",
     "wss://jskitty.com/nostr",
-    "wss://asia.vectorapp.io/nostr",
-    "wss://relay.damus.io"
+    "wss://asia.vectorapp.io/nostr"
   ],
   "recipients": [
     { "name": "AGENT_A", "npub_hex": "<64-hex pubkey of agent A>", "inbox": "INBOX_UUID_AGENT_A" },
@@ -13,7 +12,7 @@
   ],
   "public": {
     "_comment": "Public kind:1 read lane. Phase-0 safety gates: quarantine + bounds + rate limits.",
-    "relays": ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.primal.net"],
+    "relays": ["wss://nos.lol", "wss://relay.primal.net"],
     "inbox": "COMMUNITY_READ_LANE_UUID",
     "staging_inbox": "<channel name or UUID for pending posts; may EQUAL inbox for a single-channel lifecycle (pending and released together); omit => hold-and-log>",
     "watch_authors": ["<hex pubkey of a trusted author whose kind:1 posts publish straight to the community channel>"],

@@ -164,7 +164,7 @@ const PLANE_AUTHORS = Object.keys(PLANES)
 // --- Public kind:1 read lane (additive; absent => zero behavior change) -------
 // The INBOX DOOR for open-Nostr interop (POC, 2026-07-27). Unlike the two sealed
 // lanes above, public kind:1 notes are PLAINTEXT — there is nothing to unwrap and NO
-// key is ever held. We hold an open REQ to a set of PUBLIC relays (damus/nos.lol/
+// key is ever held. We hold an open REQ to the configured PUBLIC relays
 // primal) and repost each matching note into a Buzz channel as a human-readable
 // message. NON-CUSTODIAL by construction: read public data, repost its content.
 // This is the "outside world → us" half; the outbox half (federating a member's
@@ -172,7 +172,7 @@ const PLANE_AUTHORS = Object.keys(PLANES)
 // cfg.public: { relays:[...], inbox:"<uuid>", watch_authors:[hex...], watch_events:[id...], since_secs? }
 //   watch_authors — pull a chosen author's public kind:1 into Buzz.
 //   watch_events  — catch kind:1 REPLIES (#e) to one of our own published notes
-//                   (closes the round-trip: stranger's Damus reply lands back in Buzz).
+//                   (closes the round-trip: a stranger's reply lands back in Buzz).
 const PUB_SINCE_SECS = cfg.public && cfg.public.since_secs != null ? Number(cfg.public.since_secs) : 3600
 // A3: a persisted watermark lets a restart resume from the last delivered note instead of
 // re-reading the whole `since` window every boot. OVERLAP re-reads a small margin to absorb
