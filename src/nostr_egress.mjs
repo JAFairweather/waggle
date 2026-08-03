@@ -70,6 +70,57 @@ const handle = (v) => {
 // side's carried_body: quoted, never rendered as waggle's own voice.
 const carried = (v) => String(v == null ? '' : v)
 
+const url = (v, what) => {
+  const s = String(v == null ? '' : v).trim()
+  let u; try { u = new URL(s) } catch { reject(`${what} is not a URL: ${JSON.stringify(s.slice(0, 48))}`) }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') reject(`${what} must be http(s): ${JSON.stringify(s.slice(0, 48))}`)
+  return s
+}
+
+// --- In-door consent (docs/CONSENT.md §5/§7) --------------------------------------------------
+//
+// THE CANONICAL ToS BLOCK, verbatim (Kerouac, §7). It is a SOURCE LITERAL, never a caller slot,
+// because its sha256 is the `tos` hash the consent 440 binds to (§7): if any caller could vary the
+// wording, the hash would not mean "these exact terms". The only fills are {COMMUNITY} and
+// {TERMS_URL}, both INSIDE the hash on purpose (a different community's terms yield a different hash
+// by construction), and the literal `v1` marker so a wording revision is a new hash, never silent.
+// Exported so bridge.mjs computes `expectedTosHash` from this SAME producer — one canonicalization,
+// three consumers (the block shown, the prefilled 440's `tos` tag, the bridge's expected hash).
+export function consentTosBlock({ community, termsUrl }) {
+  const c = handle(community)
+  const terms = url(termsUrl, 'termsUrl')
+  return [
+    `**waggle — mirror consent (v1)**`,
+    ``,
+    `The private Buzz community **${c}** would like to mirror your public Nostr posts into it. Here is exactly what you'd be agreeing to.`,
+    ``,
+    `1. **What happens.** Your public Nostr content would be reposted into ${c} — a private, invite-walled Buzz community you are not a member of.`,
+    `2. **Who sees it.** Only members of ${c}, inside their space, under that community's own terms (${terms}).`,
+    `3. **How it's posted, honestly.** Today the mirror reposts your content under the bridge's own key, attributed to you — not as your own signed event. Until that limitation is fixed, moderation and the platform's content license attach to the operator's copy, not to you.`,
+    `4. **Your public self is untouched.** Your notes stay yours on the open network. This covers only the mirrored copy inside ${c}; it does not change, claim, or move your originals.`,
+    `5. **You can stop it anytime.** Revoke and no new content crosses — a \`441\`, or ask the operator / use the console. Content already seen can't be un-seen; that's physics, not a permission you're giving.`,
+    ``,
+    `**To agree:** return a signed \`440\` naming waggle, capability \`mirror\`, scoped to ${c}, carrying the hash of these terms. **To decline:** ignore this — silence is a no, and you won't be asked again. An explicit no is honored permanently.`,
+    ``,
+    `Nothing of yours crosses until you say yes.`,
+  ].join('\n')
+}
+
+// The unsigned 440 the participant signs, carried in the DM as an opaque blob (attributed, never
+// rendered as waggle's words). Validated so the disclosure can only ever ask them to sign a
+// mirror-consent grant to THIS bridge — never an arbitrary event dressed as "sign this".
+const prefill440 = (v) => {
+  const ev = (v && typeof v === 'object') ? v : reject('prefill is not an object')
+  if (ev.kind !== 440) reject('prefill is not a 440')
+  const tag = (k) => (ev.tags || []).find(t => t[0] === k)
+  if (tag('da-cap')?.[1] !== 'mirror') reject('prefill is not a mirror capability')
+  if (!tag('p')?.[1]) reject('prefill names no grantee')
+  if (!tag('da-scope')) reject('prefill has no scope')
+  if (!tag('tos')?.[1]) reject('prefill carries no tos hash')
+  if (ev.sig) reject('prefill must be UNSIGNED — the participant supplies the signature')
+  return JSON.stringify(ev)
+}
+
 const CATALOGUE = {
   // Relay-lane acks. Typed JSON, never prose — a caller picks ok/err and supplies fields.
   relay_ack_ok: {
@@ -117,6 +168,22 @@ const CATALOGUE = {
         `\n\n_carried out by waggle's return lane. Replying to this message reaches nobody; ` +
         `post from your own key and the bridge brings it back in._`
     },
+  },
+  // In-door consent request (docs/CONSENT.md §5). waggle's FIRST unsolicited outbound seal to a
+  // stranger — the disclosure IS the ask. Three fixed parts and no free-prose slot: a per-target
+  // cover greeting (NOT hashed), the canonical ToS block (hashed, the source literal above), and
+  // the unsigned prefilled 440 the participant need only sign-and-publish. The safety of SENDING
+  // this at all lives in bridge.mjs's §6 once-per-target ask-record — the catalogue only fixes the
+  // FORM so the bridge can never author free text at a stranger.
+  consent_request: {
+    build: ({ community, termsUrl, prefill }) =>
+      `Hi — this is the waggle bridge. Your public Nostr posts came up to be mirrored into a ` +
+      `private Buzz community, and nothing of yours crosses until you agree. The exact terms are ` +
+      `below. If this isn't for you, just ignore it — you won't be asked again.\n\n` +
+      consentTosBlock({ community, termsUrl }) +
+      `\n\n---\nTo agree, sign and publish this exact event (it names waggle, capability \`mirror\`, ` +
+      `scoped to this community, and carries the hash of the terms above — your signature is the ` +
+      `whole consent):\n\n\`\`\`json\n${prefill440(prefill)}\n\`\`\``,
   },
 }
 
