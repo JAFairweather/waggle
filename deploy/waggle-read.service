@@ -38,7 +38,10 @@ Restart=always
 RestartSec=5
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/opt/waggle-read/data
+# `config.json` is a director-owned, non-secret policy file. The signed staging-console commands
+# persist watch/mute/follow decisions there, so allow this ONE existing file as well as durable
+# runtime state — never the tree directory (which would permit code replacement as bridge).
+ReadWritePaths=/opt/waggle-read/data /opt/waggle-read/config.json
 ProtectHome=yes
 PrivateTmp=yes
 
