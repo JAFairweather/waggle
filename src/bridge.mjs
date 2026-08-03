@@ -39,6 +39,7 @@ import { verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import { emit, query, checkConfigRenderable } from './egress.mjs'
 import { bridgePubkey, hasBridgeKey, openSeal, openRumor, sealAndWrap } from './nostr_egress.mjs'
+import { verifyConsent } from './consent.mjs'   // in-door consent (#131/#132, docs/CONSENT.md §8)
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -298,6 +299,19 @@ const PUB = cfg.public ? {
   // Keys whose signed 440/441 events the bridge honors for admission. Defaults to the
   // approvers set — the same authority that runs the quarantine console.
   grantors: (cfg.public.grantors || cfg.public.approvers || []).map(s => String(s).toLowerCase()),
+  // In-door consent (#131/#132, docs/CONSENT.md §8). ENFORCEMENT is OFF by default: with it off,
+  // the consent set is still built (observability) but never gates, so behaviour is unchanged and
+  // the crew's feeds keep mirroring. Flip mirror_require_consent on only once every non-grandfathered
+  // watched author holds a consent record. Grandfathered authors (the pre-consent crew, who joined
+  // as members) are exempt while enforcement is on.
+  mirrorRequireConsent: /^(1|true|yes|on)$/i.test(String(cfg.public.mirror_require_consent || '')),
+  mirrorGrandfathered: (cfg.public.mirror_grandfathered || []).map(s => String(s).toLowerCase())
+    .filter(s => /^[0-9a-f]{64}$/.test(s)),
+  // §7 version-binding (crew review of #199): the sha256 of the CURRENT canonical ToS block
+  // (nostr_egress `consentTosBlock`), so a consent carrying a superseded terms hash fails the gate.
+  // Null = presence-only (a warning fires once at boot when enforcing without it).
+  mirrorExpectedTosHash: cfg.public.mirror_expected_tos_hash
+    ? String(cfg.public.mirror_expected_tos_hash).toLowerCase() : null,
 } : null
 
 // scan_authors — the SIGNER gate on the return-lane carry-out (§5 of the notify design: spam and
@@ -589,6 +603,40 @@ function processGrantEvent(ev) {
   if (cap !== 'admit' && cap !== 'admit+read') return
   grantSet.set(String(grantee).toLowerCase(), { grantId: ev.id, grantor: ev.pubkey })
   log(`NIPDA granted: ${String(grantee).slice(0, 12)}… admitted (${cap}, 440 ${ev.id.slice(0, 12)}…)`)
+}
+
+// In-door consent (#131/#132, docs/CONSENT.md §8). A SEPARATE lane from grantSet by construction —
+// processGrantEvent above rejects any 440 whose author is not a maintainer grantor (:577), and a
+// consent's author is the external participant, so it would drop there before it was ever read. The
+// consent record is authored by the DATA SUBJECT granting waggle a `mirror` capability, verified by
+// consent.mjs (grantee == this bridge, cap == 'mirror', scope == PUB.inbox, author == subject). Its
+// own subscription (`pmc`) feeds it, and it is consulted only by routePublic — and only when
+// mirror_require_consent is on. Off (the default), this set is built for observability and gates
+// nothing, so the deploy changes no behaviour.
+const mirrorConsent = new Map() // participant pubkey -> { recordId, tosHash, at }
+function processConsentEvent(ev) {
+  if (!ev || !ev.id || !PUB || !BRIDGE_PK) return
+  if (ev.kind === NIPDA.revocation) {
+    // Only the grantor withdraws their own consent: a 441 counts iff signed by the same participant
+    // whose consent record it e-tags. A 441 from anyone else is ignored (consent.mjs's rule, here).
+    const author = String(ev.pubkey || '').toLowerCase()
+    const held = mirrorConsent.get(author)
+    if (!held) return
+    const targets = (ev.tags || []).filter(t => t[0] === 'e').map(t => t[1])
+    if (targets.includes(held.recordId)) {
+      mirrorConsent.delete(author)
+      log(`mirror consent revoked: ${author.slice(0, 12)}… (441 ${ev.id.slice(0, 12)}…)`)
+    }
+    return
+  }
+  if (ev.kind !== NIPDA.grant) return
+  const v = verifyConsent(ev, { bridgePubkey: BRIDGE_PK, communityId: PUB.inbox })
+  if (!v.ok) return
+  const prev = mirrorConsent.get(v.participant)
+  if (!prev || ev.created_at >= prev.at) {   // newest active consent per participant wins
+    mirrorConsent.set(v.participant, { recordId: ev.id, tosHash: v.tosHash, at: ev.created_at })
+    log(`mirror consent: ${v.participant.slice(0, 12)}… → ${String(PUB.inbox).slice(0, 8)}… (440 ${ev.id.slice(0, 12)}…)`)
+  }
 }
 
 // --- delivery ---------------------------------------------------------------
@@ -908,6 +956,30 @@ function routePublic(ev) {
     }
   }
   if (!why) return
+
+  // In-door consent gate (#131/#132, docs/CONSENT.md §8). DEFAULT-OFF: the whole block is inert
+  // unless mirror_require_consent is on, so the deploy changes nothing and the crew keeps mirroring.
+  // When on, a MIRRORED FEED (#131) or an un-trusted REPLY (#132) forwards only if its author holds
+  // a consent record — or is grandfathered (the pre-consent crew). Granted participants and standing
+  // follows are already consensual (they hold a key / were vouched by the maintainer) and are not
+  // gated here. A held reply is dropped BEFORE staging — the invisible pre-consent hold §6 requires,
+  // so the community never sees un-consented content. Never a silent drop (§7).
+  if (PUB.mirrorRequireConsent && (why === 'mirrored feed' || why === 'reply to our note')) {
+    const author = String(ev.pubkey).toLowerCase()
+    // Consent must be PRESENT and (when a current-terms hash is configured) bound to THOSE terms.
+    // §7 promises a material ToS change does not silently ride an old yes: with mirror_expected_tos_hash
+    // set, a consent whose `tosHash` differs from the current terms fails closed — a v1 consenter is
+    // held after a v1→v2 bump until they re-consent. Without it configured, the gate is presence-only
+    // and warns once that §7 version-binding is unenforced (the honest state, not a silent gap).
+    const rec = mirrorConsent.get(author)
+    const consentBinds = rec && (!PUB.mirrorExpectedTosHash || rec.tosHash === PUB.mirrorExpectedTosHash)
+    if (!consentBinds && !PUB.mirrorGrandfathered.includes(author)) {
+      const why2 = rec && PUB.mirrorExpectedTosHash ? 'consent is bound to superseded terms' : 'participant has not consented'
+      err(`PUBLIC hold[no-consent]: ${why} from ${author.slice(0, 12)}… held — ${why2} (default-closed, §8)`)
+      if (FORWARD_MODE === 'buzz') markSeen(ev.id)
+      return
+    }
+  }
 
   // A1: an un-allowlisted reply routes to STAGING, never a community channel. With no staging
   // channel configured we HOLD (log only) — default-closed, so a stranger's reply can never
@@ -1659,6 +1731,12 @@ function connectPublic(url) {
       // NIP-DA: grants + revocations from the grantor set. Wide lookback — a standing
       // grant issued weeks ago must survive any restart (stateless consumption).
       if (PUB.grantors.length) { expect.add('pg'); ws.send(JSON.stringify(['REQ', 'pg', { kinds: [NIPDA.grant, NIPDA.revocation], authors: PUB.grantors, limit: 200 }])) }
+      // In-door consent (#131/#132, docs/CONSENT.md §8): consent 440s/441s p-tagging the bridge, from
+      // ANY author (the inverted grantor) — a SEPARATE lane from `pg` (grantor-authored). Always
+      // opened for observability; enforcement is gated in routePublic. Wide lookback like `pg` — a
+      // standing consent must survive any restart (stateless consumption). Dispatched to
+      // processConsentEvent alongside processGrantEvent below.
+      if (BRIDGE_PK) { ws.send(JSON.stringify(['REQ', 'pmc', { kinds: [NIPDA.grant, NIPDA.revocation], '#p': [BRIDGE_PK], limit: 500 }])) }
       // Relay lane (DESIGN_RELAY_INGRESS): wraps p-tagged to waggle's OWN key. This REQ lives HERE,
       // not in the sealed connect block, because the handler needs PUB state that only this
       // instance has: `grantSet` (populated by the `pg` subscription above), `relayChannels`, and
@@ -1687,6 +1765,11 @@ function connectPublic(url) {
         if (ev && (ev.kind === NIPDA.grant || ev.kind === NIPDA.revocation)) {
           const before = grantSet.size
           processGrantEvent(ev)
+          // Same event, second consumer: a mirror-consent 440 (participant-authored, p-tagging the
+          // bridge) is dropped by processGrantEvent's grantor gate, so processConsentEvent reads it
+          // here. The two are mutually exclusive by construction — grantor-admit vs subject-mirror —
+          // so each ignores what isn't its own (docs/CONSENT.md §8).
+          processConsentEvent(ev)
           // A grant ADMITS, but nothing was FETCHING. The four subscriptions above pull kind:1
           // by watched author and by reply-to-our-note; none pulls a granted participant's own
           // posts, so an admitted identity could be answered but never heard from unless it also
@@ -1725,7 +1808,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, processConsentEvent, mirrorConsent, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
@@ -1778,6 +1861,10 @@ if (!process.env.WB_NO_BOOT) {
     log(`public read lane -> inbox ${PUB.inbox}: ${PUB.relays.length} relay(s), ${PUB.authors.length} watched author(s), ${PUB.events.length} watched note(s), pub-since=${PUB.since} (${PUB_SINCE_SECS}s), watermark=${pubWatermark || 'none'}`)
     log(`  gates: staging=${PUB.staging || 'HOLD (none)'} · backfill<=${PUB.backfillLimit} · maxContent=${PUB.maxContentBytes}B · rate ${PUB.replierPerMin}/replier/min ${PUB.channelPerMin}/chan/min ${PUB.lanePerHour}/lane/h · deletes ${PUB.deletesPerHour}/h (A7)`)
     if (PUB.grantors.length) log(`  admission: ${PUB.grantors.length} grantor key(s); NIP-DA kinds ${NIPDA.grant}/${NIPDA.revocation}/${NIPDA.index}`)
+    if (PUB.mirrorRequireConsent) {
+      log(`  in-door consent: ENFORCING (§8) — mirror/reply gated on consent; ${PUB.mirrorGrandfathered.length} grandfathered; version-binding ${PUB.mirrorExpectedTosHash ? 'ON (tos ' + PUB.mirrorExpectedTosHash.slice(0, 8) + '…)' : 'OFF'}`)
+      if (!PUB.mirrorExpectedTosHash) err(`  in-door consent: version-binding UNENFORCED — set public.mirror_expected_tos_hash to the current ToS block hash, or a v1 consent rides v2 terms (§7)`)
+    }
     if (PUB.relayChannels.length && hasBridgeKey()) log(`  relay lane: ${PUB.relayChannels.length} allowlisted channel(s); decrypt budget ${PUB.relayDecryptBudget}/min, wrap cap ${PUB.relayMaxWrapBytes}B — a channel waggle has not joined fails as RELAY[buzz] ERR, never a silent §7 drop`)
     else if (PUB.relayChannels.length && !hasBridgeKey()) err('WARN: relay_channels configured but no BRIDGE key to open sealed requests — relay lane INERT.')
     PUB.relays.forEach(connectPublic)
