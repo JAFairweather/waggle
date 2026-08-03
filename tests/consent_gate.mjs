@@ -54,9 +54,9 @@ const salted = (subject) => {
   return [hash, salt]
 }
 // a participant-issued mirror consent (grantee = the bridge; scope = the community)
-const consent = (sk, { community = CHAN, cap = 'mirror', grantee = bridgePk } = {}) => wire(finalizeEvent({
+const consent = (sk, { community = CHAN, cap = 'mirror', grantee = bridgePk, tos = 't'.repeat(64) } = {}) => wire(finalizeEvent({
   kind: 440, created_at: now(),
-  tags: [['p', grantee], ['da-scope', ...salted(community)], ['da-cap', cap], ['tos', 't'.repeat(64)]], content: '',
+  tags: [['p', grantee], ['da-scope', ...salted(community)], ['da-cap', cap], ['tos', tos]], content: '',
 }, sk))
 const revokeBy = (sk, id) => wire(finalizeEvent({ kind: 441, created_at: now() + 1, tags: [['e', id]], content: '' }, sk))
 let seq = 0
@@ -119,6 +119,25 @@ check(!mirrorConsent.has(dPk), 'a consent naming a different grantee (not this b
 const eSk = generateSecretKey(), ePk = getPublicKey(eSk)
 processConsentEvent(consent(eSk))
 check(mirrorConsent.has(ePk), 'a well-formed mirror consent for this bridge+community IS read (positive control)')
+
+// --- §7 version-binding (crew review of #199): a superseded-terms consent fails closed ----------
+// Exercises the ToS bump the reviewer flagged as untested. mirror_require_consent stays ON.
+const V1 = 'a'.repeat(64), V2 = 'b'.repeat(64)
+const vSk = generateSecretKey(), vPk = getPublicKey(vSk)
+const wSk = generateSecretKey(), wPk = getPublicKey(wSk)
+PUB.authors.push(vPk, wPk)   // make them mirrored-feed authors so their posts reach the gate
+PUB.mirrorExpectedTosHash = V1
+processConsentEvent(consent(vSk, { tos: V1 }))
+check(mirrorConsent.get(vPk)?.tosHash === V1, 'the consent records the terms hash it was given')
+check(!held(routeOf(feedPost(vSk))), 'version ON: a consent matching the current ToS flows')
+PUB.mirrorExpectedTosHash = V2                                   // a material v1->v2 bump
+check(held(routeOf(feedPost(vSk))), 'version ON: after a ToS bump, the stale-terms consent is HELD (fails closed)')
+processConsentEvent(consent(vSk, { tos: V2 }))                   // the participant re-consents under v2
+check(!held(routeOf(feedPost(vSk))), 'version ON: re-consent under the new terms flows again')
+
+PUB.mirrorExpectedTosHash = null                                // unconfigured → presence-only (back-compat)
+processConsentEvent(consent(wSk, { tos: 'deadbeef'.repeat(8) }))
+check(!held(routeOf(feedPost(wSk))), 'version OFF (no hash configured): presence-only, any-terms consent flows')
 
 realLog(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
 process.exit(pass ? 0 : 1)

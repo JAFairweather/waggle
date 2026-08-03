@@ -307,6 +307,11 @@ const PUB = cfg.public ? {
   mirrorRequireConsent: /^(1|true|yes|on)$/i.test(String(cfg.public.mirror_require_consent || '')),
   mirrorGrandfathered: (cfg.public.mirror_grandfathered || []).map(s => String(s).toLowerCase())
     .filter(s => /^[0-9a-f]{64}$/.test(s)),
+  // §7 version-binding (crew review of #199): the sha256 of the CURRENT canonical ToS block
+  // (nostr_egress `consentTosBlock`), so a consent carrying a superseded terms hash fails the gate.
+  // Null = presence-only (a warning fires once at boot when enforcing without it).
+  mirrorExpectedTosHash: cfg.public.mirror_expected_tos_hash
+    ? String(cfg.public.mirror_expected_tos_hash).toLowerCase() : null,
 } : null
 
 // scan_authors — the SIGNER gate on the return-lane carry-out (§5 of the notify design: spam and
@@ -961,8 +966,16 @@ function routePublic(ev) {
   // so the community never sees un-consented content. Never a silent drop (§7).
   if (PUB.mirrorRequireConsent && (why === 'mirrored feed' || why === 'reply to our note')) {
     const author = String(ev.pubkey).toLowerCase()
-    if (!mirrorConsent.has(author) && !PUB.mirrorGrandfathered.includes(author)) {
-      err(`PUBLIC hold[no-consent]: ${why} from ${author.slice(0, 12)}… held — participant has not consented (default-closed, §8)`)
+    // Consent must be PRESENT and (when a current-terms hash is configured) bound to THOSE terms.
+    // §7 promises a material ToS change does not silently ride an old yes: with mirror_expected_tos_hash
+    // set, a consent whose `tosHash` differs from the current terms fails closed — a v1 consenter is
+    // held after a v1→v2 bump until they re-consent. Without it configured, the gate is presence-only
+    // and warns once that §7 version-binding is unenforced (the honest state, not a silent gap).
+    const rec = mirrorConsent.get(author)
+    const consentBinds = rec && (!PUB.mirrorExpectedTosHash || rec.tosHash === PUB.mirrorExpectedTosHash)
+    if (!consentBinds && !PUB.mirrorGrandfathered.includes(author)) {
+      const why2 = rec && PUB.mirrorExpectedTosHash ? 'consent is bound to superseded terms' : 'participant has not consented'
+      err(`PUBLIC hold[no-consent]: ${why} from ${author.slice(0, 12)}… held — ${why2} (default-closed, §8)`)
       if (FORWARD_MODE === 'buzz') markSeen(ev.id)
       return
     }
@@ -1848,6 +1861,10 @@ if (!process.env.WB_NO_BOOT) {
     log(`public read lane -> inbox ${PUB.inbox}: ${PUB.relays.length} relay(s), ${PUB.authors.length} watched author(s), ${PUB.events.length} watched note(s), pub-since=${PUB.since} (${PUB_SINCE_SECS}s), watermark=${pubWatermark || 'none'}`)
     log(`  gates: staging=${PUB.staging || 'HOLD (none)'} · backfill<=${PUB.backfillLimit} · maxContent=${PUB.maxContentBytes}B · rate ${PUB.replierPerMin}/replier/min ${PUB.channelPerMin}/chan/min ${PUB.lanePerHour}/lane/h · deletes ${PUB.deletesPerHour}/h (A7)`)
     if (PUB.grantors.length) log(`  admission: ${PUB.grantors.length} grantor key(s); NIP-DA kinds ${NIPDA.grant}/${NIPDA.revocation}/${NIPDA.index}`)
+    if (PUB.mirrorRequireConsent) {
+      log(`  in-door consent: ENFORCING (§8) — mirror/reply gated on consent; ${PUB.mirrorGrandfathered.length} grandfathered; version-binding ${PUB.mirrorExpectedTosHash ? 'ON (tos ' + PUB.mirrorExpectedTosHash.slice(0, 8) + '…)' : 'OFF'}`)
+      if (!PUB.mirrorExpectedTosHash) err(`  in-door consent: version-binding UNENFORCED — set public.mirror_expected_tos_hash to the current ToS block hash, or a v1 consent rides v2 terms (§7)`)
+    }
     if (PUB.relayChannels.length && hasBridgeKey()) log(`  relay lane: ${PUB.relayChannels.length} allowlisted channel(s); decrypt budget ${PUB.relayDecryptBudget}/min, wrap cap ${PUB.relayMaxWrapBytes}B — a channel waggle has not joined fails as RELAY[buzz] ERR, never a silent §7 drop`)
     else if (PUB.relayChannels.length && !hasBridgeKey()) err('WARN: relay_channels configured but no BRIDGE key to open sealed requests — relay lane INERT.')
     PUB.relays.forEach(connectPublic)
