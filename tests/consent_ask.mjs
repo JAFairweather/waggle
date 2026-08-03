@@ -15,6 +15,9 @@ import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure
 
 const tmp = mkdtempSync(join(tmpdir(), 'wb-consent-ask-'))
 const CHAN = 'a8186b53-537d-46ad-a7e7-b6486c58970e'
+const HIVE = 'c'.repeat(64)
+const HIVE_NAME = 'JA Fairweather\'s hive'
+const HIVE_HANDLE = 'jaf@dequalsf.com'
 const TERMS = 'https://block.github.io/buzz/terms.html'
 const bridgeSk = generateSecretKey(), bridgePk = getPublicKey(bridgeSk)
 
@@ -23,6 +26,9 @@ writeFileSync(join(tmp, 'config.json'), JSON.stringify({
   public: {
     relays: ['wss://x'], inbox: CHAN, watch_authors: [], watch_events: [], grantors: [],
     mirror_require_consent: true,
+    mirror_consent_hive_id: HIVE,
+    mirror_consent_hive_name: HIVE_NAME,
+    mirror_consent_hive_handle: HIVE_HANDLE,
     mirror_consent_terms_url: TERMS,
     mirror_ask_per_hour: 2,
     muted_authors: [],
@@ -49,7 +55,7 @@ const fresh = () => getPublicKey(generateSecretKey())
 
 // --- 1. config: expected ToS hash DERIVED from the one producer (#200 folded in) ----------------
 {
-  const derived = createHash('sha256').update(consentTosBlock({ community: CHAN, termsUrl: TERMS })).digest('hex')
+  const derived = createHash('sha256').update(consentTosBlock({ hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS })).digest('hex')
   t('mirror_expected_tos_hash is derived from consentTosBlock, not hand-set', PUB.mirrorExpectedTosHash === derived)
 }
 
@@ -59,12 +65,13 @@ const fresh = () => getPublicKey(generateSecretKey())
   t('prefill is an UNSIGNED 440', pre.kind === 440 && !pre.sig)
   t('  grantee is the bridge, cap is mirror', pre.tags.find(x => x[0] === 'p')[1] === bridgePk && pre.tags.find(x => x[0] === 'da-cap')[1] === 'mirror')
   t('  tos is the derived expected hash (matches the gate)', pre.tags.find(x => x[0] === 'tos')[1] === PUB.mirrorExpectedTosHash)
-  t('  the disclosure template accepts the prefill', typeof buildBody('consent_request', { community: CHAN, termsUrl: TERMS, prefill: pre }) === 'string')
+  t('  the disclosure template accepts the prefill', typeof buildBody('consent_request', { hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS, prefill: pre }) === 'string')
   // a participant signs it unchanged → it verifies against the gate
   const psk = generateSecretKey()
   const signed = JSON.parse(JSON.stringify(finalizeEvent(pre, psk)))
-  const v = verifyConsent(signed, { bridgePubkey: bridgePk, communityId: CHAN, expectedTosHash: PUB.mirrorExpectedTosHash })
+  const v = verifyConsent(signed, { bridgePubkey: bridgePk, communityId: HIVE, expectedTosHash: PUB.mirrorExpectedTosHash })
   t('  signed unchanged, it verifies (participant == signer, tos bound)', v.ok && v.participant === getPublicKey(psk))
+  t('  it does NOT verify against a routing channel id', !verifyConsent(signed, { bridgePubkey: bridgePk, communityId: CHAN, expectedTosHash: PUB.mirrorExpectedTosHash }).ok)
 }
 
 // --- 3. sendConsentRequest seals ONE disclosure DM to the target and records it ------------------

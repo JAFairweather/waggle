@@ -308,24 +308,26 @@ const PUB = cfg.public ? {
   mirrorRequireConsent: /^(1|true|yes|on)$/i.test(String(cfg.public.mirror_require_consent || '')),
   mirrorGrandfathered: (cfg.public.mirror_grandfathered || []).map(s => String(s).toLowerCase())
     .filter(s => /^[0-9a-f]{64}$/.test(s)),
-  // The disclosure/ask side (§5/§6). The terms URL and community name feed the ONE ToS producer
-  // (nostr_egress `consentTosBlock`); with a terms URL set and a bridge key present, the bridge
-  // ASKS (sends the consent-request DM) when it holds an un-consented author. Rate-capped, once per
-  // target (§6). Absent terms URL → asking is OFF (enforcement can still gate; nobody is DM'd).
+  // The disclosure/ask side (§5/§6). Consent is bound to a Concord hive's stable, self-certifying
+  // community_id — never to `inbox`, which is merely one routing channel inside that hive. The
+  // display name/handle are independently bound into the ToS hash so the human-facing target can't
+  // drift beneath a valid signature.
+  mirrorConsentHiveId: String(cfg.public.mirror_consent_hive_id || '').toLowerCase().match(/^[0-9a-f]{64}$/)?.[0] || null,
+  mirrorConsentHiveName: cfg.public.mirror_consent_hive_name || null,
+  mirrorConsentHiveHandle: cfg.public.mirror_consent_hive_handle || null,
   mirrorConsentTermsUrl: cfg.public.mirror_consent_terms_url || null,
-  mirrorConsentCommunity: cfg.public.mirror_consent_community_name || cfg.public.inbox,
   mirrorAskPerHour: Number(cfg.public.mirror_ask_per_hour != null ? cfg.public.mirror_ask_per_hour : 20),
 } : null
 
 // §7 version-binding, from ONE producer (crew review of #199 → #200). The gate's expected hash, the
 // DM prefill's `tos`, and the block a participant sees all derive from the same `consentTosBlock`,
 // so they cannot drift. `mirror_expected_tos_hash` remains an explicit override; otherwise it is
-// derived from the community name + terms URL when both are present. Null → presence-only.
+// derived from the hive id + display identity + terms URL when all are present. Null → presence-only.
 if (PUB) {
   PUB.mirrorExpectedTosHash = (() => {
     if (cfg.public.mirror_expected_tos_hash) return String(cfg.public.mirror_expected_tos_hash).toLowerCase()
-    if (PUB.mirrorConsentTermsUrl && PUB.mirrorConsentCommunity) {
-      try { return createHash('sha256').update(consentTosBlock({ community: PUB.mirrorConsentCommunity, termsUrl: PUB.mirrorConsentTermsUrl })).digest('hex') } catch { return null }
+    if (PUB.mirrorConsentTermsUrl && PUB.mirrorConsentHiveId && PUB.mirrorConsentHiveName && PUB.mirrorConsentHiveHandle) {
+      try { return createHash('sha256').update(consentTosBlock({ hiveId: PUB.mirrorConsentHiveId, hiveName: PUB.mirrorConsentHiveName, hiveHandle: PUB.mirrorConsentHiveHandle, termsUrl: PUB.mirrorConsentTermsUrl })).digest('hex') } catch { return null }
     }
     return null
   })()
@@ -626,7 +628,7 @@ function processGrantEvent(ev) {
 // processGrantEvent above rejects any 440 whose author is not a maintainer grantor (:577), and a
 // consent's author is the external participant, so it would drop there before it was ever read. The
 // consent record is authored by the DATA SUBJECT granting waggle a `mirror` capability, verified by
-// consent.mjs (grantee == this bridge, cap == 'mirror', scope == PUB.inbox, author == subject). Its
+// consent.mjs (grantee == this bridge, cap == 'mirror', scope == this hive, author == subject). Its
 // own subscription (`pmc`) feeds it, and it is consulted only by routePublic — and only when
 // mirror_require_consent is on. Off (the default), this set is built for observability and gates
 // nothing, so the deploy changes no behaviour.
@@ -661,13 +663,14 @@ function processConsentEvent(ev) {
     return
   }
   if (ev.kind !== NIPDA.grant) return
-  const v = verifyConsent(ev, { bridgePubkey: BRIDGE_PK, communityId: PUB.inbox })
+  if (!PUB.mirrorConsentHiveId) return
+  const v = verifyConsent(ev, { bridgePubkey: BRIDGE_PK, communityId: PUB.mirrorConsentHiveId, expectedTosHash: PUB.mirrorExpectedTosHash || undefined })
   if (!v.ok) return
   const prev = mirrorConsent.get(v.participant)
   if (!prev || ev.created_at >= prev.at) {   // newest active consent per participant wins
     mirrorConsent.set(v.participant, { recordId: ev.id, tosHash: v.tosHash, at: ev.created_at })
     refreshConsentRevocations()
-    log(`mirror consent: ${v.participant.slice(0, 12)}… → ${String(PUB.inbox).slice(0, 8)}… (440 ${ev.id.slice(0, 12)}…)`)
+    log(`mirror consent: ${v.participant.slice(0, 12)}… → hive ${PUB.mirrorConsentHiveId.slice(0, 12)}… (440 ${ev.id.slice(0, 12)}…)`)
   }
 }
 
@@ -694,16 +697,16 @@ function buildConsentPrefill() {
   const salt = randomBytes(16).toString('hex')
   return {
     kind: 440, created_at: Math.floor(Date.now() / 1000),
-    tags: [['p', BRIDGE_PK], ['da-scope', scopeHash(PUB.inbox, salt), salt], ['da-cap', 'mirror'], ['tos', PUB.mirrorExpectedTosHash || '']],
+    tags: [['p', BRIDGE_PK], ['da-scope', scopeHash(PUB.mirrorConsentHiveId, salt), salt], ['da-cap', 'mirror'], ['tos', PUB.mirrorExpectedTosHash || '']],
     content: '',
   }
 }
 async function sendConsentRequest(targetPub, publish = publishWrapToRelays) {
-  if (!hasBridgeKey() || !PUB.mirrorConsentTermsUrl || !PUB.mirrorExpectedTosHash) return 0
+  if (!hasBridgeKey() || !PUB.mirrorConsentHiveId || !PUB.mirrorConsentHiveName || !PUB.mirrorConsentHiveHandle || !PUB.mirrorConsentTermsUrl || !PUB.mirrorExpectedTosHash) return 0
   if (!askRateOk()) { err(`consent ask: rate cap ${PUB.mirrorAskPerHour}/h reached — not asking ${targetPub.slice(0, 12)}… this window`); return 0 }
   const accepted = await returnLaneSend(targetPub, {
     template: 'consent_request',
-    slots: { community: PUB.mirrorConsentCommunity, termsUrl: PUB.mirrorConsentTermsUrl, prefill: buildConsentPrefill() },
+    slots: { hiveId: PUB.mirrorConsentHiveId, hiveName: PUB.mirrorConsentHiveName, hiveHandle: PUB.mirrorConsentHiveHandle, termsUrl: PUB.mirrorConsentTermsUrl, prefill: buildConsentPrefill() },
   }, { lane: 'consent-ask' }, publish).catch(() => 0)
   if (accepted >= 1) { mirrorAskedStore.commit(targetPub); log(`consent ask -> ${targetPub.slice(0, 12)}… (disclosure DM sealed)`) }
   else err(`consent ask -> ${targetPub.slice(0, 12)}…: seal reached no relay — NOT marked asked, retries on the next hold`)
@@ -713,7 +716,7 @@ async function sendConsentRequest(targetPub, publish = publishWrapToRelays) {
 // and it is neither muted (an explicit prior no) nor grandfathered. Fire-and-forget from the hold.
 // `send` is injectable so the guard logic is testable without a socket.
 function maybeAskConsent(targetPub, send = sendConsentRequest) {
-  if (!PUB.mirrorConsentTermsUrl || !hasBridgeKey()) return false
+  if (!PUB.mirrorConsentHiveId || !PUB.mirrorConsentHiveName || !PUB.mirrorConsentHiveHandle || !PUB.mirrorConsentTermsUrl || !hasBridgeKey()) return false
   if (mirrorAsked.has(targetPub) || mirrorConsent.has(targetPub) || askInFlight.has(targetPub)) return false
   if (PUB.muted.includes(targetPub) || PUB.mirrorGrandfathered.includes(targetPub)) return false
   askInFlight.add(targetPub)
@@ -2088,7 +2091,7 @@ if (!process.env.WB_NO_BOOT) {
     if (PUB.grantors.length) log(`  admission: ${PUB.grantors.length} grantor key(s); NIP-DA kinds ${NIPDA.grant}/${NIPDA.revocation}/${NIPDA.index}`)
     if (PUB.mirrorRequireConsent) {
       log(`  in-door consent: ENFORCING (§8) — mirror/reply gated on consent; ${PUB.mirrorGrandfathered.length} grandfathered; version-binding ${PUB.mirrorExpectedTosHash ? 'ON (tos ' + PUB.mirrorExpectedTosHash.slice(0, 8) + '…)' : 'OFF'}`)
-      log(`  in-door consent ask (§5/§6): ${PUB.mirrorConsentTermsUrl ? 'ON — disclosure DM once per target, ' + PUB.mirrorAskPerHour + '/h cap, ' + mirrorAsked.size + ' already asked' : 'OFF (no mirror_consent_terms_url — enforcement gates, nobody is messaged)'}`)
+      log(`  in-door consent ask (§5/§6): ${PUB.mirrorConsentHiveId && PUB.mirrorConsentHiveName && PUB.mirrorConsentHiveHandle && PUB.mirrorConsentTermsUrl && PUB.mirrorExpectedTosHash ? 'ON — hive ' + PUB.mirrorConsentHiveId.slice(0, 12) + '…, disclosure DM once per target, ' + PUB.mirrorAskPerHour + '/h cap, ' + mirrorAsked.size + ' already asked' : 'OFF (need mirror_consent_hive_id, display identity, and terms URL — enforcement gates, nobody is messaged)'}`)
       if (!PUB.mirrorExpectedTosHash) err(`  in-door consent: version-binding UNENFORCED — set public.mirror_expected_tos_hash to the current ToS block hash, or a v1 consent rides v2 terms (§7)`)
     }
     if (PUB.relayChannels.length && hasBridgeKey()) log(`  relay lane: ${PUB.relayChannels.length} allowlisted channel(s); decrypt budget ${PUB.relayDecryptBudget}/min, wrap cap ${PUB.relayMaxWrapBytes}B — a channel waggle has not joined fails as RELAY[buzz] ERR, never a silent §7 drop`)

@@ -289,10 +289,11 @@ Grounded in the live code (`src/bridge.mjs`):
   maintainer-authored `441`s. Consent revocation has the stricter rule the primitive already
   enforces (`consent.mjs`: a `441` counts *only if signed by the same participant who granted*), so
   it lives in the same separate `readConsents` lane. Mirror stops on the next read. No restart.
-- **The scope landmine (Dennis, confirmed):** `verifyConsent`/`readConsents` must be called with
-  `communityId = PUB.inbox` — the exact secret admissions scope to (`bridge.mjs:588`,
-  `scopeHash(PUB.inbox, …)`), byte-identical to `consent.mjs`'s `scopeHash`. Any other value and
-  every consent fails closed on scope.
+- **The scope boundary (#213):** `verifyConsent`/`readConsents` are called with the hive's
+  self-certifying Concord `community_id` (`public.mirror_consent_hive_id`), byte-identical to the
+  value passed to `scopeHash`. `PUB.inbox` is only a destination channel inside that hive; it is
+  deliberately NOT a consent scope. A director may route a consented feed to one or more hive
+  channels without widening or re-asking consent. A different hive id fails closed.
 - **Config coupling (Neil):** `watch_authors` / `watch_events` entries outside the roster are inert
   until a consent record exists — so an operator *adding* an author is no longer the moment content
   flows; the participant's *consent* is. Findable and flowing stay two switches, as §3.5 already

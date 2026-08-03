@@ -15,12 +15,14 @@ let n = 0, pass = 0
 const t = (name, cond) => { n++; if (cond) { pass++; console.log(`ok - ${name}`) } else console.error(`FAIL - ${name}`) }
 const sha = (s) => createHash('sha256').update(s).digest('hex')
 
-const COMMUNITY = 'waggle-test'
+const HIVE = 'c'.repeat(64)
+const HIVE_NAME = 'JA Fairweather\'s hive'
+const HIVE_HANDLE = 'jaf@dequalsf.com'
 const TERMS = 'https://block.github.io/buzz/terms.html'
 const bridge = 'b'.repeat(64)
 
 // A well-formed UNSIGNED prefill 440 whose tos = hash of the canonical block (as the bridge builds it).
-const tosHash = sha(consentTosBlock({ community: COMMUNITY, termsUrl: TERMS }))
+const tosHash = sha(consentTosBlock({ hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS }))
 const prefill = {
   kind: 440, created_at: 1000,
   tags: [['p', bridge], ['da-scope', 'a'.repeat(64), 'c'.repeat(32)], ['da-cap', 'mirror'], ['tos', tosHash]],
@@ -32,11 +34,12 @@ t('consent_request is a registered nostr template', NOSTR_TEMPLATE_NAMES.include
 
 // --- 2. the ToS block is DETERMINISTIC and community-bound (the hash must be stable) -------------
 {
-  const a = consentTosBlock({ community: COMMUNITY, termsUrl: TERMS })
-  const b = consentTosBlock({ community: COMMUNITY, termsUrl: TERMS })
+  const a = consentTosBlock({ hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS })
+  const b = consentTosBlock({ hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS })
   t('the ToS block renders identically for the same inputs (stable hash)', sha(a) === sha(b))
-  t('a different community yields a different block/hash by construction',
-    sha(consentTosBlock({ community: 'other', termsUrl: TERMS })) !== sha(a))
+  t('a different hive id yields a different block/hash by construction',
+    sha(consentTosBlock({ hiveId: 'f'.repeat(64), hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS })) !== sha(a))
+  t('the visible @ handle survives into the signed terms', a.includes(HIVE_HANDLE))
   t('the v1 marker is present (a wording rev is a new hash, never silent)', /mirror consent \(v1\)/.test(a))
   t('all five §7 disclosures are in the block', /What happens/.test(a) && /Who sees it/.test(a) &&
     /How it's posted, honestly/.test(a) && /public self is untouched/.test(a) && /stop it anytime/.test(a))
@@ -44,12 +47,12 @@ t('consent_request is a registered nostr template', NOSTR_TEMPLATE_NAMES.include
 
 // --- 3. the built DM carries cover line + block + the prefill, and binds the SAME hash -----------
 {
-  const body = buildBody('consent_request', { community: COMMUNITY, termsUrl: TERMS, prefill })
-  t('the DM opens with the honest cover line (per-target, not hashed)', /this is the waggle bridge/.test(body))
-  t('the DM embeds the canonical block', body.includes(consentTosBlock({ community: COMMUNITY, termsUrl: TERMS })))
+  const body = buildBody('consent_request', { hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS, prefill })
+  t('the DM opens with a warm but explicit consent invitation', /small invitation from waggle/.test(body))
+  t('the DM embeds the canonical block', body.includes(consentTosBlock({ hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS })))
   t('the DM embeds the prefilled 440 for the participant to sign', body.includes('"da-cap"') && body.includes('mirror'))
   t('the prefill\'s tos hash equals the hash of the block shown (bound, not drifting)',
-    prefill.tags.find(x => x[0] === 'tos')[1] === sha(consentTosBlock({ community: COMMUNITY, termsUrl: TERMS })))
+    prefill.tags.find(x => x[0] === 'tos')[1] === sha(consentTosBlock({ hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS })))
 }
 
 // --- 4. the prefill slot refuses anything but a mirror-consent grant to this bridge -------------
@@ -58,14 +61,14 @@ const mustThrow = (name, slots) => {
   try { buildBody('consent_request', slots); console.error(`FAIL - ${name} (did not throw)`) }
   catch { pass++; console.log(`ok - ${name}`) }
 }
-mustThrow('refuses a prefill that is not a 440', { community: COMMUNITY, termsUrl: TERMS, prefill: { ...prefill, kind: 1 } })
-mustThrow('refuses a non-mirror capability (e.g. admit)', { community: COMMUNITY, termsUrl: TERMS,
+mustThrow('refuses a prefill that is not a 440', { hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS, prefill: { ...prefill, kind: 1 } })
+mustThrow('refuses a non-mirror capability (e.g. admit)', { hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS,
   prefill: { ...prefill, tags: [['p', bridge], ['da-scope', 'a'.repeat(64), 'c'.repeat(32)], ['da-cap', 'admit'], ['tos', tosHash]] } })
-mustThrow('refuses a prefill that carries no tos hash', { community: COMMUNITY, termsUrl: TERMS,
+mustThrow('refuses a prefill that carries no tos hash', { hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS,
   prefill: { ...prefill, tags: [['p', bridge], ['da-scope', 'a'.repeat(64), 'c'.repeat(32)], ['da-cap', 'mirror']] } })
 mustThrow('refuses an ALREADY-SIGNED prefill (the participant must supply the signature)',
-  { community: COMMUNITY, termsUrl: TERMS, prefill: { ...prefill, sig: 'f'.repeat(128) } })
-mustThrow('refuses a non-https terms URL', { community: COMMUNITY, termsUrl: 'javascript:alert(1)', prefill })
+  { hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS, prefill: { ...prefill, sig: 'f'.repeat(128) } })
+mustThrow('refuses a non-https terms URL', { hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: 'javascript:alert(1)', prefill })
 
 console.log(`\n${pass}/${n} passed`)
 process.exit(pass === n ? 0 : 1)
