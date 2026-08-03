@@ -19,6 +19,7 @@ const HIVE = 'c'.repeat(64)
 const HIVE_NAME = 'JA Fairweather\'s hive'
 const HIVE_HANDLE = 'jaf@dequalsf.com'
 const TERMS = 'https://block.github.io/buzz/terms.html'
+const CONSENT_URL = 'https://jafairweather.github.io/nvoy/consent.html'
 const bridge = 'b'.repeat(64)
 
 // A well-formed UNSIGNED prefill 440 whose tos = hash of the canonical block (as the bridge builds it).
@@ -47,11 +48,10 @@ t('consent_request is a registered nostr template', NOSTR_TEMPLATE_NAMES.include
 
 // --- 3. the built DM carries cover line + block + the prefill, and binds the SAME hash -----------
 {
-  const body = buildBody('consent_request', { hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS, prefill })
+  const body = buildBody('consent_request', { consentUrl: CONSENT_URL, hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS, prefill })
   t('the DM opens with a warm but explicit consent invitation', /small invitation from waggle/.test(body))
-  t('the DM embeds the canonical block', body.includes(consentTosBlock({ hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS })))
-  t('the DM embeds the prefilled 440 for the participant to sign', body.includes('"da-cap"') && body.includes('mirror'))
-  t('the prefill\'s tos hash equals the hash of the block shown (bound, not drifting)',
+  t('the DM contains a fragment-only Nvoy signing link, not raw event JSON', body.includes(`${CONSENT_URL}#request=`) && !body.includes('```json') && !body.includes('"da-scope"'))
+  t('the prefill\'s tos hash equals the canonical block shown by the signer (bound, not drifting)',
     prefill.tags.find(x => x[0] === 'tos')[1] === sha(consentTosBlock({ hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS })))
 }
 
@@ -61,14 +61,14 @@ const mustThrow = (name, slots) => {
   try { buildBody('consent_request', slots); console.error(`FAIL - ${name} (did not throw)`) }
   catch { pass++; console.log(`ok - ${name}`) }
 }
-mustThrow('refuses a prefill that is not a 440', { hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS, prefill: { ...prefill, kind: 1 } })
-mustThrow('refuses a non-mirror capability (e.g. admit)', { hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS,
+mustThrow('refuses a prefill that is not a 440', { consentUrl: CONSENT_URL, hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS, prefill: { ...prefill, kind: 1 } })
+mustThrow('refuses a non-mirror capability (e.g. admit)', { consentUrl: CONSENT_URL, hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS,
   prefill: { ...prefill, tags: [['p', bridge], ['da-scope', 'a'.repeat(64), 'c'.repeat(32)], ['da-cap', 'admit'], ['tos', tosHash]] } })
-mustThrow('refuses a prefill that carries no tos hash', { hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS,
+mustThrow('refuses a prefill that carries no tos hash', { consentUrl: CONSENT_URL, hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS,
   prefill: { ...prefill, tags: [['p', bridge], ['da-scope', 'a'.repeat(64), 'c'.repeat(32)], ['da-cap', 'mirror']] } })
 mustThrow('refuses an ALREADY-SIGNED prefill (the participant must supply the signature)',
-  { hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS, prefill: { ...prefill, sig: 'f'.repeat(128) } })
-mustThrow('refuses a non-https terms URL', { hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: 'javascript:alert(1)', prefill })
+  { consentUrl: CONSENT_URL, hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS, prefill: { ...prefill, sig: 'f'.repeat(128) } })
+mustThrow('refuses a non-https terms URL', { consentUrl: CONSENT_URL, hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: 'javascript:alert(1)', prefill })
 
 console.log(`\n${pass}/${n} passed`)
 process.exit(pass === n ? 0 : 1)
