@@ -113,9 +113,9 @@ export function consentTosBlock({ hiveId, hiveName, hiveHandle, termsUrl }) {
   ].join('\n')
 }
 
-// The unsigned 440 the participant signs, carried in the DM as an opaque blob (attributed, never
-// rendered as waggle's words). Validated so the disclosure can only ever ask them to sign a
-// mirror-consent grant to THIS bridge — never an arbitrary event dressed as "sign this".
+// The unsigned 440 the participant signs. It is validated before being put in a fragment-only
+// link to Nvoy's signer page, so the disclosure can only ever ask them to sign a mirror-consent
+// grant to THIS bridge — never an arbitrary event dressed as "sign this".
 const prefill440 = (v) => {
   const ev = (v && typeof v === 'object') ? v : reject('prefill is not an object')
   if (ev.kind !== 440) reject('prefill is not a 440')
@@ -126,6 +126,18 @@ const prefill440 = (v) => {
   if (!tag('tos')?.[1]) reject('prefill carries no tos hash')
   if (ev.sig) reject('prefill must be UNSIGNED — the participant supplies the signature')
   return JSON.stringify(ev)
+}
+
+const consentLink = ({ consentUrl, hiveId, hiveName, hiveHandle, termsUrl, prefill }) => {
+  const base = url(consentUrl, 'consentUrl')
+  const checked = JSON.parse(prefill440(prefill))
+  const request = { hiveId: hex64(hiveId, 'hiveId'), hiveName: handle(hiveName), hiveHandle: String(hiveHandle).replace(/[\r\n`]/g, '').trim(), termsUrl: url(termsUrl, 'termsUrl'), prefill: checked }
+  if (!request.hiveHandle) reject('hiveHandle empty')
+  const out = new URL(base)
+  // A fragment never reaches Pages, HTTP logs, or a Referer header. It holds no secret, but keeps
+  // this unsigned draft out of routine server logs all the same.
+  out.hash = `request=${Buffer.from(JSON.stringify(request)).toString('base64url')}`
+  return out.toString()
 }
 
 const CATALOGUE = {
@@ -177,20 +189,18 @@ const CATALOGUE = {
     },
   },
   // In-door consent request (docs/CONSENT.md §5). waggle's FIRST unsolicited outbound seal to a
-  // stranger — the disclosure IS the ask. Three fixed parts and no free-prose slot: a per-target
-  // cover greeting (NOT hashed), the canonical ToS block (hashed, the source literal above), and
-  // the unsigned prefilled 440 the participant need only sign-and-publish. The safety of SENDING
-  // this at all lives in bridge.mjs's §6 once-per-target ask-record — the catalogue only fixes the
-  // FORM so the bridge can never author free text at a stranger.
+  // stranger — the disclosure IS the ask. Its prose and signing URL are fixed: Nvoy reviews the
+  // canonical terms and asks the participant's own signer to publish the prefilled 440. The safety
+  // of SENDING this at all lives in bridge.mjs's §6 once-per-target ask-record.
   consent_request: {
-    build: ({ hiveId, hiveName, hiveHandle, termsUrl, prefill }) =>
-      `A small invitation from waggle: your public posts may be welcome in a private Buzz hive. ` +
-      `The bees do not carry a single word across until you give the nod. If it is not for you, ` +
-      `simply leave this note alone — silence is a no, and you will not be asked again.\n\n` +
-      consentTosBlock({ hiveId, hiveName, hiveHandle, termsUrl }) +
-      `\n\n---\nTo agree, sign and publish this exact event (it names waggle, capability \`mirror\`, ` +
-      `scoped to this hive, and carries the hash of the terms above — your signature is the ` +
-      `whole consent):\n\n\`\`\`json\n${prefill440(prefill)}\n\`\`\``,
+    build: ({ consentUrl, hiveId, hiveName, hiveHandle, termsUrl, prefill }) => {
+      const link = consentLink({ consentUrl, hiveId, hiveName, hiveHandle, termsUrl, prefill })
+      return `A small invitation from waggle: ${handle(hiveName)}'s hive (${String(hiveHandle).replace(/[\r\n`]/g, '').trim()}) ` +
+        `would love to share your public wisdom in its meadow, with the bees already in the hive. ` +
+        `Nothing crosses until you give the nod.\n\n` +
+        `To see exactly what that means and choose your own Nostr signer, open this consent card:\n${link}\n\n` +
+        `If it is not for you, simply leave this note alone — silence is a no, and you will not be asked again.`
+    },
   },
 }
 
