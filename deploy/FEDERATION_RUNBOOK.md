@@ -75,8 +75,7 @@ Two systemd units (see `deploy/README.md` for the full split and why):
 ```jsonc
 {
   "relays": [ "wss://relay.ditto.pub", "wss://relay.dreamith.to",
-              "wss://jskitty.com/nostr", "wss://asia.vectorapp.io/nostr",
-              "wss://relay.damus.io" ],
+              "wss://jskitty.com/nostr", "wss://asia.vectorapp.io/nostr" ],
   "recipients": [
     { "name": "My Dude", "npub_hex": "0a8e0720…", "inbox": "906910e0-…" },
     { "name": "Dennis",  "npub_hex": "9a07300d…", "inbox": "d11ee480-…" },

@@ -33,7 +33,7 @@ const flag = (n, d) => { const i = args.indexOf(n); return i === -1 ? d : args[i
 const die = (m) => { console.error(`participant-init: ${m}`); process.exit(1) }
 const say = (s = '') => console.log(s)
 
-const RELAYS = (process.env.RELAYS?.split(',') || ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'])
+const RELAYS = (process.env.RELAYS?.split(',') || ['wss://nos.lol', 'wss://relay.primal.net'])
   .map(s => s.trim()).filter(Boolean)
 const toHex = (v) => {
   const s = String(v || '').trim()

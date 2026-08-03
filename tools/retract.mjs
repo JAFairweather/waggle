@@ -18,7 +18,7 @@ for (const line of readFileSync(homedir() + '/.nvoy/claude-identity.env', 'utf8'
 if (!nsec) { console.error('no NVOY_NSEC'); process.exit(1) }
 const sk = nsec.startsWith('nsec') ? nip19.decode(nsec).data : Uint8Array.from(nsec.match(/../g).map(b => parseInt(b, 16)))
 
-const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net',
+const RELAYS = ['wss://nos.lol', 'wss://relay.primal.net',
                 'wss://relay.ditto.pub', 'wss://jskitty.com/nostr', 'wss://asia.vectorapp.io',
                 'wss://relay.dreamith.to']
 const pool = new SimplePool()

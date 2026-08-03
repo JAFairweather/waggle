@@ -33,7 +33,7 @@ const flag = (n) => { const i = args.indexOf(n); return i === -1 ? null : args[i
 const has = (n) => args.includes(n)
 const die = (m) => { console.error(`session-profile: ${m}`); process.exit(1) }
 
-const RELAYS = (process.env.RELAY_RELAYS || 'wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net')
+const RELAYS = (process.env.RELAY_RELAYS || 'wss://nos.lol,wss://relay.primal.net')
   .split(',').map(s => s.trim()).filter(Boolean)
 
 // The shared face. A URL, not embedded data: one asset, changed in one place for every session.

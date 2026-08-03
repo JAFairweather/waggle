@@ -77,7 +77,7 @@ function loadRelays() {
   const out = new Set()
   if (process.env.BUZZ_RELAY_URL) out.add(process.env.BUZZ_RELAY_URL)
   try { const c = JSON.parse(readFileSync(resolve(ROOT, 'config.json'), 'utf8')); for (const r of c.public?.relays || []) out.add(r) } catch { /* fall through */ }
-  if (!out.size) ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net'].forEach(r => out.add(r))
+  if (!out.size) ['wss://nos.lol', 'wss://relay.primal.net'].forEach(r => out.add(r))
   return [...out]
 }
 

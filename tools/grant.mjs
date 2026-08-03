@@ -103,7 +103,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 function relays() {
   try { const c = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')); if (c.public?.relays?.length) return c.public.relays } catch { /* fall through */ }
-  return ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net']
+  return ['wss://nos.lol', 'wss://relay.primal.net']
 }
 
 function publish(ev) {
