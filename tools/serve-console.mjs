@@ -23,7 +23,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const DOCROOT = resolve(ROOT, 'console')
 const PORT = Number(process.env.PORT || 8080)
 const TYPES = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml' }
+  '.js': 'text/javascript; charset=utf-8', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml',
+  '.png': 'image/png' }
 
 // #145 — DNS rebinding. Binding to 127.0.0.1 decides WHICH INTERFACE accepts a connection; it
 // decides nothing about WHICH ORIGIN the browser believes it is talking to. A hostile page can

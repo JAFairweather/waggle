@@ -84,6 +84,16 @@ check('handler: the documented Host still serves the console', good.code === 200
   `got ${good.code} — if this fails the guard is refusing everything, which "passes" every refusal test`)
 check('handler: and serves actual bytes', good.body.length > 0 || good.ended)
 
+// The setup welcome and its hero are part of the same trusted document root. A setup page that
+// silently 404s its illustration regresses into a wall of operational text; serve both without
+// widening the handler beyond console/.
+const setup = await call('127.0.0.1:8080', '/console/setup.html')
+check('handler: serves the setup welcome', setup.code === 200 && /Bring the meadow to your hive/.test(setup.body),
+  `got ${setup.code}`)
+const hero = await call('127.0.0.1:8080', '/console/assets/waggle-setup-meadow-hero.png')
+check('handler: serves the setup hero as PNG', hero.code === 200 && hero.headers?.['Content-Type'] === 'image/png',
+  `got ${hero.code} / ${hero.headers?.['Content-Type']}`)
+
 // The path guard from #142 must still bite, and must bite AFTER the host check — a rebound page
 // must not be able to probe the filesystem through the traversal response.
 const traversalFromBadHost = await call('evil.com:8080', '/console/../../.env')
