@@ -116,6 +116,10 @@
      shared component: the casing is waggle's brand rule, not a defect in the design system. */
   #titlebar .ntb-name{text-transform:none;letter-spacing:.02em;color:var(--gold-bright)}
   #titlebar .ntb-name::first-letter{color:var(--gold-bright)}
+  .console-tabs{display:flex;gap:5px;border-bottom:1px solid var(--line);margin:4px 0 22px}
+  .console-tabs a{color:var(--dim);text-decoration:none;padding:9px 12px 10px;border-bottom:2px solid transparent;font-size:13px;font-weight:650}
+  .console-tabs a:hover{color:var(--text)}
+  .console-tabs a.active{color:var(--gold-bright);border-bottom-color:var(--gold-bright)}
 </style>
 </head>
 <body>
@@ -124,7 +128,7 @@
 <div id="titlebar" style="max-width:1000px;margin:0 auto;padding:0 20px"></div>
 
 <main>
-  <p class="sub" style="margin-top:26px"><a href="/console/setup.html">Start or review hive setup →</a> · <a href="/console/following.html">View followed public feeds →</a></p>
+  <nav class="console-tabs" aria-label="Waggle console"><a class="active" href="/console/">Access</a><a href="/console/following.html">Following</a><a href="/console/setup.html">Setup</a></nav>
   <p class="sub" style="margin-top:26px">This page shows everyone who has been given access to your community, and who approved them.
   <b>It checks every approval here, in your browser</b> — nothing is taken on trust from a server.
   It needs no connection to your bridge and no password: an approval is a public, signed record, so
