@@ -19,6 +19,7 @@ const HIVE = 'c'.repeat(64)
 const HIVE_NAME = 'JA Fairweather\'s hive'
 const HIVE_HANDLE = 'jaf@dequalsf.com'
 const TERMS = 'https://block.github.io/buzz/terms.html'
+const CONSENT_URL = 'https://jafairweather.github.io/nvoy/consent.html'
 const bridgeSk = generateSecretKey(), bridgePk = getPublicKey(bridgeSk)
 
 writeFileSync(join(tmp, 'config.json'), JSON.stringify({
@@ -30,6 +31,7 @@ writeFileSync(join(tmp, 'config.json'), JSON.stringify({
     mirror_consent_hive_name: HIVE_NAME,
     mirror_consent_hive_handle: HIVE_HANDLE,
     mirror_consent_terms_url: TERMS,
+    mirror_consent_url: CONSENT_URL,
     mirror_ask_per_hour: 2,
     muted_authors: [],
   },
@@ -65,7 +67,7 @@ const fresh = () => getPublicKey(generateSecretKey())
   t('prefill is an UNSIGNED 440', pre.kind === 440 && !pre.sig)
   t('  grantee is the bridge, cap is mirror', pre.tags.find(x => x[0] === 'p')[1] === bridgePk && pre.tags.find(x => x[0] === 'da-cap')[1] === 'mirror')
   t('  tos is the derived expected hash (matches the gate)', pre.tags.find(x => x[0] === 'tos')[1] === PUB.mirrorExpectedTosHash)
-  t('  the disclosure template accepts the prefill', typeof buildBody('consent_request', { hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS, prefill: pre }) === 'string')
+  t('  the disclosure template accepts the prefill', typeof buildBody('consent_request', { consentUrl: CONSENT_URL, hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS, prefill: pre }) === 'string')
   // a participant signs it unchanged → it verifies against the gate
   const psk = generateSecretKey()
   const signed = JSON.parse(JSON.stringify(finalizeEvent(pre, psk)))
