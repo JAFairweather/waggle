@@ -49,6 +49,7 @@ import { fileURLToPath } from 'node:url'
 import { log, err } from './log.mjs'
 import { durableSet, durableQueue } from './stores.mjs'
 import { fanout } from './fanout.mjs'
+import { recipientDmRelays } from './dm_relays.mjs'
 import { defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased } from './render.mjs'
 import { hex as concordHex, publicChannel, openChannelWrap } from './concord_lib.mjs'
 
@@ -951,6 +952,44 @@ function fetchProfileName(pubkey, mkSocket) {
   })
 }
 
+// NIP-17: kind:10050 is a recipient's signed, replaceable delivery preference.
+// It is discovered on our ordinary read relays, then the resulting gift wrap is
+// published ONLY to the recipient's declared private-message relays. No list is
+// deliberately not a fallback case: NIP-17 treats it as "not ready for DMs".
+const dmRelayCache = new Map() // pubkey -> { relays, ts }
+const DM_RELAY_TTL_MS = 15 * 60_000
+const DM_RELAY_CACHE_CAP = Number(process.env.DM_RELAY_CACHE_CAP || 5000)
+function cacheDmRelays(pubkey, relays) {
+  dmRelayCache.set(pubkey, { relays, ts: Date.now() })
+  if (dmRelayCache.size > DM_RELAY_CACHE_CAP) dmRelayCache.delete(dmRelayCache.keys().next().value)
+}
+function fetchRecipientDmRelays(pubkey, mkSocket) {
+  const target = String(pubkey || '').toLowerCase()
+  const hit = dmRelayCache.get(target)
+  if (hit && Date.now() - hit.ts < DM_RELAY_TTL_MS) return Promise.resolve(hit.relays)
+  const events = []
+  return fanout(PUB.relays || [], {
+    timeoutMs: 3000,
+    mkSocket,
+    each: (ws, done) => {
+      ws.on('open', () => ws.send(JSON.stringify(['REQ', 'dm-relays', { kinds: [10050], authors: [target], limit: 1 }])))
+      ws.on('message', d => {
+        try {
+          const m = JSON.parse(d.toString())
+          if (m[0] === 'EVENT' && m[2]) events.push(m[2])
+          if (m[0] === 'EOSE') done()
+        } catch { /* ignore malformed relay frames */ }
+      })
+      ws.on('error', done)
+    },
+    collect: () => {
+      const relays = recipientDmRelays(events, target)
+      cacheDmRelays(target, relays)
+      return relays
+    },
+  })
+}
+
 // No unwrap label, no key — already-public content.
 async function forwardPublic(ev, why, dest, quarantine) {
   const author = ev.pubkey ? ev.pubkey.slice(0, 16) : '?'
@@ -1413,13 +1452,13 @@ function rlDropOnce(id) {
 // chosen accept-count with no socket — the same shape #5's scanChannel(fetchPage) uses. WB_STUB_SEND
 // keeps the socket-free tests honest: it means "assume it landed on every configured relay", so the
 // crypto still runs but the count is positive, never a spurious 0/N.
-function publishWrapToRelays(wrap, mkSocket) {
-  if (process.env.WB_STUB_SEND) return Promise.resolve(PUB.relays.length || 1)
+function publishWrapToRelayList(wrap, relays, mkSocket) {
+  if (process.env.WB_STUB_SEND) return Promise.resolve(relays.length || 1)
   // All-settled-with-a-count: per-relay OK-true is the ONLY landing signal. A relay that opens but
   // never OKs is bounded by the budget, and an explicit ["OK", id, false] rejection must not read
   // as an accept — counting any inbound frame was finding #2.
   let accepted = 0
-  return fanout(PUB.relays || [], {
+  return fanout(relays || [], {
     timeoutMs: 10000,
     mkSocket,
     each: (ws, done) => {
@@ -1436,13 +1475,26 @@ function publishWrapToRelays(wrap, mkSocket) {
   })
 }
 
+function publishWrapToRelays(wrap, mkSocket) {
+  return publishWrapToRelayList(wrap, PUB.relays || [], mkSocket)
+}
+
 async function returnLaneSend(toHex, descriptor, meta, publish = publishWrapToRelays) {
   if (!hasBridgeKey()) { err('return lane: no bridge key to seal with — skipping'); return 0 }
   try {
-    const relays = (PUB.relays || []).length
+    // Socket-free injected publishers are a test seam. Live sends discover the
+    // recipient's kind:10050 and have no public-relay fallback by design.
+    const recipientRelays = (publish === publishWrapToRelays && !process.env.WB_STUB_SEND)
+      ? await fetchRecipientDmRelays(toHex) : null
+    if (recipientRelays && recipientRelays.length === 0) {
+      err(`RETURN not sent -> ${toHex.slice(0, 12)}…: no valid kind:10050 recipient DM relay list (NIP-17)`)
+      return 0
+    }
+    const relays = recipientRelays ? recipientRelays.length : (PUB.relays || []).length
+    const publisher = recipientRelays ? (wrap) => publishWrapToRelayList(wrap, recipientRelays) : publish
     // A3 §2.5: the seal/wrap construction and the key both live in nostr_egress.mjs. `descriptor`
     // is {template, slots} — there is no parameter here that could carry a composed sentence.
-    const { wrap, accepted, bytes } = await sealAndWrap({ template: descriptor.template, to: toHex, slots: descriptor.slots }, publish)
+    const { wrap, accepted, bytes } = await sealAndWrap({ template: descriptor.template, to: toHex, slots: descriptor.slots }, publisher)
     // Journal stamped with the accept-count so the durable record is landed-reality, not intent: a
     // 0/N carry is written accepted:0, never a false "sent". The wrap's author is ephemeral and can
     // never trip the tripwire, so this record is a written-down intent — worth making a truthful one;
@@ -2036,7 +2088,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, processConsentEvent, mirrorConsent, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, processConsentEvent, mirrorConsent, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {

@@ -26,6 +26,7 @@ import { homedir } from 'node:os'
 import WebSocket from 'ws'
 import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
+import { normalizeDmRelayList, recipientDmRelays } from '../src/dm_relays.mjs'
 
 const args = process.argv.slice(2)
 const cmd = args[0]
@@ -35,6 +36,8 @@ const say = (s = '') => console.log(s)
 
 const RELAYS = (process.env.RELAYS?.split(',') || ['wss://nos.lol', 'wss://relay.primal.net'])
   .map(s => s.trim()).filter(Boolean)
+const dmRelayArg = flag('--dm-relays', process.env.DM_RELAYS || RELAYS.join(','))
+const DM_RELAYS = normalizeDmRelayList(String(dmRelayArg || '').split(','))
 const toHex = (v) => {
   const s = String(v || '').trim()
   if (s.startsWith('npub1')) return nip19.decode(s).data
@@ -115,6 +118,9 @@ if (cmd === 'publish') {
     content: JSON.stringify({ name, about, ...(picture ? { picture } : {}), bot: true }) }, sk)
   const relayList = finalizeEvent({ kind: 10002, created_at: now,
     tags: RELAYS.map(r => ['r', r]), content: '' }, sk)
+  if (!DM_RELAYS.length) die('publish needs one or more valid wss:// URLs in --dm-relays (or DM_RELAYS)')
+  const dmRelayList = finalizeEvent({ kind: 10050, created_at: now,
+    tags: DM_RELAYS.map(r => ['relay', r]), content: '' }, sk)
 
   say('')
   say(`  Publishing as ${nip19.npubEncode(pk)}`)
@@ -128,6 +134,8 @@ if (cmd === 'publish') {
   for (const l of await publish(profile)) say('    ' + l)
   say('  kind:10002 relay list  (how others find where to reach you)')
   for (const l of await publish(relayList)) say('    ' + l)
+  say('  kind:10050 private-message relays  (where sealed mail is delivered)')
+  for (const l of await publish(dmRelayList)) say('    ' + l)
   say('')
   say('  Next, the operator must admit you — they hold the signing key, not you:')
   say('')
@@ -151,14 +159,16 @@ if (cmd === 'verify') {
   // 1. discoverable
   const meEvents = new Map(); let answered = 0
   for (const url of RELAYS) {
-    const { out, answered: a } = await query(url, { kinds: [0, 10002], authors: [pk] })
+    const { out, answered: a } = await query(url, { kinds: [0, 10002, 10050], authors: [pk] })
     if (a) answered++
     for (const e of out) meEvents.set(e.kind + ':' + e.id, e)
   }
   const hasProfile = [...meEvents.values()].some(e => e.kind === 0)
   const hasRelays = [...meEvents.values()].some(e => e.kind === 10002)
+  const hasDmRelays = [...meEvents.values()].some(e => e.kind === 10050 && verifyEvent(e))
   say(`    ${hasProfile ? '✓' : '•'} profile published${hasProfile ? '' : ' — run: participant-init publish'}`)
   say(`    ${hasRelays ? '✓' : '•'} relay list published${hasRelays ? '' : ' — others cannot discover where to reach you'}`)
+  say(`    ${hasDmRelays ? '✓' : '•'} private-message relay list published${hasDmRelays ? '' : ' — NIP-17 senders must not send sealed mail without it'}`)
 
   // 2. admitted
   const grants = new Map()
@@ -175,11 +185,14 @@ if (cmd === 'verify') {
 
   // 3. reachable — can anything actually get back to this identity?
   const wraps = new Map()
-  for (const url of RELAYS) {
+  // Read the same signed list that a NIP-17 sender must use. A wrap sent only to
+  // relay.nave.pub (or another private inbox relay) is still a successful loop.
+  const inboundRelays = recipientDmRelays([...meEvents.values()], pk)
+  for (const url of inboundRelays) {
     const { out } = await query(url, { kinds: [1059], '#p': [pk], limit: 50 })
     for (const e of out) wraps.set(e.id, e)
   }
-  say(`    ${wraps.size ? '✓' : '•'} inbound reachable — ${wraps.size} sealed message(s) addressed to you`)
+  say(`    ${wraps.size ? '✓' : '•'} inbound reachable — ${wraps.size} sealed message(s) addressed to you${inboundRelays.length ? '' : ' — no valid private-message relay list to check'}`)
 
   say('')
   if (answered === 0) {
@@ -187,7 +200,7 @@ if (cmd === 'verify') {
     say('    is not the same as a failure. Try again before concluding anything.')
     process.exit(2)
   }
-  const closed = hasProfile && hasRelays && mine.length && wraps.size
+  const closed = hasProfile && hasRelays && hasDmRelays && mine.length && wraps.size
   if (closed) {
     say('    The loop is closed: you are discoverable, admitted, and reachable.')
   } else {
