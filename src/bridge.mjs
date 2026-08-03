@@ -38,9 +38,9 @@ import WebSocket from 'ws'
 import { verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import { emit, query, checkConfigRenderable } from './egress.mjs'
-import { bridgePubkey, hasBridgeKey, openSeal, openRumor, sealAndWrap } from './nostr_egress.mjs'
+import { bridgePubkey, hasBridgeKey, openSeal, openRumor, sealAndWrap, consentTosBlock } from './nostr_egress.mjs'
 import { verifyConsent } from './consent.mjs'   // in-door consent (#131/#132, docs/CONSENT.md §8)
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -62,6 +62,7 @@ const SEEN_CAP = Number(process.env.SEEN_CAP || 100000)
 // its keys are (source_id × recipient) composites, not bare event ids, so one community message
 // carries out to every matching recipient exactly once and never re-delivers across a restart.
 const RLSEEN_PATH = process.env.RLSEEN_PATH || resolve(ROOT, 'data', 'return-lane-seen.log')
+const MIRRORASKED_PATH = process.env.MIRRORASKED_PATH || resolve(ROOT, 'data', 'mirror-asked.log')
 const RLPENDING_PATH = process.env.RLPENDING_PATH || resolve(ROOT, 'data', 'return-lane-pending.log')
 // Bounded, or one permanently-unreachable recipient retries forever. On the ~4-minute scan poll
 // this is roughly two hours of outage before a carry is dead-lettered — long enough to ride out a
@@ -307,12 +308,28 @@ const PUB = cfg.public ? {
   mirrorRequireConsent: /^(1|true|yes|on)$/i.test(String(cfg.public.mirror_require_consent || '')),
   mirrorGrandfathered: (cfg.public.mirror_grandfathered || []).map(s => String(s).toLowerCase())
     .filter(s => /^[0-9a-f]{64}$/.test(s)),
-  // §7 version-binding (crew review of #199): the sha256 of the CURRENT canonical ToS block
-  // (nostr_egress `consentTosBlock`), so a consent carrying a superseded terms hash fails the gate.
-  // Null = presence-only (a warning fires once at boot when enforcing without it).
-  mirrorExpectedTosHash: cfg.public.mirror_expected_tos_hash
-    ? String(cfg.public.mirror_expected_tos_hash).toLowerCase() : null,
+  // The disclosure/ask side (§5/§6). The terms URL and community name feed the ONE ToS producer
+  // (nostr_egress `consentTosBlock`); with a terms URL set and a bridge key present, the bridge
+  // ASKS (sends the consent-request DM) when it holds an un-consented author. Rate-capped, once per
+  // target (§6). Absent terms URL → asking is OFF (enforcement can still gate; nobody is DM'd).
+  mirrorConsentTermsUrl: cfg.public.mirror_consent_terms_url || null,
+  mirrorConsentCommunity: cfg.public.mirror_consent_community_name || cfg.public.inbox,
+  mirrorAskPerHour: Number(cfg.public.mirror_ask_per_hour != null ? cfg.public.mirror_ask_per_hour : 20),
 } : null
+
+// §7 version-binding, from ONE producer (crew review of #199 → #200). The gate's expected hash, the
+// DM prefill's `tos`, and the block a participant sees all derive from the same `consentTosBlock`,
+// so they cannot drift. `mirror_expected_tos_hash` remains an explicit override; otherwise it is
+// derived from the community name + terms URL when both are present. Null → presence-only.
+if (PUB) {
+  PUB.mirrorExpectedTosHash = (() => {
+    if (cfg.public.mirror_expected_tos_hash) return String(cfg.public.mirror_expected_tos_hash).toLowerCase()
+    if (PUB.mirrorConsentTermsUrl && PUB.mirrorConsentCommunity) {
+      try { return createHash('sha256').update(consentTosBlock({ community: PUB.mirrorConsentCommunity, termsUrl: PUB.mirrorConsentTermsUrl })).digest('hex') } catch { return null }
+    }
+    return null
+  })()
+}
 
 // scan_authors — the SIGNER gate on the return-lane carry-out (§5 of the notify design: spam and
 // abuse control plus defense-in-depth, NOT the load-bearing safety property, which is the
@@ -637,6 +654,56 @@ function processConsentEvent(ev) {
     mirrorConsent.set(v.participant, { recordId: ev.id, tosHash: v.tosHash, at: ev.created_at })
     log(`mirror consent: ${v.participant.slice(0, 12)}… → ${String(PUB.inbox).slice(0, 8)}… (440 ${ev.id.slice(0, 12)}…)`)
   }
+}
+
+// --- the disclosure/ask side (docs/CONSENT.md §5/§6) ------------------------------------------
+// When enforcement HOLDS an un-consented author and asking is configured, the bridge sends the
+// consent-request DM. This is waggle's FIRST unsolicited outbound seal to a stranger, so its safety
+// is not an allowlist — it is these three rules, all here: ONCE per target ever (a durable ask
+// record; silence is a no, §6), a global hourly RATE CAP, and never a muted or grandfathered target.
+const mirrorAskedStore = durableSet({ path: MIRRORASKED_PATH, cap: 100000, label: 'consent asks', noun: 'asked targets' })
+const mirrorAsked = mirrorAskedStore.mem
+const askInFlight = new Set()   // prevents two rapid holds double-sending before the first records
+let askWindowStart = 0, askWindowCount = 0
+function askRateOk() {
+  const t = Date.now()
+  if (t - askWindowStart >= 3600_000) { askWindowStart = t; askWindowCount = 0 }
+  if (askWindowCount >= PUB.mirrorAskPerHour) return false
+  askWindowCount++
+  return true
+}
+// The UNSIGNED prefill 440 the participant need only sign (Dennis's prefill-signer). Its `tos` is the
+// derived expected hash, so a signed-unchanged prefill verifies against the version-bound gate by
+// construction; the fresh salt rides in the da-scope tag the participant signs.
+function buildConsentPrefill() {
+  const salt = randomBytes(16).toString('hex')
+  return {
+    kind: 440, created_at: Math.floor(Date.now() / 1000),
+    tags: [['p', BRIDGE_PK], ['da-scope', scopeHash(PUB.inbox, salt), salt], ['da-cap', 'mirror'], ['tos', PUB.mirrorExpectedTosHash || '']],
+    content: '',
+  }
+}
+async function sendConsentRequest(targetPub, publish = publishWrapToRelays) {
+  if (!hasBridgeKey() || !PUB.mirrorConsentTermsUrl || !PUB.mirrorExpectedTosHash) return 0
+  if (!askRateOk()) { err(`consent ask: rate cap ${PUB.mirrorAskPerHour}/h reached — not asking ${targetPub.slice(0, 12)}… this window`); return 0 }
+  const accepted = await returnLaneSend(targetPub, {
+    template: 'consent_request',
+    slots: { community: PUB.mirrorConsentCommunity, termsUrl: PUB.mirrorConsentTermsUrl, prefill: buildConsentPrefill() },
+  }, { lane: 'consent-ask' }, publish).catch(() => 0)
+  if (accepted >= 1) { mirrorAskedStore.commit(targetPub); log(`consent ask -> ${targetPub.slice(0, 12)}… (disclosure DM sealed)`) }
+  else err(`consent ask -> ${targetPub.slice(0, 12)}…: seal reached no relay — NOT marked asked, retries on the next hold`)
+  return accepted
+}
+// Ask once, and only when: asking is configured, the target is a fresh subject with no consent yet,
+// and it is neither muted (an explicit prior no) nor grandfathered. Fire-and-forget from the hold.
+// `send` is injectable so the guard logic is testable without a socket.
+function maybeAskConsent(targetPub, send = sendConsentRequest) {
+  if (!PUB.mirrorConsentTermsUrl || !hasBridgeKey()) return false
+  if (mirrorAsked.has(targetPub) || mirrorConsent.has(targetPub) || askInFlight.has(targetPub)) return false
+  if (PUB.muted.includes(targetPub) || PUB.mirrorGrandfathered.includes(targetPub)) return false
+  askInFlight.add(targetPub)
+  Promise.resolve(send(targetPub)).finally(() => askInFlight.delete(targetPub))
+  return true
 }
 
 // --- delivery ---------------------------------------------------------------
@@ -976,6 +1043,7 @@ function routePublic(ev) {
     if (!consentBinds && !PUB.mirrorGrandfathered.includes(author)) {
       const why2 = rec && PUB.mirrorExpectedTosHash ? 'consent is bound to superseded terms' : 'participant has not consented'
       err(`PUBLIC hold[no-consent]: ${why} from ${author.slice(0, 12)}… held — ${why2} (default-closed, §8)`)
+      maybeAskConsent(author)   // §5/§6: send the disclosure DM once, if asking is configured
       if (FORWARD_MODE === 'buzz') markSeen(ev.id)
       return
     }
@@ -1808,13 +1876,14 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, processConsentEvent, mirrorConsent, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, processConsentEvent, mirrorConsent, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
   loadSeen()
   loadPostedMap()
   loadRlSeen()
+  mirrorAskedStore.load()   // §6: who we've already sent a consent-request DM (once per target)
   rlPending.load()
   loadRelaySeen()
   // #171 — say it on every boot. A record of lost messages that nobody reads is the same silence
@@ -1863,6 +1932,7 @@ if (!process.env.WB_NO_BOOT) {
     if (PUB.grantors.length) log(`  admission: ${PUB.grantors.length} grantor key(s); NIP-DA kinds ${NIPDA.grant}/${NIPDA.revocation}/${NIPDA.index}`)
     if (PUB.mirrorRequireConsent) {
       log(`  in-door consent: ENFORCING (§8) — mirror/reply gated on consent; ${PUB.mirrorGrandfathered.length} grandfathered; version-binding ${PUB.mirrorExpectedTosHash ? 'ON (tos ' + PUB.mirrorExpectedTosHash.slice(0, 8) + '…)' : 'OFF'}`)
+      log(`  in-door consent ask (§5/§6): ${PUB.mirrorConsentTermsUrl ? 'ON — disclosure DM once per target, ' + PUB.mirrorAskPerHour + '/h cap, ' + mirrorAsked.size + ' already asked' : 'OFF (no mirror_consent_terms_url — enforcement gates, nobody is messaged)'}`)
       if (!PUB.mirrorExpectedTosHash) err(`  in-door consent: version-binding UNENFORCED — set public.mirror_expected_tos_hash to the current ToS block hash, or a v1 consent rides v2 terms (§7)`)
     }
     if (PUB.relayChannels.length && hasBridgeKey()) log(`  relay lane: ${PUB.relayChannels.length} allowlisted channel(s); decrypt budget ${PUB.relayDecryptBudget}/min, wrap cap ${PUB.relayMaxWrapBytes}B — a channel waggle has not joined fails as RELAY[buzz] ERR, never a silent §7 drop`)
