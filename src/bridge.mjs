@@ -1175,6 +1175,38 @@ function mutateConfig(fn) {
   } catch (e) { err(`commands: config write failed: ${e.message}`); return false }
 }
 
+// --- watchlist hot-reload (#206 stage 1) ------------------------------------------------------
+// watch_authors was the one trust input that needed a process RESTART to change. These change it
+// at runtime: PUB.authors is updated, the config is rewritten (mutateConfig — the same path mutes
+// already use), and every live relay connection re-issues its watched-author filter IN PLACE —
+// mirroring how a grant already re-opens the granted-author subscription without a restart. Each
+// connectPublic registers its re-subscribe in WATCH_REFRESHERS; refreshWatched fans a change out.
+const WATCH_REFRESHERS = new Set()
+function refreshWatched() {
+  for (const f of WATCH_REFRESHERS) { try { f() } catch (e) { err(`watchlist: refresh failed: ${e?.message || '?'}`) } }
+}
+function addWatchAuthor(pk) {
+  const hex = String(pk || '').trim().toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(hex)) return { ok: false, reason: 'not a 64-hex pubkey' }
+  if (PUB.authors.includes(hex)) return { ok: true, already: true }
+  PUB.authors.push(hex)
+  mutateConfig(c => { c.public.watch_authors = Array.from(new Set([...(c.public.watch_authors || []).map(s => String(s).toLowerCase()), hex])) })
+  refreshWatched()
+  log(`watchlist: +${hex.slice(0, 12)}… — now ${PUB.authors.length} watched, subscription updated (no restart)`)
+  return { ok: true, added: true }
+}
+function removeWatchAuthor(pk) {
+  const hex = String(pk || '').trim().toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(hex)) return { ok: false, reason: 'not a 64-hex pubkey' }
+  const i = PUB.authors.indexOf(hex)
+  if (i === -1) return { ok: true, already: true }
+  PUB.authors.splice(i, 1)
+  mutateConfig(c => { c.public.watch_authors = (c.public.watch_authors || []).map(s => String(s).toLowerCase()).filter(a => a !== hex) })
+  refreshWatched()
+  log(`watchlist: -${hex.slice(0, 12)}… — now ${PUB.authors.length} watched, subscription updated (no restart)`)
+  return { ok: true, removed: true }
+}
+
 // A3: this took a `text: string` until #134, and its unrecognized-verb caller passed runtime
 // operator input straight through — the free-text path that already had a live caller, not a
 // hypothetical one. It now takes a VERB from the catalogue's closed set; the words live in
@@ -1729,6 +1761,11 @@ function connect(url) {
 // #e REPLIES to our own notes — a relay serving one still serves the other.
 function connectPublic(url) {
   let ws, alive = false
+  // #206 stage 1: the current open-cycle's watched-author re-subscribe. Registered ONCE per
+  // connection (not per reconnect); reassigned each open() to the fresh closure. refreshWatched
+  // fans a watchlist change out through this so the relay filter updates without a restart.
+  let watchedRefresher = null
+  WATCH_REFRESHERS.add(() => { if (watchedRefresher) watchedRefresher() })
   const open = () => {
     ws = new WebSocket(url)
     // A5: buffer the pre-EOSE backfill and deliver it in CLAMPED-created_at order, so a batch
@@ -1751,6 +1788,29 @@ function connectPublic(url) {
         log(`[pub ${url}] granted-author subscription -> ${authors.length} admitted identity(ies)`)
       } catch (e) { err(`[pub ${url}] could not subscribe to granted authors: ${e?.message || '?'}`) }
     }
+    // #206 stage 1: watched-author subscription, hot-reloadable. Same two sub ids as the initial
+    // pa/pd REQs, so re-issuing REPLACES the filter in place at the relay (as subscribeGranted does
+    // for pga). An empty set CLOSEs the subs, so a removed author actually stops streaming rather
+    // than lingering behind a stale filter. watchedSubKey guards against churning an unchanged set.
+    let watchedSubKey = null
+    const subscribeWatched = () => {
+      const authors = PUB.authors.slice().sort()
+      const key = authors.join(',')
+      if (key === watchedSubKey) return
+      const hadAuthors = !!(watchedSubKey && watchedSubKey.length)
+      watchedSubKey = key
+      try {
+        if (authors.length) {
+          ws.send(JSON.stringify(['REQ', 'pa', { kinds: [1], authors, since: PUB.since, limit: PUB.backfillLimit }]))
+          ws.send(JSON.stringify(['REQ', 'pd', { kinds: [5], authors, since: Math.floor(Date.now() / 1000) - DEL_SINCE_SECS, limit: PUB.backfillLimit }]))
+          log(`[pub ${url}] watched-author subscription -> ${authors.length} author(s)`)
+        } else if (hadAuthors) {
+          ws.send(JSON.stringify(['CLOSE', 'pa'])); ws.send(JSON.stringify(['CLOSE', 'pd']))
+          log(`[pub ${url}] watched-author subscription -> 0 authors (closed)`)
+        }
+      } catch (e) { err(`[pub ${url}] could not update watched-author subscription: ${e?.message || '?'}`) }
+    }
+    watchedRefresher = subscribeWatched
     const flush = (reason) => {
       if (eosed) return
       eosed = true
@@ -1796,6 +1856,7 @@ function connectPublic(url) {
       // A7: kind:5 deletes from watched authors. Longer lookback than the kind:1 watermark
       // (deletes are rare + idempotent; one issued during downtime must not be missed).
       if (PUB.authors.length) { expect.add('pd'); ws.send(JSON.stringify(['REQ', 'pd', { kinds: [5], authors: PUB.authors, since: Math.floor(Date.now() / 1000) - DEL_SINCE_SECS, limit: PUB.backfillLimit }])) }
+      watchedSubKey = PUB.authors.slice().sort().join(',')   // #206: initial pa/pd already cover this set; a later watchlist change re-fires subscribeWatched
       // NIP-DA: grants + revocations from the grantor set. Wide lookback — a standing
       // grant issued weeks ago must survive any restart (stateless consumption).
       if (PUB.grantors.length) { expect.add('pg'); ws.send(JSON.stringify(['REQ', 'pg', { kinds: [NIPDA.grant, NIPDA.revocation], authors: PUB.grantors, limit: 200 }])) }
@@ -1876,7 +1937,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, processConsentEvent, mirrorConsent, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, processConsentEvent, mirrorConsent, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
