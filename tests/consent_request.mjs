@@ -49,7 +49,10 @@ t('consent_request is a registered nostr template', NOSTR_TEMPLATE_NAMES.include
 // --- 3. the built DM carries cover line + block + the prefill, and binds the SAME hash -----------
 {
   const body = buildBody('consent_request', { consentUrl: CONSENT_URL, hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS, prefill })
-  t('the DM opens with a warm but explicit consent invitation', /small invitation from waggle/.test(body))
+  t('the DM opens with a warm but explicit consent invitation',
+    body.includes(`Hello from ${HIVE_NAME} (${HIVE_HANDLE}) on Buzz.xyz.`) &&
+    body.includes('May waggle mirror your public Nostr posts into this one hive? Nothing crosses unless you say yes.') &&
+    !body.includes("hive's hive"))
   t('the DM contains a fragment-only Nvoy signing link, not raw event JSON', body.includes(`${CONSENT_URL}#request=`) && !body.includes('```json') && !body.includes('"da-scope"'))
   t('the prefill\'s tos hash equals the canonical block shown by the signer (bound, not drifting)',
     prefill.tags.find(x => x[0] === 'tos')[1] === sha(consentTosBlock({ hiveId: HIVE, hiveName: HIVE_NAME, hiveHandle: HIVE_HANDLE, termsUrl: TERMS })))
