@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // waggle-init.mjs — the guided setup. The executable form of the getting-started guide.
 //
-//   node tools/waggle-init.mjs            walk the setup, prompting only for what is missing
-//   node tools/waggle-init.mjs --check    report readiness and change nothing
+//   node tools/waggle-init.mjs                walk the setup, prompting only for what is missing
+//   node tools/waggle-init.mjs --check        report readiness and change nothing
+//   node tools/waggle-init.mjs --enable-mirror-consent  add this hive's consent identity
+//   node tools/waggle-init.mjs --agent-launch print the safe hand-off for a coding agent
 //
 // Standing up a bridge is roughly two dozen steps across identities, a host, configuration,
 // discoverability and admission — with private keys moving between several of them. The steps
@@ -33,6 +35,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CONFIG = process.env.CONFIG_PATH || resolve(ROOT, 'config.json')
 const EXAMPLE = resolve(ROOT, 'config.example.json')
 const CHECK_ONLY = process.argv.includes('--check')
+const ENABLE_MIRROR_CONSENT = process.argv.includes('--enable-mirror-consent')
+const AGENT_LAUNCH = process.argv.includes('--agent-launch')
 
 const c = { dim: '\x1b[2m', b: '\x1b[1m', ok: '\x1b[32m', warn: '\x1b[33m', bad: '\x1b[31m', off: '\x1b[0m' }
 const say = (s = '') => console.log(s)
@@ -50,6 +54,29 @@ const toHex = (v) => {
   throw new Error(`not an npub or 64-hex pubkey: ${s || '(empty)'}`)
 }
 const isPlaceholder = (v) => typeof v === 'string' && (v.startsWith('<') || /^[A-Z_]+$/.test(v) || v.includes('UUID_'))
+
+// A coding agent's identity belongs to that agent's runtime, not to this installer and not
+// to its owner. This is deliberately a hand-off, rather than a "create agent key" action:
+// the recipient mints locally, asks for a bounded admission, and burns the key on exit.
+function printAgentLaunch() {
+  head('Coding-agent hand-off')
+  say('    Give the following job to the coding agent that will join this hive:')
+  say('')
+  say('      1. Mint its own ephemeral Nostr identity locally (0600; never print or export the nsec).')
+  say('      2. Publish kind:0, kind:10002, and kind:10050; name it `Codex - <8 public-key hex>`')
+  say('         (or the runtime family equivalent) and mark `bot:true`.')
+  say('      3. Send a scoped admission request naming the Buzz channel and one-line purpose.')
+  say('      4. Wait for the owner to approve the NIP-DA `admit` grant in Nvoy or waggle console.')
+  say('      5. Cold-read the grant and relay lists, then send one test message and read its sealed receipt.')
+  say('      6. Burn the session key on exit.')
+  say('')
+  note('Use Nvoy MCP only when this agent also needs delegated private data or NIP-17 conversation tools.')
+  note('A standing MCP agent keeps its OWN encrypted NIP-49 key file; setup never accepts its nsec.')
+  say('')
+  process.exit(0)
+}
+
+if (AGENT_LAUNCH) printAgentLaunch()
 
 // --- read what exists ------------------------------------------------------------------------
 let cfg = null, cfgExists = existsSync(CONFIG)
@@ -103,6 +130,9 @@ const checks = [
   ['public.grantors', Array.isArray(P.grantors) && P.grantors.length && !isPlaceholder(P.grantors[0]), 'whose signed grants admit an outside participant'],
   ['public.watch_events', Array.isArray(P.watch_events) && P.watch_events.length && !isPlaceholder(P.watch_events[0]), 'notes whose replies you want to receive'],
 ]
+
+const consentFields = ['mirror_consent_hive_id', 'mirror_consent_hive_name', 'mirror_consent_hive_handle', 'mirror_consent_terms_url', 'mirror_consent_url']
+const consentMissing = () => consentFields.filter(k => !cfg?.public?.[k] || isPlaceholder(cfg?.public?.[k]))
 // A configured channel is a UUID, and a UUID confirms nothing to a human. "public.inbox ✓" next
 // to an unreadable id is exactly the kind of green tick that gets trusted without being checked —
 // and pointing the bridge at the wrong channel is silent until members see traffic they did not
@@ -127,8 +157,21 @@ for (const [k, ok, why] of checks) {
   else good(k)
 }
 
+if (P.mirror_require_consent) {
+  const missing = consentMissing()
+  if (missing.length) {
+    todo(`mirror consent identity — enforcement is ON but needs: ${missing.join(', ')}`)
+    gaps++
+  } else {
+    good(`mirror consent → ${P.mirror_consent_hive_name} (${P.mirror_consent_hive_handle}), bound to its stable hive id`)
+  }
+} else {
+  todo('mirror consent is not enabled yet — public feeds remain ungated until you choose a hive identity')
+  note('enable it only after the first feed invitation can be delivered; silence remains a no')
+}
+
 // --- interactive fill ---------------------------------------------------------------------------
-if (!CHECK_ONLY && (gaps || !cfgExists)) {
+if (!CHECK_ONLY && (gaps || !cfgExists || ENABLE_MIRROR_CONSENT)) {
   say('')
   const rl = createInterface({ input, output })
   const ask = async (q, dflt) => {
@@ -137,6 +180,12 @@ if (!CHECK_ONLY && (gaps || !cfgExists)) {
   }
   if (!cfgExists) { copyFileSync(EXAMPLE, CONFIG); cfg = JSON.parse(readFileSync(CONFIG, 'utf8')); say(`    created ${CONFIG.replace(ROOT + '/', '')} from the example`) }
   cfg.public = cfg.public || {}
+  if (ENABLE_MIRROR_CONSENT) {
+    cfg.public.mirror_require_consent = true
+    say('')
+    say('    Mirror consent will be enforced for this hive after you finish its identity below.')
+    note('existing watched authors need explicit grandfathering or their feeds will hold until they consent')
+  }
 
   if (!P.inbox || isPlaceholder(P.inbox)) {
     say('')
@@ -167,6 +216,25 @@ if (!CHECK_ONLY && (gaps || !cfgExists)) {
     const v = await ask('grantor npub or hex', dflt ? nip19.npubEncode(dflt) : '')
     if (v) { try { cfg.public.grantors = [toHex(v)] } catch (e) { bad(e.message) } }
   }
+
+  // A consent grant belongs to a HIVE, not to a single channel. One owner can operate several
+  // hives, so this must be a stable community id rather than an owner key or an inbox UUID.
+  const needConsentIdentity = cfg.public.mirror_require_consent || !!cfg.public.mirror_consent_hive_id
+  if (needConsentIdentity && consentMissing().length) {
+    say('')
+    say('    This hive gates mirrored feeds on each author\'s consent. Name the hive they are consenting to.')
+    const hiveId = await ask('stable hive community_id (64 hex)')
+    if (/^[0-9a-f]{64}$/i.test(hiveId)) cfg.public.mirror_consent_hive_id = hiveId.toLowerCase()
+    else if (hiveId) bad('community_id must be 64 hexadecimal characters; it was not saved')
+    const hiveName = await ask('hive display name', cfg.public.mirror_consent_hive_name || '')
+    if (hiveName) cfg.public.mirror_consent_hive_name = hiveName
+    const hiveHandle = await ask('hive handle (for example you@example.com)', cfg.public.mirror_consent_hive_handle || '')
+    if (hiveHandle) cfg.public.mirror_consent_hive_handle = hiveHandle
+    const termsUrl = await ask('terms URL', cfg.public.mirror_consent_terms_url || '')
+    if (termsUrl) cfg.public.mirror_consent_terms_url = termsUrl
+    const consentUrl = await ask('public consent signing page URL', cfg.public.mirror_consent_url || '')
+    if (consentUrl) cfg.public.mirror_consent_url = consentUrl
+  }
   await rl.close()
 
   writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + '\n')
@@ -183,6 +251,12 @@ todo('Seat the agent credentials yourself over ssh stdin — never argv, never a
 note('stage, verify the staged key derives to the intended identity, then swap, then destroy the old copy')
 todo('Apply the firewall:                  deploy/nave-fw.nft')
 note('it permits NTP egress on purpose — a dropped clock silently corrupts every time-based gate')
+
+head('Coding agents — optional, and never key collection')
+todo('Print the safe session/MCP hand-off: node tools/waggle-init.mjs --agent-launch')
+note('the agent creates its own key, requests a scoped admission, and receives a grant; no owner or wizard ever copies its nsec')
+todo('For a standing Nvoy MCP agent, use an encrypted NIP-49 key file in that agent runtime')
+note('MCP is for delegated private data and sealed conversations; the public mirror/consent loop does not require it')
 
 head('After it runs — the steps that prove it, rather than assume it')
 todo('Prove the firewall loaded and the clock is synced:  sudo deploy/verify-firewall.sh')
@@ -203,6 +277,7 @@ try {
   const now = JSON.parse(readFileSync(CONFIG, 'utf8'))
   const p = now.public || {}
   const missing = ['inbox', 'approvers', 'grantors'].filter(k => !p[k] || (Array.isArray(p[k]) ? !p[k].length || isPlaceholder(p[k][0]) : isPlaceholder(p[k])))
+  if (p.mirror_require_consent) missing.push(...consentFields.filter(k => !p[k] || isPlaceholder(p[k])))
   if (missing.length) { todo(`config still needs: ${missing.join(', ')}`); ready = false } else good('config has the values the bridge refuses to start without')
 } catch { todo('no config yet'); ready = false }
 

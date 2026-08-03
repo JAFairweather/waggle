@@ -22,6 +22,8 @@ The setup has an executable form, and it is the source of truth for the order be
 ```sh
 node tools/waggle-init.mjs           # walk the setup, prompting only for what's missing
 node tools/waggle-init.mjs --check   # report readiness and change nothing
+node tools/waggle-init.mjs --enable-mirror-consent  # bind watched feeds to this hive's consent
+node tools/waggle-init.mjs --agent-launch            # print the safe coding-agent hand-off
 ```
 
 It is resumable and idempotent — every step first checks whether it is already done, so
@@ -38,6 +40,20 @@ Three things `waggle-init` will **not** do, on purpose:
   writes one into this repo, and never prints one back.
 - It does not touch a live host. Provisioning and seating are deliberate administrator
   acts with their own scripts; the tool prepares and verifies, and tells you what to run.
+
+### Hives, consent, and coding agents
+
+Run `--enable-mirror-consent` when this hive is ready to invite public authors. The wizard
+records the stable Concord `community_id`, human-readable hive name and handle, terms URL,
+and consent signing page. Those fields—not a chat-channel UUID and not the owner's key—define
+the scope an author consents to. Existing watched authors must be explicitly grandfathered or
+they will be held until they consent.
+
+Run `--agent-launch` to print the hand-off for a coding agent. It mints its own ephemeral key,
+publishes kind:0 + kind:10002 + kind:10050, asks for a scoped admission, verifies a sealed
+receipt, and burns its key on exit. Nvoy MCP is optional: use it for delegated private data or
+sealed conversations, with an agent-owned encrypted NIP-49 key file; it is not required for
+public mirror-and-consent.
 
 ## Prerequisites
 
