@@ -23,6 +23,8 @@
     "mirror_consent_hive_handle": "<human-readable hive handle, e.g. jaf@dequalsf.com>",
     "mirror_consent_terms_url": "https://<operator>/terms.html",
     "mirror_consent_url": "https://jafairweather.github.io/nvoy/consent.html",
+    "control_state_publish": false,
+    "control_state_refresh_secs": 300,
     "mirror_grandfathered": ["<pre-consent watched author hex, temporary explicit exception>"],
     "since_secs": 10800,
     "backfill_limit": 50,

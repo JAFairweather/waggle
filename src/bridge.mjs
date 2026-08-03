@@ -38,7 +38,7 @@ import WebSocket from 'ws'
 import { verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import { emit, query, checkConfigRenderable } from './egress.mjs'
-import { bridgePubkey, hasBridgeKey, openSeal, openRumor, sealAndWrap, consentTosBlock } from './nostr_egress.mjs'
+import { bridgePubkey, hasBridgeKey, openSeal, openRumor, sealAndWrap, consentTosBlock, signControlState } from './nostr_egress.mjs'
 import { verifyConsent } from './consent.mjs'   // in-door consent (#131/#132, docs/CONSENT.md §8)
 import { createHash, randomBytes } from 'node:crypto'
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs'
@@ -319,6 +319,10 @@ const PUB = cfg.public ? {
   mirrorConsentTermsUrl: cfg.public.mirror_consent_terms_url || null,
   mirrorConsentUrl: cfg.public.mirror_consent_url || null,
   mirrorAskPerHour: Number(cfg.public.mirror_ask_per_hour != null ? cfg.public.mirror_ask_per_hour : 20),
+  // #67: a signed state record enables a remote/read-only console. It is intentionally OFF until
+  // an owner decides their follow list and consent state may be public relay metadata.
+  controlStatePublish: /^(1|true|yes|on)$/i.test(String(cfg.public.control_state_publish || '')),
+  controlStateRefreshSecs: Number(cfg.public.control_state_refresh_secs != null ? cfg.public.control_state_refresh_secs : 300),
 } : null
 
 // §7 version-binding, from ONE producer (crew review of #199 → #200). The gate's expected hash, the
@@ -635,6 +639,10 @@ function processGrantEvent(ev) {
 // mirror_require_consent is on. Off (the default), this set is built for observability and gates
 // nothing, so the deploy changes no behaviour.
 const mirrorConsent = new Map() // participant pubkey -> { recordId, tosHash, at }
+// Observability is part of consent, not an afterthought.  An active record disappears on a valid
+// withdrawal so routing fails closed; retain the *fact* of that withdrawal for the owner-facing
+// state summary. Relay replay rebuilds this on boot, and a newer re-consent clears it.
+const mirrorRevoked = new Map() // participant pubkey -> { recordId, at }
 // `pmc` finds consents because a 440 p-tags the bridge. A participant's later 441 need not
 // repeat that p-tag, though, so it would otherwise be invisible and leave consent fail-open.
 // Every live public socket registers a refresher that subscribes by the accepted 440 ids (the
@@ -659,7 +667,9 @@ function processConsentEvent(ev) {
     const targets = (ev.tags || []).filter(t => t[0] === 'e').map(t => t[1])
     if (targets.includes(held.recordId)) {
       mirrorConsent.delete(author)
+      mirrorRevoked.set(author, { recordId: held.recordId, at: ev.created_at || Math.floor(Date.now() / 1000) })
       refreshConsentRevocations()
+      scheduleControlState()
       log(`mirror consent revoked: ${author.slice(0, 12)}… (441 ${ev.id.slice(0, 12)}…)`)
     }
     return
@@ -671,7 +681,10 @@ function processConsentEvent(ev) {
   const prev = mirrorConsent.get(v.participant)
   if (!prev || ev.created_at >= prev.at) {   // newest active consent per participant wins
     mirrorConsent.set(v.participant, { recordId: ev.id, tosHash: v.tosHash, at: ev.created_at })
+    const revoked = mirrorRevoked.get(v.participant)
+    if (!revoked || ev.created_at >= revoked.at) mirrorRevoked.delete(v.participant)
     refreshConsentRevocations()
+    scheduleControlState()
     log(`mirror consent: ${v.participant.slice(0, 12)}… → hive ${PUB.mirrorConsentHiveId.slice(0, 12)}… (440 ${ev.id.slice(0, 12)}…)`)
   }
 }
@@ -710,7 +723,7 @@ async function sendConsentRequest(targetPub, publish = publishWrapToRelays) {
     template: 'consent_request',
     slots: { consentUrl: PUB.mirrorConsentUrl, hiveId: PUB.mirrorConsentHiveId, hiveName: PUB.mirrorConsentHiveName, hiveHandle: PUB.mirrorConsentHiveHandle, termsUrl: PUB.mirrorConsentTermsUrl, prefill: buildConsentPrefill() },
   }, { lane: 'consent-ask' }, publish).catch(() => 0)
-  if (accepted >= 1) { mirrorAskedStore.commit(targetPub); log(`consent ask -> ${targetPub.slice(0, 12)}… (disclosure DM sealed)`) }
+  if (accepted >= 1) { mirrorAskedStore.commit(targetPub); scheduleControlState(); log(`consent ask -> ${targetPub.slice(0, 12)}… (disclosure DM sealed)`) }
   else err(`consent ask -> ${targetPub.slice(0, 12)}…: seal reached no relay — NOT marked asked, retries on the next hold`)
   return accepted
 }
@@ -1266,6 +1279,7 @@ function addWatchAuthor(pk) {
   }
   PUB.authors.push(hex)
   refreshWatched()
+  scheduleControlState()
   log(`watchlist: +${hex.slice(0, 12)}… — now ${PUB.authors.length} watched, subscription updated (no restart)`)
   return { ok: true, added: true }
 }
@@ -1281,6 +1295,7 @@ function removeWatchAuthor(pk) {
   }
   PUB.authors.splice(i, 1)
   refreshWatched()
+  scheduleControlState()
   log(`watchlist: -${hex.slice(0, 12)}… — now ${PUB.authors.length} watched, subscription updated (no restart)`)
   return { ok: true, removed: true }
 }
@@ -1477,6 +1492,71 @@ function publishWrapToRelayList(wrap, relays, mkSocket) {
 
 function publishWrapToRelays(wrap, mkSocket) {
   return publishWrapToRelayList(wrap, PUB.relays || [], mkSocket)
+}
+
+// --- signed owner-control state (#67 / #206) -------------------------------------------------
+//
+// This is a read plane, never a config endpoint. The state record is opt-in because a public
+// relay record necessarily reveals the owner-selected follows and consent state. When enabled,
+// browser clients must verify the bridge signature before displaying it.
+const CONTROL_STATE_DELAY_MS = 250
+let controlStateTimer = null
+
+function buildControlState() {
+  if (!PUB || !BRIDGE_PK || !PUB.mirrorConsentHiveId || !PUB.mirrorConsentHiveName || !PUB.mirrorConsentHiveHandle) return null
+  return {
+    v: 1,
+    observed_at: Math.floor(Date.now() / 1000),
+    hive: { id: PUB.mirrorConsentHiveId, name: PUB.mirrorConsentHiveName, handle: PUB.mirrorConsentHiveHandle },
+    bridge: BRIDGE_PK,
+    follows: PUB.authors.map((pubkey) => ({
+      pubkey,
+      consent: mirrorConsent.has(pubkey) ? 'active'
+        : mirrorRevoked.has(pubkey) ? 'revoked'
+          : mirrorAsked.has(pubkey) ? 'asked'
+            : 'pending',
+    })),
+  }
+}
+
+function publishControlStateToRelays(event, relays = PUB?.relays || [], mkSocket) {
+  if (process.env.WB_STUB_SEND) return Promise.resolve(relays.length || 1)
+  let accepted = 0
+  return fanout(relays || [], {
+    timeoutMs: 10000,
+    mkSocket,
+    each: (ws, done) => {
+      ws.on('open', () => ws.send(JSON.stringify(['EVENT', event])))
+      ws.on('message', d => {
+        try {
+          const m = JSON.parse(d.toString())
+          if (m[0] === 'OK' && m[1] === event.id) { if (m[2]) accepted++; done() }
+        } catch { /* non-OK frame */ }
+      })
+      ws.on('error', done)
+    },
+    collect: () => accepted,
+  })
+}
+
+async function publishControlState(publish = publishControlStateToRelays) {
+  const state = buildControlState()
+  if (!PUB?.controlStatePublish || !state || !hasBridgeKey()) return 0
+  let event
+  try { event = signControlState(state) }
+  catch (e) { err(`control state: refused to sign: ${e?.message || '?'}`); return 0 }
+  const accepted = await publish(event).catch(() => 0)
+  if (accepted >= 1) log(`control state -> ${accepted}/${PUB.relays.length} relay(s): ${state.follows.length} followed author(s) (${event.id.slice(0, 12)}…)`)
+  else err('control state: reached no relay — console will correctly show state unavailable')
+  return accepted
+}
+
+function scheduleControlState() {
+  if (process.env.WB_NO_BOOT || controlStateTimer || !PUB?.controlStatePublish || !PUB.relays.length) return
+  controlStateTimer = setTimeout(() => {
+    controlStateTimer = null
+    publishControlState()
+  }, CONTROL_STATE_DELAY_MS)
 }
 
 async function returnLaneSend(toHex, descriptor, meta, publish = publishWrapToRelays) {
@@ -2088,7 +2168,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, processConsentEvent, mirrorConsent, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
@@ -2150,6 +2230,15 @@ if (!process.env.WB_NO_BOOT) {
     if (PUB.relayChannels.length && hasBridgeKey()) log(`  relay lane: ${PUB.relayChannels.length} allowlisted channel(s); decrypt budget ${PUB.relayDecryptBudget}/min, wrap cap ${PUB.relayMaxWrapBytes}B — a channel waggle has not joined fails as RELAY[buzz] ERR, never a silent §7 drop`)
     else if (PUB.relayChannels.length && !hasBridgeKey()) err('WARN: relay_channels configured but no BRIDGE key to open sealed requests — relay lane INERT.')
     PUB.relays.forEach(connectPublic)
+    if (PUB.controlStatePublish) {
+      log('  owner control state: ON — signed follow/consent summary is published to public relays')
+      scheduleControlState()
+      // A state event that only changes on mutation looks healthy forever even if the bridge is
+      // gone. Republish the same bounded snapshot so a console can distinguish "unchanged" from
+      // "disconnected" without getting a host-health endpoint or any config access.
+      const every = Math.max(60, PUB.controlStateRefreshSecs) * 1000
+      setInterval(scheduleControlState, every)
+    } else log('  owner control state: OFF — no follow/consent metadata is published to relays')
     if (PUB.staging && PUB.approvers.length && FORWARD_MODE === 'buzz') {
       log(`approval console: watching staging for commands from ${PUB.approvers.length} approver(s)`)
       pollCommands(); setInterval(pollCommands, 15000)

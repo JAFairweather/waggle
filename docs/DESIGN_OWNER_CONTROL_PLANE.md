@@ -69,9 +69,11 @@ The browser version uses the same principle:
    deduplicates its id, changes the one allowed field, and acknowledges the
    result in signed bridge state.
 3. A signed state summary publishes only safe operational metadata: watched
-   pubkeys, consent record ids/status, policy version, caps, lane health and a
-   monotonically increasing state version. It contains **no** Buzz channel
-   UUID, host address, credentials, or message content.
+   pubkeys and consent status. It contains **no** Buzz channel UUID, host
+   address, credentials, message content, consent-record id, or grant detail.
+   It is **off by default** (`public.control_state_publish: false`): a public
+   relay record makes the owner-selected follow list observable, so that
+   disclosure is an explicit hive-owner choice.
 4. The console reads that event and public kind:0 / consent events from relays.
    If state cannot be verified or is stale, it renders `Disconnected — state
    unavailable`, never a plausible empty list.
