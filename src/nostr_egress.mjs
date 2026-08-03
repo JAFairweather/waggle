@@ -33,6 +33,11 @@ const BRIDGE_PK = BRIDGE_SK ? getPublicKey(BRIDGE_SK) : null
 export const bridgePubkey = () => BRIDGE_PK
 export const hasBridgeKey = () => !!BRIDGE_SK
 
+// NIP-78 application data. This is deliberately an addressable event: consumers ask for the
+// latest `d=waggle-control-state` record from THIS bridge key, never try to infer operational
+// truth from a stale cache or from an unverified web page.
+export const CONTROL_STATE_KIND = 30078
+
 // --- The catalogue of things waggle may say on this transport ---------------------------------
 //
 // Its bodies are machine JSON and one carried mention today, which is why §2.5 rates this lower
@@ -75,6 +80,48 @@ const url = (v, what) => {
   let u; try { u = new URL(s) } catch { reject(`${what} is not a URL: ${JSON.stringify(s.slice(0, 48))}`) }
   if (u.protocol !== 'https:' && u.protocol !== 'http:') reject(`${what} must be http(s): ${JSON.stringify(s.slice(0, 48))}`)
   return s
+}
+
+// A public control-plane record is *not* another general-purpose signing primitive.  Its schema
+// lives beside the key and is closed: callers can report the bridge's own observed state, but
+// cannot turn a status publisher into a public-prose or arbitrary-event sender (#67 / #134).
+const controlState = (v) => {
+  const s = (v && typeof v === 'object') ? v : reject('control state is not an object')
+  if (s.v !== 1) reject('control state version must be 1')
+  const observedAt = Math.floor(num(s.observed_at, 'control state observed_at'))
+  if (observedAt <= 0) reject('control state observed_at must be positive')
+  const hive = (s.hive && typeof s.hive === 'object') ? s.hive : reject('control state hive is missing')
+  const hiveId = hex64(hive.id, 'control state hive.id')
+  const hiveName = handle(hive.name)
+  const hiveHandle = String(hive.handle == null ? '' : hive.handle).replace(/[\r\n`]/g, '').trim().slice(0, 128)
+  if (!hiveHandle) reject('control state hive.handle empty')
+  const follows = Array.isArray(s.follows) ? s.follows : reject('control state follows is not an array')
+  if (follows.length > 1000) reject('control state has too many follows')
+  const statuses = new Set(['pending', 'asked', 'active', 'revoked'])
+  const seen = new Set()
+  const cleaned = follows.map((f) => {
+    if (!f || typeof f !== 'object') reject('control state follow is not an object')
+    const pubkey = hex64(f.pubkey, 'control state follow.pubkey')
+    if (seen.has(pubkey)) reject('control state has duplicate follow')
+    seen.add(pubkey)
+    const consent = String(f.consent || '')
+    if (!statuses.has(consent)) reject('control state follow.consent is invalid')
+    return { pubkey, consent }
+  }).sort((a, b) => a.pubkey.localeCompare(b.pubkey))
+  return { v: 1, observed_at: observedAt, hive: { id: hiveId, name: hiveName, handle: hiveHandle }, bridge: hex64(s.bridge, 'control state bridge'), follows: cleaned }
+}
+
+// The sole public-event capability held by bridge.mjs.  The body and tags are fixed by the
+// validator above; a caller supplies state, never event shape, kind, tags, or arbitrary content.
+export function signControlState(state) {
+  if (!BRIDGE_SK || !BRIDGE_PK) reject('no bridge key to sign control state')
+  const checked = controlState(state)
+  return finalizeEvent({
+    kind: CONTROL_STATE_KIND,
+    created_at: checked.observed_at,
+    tags: [['d', 'waggle-control-state'], ['h', checked.hive.id], ['v', '1']],
+    content: JSON.stringify(checked),
+  }, BRIDGE_SK)
 }
 
 // --- In-door consent (docs/CONSENT.md §5/§7) --------------------------------------------------
