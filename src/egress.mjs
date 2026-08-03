@@ -270,6 +270,28 @@ const CATALOGUE = {
     render: ({ granted }) =>
       `✅ already released earlier${granted ? ` · standing follow granted (their replies now skip the queue)` : ''}`,
   },
+
+  // The director-managed feed watchlist (#206). This is deliberately distinct from `follow`:
+  // follow trusts replies to OUR note; mirror subscribes to somebody's whole public feed. The
+  // bridge speaks only a closed acknowledgement, never an operator-supplied sentence.
+  watchlist_ack: {
+    action: 'reply',
+    slots: { verb: 'enum', author: 'npub' },
+    optional: ['author'],
+    enums: { verb: ['added', 'removed', 'already', 'not_watched', 'bad_target', 'persist_failed'] },
+    render: ({ verb, author }) => {
+      const who = author ? ` \`${String(author).slice(0, 12)}…\`` : ''
+      switch (verb) {
+        case 'added': return `🐝 now watching${who} — their feed is consent-gated before it enters.`
+        case 'removed': return `🛑 stopped watching${who} — no new feed posts will be mirrored.`
+        case 'already': return `ℹ️ already watching${who}.`
+        case 'not_watched': return `ℹ️ that key is not on the watchlist.`
+        case 'bad_target': return '⚠️ use a single valid npub or 64-character hex pubkey.'
+        case 'persist_failed': return '⚠️ could not save the watchlist — nothing changed.'
+      }
+      reject('enum', `watchlist_ack verb fell through: ${JSON.stringify(verb)}`)
+    },
+  },
 }
 
 export const TEMPLATE_NAMES = Object.freeze(Object.keys(CATALOGUE))

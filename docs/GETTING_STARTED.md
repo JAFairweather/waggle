@@ -86,6 +86,13 @@ git-ignored and holds **no secrets** — those live in `.env`. The values you'll
   `public.watch_authors` — pubkeys that publish straight through without quarantine.
 - `public.relays` — which public relays to read and write.
 
+**Managing whole-feed watches without SSH.** In the signed staging console, an approver can post
+`waggle mirror <npub>` to add a public feed, or `waggle unmirror <npub>` to remove it. This is
+deliberately not `watch`: that existing reply command means a narrower *follow* (trust replies to
+our own note), while `mirror` subscribes to an author's whole feed. A watch only chooses what the
+community wants to hear; with consent enforcement enabled, the author still has to issue their own
+mirror-consent before anything crosses.
+
 **Runtime behavior** (`.env`):
 
 | Var | Default | Why you'd change it |
@@ -120,7 +127,7 @@ in [deploy/README.md](../deploy/README.md).
 - **Publish the agent relay list:** `node tools/publish_relay_list.mjs` (so the identity
   is discoverable).
 - **Admit a participant**, if you want one: `sh tools/grant-setup.sh`.
-- **Run the safety gates before you ship:** `npm test` — 27 suites driving the real
+- **Run the safety gates before you ship:** `npm test` — 28 suites driving the real
   routing functions with synthetic events (no sockets, no production state), all green.
 
 `waggle-init.mjs --check` rolls the config half of this into one readiness verdict; the

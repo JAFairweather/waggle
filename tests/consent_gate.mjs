@@ -42,7 +42,7 @@ process.env.PUB_WATERMARK_PATH = join(tmp, 'watermark')
 process.env.POSTED_MAP_PATH = join(tmp, 'posted-map.log')
 process.env.BUZZ_PRIVATE_KEY = Buffer.from(bridgeSk).toString('hex')   // so BRIDGE_PK is known
 
-const { routePublic, processConsentEvent, mirrorConsent, PUB } = await import('../src/bridge.mjs')
+const { routePublic, processConsentEvent, mirrorConsent, consentRecordIds, CONSENT_REFRESHERS, PUB } = await import('../src/bridge.mjs')
 
 const wire = (ev) => JSON.parse(JSON.stringify(ev))
 const now = () => Math.floor(Date.now() / 1000)
@@ -71,6 +71,8 @@ const held = (out) => /hold\[no-consent\]/.test(out)
 
 let pass = true
 const check = (cond, label) => { realLog(`${cond ? 'ok  ' : 'FAIL'} — ${label}`); if (!cond) pass = false }
+let revocationRefreshes = 0
+CONSENT_REFRESHERS.add(() => { revocationRefreshes++ })
 
 // --- OFF (default) — behaviour is UNCHANGED, nothing gated -------------------------------------
 PUB.mirrorRequireConsent = false
@@ -96,10 +98,15 @@ check(!held(routeOf(replyPost(replierSk))), 'ON: once the replier consents, the 
 const c = consent(partSk)
 processConsentEvent(c)
 check(mirrorConsent.has(participant), 'consent re-established')
+check(consentRecordIds().includes(c.id), 'the active consent record is exposed for its e-tag revocation subscription')
+const refreshBeforeThirdParty = revocationRefreshes
 processConsentEvent(revokeBy(replierSk, c.id))   // someone ELSE's 441 e-tagging the participant's record
 check(mirrorConsent.has(participant), 'a 441 by anyone BUT the grantor does NOT revoke')
+check(revocationRefreshes === refreshBeforeThirdParty, 'a third-party 441 does NOT churn revocation subscriptions')
+const refreshBeforeOwnRevoke = revocationRefreshes
 processConsentEvent(revokeBy(partSk, c.id))       // the participant's OWN 441
 check(!mirrorConsent.has(participant), 'the participant\'s own 441 revokes their consent')
+check(revocationRefreshes === refreshBeforeOwnRevoke + 1, 'a valid 441 refreshes the record-id revocation subscription')
 check(held(routeOf(feedPost(partSk))), 'ON: after revocation, the feed is held again')
 
 // --- processConsentEvent ignores what is not a mirror consent (fresh keys, non-vacuous) --------

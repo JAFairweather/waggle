@@ -78,6 +78,11 @@ administrator seats credentials directly — and it never takes a secret as a co
 The console is served from your own machine on purpose. Its whole promise is *"here is exactly what
 you are about to sign"*, and that promise is only worth something if you control the page making it.
 
+For whole-feed watches, an authorized approver can also use the signed in-Buzz staging console:
+`waggle mirror <npub>` adds a feed and `waggle unmirror <npub>` removes it. This is a plain
+director-curated watchlist, not a grant; the watched person’s separate mirror-consent is what
+authorizes ingestion when consent enforcement is enabled.
+
 ## Configuration
 
 `config.json` (git-ignored) holds the relay set, the channels messages land in, the watch tiers, the
@@ -104,12 +109,12 @@ against what git says, because a stale build is invisible while every status sur
 
 ## Tests
 
-`npm test` runs 27 suites against the **real** exported functions with synthetic events — no
+`npm test` runs 28 suites against the **real** exported functions with synthetic events — no
 sockets, no production state:
 
 boot · suite roster · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant
 admission · message rendering · deployed-build verification · return lane · return-lane scan ·
-return-lane no-miss · return-lane pending · relay ingress · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask
+return-lane no-miss · return-lane pending · relay ingress · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · watchlist hot-reload
 
 The rendering suite is the one to read if you are reviewing. It tests what the bridge **refuses**,
 not only what it does: a hostile note tries to ping the approver, mint an `APPROVED BY` heading,
