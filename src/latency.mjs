@@ -69,6 +69,7 @@ export function markLatency(sourceId, stage, at = Date.now(), attempt = 0) {
   if (!key) return { ok: false, error: 'latency tracing disabled: LATENCY_TRACE_KEY unavailable' }
   if (!Number.isInteger(attempt) || attempt < 0 || attempt > 10_000) throw new Error('latency trace attempt is invalid')
   const record = { v: 1, trace: correlationId(sourceId, key), attempt, stage, at: Math.floor(at) }
+  const line = JSON.stringify(record) + '\n'
   const path = latencyPath()
   const count = pending.get(path) || 0
   if (count >= maxPending()) { noteHealth(path, 'queue_full'); return { ok: false, error: 'trace queue full', record } }
@@ -79,8 +80,10 @@ export function markLatency(sourceId, stage, at = Date.now(), attempt = 0) {
       await mkdir(dirname(path), { recursive: true, mode: 0o700 })
       let bytes = 0
       try { bytes = (await stat(path)).size } catch (e) { if (e?.code !== 'ENOENT') throw e }
-      if (bytes >= maxFileBytes()) { noteHealth(path, 'file_full'); return }
-      await appendFile(path, JSON.stringify(record) + '\n', { mode: 0o600 })
+      // The bound is on the resulting file, not merely its pre-append size. Checking only the
+      // latter permits the final telemetry record to cross the configured hard ceiling.
+      if (bytes + Buffer.byteLength(line) > maxFileBytes()) { noteHealth(path, 'file_full'); return }
+      await appendFile(path, line, { mode: 0o600 })
     } catch { noteHealth(path, 'write_error') /* telemetry is never a delivery dependency */ }
     finally { pending.set(path, Math.max(0, (pending.get(path) || 1) - 1)) }
   })

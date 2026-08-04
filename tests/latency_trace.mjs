@@ -35,12 +35,12 @@ try {
   const bounded = readLatencyWindow(process.env.LATENCY_PATH, 4096)
   ok('report reads a bounded tail window', bounded.bytes <= 4096 && Array.isArray(bounded.records))
   const cappedPath = join(root, 'capped.jsonl')
-  writeFileSync(cappedPath, 'x'.repeat(4096))
+  writeFileSync(cappedPath, 'x'.repeat(4095))
   process.env.LATENCY_PATH = cappedPath
   process.env.LATENCY_MAX_FILE_BYTES = '4096'
   markLatency(a, 'relay.observed', 5000)
   await flushLatency(cappedPath)
-  ok('a full trace file drops new telemetry and surfaces the condition', latencyHealth(cappedPath).file_full === 1 && readFileSync(cappedPath).length === 4096)
+  ok('a record that would cross the hard trace cap is dropped and surfaced', latencyHealth(cappedPath).file_full === 1 && readFileSync(cappedPath).length === 4095)
   delete process.env.LATENCY_MAX_FILE_BYTES
 } finally { delete process.env.LATENCY_TRACE_KEY; rmSync(root, { recursive: true, force: true }) }
 if (failed) process.exit(1)
