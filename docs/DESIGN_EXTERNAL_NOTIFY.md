@@ -1,5 +1,15 @@
 # Design: notifying an external agent of hive activity
 
+> **2026-08-04 authority extension:** the data-only carry below remains the default. A recipient
+> configured with `protocol: "nvoy-task-carry-v1"` instead receives a strict encrypted JSON carry
+> containing the complete original signed kind:9 event plus the resolved scan-channel UUID. That
+> typed path becomes an instruction only when Nvoy independently verifies (1) the original signer
+> has `task`/`task+act` for the recipient and (2) this bridge has the separate carrier-only
+> `task-relay` grant for the same recipient. Replies are receipt-bound to this bridge and the exact
+> source channel, then use the existing relay-ingress lane. `task-relay` alone never authorizes
+> bridge prose. The normative cross-runtime contract and adversarial acceptance matrix live in
+> Nvoy `docs/DESIGN_CHANNEL_TASK_CARRY.md`.
+
 **Status:** proposed — decision-ready · **Tracks:** #110 · **Origin channel:** connector (`73f80d38-3245-41a9-814c-8ad364686944`)
 **Verified against:** `src/bridge.mjs` @ `718aa7c` (= `origin/main`) and the live `/opt/waggle-read` box, 2026-07-31.
 

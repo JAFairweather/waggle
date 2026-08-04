@@ -14,7 +14,7 @@
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
-import { getPublicKey, generateSecretKey } from 'nostr-tools/pure'
+import { getPublicKey, generateSecretKey, finalizeEvent } from 'nostr-tools/pure'
 
 const dir = mkdtempSync(resolve(tmpdir(), 'wb-rls-'))
 const bridgeSk = generateSecretKey()
@@ -26,11 +26,16 @@ const dennis = getPublicKey(generateSecretKey())
 const bumble = getPublicKey(generateSecretKey())
 // Buzz-side signer keys. claudeSigner is bound to ONE entry (unique → drives echo-skip);
 // sharedSigner is bound to two (ambiguous → must NOT drive skip, stands in for the shared bridge).
-const claudeSigner = getPublicKey(generateSecretKey())
-const sharedSigner = getPublicKey(generateSecretKey())
+const claudeSignerSk = generateSecretKey()
+const claudeSigner = getPublicKey(claudeSignerSk)
+const sharedSignerSk = generateSecretKey()
+const sharedSigner = getPublicKey(sharedSignerSk)
 // A crew author allowed through the signer gate, and an outsider who is not.
-const crew = getPublicKey(generateSecretKey())
-const outsider = getPublicKey(generateSecretKey())
+const crewSk = generateSecretKey()
+const crew = getPublicKey(crewSk)
+const outsiderSk = generateSecretKey()
+const outsider = getPublicKey(outsiderSk)
+const signerKeys = new Map([[crew, crewSk], [outsider, outsiderSk], [claudeSigner, claudeSignerSk], [sharedSigner, sharedSignerSk]])
 
 writeFileSync(resolve(dir, 'config.json'), JSON.stringify({
   relays: [], recipients: [],
@@ -67,8 +72,16 @@ const journal = () => existsSync(process.env.SEND_JOURNAL_PATH)
 // Run a scan and return only the journal entries it produced.
 async function scanDelta(msgs, opts) {
   const before = journal().length
-  if (opts === undefined) await scanReturnLane(msgs)
-  else await scanReturnLane(msgs, opts)
+  // A working-channel message is a real wire-form signed kind:9. The JSON round-trip strips
+  // nostr-tools' finalize symbol, forcing production signature verification in the bridge.
+  const wire = msgs.map((m, i) => {
+    const sk = signerKeys.get(m.pubkey)
+    if (!sk) return m
+    return JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 1000 + i,
+      tags: m.tags || [], content: String(m.content || '') }, sk)))
+  })
+  if (opts === undefined) await scanReturnLane(wire)
+  else await scanReturnLane(wire, opts)
   const j = journal()
   return j.slice(before)
 }
@@ -116,8 +129,9 @@ d = await scanDelta([{ id: 'e2', pubkey: sharedSigner, content: 'over to @dennis
 ok('a SHARED author is NOT skipped — the mention still delivers', d.length === 1 && toOf(d[0]) === short(dennis))
 
 // --- echo: per-event registry (the bridge posted this event FOR claude) -----
-recordPosted({ id: 'orig-r1', author: claude, buzz: 'reg1', dest: 'chan', q: false, ts: 0, agent: claude })
-d = await scanDelta([{ id: 'reg1', pubkey: crew, content: 'echo of @claude own words' }])
+const registryWire = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 1000, tags: [], content: 'echo of @claude own words' }, crewSk)))
+recordPosted({ id: 'orig-r1', author: claude, buzz: registryWire.id, dest: 'chan', q: false, ts: 0, agent: claude })
+d = await scanDelta([registryWire])
 ok('a registry-attributed event is echo-skipped', d.length === 0)
 
 // --- reply-to-agent via the registry, no body mention needed ----------------
