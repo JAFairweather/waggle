@@ -1893,6 +1893,13 @@ async function scanReturnLane(msgs, opts = {}) {
       if (rlDropOnce(m.id)) err(`RETURN drop[author]: ${String(m.id).slice(0, 12)}… signer ${from.slice(0, 12)}… not in scan_authors`)
       continue
     }
+    // The working-channel path must preserve a verifiable original principal for every carry,
+    // including legacy recipients. The bridge is transport, never a substitute author. Staging
+    // deliberately keeps its older human-gated shape because it supplies no signer gate.
+    if (gateActive && !sourceWireEvent(m)) {
+      if (rlDropOnce(m.id)) err(`RETURN drop[source]: ${String(m.id).slice(0, 12)}… is not a valid signed kind:9 event`)
+      continue
+    }
     const body = String(m.content || '')
     const tags = Array.isArray(m.tags) ? m.tags : []
     const ptags = tags.filter(t => t[0] === 'p' && t[1]).map(t => String(t[1]).toLowerCase())

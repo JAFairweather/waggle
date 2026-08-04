@@ -24,12 +24,13 @@
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
-import { getPublicKey, generateSecretKey } from 'nostr-tools/pure'
+import { getPublicKey, generateSecretKey, finalizeEvent } from 'nostr-tools/pure'
 
 const dir = mkdtempSync(resolve(tmpdir(), 'wb-nomiss-'))
 const bridgeSk = generateSecretKey()
 const claude = getPublicKey(generateSecretKey())
-const crew = getPublicKey(generateSecretKey())
+const crewSk = generateSecretKey()
+const crew = getPublicKey(crewSk)
 
 writeFileSync(resolve(dir, 'config.json'), JSON.stringify({
   relays: [], recipients: [],
@@ -72,9 +73,9 @@ for (let i = 7; i >= 1; i--) {                 // created_at now-7 (oldest) .. n
   let content = `just chatter ${i}`
   if (i === 7) content = 'heads up @claude — buried under the backlog'
   if (i === 2) content = '@claude one more recent thing'
-  store.push({ id: `m${i}`, pubkey: crew, content, created_at: now - i, tags: [] })
+  store.push(JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, content, created_at: now - i, tags: [] }, crewSk))))
 }
-const BURIED = `m7`
+const BURIED = store.find(m => m.content.includes('buried under the backlog')).id
 
 // A relay-shaped page fetch honouring `--since floor`, `--before`, `--limit 3`, newest-first.
 // `failOn` makes the Nth call error, to model a mid-drain read failure.
