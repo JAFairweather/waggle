@@ -112,7 +112,15 @@ DEPLOYED_SHA=$(cat "$TREE/DEPLOYED_SHA" 2>/dev/null || echo none)
 log "target $SHORT ($REF); deployed $DEPLOYED_SHA"
 
 if [ "$TARGET_SHA" = "$DEPLOYED_SHA" ]; then
-  log "already current — nothing to do"; exit 0
+  # A matching code watermark does not prove the mutable, deliberately-unshipped
+  # routing policy is still healthy. Check it on every timer tick: otherwise a
+  # config edited after the last deploy would remain invisible until some future
+  # code commit happened to enter the no-op/full-deploy paths below.
+  if ! sh -c "$CONFIG_VERIFY_CMD"; then
+    alarm "live routing policy is incomplete or unreadable — DEPLOYED_SHA retained; will re-alarm next tick"
+    exit 1
+  fi
+  log "already current — deployed code and live routing policy verified"; exit 0
 fi
 
 # --- green gate: merged is not enough, CI must have passed for THIS sha ------------------
