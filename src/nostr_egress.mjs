@@ -109,7 +109,28 @@ const controlState = (v) => {
     return { pubkey, consent }
   }).sort((a, b) => a.pubkey.localeCompare(b.pubkey))
   if (typeof s.publishing !== 'boolean') reject('control state publishing is not boolean')
-  return { v: 1, observed_at: observedAt, hive: { id: hiveId, name: hiveName, handle: hiveHandle }, bridge: hex64(s.bridge, 'control state bridge'), publishing: s.publishing, follows: cleaned }
+  // v1 originally carried just hive/bridge/publishing/follows. Operations was added as an
+  // additive v1 summary, so old signed records must remain valid rather than being rewritten
+  // under a fictional v2 contract.
+  if (s.operations == null) return { v: 1, observed_at: observedAt, hive: { id: hiveId, name: hiveName, handle: hiveHandle }, bridge: hex64(s.bridge, 'control state bridge'), publishing: s.publishing, follows: cleaned }
+  const operations = (typeof s.operations === 'object') ? s.operations : reject('control state operations is invalid')
+  const exact = (obj, keys, label) => { if (Object.keys(obj).sort().join(',') !== keys.slice().sort().join(',')) reject(`${label} has unexpected fields`) }
+  const count = (value, label) => { const n = Math.floor(num(value, label)); if (n < 0 || n > 1000000) reject(`${label} out of bounds`); return n }
+  exact(operations, ['trust', 'lanes', 'gates', 'drops'], 'control state operations')
+  const trust = (operations.trust && typeof operations.trust === 'object') ? operations.trust : reject('control state trust is missing')
+  exact(trust, ['trusted_repliers', 'muted_authors', 'watched_notes'], 'control state trust')
+  const lanes = (operations.lanes && typeof operations.lanes === 'object') ? operations.lanes : reject('control state lanes is missing')
+  exact(lanes, ['public_read', 'sealed', 'return_watch', 'relay_ingress'], 'control state lanes')
+  if (!Object.values(lanes).every(x => typeof x === 'boolean')) reject('control state lanes are not booleans')
+  const gates = (operations.gates && typeof operations.gates === 'object') ? operations.gates : reject('control state gates is missing')
+  exact(gates, ['consent_required', 'ask_per_hour', 'public_content_bytes', 'public_replier_per_min', 'public_channel_per_min', 'public_lane_per_hour'], 'control state gates')
+  if (typeof gates.consent_required !== 'boolean') reject('control state consent_required is not boolean')
+  const drops = (operations.drops && typeof operations.drops === 'object') ? operations.drops : reject('control state drops is missing')
+  exact(drops, ['relay_preauth', 'relay_not_relay'], 'control state drops')
+  return { v: 1, observed_at: observedAt, hive: { id: hiveId, name: hiveName, handle: hiveHandle }, bridge: hex64(s.bridge, 'control state bridge'), publishing: s.publishing, follows: cleaned,
+    operations: { trust: { trusted_repliers: count(trust.trusted_repliers, 'trusted_repliers'), muted_authors: count(trust.muted_authors, 'muted_authors'), watched_notes: count(trust.watched_notes, 'watched_notes') }, lanes,
+      gates: { consent_required: gates.consent_required, ask_per_hour: count(gates.ask_per_hour, 'ask_per_hour'), public_content_bytes: count(gates.public_content_bytes, 'public_content_bytes'), public_replier_per_min: count(gates.public_replier_per_min, 'public_replier_per_min'), public_channel_per_min: count(gates.public_channel_per_min, 'public_channel_per_min'), public_lane_per_hour: count(gates.public_lane_per_hour, 'public_lane_per_hour') },
+      drops: { relay_preauth: count(drops.relay_preauth, 'relay_preauth'), relay_not_relay: count(drops.relay_not_relay, 'relay_not_relay') } } }
 }
 
 // The sole public-event capability held by bridge.mjs.  The body and tags are fixed by the
