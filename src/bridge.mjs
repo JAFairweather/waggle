@@ -323,6 +323,7 @@ const PUB = cfg.public ? {
   // an owner decides their follow list and consent state may be public relay metadata.
   controlStatePublish: /^(1|true|yes|on)$/i.test(String(cfg.public.control_state_publish || '')),
   controlStateRefreshSecs: Number(cfg.public.control_state_refresh_secs != null ? cfg.public.control_state_refresh_secs : 300),
+  controlStateCommandAt: Number(cfg.public.control_state_command_at || 0),
 } : null
 
 // §7 version-binding, from ONE producer (crew review of #199 → #200). The gate's expected hash, the
@@ -1500,6 +1501,9 @@ function publishWrapToRelays(wrap, mkSocket) {
 // relay record necessarily reveals the owner-selected follows and consent state. When enabled,
 // browser clients must verify the bridge signature before displaying it.
 const CONTROL_STATE_DELAY_MS = 250
+const CONTROL_COMMAND_KIND = 30078
+const CONTROL_COMMAND_D = 'waggle-control'
+const CONTROL_COMMAND_MAX_AGE_SECS = 15 * 60
 let controlStateTimer = null
 
 function buildControlState() {
@@ -1509,6 +1513,7 @@ function buildControlState() {
     observed_at: Math.floor(Date.now() / 1000),
     hive: { id: PUB.mirrorConsentHiveId, name: PUB.mirrorConsentHiveName, handle: PUB.mirrorConsentHiveHandle },
     bridge: BRIDGE_PK,
+    publishing: PUB.controlStatePublish,
     follows: PUB.authors.map((pubkey) => ({
       pubkey,
       consent: mirrorConsent.has(pubkey) ? 'active'
@@ -1539,9 +1544,9 @@ function publishControlStateToRelays(event, relays = PUB?.relays || [], mkSocket
   })
 }
 
-async function publishControlState(publish = publishControlStateToRelays) {
+async function publishControlState(publish = publishControlStateToRelays, force = false) {
   const state = buildControlState()
-  if (!PUB?.controlStatePublish || !state || !hasBridgeKey()) return 0
+  if ((!PUB?.controlStatePublish && !force) || !state || !hasBridgeKey()) return 0
   let event
   try { event = signControlState(state) }
   catch (e) { err(`control state: refused to sign: ${e?.message || '?'}`); return 0 }
@@ -1549,6 +1554,35 @@ async function publishControlState(publish = publishControlStateToRelays) {
   if (accepted >= 1) log(`control state -> ${accepted}/${PUB.relays.length} relay(s): ${state.follows.length} followed author(s) (${event.id.slice(0, 12)}…)`)
   else err('control state: reached no relay — console will correctly show state unavailable')
   return accepted
+}
+
+// A browser never receives config write access. It can only publish this exact, bridge-addressed
+// NIP-78 command; the bridge verifies the signer against its approver roster, refuses replay or
+// stale events, and persists the one boolean itself. `created_at` is the ordering token: an old
+// relay replay must not turn a newer owner decision back over.
+function handleControlStateCommand(ev, publish = publishControlState) {
+  if (!ev || ev.kind !== CONTROL_COMMAND_KIND || !PUB || !BRIDGE_PK) return { ok: false, reason: 'not a control event' }
+  const author = String(ev.pubkey || '').toLowerCase()
+  if (!PUB.approvers.includes(author)) return { ok: false, reason: 'author is not an approver' }
+  let sigOk; try { sigOk = verifyEvent(ev) } catch { sigOk = false }
+  if (!sigOk) return { ok: false, reason: 'invalid signature' }
+  const tags = ev.tags || []
+  if (!tags.some(t => t[0] === 'd' && t[1] === CONTROL_COMMAND_D) || !tags.some(t => t[0] === 'p' && String(t[1]).toLowerCase() === BRIDGE_PK)) return { ok: false, reason: 'not addressed to this bridge' }
+  const now = Math.floor(Date.now() / 1000)
+  if (!Number.isInteger(ev.created_at) || ev.created_at > now + 300 || now - ev.created_at > CONTROL_COMMAND_MAX_AGE_SECS) return { ok: false, reason: 'stale command' }
+  let body
+  try { body = JSON.parse(ev.content) } catch { return { ok: false, reason: 'invalid body' } }
+  if (!body || body.v !== 1 || typeof body.enabled !== 'boolean' || Object.keys(body).sort().join(',') !== 'enabled,v') return { ok: false, reason: 'invalid command body' }
+  if (ev.created_at <= PUB.controlStateCommandAt) return { ok: false, reason: 'superseded command' }
+  if (!mutateConfig(c => { c.public.control_state_publish = body.enabled; c.public.control_state_command_at = ev.created_at })) return { ok: false, reason: 'could not persist control state' }
+  PUB.controlStatePublish = body.enabled
+  PUB.controlStateCommandAt = ev.created_at
+  // Publish the final signed state even when turning off, so the console gets a verified receipt
+  // of the policy change. This does not retract history already public on relays; it stops future
+  // refreshes and makes that immutable limitation visible rather than pretending otherwise.
+  Promise.resolve(publish(undefined, true)).catch(() => {})
+  log(`control state: ${body.enabled ? 'ENABLED' : 'DISABLED'} by approver ${author.slice(0, 12)}… (${ev.id.slice(0, 12)}…)`)
+  return { ok: true, enabled: body.enabled }
 }
 
 function scheduleControlState() {
@@ -2094,6 +2128,10 @@ function connectPublic(url) {
       // standing consent must survive any restart (stateless consumption). Dispatched to
       // processConsentEvent alongside processGrantEvent below.
       if (BRIDGE_PK) { ws.send(JSON.stringify(['REQ', 'pmc', { kinds: [NIPDA.grant, NIPDA.revocation], '#p': [BRIDGE_PK], limit: 500 }])) }
+      // #206: owner-console control events. NIP-78 is shared with the read-only state record,
+      // but a distinct `d` tag, an approver author filter, and a bridge p-tag make this a narrow
+      // command inbox rather than a general public-event subscription.
+      if (BRIDGE_PK && PUB.approvers.length) ws.send(JSON.stringify(['REQ', 'pctl', { kinds: [CONTROL_COMMAND_KIND], authors: PUB.approvers, '#d': [CONTROL_COMMAND_D], '#p': [BRIDGE_PK], since: Math.floor(Date.now() / 1000) - CONTROL_COMMAND_MAX_AGE_SECS, limit: 100 }]))
       // Re-open the record-id subscriptions on reconnect. New 440s refresh this live after
       // verification; these existing ids cover a revocation that arrives without a bridge p-tag.
       subscribeConsentRevocations()
@@ -2122,6 +2160,7 @@ function connectPublic(url) {
       try { m = JSON.parse(d.toString()) } catch { return }
       if (m[0] === 'EVENT') {
         const ev = m[2]
+        if (ev && ev.kind === CONTROL_COMMAND_KIND) { handleControlStateCommand(ev); return }
         if (ev && (ev.kind === NIPDA.grant || ev.kind === NIPDA.revocation)) {
           const before = grantSet.size
           processGrantEvent(ev)
@@ -2168,7 +2207,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {

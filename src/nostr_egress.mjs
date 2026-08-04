@@ -108,7 +108,8 @@ const controlState = (v) => {
     if (!statuses.has(consent)) reject('control state follow.consent is invalid')
     return { pubkey, consent }
   }).sort((a, b) => a.pubkey.localeCompare(b.pubkey))
-  return { v: 1, observed_at: observedAt, hive: { id: hiveId, name: hiveName, handle: hiveHandle }, bridge: hex64(s.bridge, 'control state bridge'), follows: cleaned }
+  if (typeof s.publishing !== 'boolean') reject('control state publishing is not boolean')
+  return { v: 1, observed_at: observedAt, hive: { id: hiveId, name: hiveName, handle: hiveHandle }, bridge: hex64(s.bridge, 'control state bridge'), publishing: s.publishing, follows: cleaned }
 }
 
 // The sole public-event capability held by bridge.mjs.  The body and tags are fixed by the
