@@ -66,7 +66,10 @@ log() { echo "deploy-runner[$LANE] $*"; }
 alarm() { echo "deploy-runner[$LANE] ALARM: $*" >&2; }
 # The private routing policy is a deploy gate even when the new commit changes no shipped code.
 # A docs-only tick must never advance DEPLOYED_SHA past an incomplete live config.
-CONFIG_VERIFY_CMD="${WB_CONFIG_VERIFY_CMD:-sh \"$HUB/deploy/verify-config.sh\" \"$TREE/config.json\"}"
+# verify-config.sh deliberately uses bash (`pipefail` + BASH_SOURCE). Invoking it through `sh`
+# ignores its shebang on Debian/Ubuntu, where /bin/sh is dash, and makes every otherwise-good
+# deploy fail after shipping with `set: Illegal option -o pipefail`.
+CONFIG_VERIFY_CMD="${WB_CONFIG_VERIFY_CMD:-bash \"$HUB/deploy/verify-config.sh\" \"$TREE/config.json\"}"
 
 # Default CI-state resolver: GitHub Actions records results as CHECK-RUNS (not legacy commit
 # statuses), so ask the check-runs API for this exact sha and aggregate. Unauthenticated for a

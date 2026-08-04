@@ -30,6 +30,13 @@ process.env.WB_CONFIG_VERIFY_CMD = ':'
 let failed = 0
 const check = (cond, msg) => { if (!cond) { console.error('  ✗', msg); failed++ } else { console.log('  ✓', msg) } }
 
+// Production uses the default command, not the seam below. verify-config is a bash script
+// (`pipefail` + BASH_SOURCE), so forcing it through `sh` fails on Ubuntu's dash after code has
+// already shipped and leaves DEPLOYED_SHA permanently stale.
+const runnerSource = readFileSync(join(REPO, SCRIPT), 'utf8')
+check(/CONFIG_VERIFY_CMD="\$\{WB_CONFIG_VERIFY_CMD:-bash /.test(runnerSource),
+  'production policy verifier honors its bash runtime instead of forcing /bin/sh')
+
 // The bridge persists signed operator decisions in config.json. ProtectSystem=strict remains
 // load-bearing, so the service may write that one policy file and data/, never its code tree.
 const readUnit = readFileSync(join(REPO, 'deploy', 'waggle-read.service'), 'utf8')
