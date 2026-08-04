@@ -47,6 +47,7 @@ import { fileURLToPath } from 'node:url'
 // Extracted leaf modules (#154). Each is dependency-free of config and ambient state, which is why
 // these four came out first — the split is staged, not big-bang.
 import { log, err } from './log.mjs'
+import { markLatency } from './latency.mjs'
 import { durableSet, durableQueue } from './stores.mjs'
 import { fanout } from './fanout.mjs'
 import { recipientDmRelays } from './dm_relays.mjs'
@@ -824,6 +825,7 @@ function forward(rec, ev, src) {
   emit(descriptor).then(({ stdout }) => {
     log(`FORWARD[buzz] ok -> ${rec.name} inbox: ${decrypted ? 'plaintext ' : ''}${src && src.channel ? `${src.channel} ` : 'DM '}1059 ${ev.id.slice(0, 12)}…`)
     journalSend(parseBuzzEventId(stdout), { kind: 9, dest: rec.inbox, lane: 'sealed' })
+    markLatency(ev.id, 'sealed.forwarded')
   }).catch(e => {
     err(`FORWARD[buzz] ERR -> ${rec.name}: ${e.message}`)
     // The event was marked seen before this send (route()), and the mark is per EVENT, not per
@@ -835,6 +837,7 @@ function forward(rec, ev, src) {
 
 function route(ev) {
   if (!ev || !ev.id || seen.has(ev.id)) return
+  markLatency(ev.id, 'sealed.observed')
 
   // Channel-plane traffic: routed by AUTHOR (the derived plane pubkey), not by p-tag.
   // Every configured member of that channel gets a copy; each decrypts with the plane key.
@@ -1689,7 +1692,11 @@ async function returnLaneSend(toHex, descriptor, meta, publish = publishWrapToRe
     // 0/N carry is written accepted:0, never a false "sent". The wrap's author is ephemeral and can
     // never trip the tripwire, so this record is a written-down intent — worth making a truthful one;
     // a landed carry (accepted ≥ 1) IS on a relay and so must be journaled for the tripwire.
-    journalSend(wrap.id, { kind: 1059, lane: 'return', to: toHex.slice(0, 12), accepted, relays, ...meta })
+    // `trace_source` is consumed locally into an opaque correlation id; never copy its raw
+    // source event id to this persistent journal.
+    const { trace_source: traceSource, ...journalMeta } = meta || {}
+    journalSend(wrap.id, { kind: 1059, lane: 'return', to: toHex.slice(0, 12), accepted, relays, ...journalMeta })
+    if (traceSource && accepted >= 1) markLatency(traceSource, 'return.published')
     if (accepted < 1)
       err(`RETURN 0/${relays} -> ${toHex.slice(0, 12)}…: seal reached NO relay — NOT marked sent, will re-carry (wrap ${wrap.id.slice(0, 12)}…)`)
     else
@@ -1737,7 +1744,7 @@ async function postRelay(ev, sender, dest, wantCh, body) {
   try { npub = nip19.npubEncode(sender) } catch { npub = null }
   const npubShort = npub ? `${npub.slice(0, 10)}…${npub.slice(-5)}` : sender.slice(0, 12) + '…'
   const nowSec = Math.floor(Date.now() / 1000)
-  const ackOk = (buzzId) => returnLaneSend(sender, { template: 'relay_ack_ok', slots: { channel: dest, buzzEventId: buzzId || null, ts: nowSec } }, { lane: 'relay-ack' })
+  const ackOk = (buzzId) => returnLaneSend(sender, { template: 'relay_ack_ok', slots: { channel: dest, buzzEventId: buzzId || null, ts: nowSec } }, { lane: 'relay-ack', trace_source: ev.id })
   if (FORWARD_MODE !== 'buzz') {
     log(`RELAY[dryrun] -> ${dest}: from ${sender.slice(0, 12)}… (${Buffer.byteLength(body)}B) :: ${JSON.stringify(body.slice(0, 80))}`)
     return
@@ -1747,6 +1754,7 @@ async function postRelay(ev, sender, dest, wantCh, body) {
     markRelaySeen(ev.id) // commit-after-"send"
     recordPosted({ id: ev.id, author: sender, buzz: fakeId, dest, q: false, ts: nowSec, agent: sender })
     journalSend(fakeId, { kind: 9, dest, lane: 'relay' })
+    markLatency(ev.id, 'relay.posted')
     ackOk(fakeId)
     log(`RELAY[stub] -> ${dest}: from ${sender.slice(0, 12)}…`)
     return
@@ -1759,6 +1767,7 @@ async function postRelay(ev, sender, dest, wantCh, body) {
     markRelaySeen(ev.id)
     recordPosted({ id: ev.id, author: sender, buzz: buzzId, dest, q: false, ts: nowSec, agent: sender })
     journalSend(buzzId, { kind: 9, dest, lane: 'relay' })
+    markLatency(ev.id, 'relay.posted')
     ackOk(buzzId)
     log(`RELAY[buzz] ok -> ${dest}: from ${sender.slice(0, 12)}… (wrap ${ev.id.slice(0, 12)}…)`)
   }).catch(e => {
@@ -1770,6 +1779,7 @@ async function postRelay(ev, sender, dest, wantCh, body) {
 }
 function handleRelayIngress(ev) {
   if (!hasBridgeKey() || !PUB) return
+  markLatency(ev.id, 'relay.observed')
   const nowMs = Date.now()
   if (relaySeen.has(ev.id)) return                                          // §6 dedup BEFORE decrypt
   const wrapBytes = Buffer.byteLength(JSON.stringify(ev))
@@ -1804,6 +1814,7 @@ function handleRelayIngress(ev) {
   if (!bytes) return relayReject(sender, ev.id, 'empty body', wantCh)
   if (bytes > PUB.maxContentBytes) return relayReject(sender, ev.id, 'over cap', wantCh, { cap: PUB.maxContentBytes })
   if (!relayRateOk(sender, dest, nowMs)) return relayReject(sender, ev.id, 'rate cap', wantCh)
+  markLatency(ev.id, 'relay.admitted')
   addRelaySeen(ev.id)   // claim BEFORE the async send: a copy from another relay must not post again
   postRelay(ev, sender, dest, wantCh, body)
 }

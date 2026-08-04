@@ -43,6 +43,7 @@ process.env.SEEN_PATH = resolve(dir, 'seen.log')
 process.env.POSTED_MAP_PATH = resolve(dir, 'posted.log')
 process.env.RLSEEN_PATH = resolve(dir, 'return-lane-seen.log')
 process.env.RELAYSEEN_PATH = resolve(dir, 'relay-lane-seen.log')
+process.env.LATENCY_PATH = resolve(dir, 'latency-trace.jsonl')
 process.env.BUZZ_PRIVATE_KEY = Buffer.from(bridgeSk).toString('hex')
 process.env.FORWARD_MODE = 'buzz'
 process.env.WB_STUB_SEND = '1'
@@ -50,6 +51,7 @@ process.env.WB_NO_BOOT = '1'
 
 const bridge = await import('../src/bridge.mjs')
 const { handleRelayIngress, route, grantSet, relaySeen, addRelaySeen, dropRelaySeen, relayDropCounts, relayDropTotalPreAuth, resolveRelayDest, rateOk, relayRateOk, PUB } = bridge
+const { flushLatency, readLatency, summarizeLatency } = await import('../src/latency.mjs')
 
 let fails = 0
 const ok = (n, c) => { console.log(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) fails++ }
@@ -94,6 +96,10 @@ ok('resolveRelayDest rejects empty', resolveRelayDest('') === null)
   ok('granted+allowlisted → posts kind:9 to the destination', !!relayPost(d) && relayPost(d).dest === CHAN)
   ok('granted+allowlisted → seals an ack back', !!ack(d))
   ok('the carried wrap is now deduped (relaySeen)', relaySeen.has(wrap.id))
+  await flushLatency()
+  const trace = readLatency()
+  const hops = summarizeLatency(trace, [['relay.observed', 'relay.admitted'], ['relay.admitted', 'relay.posted'], ['relay.posted', 'return.published']])
+  ok('the relay path leaves an opaque, stage-by-stage latency trace with no event id', trace.length >= 4 && !readFileSync(process.env.LATENCY_PATH, 'utf8').includes(wrap.id) && hops.every(h => h.count >= 1))
   // dedup-before-decrypt: replaying the SAME wrap does nothing
   handleRelayIngress(wrap); await tick()
   ok('replaying the same wrap carries nothing new (§6 dedup)', delta().length === 0)
