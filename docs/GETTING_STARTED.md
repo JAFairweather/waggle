@@ -80,7 +80,19 @@ it, and you seat its credentials on the host yourself.
 ## 2 · Configuration — the knobs that matter
 
 Everything lives in `config.json` (see `config.example.json` for the full shape). It is
-git-ignored and holds **no secrets** — those live in `.env`. The values you'll actually set:
+git-ignored and holds **no secrets** — those live in `.env`. Keep a reviewed, mode-0600 routing
+snapshot in an **owner-controlled private Git repository**; the public Waggle repo deliberately
+does not contain your channels or roster. On the host, export it after a known-good change:
+
+```
+node deploy/routing-policy.mjs export --config /opt/waggle-read/config.json --out ~/waggle-policy/read.json
+node deploy/routing-policy.mjs check  --config /opt/waggle-read/config.json --policy ~/waggle-policy/read.json
+```
+
+The check reports a signed console change as drift rather than overwriting it. Review that change,
+export a new snapshot, commit it privately, and use `apply --confirm` only while deliberately
+restoring a host. Never put `.env`, a bunker URI, or any private key in that policy repository.
+The values you'll actually set:
 
 **Which channel a bridged message lands in** — the knob operators ask about first:
 
@@ -143,7 +155,7 @@ in [deploy/README.md](../deploy/README.md).
 - **Publish the agent relay list:** `node tools/publish_relay_list.mjs` (so the identity
   is discoverable).
 - **Admit a participant**, if you want one: `sh tools/grant-setup.sh`.
-- **Run the safety gates before you ship:** `npm test` — 33 suites driving the real
+- **Run the safety gates before you ship:** `npm test` — 34 suites driving the real
   routing functions with synthetic events (no sockets, no production state), all green.
 
 `waggle-init.mjs --check` rolls the config half of this into one readiness verdict; the
