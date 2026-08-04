@@ -825,7 +825,7 @@ function forward(rec, ev, src) {
   emit(descriptor).then(({ stdout }) => {
     log(`FORWARD[buzz] ok -> ${rec.name} inbox: ${decrypted ? 'plaintext ' : ''}${src && src.channel ? `${src.channel} ` : 'DM '}1059 ${ev.id.slice(0, 12)}…`)
     journalSend(parseBuzzEventId(stdout), { kind: 9, dest: rec.inbox, lane: 'sealed' })
-    markLatency(ev.id, 'sealed.forwarded')
+    markLatency(ev.id, 'sealed.forwarded', Date.now(), src?.traceAttempt || 0)
   }).catch(e => {
     err(`FORWARD[buzz] ERR -> ${rec.name}: ${e.message}`)
     // The event was marked seen before this send (route()), and the mark is per EVENT, not per
@@ -837,8 +837,6 @@ function forward(rec, ev, src) {
 
 function route(ev) {
   if (!ev || !ev.id || seen.has(ev.id)) return
-  markLatency(ev.id, 'sealed.observed')
-
   // Channel-plane traffic: routed by AUTHOR (the derived plane pubkey), not by p-tag.
   // Every configured member of that channel gets a copy; each decrypts with the plane key.
   const plane = PLANES[ev.pubkey]
@@ -854,7 +852,10 @@ function route(ev) {
     // provisioned inbox, so a dryrun or a placeholder inbox never suppresses later backfill.
     const willDeliver = FORWARD_MODE === 'buzz' && recips.some(r => !r.inbox.startsWith('INBOX_UUID_'))
     if (willDeliver) markSeen(ev.id)
-    for (const r of recips) forward(r, ev, { channel: plane.name, planeKey: plane.planeKey })
+    for (const [attempt, r] of recips.entries()) {
+      markLatency(ev.id, 'sealed.observed', Date.now(), attempt)
+      forward(r, ev, { channel: plane.name, planeKey: plane.planeKey, traceAttempt: attempt })
+    }
     return
   }
 
@@ -872,7 +873,10 @@ function route(ev) {
   // second relay serving the same wrap can't double-send before the first records it.
   const willDeliver = FORWARD_MODE === 'buzz' && hits.some(p => !RECIPIENTS[p].inbox.startsWith('INBOX_UUID_'))
   if (willDeliver) markSeen(ev.id)
-  for (const p of hits) forward(RECIPIENTS[p], ev)
+  for (const [attempt, p] of hits.entries()) {
+    markLatency(ev.id, 'sealed.observed', Date.now(), attempt)
+    forward(RECIPIENTS[p], ev, { traceAttempt: attempt })
+  }
 }
 
 // --- public kind:1 delivery & routing ---------------------------------------

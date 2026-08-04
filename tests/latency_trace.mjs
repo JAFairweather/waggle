@@ -1,8 +1,8 @@
 // #237: correlation is opaque and reports per-hop percentiles without payload/ids in the journal.
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { correlationId, markLatency, flushLatency, readLatency, summarizeLatency } from '../src/latency.mjs'
+import { correlationId, latencyHealth, markLatency, flushLatency, readLatency, readLatencyWindow, summarizeLatency } from '../src/latency.mjs'
 
 let failed = 0
 const ok = (name, yes) => { console.log(yes ? '  ok' : 'FAIL', name); if (!yes) failed++ }
@@ -20,12 +20,28 @@ try {
   ok('journal contains only opaque trace/stage/time records', !raw.includes(a) && !raw.includes(b) && !/content|body|recipient|secret|nsec/i.test(raw))
   const rows = summarizeLatency(readLatency(), [['relay.observed', 'relay.admitted'], ['relay.admitted', 'relay.posted'], ['relay.posted', 'return.published']])
   ok('report calculates repeatable p50/p95 hop timings', rows[0].count === 2 && rows[0].p50_ms === 25 && rows[0].p95_ms === 50 && rows[1].p50_ms === 75 && rows[1].p95_ms === 150 && rows[2].p50_ms === 50 && rows[2].p95_ms === 100)
+  markLatency(a, 'sealed.observed', 3000, 0); markLatency(a, 'sealed.forwarded', 3020, 0)
+  markLatency(a, 'sealed.observed', 3000, 1)
+  await flushLatency()
+  const fanout = summarizeLatency(readLatency(), [['sealed.observed', 'sealed.forwarded']])[0]
+  ok('fan-out reports every recipient attempt including a failed recipient', fanout.attempted === 2 && fanout.count === 1 && fanout.missing_to === 1 && fanout.p50_ms === 20)
   process.env.LATENCY_MAX_PENDING = '1'
-  const queued = markLatency(a, 'sealed.observed', 3000)
-  const dropped = markLatency(b, 'sealed.observed', 3000)
+  const queued = markLatency(a, 'sealed.observed', 4000)
+  const dropped = markLatency(b, 'sealed.observed', 4000)
   ok('a bounded telemetry queue drops measurement rather than extending a delivery backlog', queued.ok && !dropped.ok && dropped.error === 'trace queue full')
+  ok('dropped telemetry is surfaced through bounded health counters', latencyHealth().queue_full === 1)
   await flushLatency()
   delete process.env.LATENCY_MAX_PENDING
+  const bounded = readLatencyWindow(process.env.LATENCY_PATH, 4096)
+  ok('report reads a bounded tail window', bounded.bytes <= 4096 && Array.isArray(bounded.records))
+  const cappedPath = join(root, 'capped.jsonl')
+  writeFileSync(cappedPath, 'x'.repeat(4096))
+  process.env.LATENCY_PATH = cappedPath
+  process.env.LATENCY_MAX_FILE_BYTES = '4096'
+  markLatency(a, 'relay.observed', 5000)
+  await flushLatency(cappedPath)
+  ok('a full trace file drops new telemetry and surfaces the condition', latencyHealth(cappedPath).file_full === 1 && readFileSync(cappedPath).length === 4096)
+  delete process.env.LATENCY_MAX_FILE_BYTES
 } finally { delete process.env.LATENCY_TRACE_KEY; rmSync(root, { recursive: true, force: true }) }
 if (failed) process.exit(1)
 console.log('latency_trace: all checks passed')
