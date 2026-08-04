@@ -91,15 +91,19 @@ const replay = handleControlStateCommand(fresh, async () => { published++; retur
 t('the same command cannot be replayed', !replay.ok && PUB.controlStatePublish === !beforePublish)
 
 const mirrorTarget = getPublicKey(generateSecretKey())
-const watchCommand = (action, target, created_at = Math.floor(Date.now() / 1000) + 2) => wire(finalizeEvent({
+const watchCommand = (action, target, created_at = Math.floor(Date.now() / 1000) + 2, tags = [['d', WATCHLIST_COMMAND_D], ['p', getPublicKey(bridgeSk)]]) => wire(finalizeEvent({
   kind: CONTROL_COMMAND_KIND, created_at, content: JSON.stringify({ v: 1, action, target }),
-  tags: [['d', WATCHLIST_COMMAND_D], ['p', getPublicKey(bridgeSk)]],
+  tags,
 }, watchedSk))
 const add = watchCommand('mirror', mirrorTarget)
 const added = handleWatchlistControlCommand(add)
 t('a signed browser mirror command persists and hot-adds a watched author', added.ok && added.added && PUB.authors.includes(mirrorTarget))
 t('the mirror and its replay watermark commit together in one config write', (() => { const p = JSON.parse(readFileSync(CFG, 'utf8')).public; return p.watch_authors.includes(mirrorTarget) && p.watchlist_command_at === add.created_at })())
 t('a browser command has a narrow schema and cannot be replayed', !handleWatchlistControlCommand(add).ok)
+const duplicateRecipient = watchCommand('mirror', getPublicKey(generateSecretKey()), add.created_at + 1, [['d', WATCHLIST_COMMAND_D], ['p', getPublicKey(bridgeSk)], ['p', getPublicKey(bridgeSk)]])
+t('a multi-recipient command cannot widen a fixed bridge target', !handleWatchlistControlCommand(duplicateRecipient).ok)
+const extraTag = watchCommand('mirror', getPublicKey(generateSecretKey()), add.created_at + 1, [['d', WATCHLIST_COMMAND_D], ['p', getPublicKey(bridgeSk)], ['client', 'untrusted']])
+t('a command address has no extensible tags', !handleWatchlistControlCommand(extraTag).ok)
 const remove = watchCommand('unmirror', mirrorTarget, add.created_at + 1)
 const removed = handleWatchlistControlCommand(remove)
 t('a signed browser unmirror command persists and hot-removes a watched author', removed.ok && removed.removed && !PUB.authors.includes(mirrorTarget))

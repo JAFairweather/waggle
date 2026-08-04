@@ -41,7 +41,7 @@ import { emit, query, checkConfigRenderable } from './egress.mjs'
 import { bridgePubkey, hasBridgeKey, openSeal, openRumor, sealAndWrap, consentTosBlock, signControlState } from './nostr_egress.mjs'
 import { verifyConsent } from './consent.mjs'   // in-door consent (#131/#132, docs/CONSENT.md §8)
 import { createHash, randomBytes } from 'node:crypto'
-import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, unlinkSync, openSync, closeSync, fsyncSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // Extracted leaf modules (#154). Each is dependency-free of config and ambient state, which is why
@@ -1265,12 +1265,28 @@ function fetchEventById(id, mkSocket) {
 }
 
 function mutateConfig(fn) {
+  let temporary = null
   try {
     const fresh = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'))
     fn(fresh)
-    writeFileSync(CONFIG_PATH, JSON.stringify(fresh, null, 2) + '\n')
+    // Never truncate the live config in place.  A successful command must leave either the
+    // complete old document or the complete new document, including its replay watermark.
+    // fsync both the replacement and parent directory so a power loss cannot report a command
+    // accepted while silently losing the state that makes it non-replayable.
+    temporary = `${CONFIG_PATH}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
+    writeFileSync(temporary, JSON.stringify(fresh, null, 2) + '\n', { mode: 0o600 })
+    const fileFd = openSync(temporary, 'r')
+    try { fsyncSync(fileFd) } finally { closeSync(fileFd) }
+    renameSync(temporary, CONFIG_PATH)
+    temporary = null
+    const dirFd = openSync(dirname(CONFIG_PATH), 'r')
+    try { fsyncSync(dirFd) } finally { closeSync(dirFd) }
     return true
-  } catch (e) { err(`commands: config write failed: ${e.message}`); return false }
+  } catch (e) {
+    if (temporary) { try { unlinkSync(temporary) } catch { /* best-effort cleanup */ } }
+    err(`commands: config write failed: ${e.message}`)
+    return false
+  }
 }
 
 // --- watchlist hot-reload (#206 stage 1) ------------------------------------------------------
@@ -1579,7 +1595,7 @@ function handleControlStateCommand(ev, publish = publishControlState) {
   let sigOk; try { sigOk = verifyEvent(ev) } catch { sigOk = false }
   if (!sigOk) return { ok: false, reason: 'invalid signature' }
   const tags = ev.tags || []
-  if (!tags.some(t => t[0] === 'd' && t[1] === CONTROL_COMMAND_D) || !tags.some(t => t[0] === 'p' && String(t[1]).toLowerCase() === BRIDGE_PK)) return { ok: false, reason: 'not addressed to this bridge' }
+  if (tags.length !== 2 || tags[0]?.[0] !== 'd' || tags[0]?.[1] !== CONTROL_COMMAND_D || tags[0].length !== 2 || tags[1]?.[0] !== 'p' || String(tags[1]?.[1]).toLowerCase() !== BRIDGE_PK || tags[1].length !== 2) return { ok: false, reason: 'not addressed to this bridge' }
   const now = Math.floor(Date.now() / 1000)
   if (!Number.isInteger(ev.created_at) || ev.created_at > now + 300 || now - ev.created_at > CONTROL_COMMAND_MAX_AGE_SECS) return { ok: false, reason: 'stale command' }
   let body
@@ -1606,7 +1622,7 @@ function handleWatchlistControlCommand(ev) {
   let sigOk; try { sigOk = verifyEvent(ev) } catch { sigOk = false }
   if (!sigOk) return { ok: false, reason: 'invalid signature' }
   const tags = ev.tags || []
-  if (!tags.some(t => t[0] === 'd' && t[1] === WATCHLIST_COMMAND_D) || !tags.some(t => t[0] === 'p' && String(t[1]).toLowerCase() === BRIDGE_PK)) return { ok: false, reason: 'not addressed to this bridge' }
+  if (tags.length !== 2 || tags[0]?.[0] !== 'd' || tags[0]?.[1] !== WATCHLIST_COMMAND_D || tags[0].length !== 2 || tags[1]?.[0] !== 'p' || String(tags[1]?.[1]).toLowerCase() !== BRIDGE_PK || tags[1].length !== 2) return { ok: false, reason: 'not addressed to this bridge' }
   const now = Math.floor(Date.now() / 1000)
   if (!Number.isInteger(ev.created_at) || ev.created_at > now + 300 || now - ev.created_at > CONTROL_COMMAND_MAX_AGE_SECS) return { ok: false, reason: 'stale command' }
   let body
