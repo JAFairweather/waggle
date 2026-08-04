@@ -44,6 +44,7 @@ process.env.POSTED_MAP_PATH = resolve(dir, 'posted.log')
 process.env.RLSEEN_PATH = resolve(dir, 'return-lane-seen.log')
 process.env.RELAYSEEN_PATH = resolve(dir, 'relay-lane-seen.log')
 process.env.LATENCY_PATH = resolve(dir, 'latency-trace.jsonl')
+process.env.LATENCY_TRACE_KEY = 'relay-ingress-test-key-that-is-long-enough-to-be-secret'
 process.env.BUZZ_PRIVATE_KEY = Buffer.from(bridgeSk).toString('hex')
 process.env.FORWARD_MODE = 'buzz'
 process.env.WB_STUB_SEND = '1'

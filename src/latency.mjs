@@ -6,16 +6,25 @@
 // id solely in the caller's memory.  This makes a trace useful in a bridge journal without
 // turning that journal into another copy of private conversation metadata.
 
-import { createHash } from 'node:crypto'
+import { createHmac } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { appendFile, mkdir } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 
 const validId = value => /^[0-9a-f]{64}$/i.test(String(value || ''))
 
-export function correlationId(sourceId) {
+const traceKey = () => {
+  const key = String(process.env.LATENCY_TRACE_KEY || '')
+  // This is local measurement state, not an optional public fingerprint. A
+  // missing or weak key disables tracing rather than emitting a reversible
+  // hash of an observable relay event id.
+  return key.length >= 32 ? key : null
+}
+
+export function correlationId(sourceId, key = traceKey()) {
   if (!validId(sourceId)) throw new Error('latency trace source must be a 64-hex event id')
-  return createHash('sha256').update('waggle/latency/v1\0').update(String(sourceId).toLowerCase()).digest('hex').slice(0, 24)
+  if (!key) throw new Error('latency tracing requires a local LATENCY_TRACE_KEY (at least 32 characters)')
+  return createHmac('sha256', key).update('waggle/latency/v1\0').update(String(sourceId).toLowerCase()).digest('hex').slice(0, 24)
 }
 
 export function latencyPath() {
@@ -38,7 +47,9 @@ export function flushLatency(path = latencyPath()) {
 export function markLatency(sourceId, stage, at = Date.now()) {
   if (!/^[a-z][a-z0-9_.-]{1,63}$/.test(String(stage || ''))) throw new Error('latency trace stage is invalid')
   if (!Number.isFinite(at) || at <= 0) throw new Error('latency trace timestamp is invalid')
-  const record = { v: 1, trace: correlationId(sourceId), stage, at: Math.floor(at) }
+  const key = traceKey()
+  if (!key) return { ok: false, error: 'latency tracing disabled: LATENCY_TRACE_KEY unavailable' }
+  const record = { v: 1, trace: correlationId(sourceId, key), stage, at: Math.floor(at) }
   const path = latencyPath()
   const count = pending.get(path) || 0
   if (count >= maxPending()) return { ok: false, error: 'trace queue full', record }

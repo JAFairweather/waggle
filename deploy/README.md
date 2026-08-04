@@ -32,8 +32,12 @@ A3 watermark resumes where local stopped, and A2's seen-set makes the overlap a 
    Then create the admin user for later root-SSH disable (see the warning below) and
    **verify both logins from the Mac before proceeding.**
 2. **(box)** Create `/opt/waggle-read/.env` (bridge:bridge, 0600) with
-   `SEALED_LANES=off`, `FORWARD_MODE=dryrun`, and the `BUZZ_*` trio; create
-   `/opt/waggle-read/config.json` with only the `public` block.
+   `SEALED_LANES=off`, `FORWARD_MODE=dryrun`, the `BUZZ_*` trio, and (when
+   latency tracing is enabled) a locally generated `LATENCY_TRACE_KEY` of at
+   least 32 random characters. It is an HMAC key, never a Nostr or Buzz key;
+   without it the bridge deliberately drops telemetry rather than writing a
+   reversible public-event fingerprint. Create `config.json` with only the
+   `public` block.
 3. **(Mac)** `sh deploy/deploy.sh read bridge@<host>` — dryrun posts nothing, so the
    local read lane can keep running. Watch the journal for `[pub …] open, subscribing`
    and clean `PUBLIC[dryrun]` routing lines.
