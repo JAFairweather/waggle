@@ -475,6 +475,10 @@ function recordUndelivered({ lane, dest, recipient, id, author, reason }) {
 // them. Claim on dispatch, persist on success, roll back on failure so it still retries.
 const relaySeenStore = durableSet({ path: RELAYSEEN_PATH, cap: RELAYSEEN_CAP, label: 'relay-lane dedup', noun: 'seen wrap ids' })
 const relaySeen = relaySeenStore.mem
+// Remote NIP-46 decrypt yields to the event loop. The durable store cannot claim a wrap before
+// validation (a transient signer/send failure must remain retryable), so this process-local claim
+// closes the two-relay race from first decrypt await through post settlement.
+const relayInFlight = new Set()
 const loadRelaySeen = () => relaySeenStore.load()
 const markRelaySeen = (id) => relaySeenStore.commit(id)
 const addRelaySeen = (id) => relaySeenStore.claim(id)
@@ -1784,46 +1788,51 @@ async function postRelay(ev, sender, dest, wantCh, body) {
     err(`RELAY[buzz] ERR -> ${dest}: ${e.message} — claim rolled back, will retry`)
   })
 }
-async function handleRelayIngress(ev) {
+async function handleRelayIngress(ev, { openSealFn = openSeal, openRumorFn = openRumor, postRelayFn = postRelay } = {}) {
   if (!hasBridgeKey() || !PUB) return
   markLatency(ev.id, 'relay.observed')
   const nowMs = Date.now()
-  if (relaySeen.has(ev.id)) return                                          // §6 dedup BEFORE decrypt
+  if (relaySeen.has(ev.id) || relayInFlight.has(ev.id)) return              // §6 dedup BEFORE decrypt
   const wrapBytes = Buffer.byteLength(JSON.stringify(ev))
   if (wrapBytes > PUB.relayMaxWrapBytes) return relayDrop('size', ev.id)     // §7 hard cap, cheap
   slide(relayDecWin, nowMs, 60_000)
   if (relayDecWin.length >= PUB.relayDecryptBudget) return relayDrop('budget', ev.id, false) // §7, transient
   relayDecWin.push(nowMs)
-  // ---- expensive step: decryption of UNAUTHENTICATED input (the §7 DoS surface) ----
-  let seal
-  try { seal = await openSeal(ev) }
-  catch { return relayDrop('decrypt', ev.id) }
-  let ok = false
-  try { ok = verifyEvent(seal) } catch { ok = false }
-  if (!ok || seal.kind !== 13) return relayDrop('verify', ev.id)            // authorship proof (§2.4)
-  let rumor
-  try { rumor = await openRumor(seal) }
-  catch { return relayDrop('decrypt', ev.id) }
-  if (!rumor || String(rumor.pubkey) !== String(seal.pubkey)) return relayDrop('mismatch', ev.id) // bind unsigned rumor
-  // ---- the sender is now AUTHENTICATED: every drop below is ACKED ----
-  const sender = String(seal.pubkey).toLowerCase()
-  const relayTag = (rumor.tags || []).find(t => t[0] === 'relay' && t[1])
-  // Routing discriminator: kind:14 + a well-formed `relay` tag IS this lane. Its absence is not an
-  // error — it is a real DM to waggle, which has no handler here; leave it silent, do not ack it as
-  // a failed relay request, and do not count it as a flood signal.
-  if (rumor.kind !== 14 || !relayTag) { relayDropCounts.notRelay++; markRelaySeen(ev.id); return }
-  const wantCh = String(relayTag[1])
-  const dest = resolveRelayDest(wantCh)
-  if (!dest) return relayReject(sender, ev.id, 'channel not allowlisted', wantCh)
-  if (!grantSet.has(sender)) return relayReject(sender, ev.id, 'not admitted', wantCh)
-  const body = String(rumor.content || '')
-  const bytes = Buffer.byteLength(body)
-  if (!bytes) return relayReject(sender, ev.id, 'empty body', wantCh)
-  if (bytes > PUB.maxContentBytes) return relayReject(sender, ev.id, 'over cap', wantCh, { cap: PUB.maxContentBytes })
-  if (!relayRateOk(sender, dest, nowMs)) return relayReject(sender, ev.id, 'rate cap', wantCh)
-  markLatency(ev.id, 'relay.admitted')
-  addRelaySeen(ev.id)   // claim BEFORE the async send: a copy from another relay must not post again
-  postRelay(ev, sender, dest, wantCh, body)
+  relayInFlight.add(ev.id)
+  try {
+    // ---- expensive step: decryption of UNAUTHENTICATED input (the §7 DoS surface) ----
+    let seal
+    try { seal = await openSealFn(ev) }
+    catch { return relayDrop('decrypt', ev.id) }
+    let ok = false
+    try { ok = verifyEvent(seal) } catch { ok = false }
+    if (!ok || seal.kind !== 13) return relayDrop('verify', ev.id)            // authorship proof (§2.4)
+    let rumor
+    try { rumor = await openRumorFn(seal) }
+    catch { return relayDrop('decrypt', ev.id) }
+    if (!rumor || String(rumor.pubkey) !== String(seal.pubkey)) return relayDrop('mismatch', ev.id) // bind unsigned rumor
+    // ---- the sender is now AUTHENTICATED: every drop below is ACKED ----
+    const sender = String(seal.pubkey).toLowerCase()
+    const relayTag = (rumor.tags || []).find(t => t[0] === 'relay' && t[1])
+    // Routing discriminator: kind:14 + a well-formed `relay` tag IS this lane. Its absence is not an
+    // error — it is a real DM to waggle, which has no handler here; leave it silent, do not ack it as
+    // a failed relay request, and do not count it as a flood signal.
+    if (rumor.kind !== 14 || !relayTag) { relayDropCounts.notRelay++; markRelaySeen(ev.id); return }
+    const wantCh = String(relayTag[1])
+    const dest = resolveRelayDest(wantCh)
+    if (!dest) return relayReject(sender, ev.id, 'channel not allowlisted', wantCh)
+    if (!grantSet.has(sender)) return relayReject(sender, ev.id, 'not admitted', wantCh)
+    const body = String(rumor.content || '')
+    const bytes = Buffer.byteLength(body)
+    if (!bytes) return relayReject(sender, ev.id, 'empty body', wantCh)
+    if (bytes > PUB.maxContentBytes) return relayReject(sender, ev.id, 'over cap', wantCh, { cap: PUB.maxContentBytes })
+    if (!relayRateOk(sender, dest, nowMs)) return relayReject(sender, ev.id, 'rate cap', wantCh)
+    markLatency(ev.id, 'relay.admitted')
+    addRelaySeen(ev.id)   // durable claim before send; postRelay rolls it back on transient failure
+    return await postRelayFn(ev, sender, dest, wantCh, body)
+  } finally {
+    relayInFlight.delete(ev.id)
+  }
 }
 
 // Which return-lane recipient (delivery npub) a given bridge-posted Buzz event was authored FOR,

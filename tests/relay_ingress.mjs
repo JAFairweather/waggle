@@ -78,7 +78,7 @@ function wrapFor(senderSk, { body = 'hello team', channel = CHAN, kind = 14, tag
   const wsk = generateSecretKey()
   const wrap = finalizeEvent({ kind: 1059, created_at: now, tags: [['p', bridgePk]],
     content: nip44.encrypt(JSON.stringify(seal), nip44.getConversationKey(wsk, bridgePk)) }, wsk)
-  return { wrap, senderPk: senderPk.toLowerCase() }
+  return { wrap, seal, rumor, senderPk: senderPk.toLowerCase() }
 }
 const admit = pk => grantSet.set(pk.toLowerCase(), { grantId: 'g-' + pk.slice(0, 8), grantor: 'test' })
 
@@ -106,13 +106,28 @@ ok('resolveRelayDest rejects empty', resolveRelayDest('') === null)
   ok('replaying the same wrap carries nothing new (§6 dedup)', delta().length === 0)
 }
 
-// --- the claim/rollback primitive that makes concurrent delivery safe ----------------------
-// HONEST SCOPE: this suite CANNOT reproduce the concurrency itself. Under WB_STUB_SEND the stub
-// branch marks synchronously — there is no async window — while the bug lives in the execFile
-// callback. A "two relays deliver at once" test written here passes with OR without the fix, so
-// it would be a check that has only ever passed. What IS testable is the primitive: a claim taken
-// at dispatch suppresses a re-entry, and a rollback restores retryability. The concurrency proof
-// is the live run (one wrap must produce exactly one channel post), not this file.
+// --- remote decrypt yields: concurrent delivery still posts once -----------------------------
+{
+  const sk = generateSecretKey(); const { wrap, seal, rumor, senderPk } = wrapFor(sk, { body: 'delayed remote decrypt' })
+  admit(senderPk); delta()
+  let release, opens = 0, posts = 0
+  const gate = new Promise(resolveGate => { release = resolveGate })
+  const deps = {
+    openSealFn: async () => { opens++; await gate; return seal },
+    openRumorFn: async () => rumor,
+    postRelayFn: async ev => { posts++; bridge.markRelaySeen(ev.id) },
+  }
+  const first = handleRelayIngress(wrap, deps)
+  await tick() // first invocation is suspended inside remote decrypt with the in-flight claim held
+  const second = handleRelayIngress(wrap, deps)
+  await tick()
+  release()
+  await Promise.all([first, second])
+  ok('two relay deliveries during delayed NIP-46 decrypt open the wrap once', opens === 1)
+  ok('two relay deliveries during delayed NIP-46 decrypt post exactly once', posts === 1)
+}
+
+// --- the durable claim/rollback primitive preserves retryability ----------------------------
 {
   const sk = generateSecretKey(); const { wrap, senderPk } = wrapFor(sk, { body: 'claim/rollback' })
   admit(senderPk); delta()
