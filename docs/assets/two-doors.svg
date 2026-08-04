@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 420" role="img" aria-labelledby="title desc">
+  <title id="title">The two Waggle doors</title>
+  <desc id="desc">A private Buzz community and open Nostr network are connected by Waggle. The outward door is chosen by a member; the inward door is approved by a person.</desc>
+  <defs>
+    <linearGradient id="sky" x1="0" x2="0" y1="0" y2="1"><stop stop-color="#fbf4dc"/><stop offset="1" stop-color="#f0d9a2"/></linearGradient>
+    <filter id="shadow"><feDropShadow dx="0" dy="8" stdDeviation="8" flood-opacity=".16"/></filter>
+  </defs>
+  <rect width="720" height="420" rx="24" fill="url(#sky)"/>
+  <text x="360" y="48" text-anchor="middle" fill="#5e4318" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17" font-weight="700" letter-spacing="2">THE TWO WAGGLE DOORS</text>
+  <g filter="url(#shadow)">
+    <rect x="48" y="105" width="220" height="238" rx="18" fill="#fffdf7" stroke="#d4b66e" stroke-width="3"/>
+    <rect x="452" y="105" width="220" height="238" rx="18" fill="#fffdf7" stroke="#d4b66e" stroke-width="3"/>
+    <rect x="300" y="137" width="120" height="174" rx="20" fill="#221a0c" stroke="#c78a2e" stroke-width="4"/>
+  </g>
+  <text x="158" y="151" text-anchor="middle" fill="#322511" font-family="system-ui, sans-serif" font-size="21" font-weight="700">Your Buzz hive</text>
+  <text x="158" y="184" text-anchor="middle" fill="#765f35" font-family="system-ui, sans-serif" font-size="16">private community</text>
+  <text x="562" y="151" text-anchor="middle" fill="#322511" font-family="system-ui, sans-serif" font-size="21" font-weight="700">Open Nostr</text>
+  <text x="562" y="184" text-anchor="middle" fill="#765f35" font-family="system-ui, sans-serif" font-size="16">the meadow</text>
+  <path d="M90 240h136" stroke="#c78a2e" stroke-width="5" stroke-linecap="round"/>
+  <path d="M494 240h136" stroke="#c78a2e" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="158" cy="240" r="14" fill="#f5c455"/><circle cx="562" cy="240" r="14" fill="#f5c455"/>
+  <text x="360" y="178" text-anchor="middle" fill="#f6d887" font-family="system-ui, sans-serif" font-size="19" font-weight="700">WAGGLE</text>
+  <path d="M318 214h84" stroke="#f2cb73" stroke-width="5" stroke-linecap="round"/>
+  <path d="M318 214l14-10m-14 10 14 10" stroke="#f2cb73" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <path d="M402 260h-84" stroke="#f2cb73" stroke-width="5" stroke-linecap="round"/>
+  <path d="M402 260l-14-10m14 10-14 10" stroke="#f2cb73" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <text x="360" y="232" text-anchor="middle" fill="#fff7df" font-family="system-ui, sans-serif" font-size="13">member chooses out</text>
+  <text x="360" y="286" text-anchor="middle" fill="#fff7df" font-family="system-ui, sans-serif" font-size="13">person approves in</text>
+  <text x="158" y="300" text-anchor="middle" fill="#765f35" font-family="system-ui, sans-serif" font-size="15">Keep your own key</text>
+  <text x="562" y="300" text-anchor="middle" fill="#765f35" font-family="system-ui, sans-serif" font-size="15">Reach, not custody</text>
+  <text x="360" y="382" text-anchor="middle" fill="#765f35" font-family="system-ui, sans-serif" font-size="15">The bridge routes the crossing. It does not become your voice.</text>
+</svg>

@@ -1,157 +1,147 @@
-# waggle — the Nostr ↔ Buzz bridge
+<h1 align="center">waggle 🐝</h1>
 
-[![CI](https://github.com/JAFairweather/waggle/actions/workflows/ci.yml/badge.svg)](https://github.com/JAFairweather/waggle/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<p align="center">
+  <strong>Bring the meadow to your hive.</strong>
+</p>
 
-**Two-way interop between a walled [Buzz](https://block.github.io/buzz/) community and the open
-Nostr network — non-custodial, quarantine-gated, running in production.**
+<p align="center">
+  A non-custodial, quarantine-gated bridge between a private <a href="https://block.github.io/buzz/">Buzz</a> community and the open Nostr network.
+</p>
 
-A private community is valuable *because* it is walled. But the wall costs its members reach: they
-cannot speak to the open network as themselves, and it cannot reach them at all. Every usual answer
-gives something real away — open the community and the reason it worked is gone; mirror it through
-a bot and every member's voice becomes the bot's; hand a service your keys and sovereignty is over.
+<p align="center">
+  <a href="https://waggle.nave.pub">Website</a> ·
+  <a href="docs/GETTING_STARTED.md">Set up a hive</a> ·
+  <a href="docs/SPEC_EXTERNAL.md">Specification</a> ·
+  <a href="SECURITY.md">Security</a> ·
+  <a href="LICENSE">MIT</a>
+</p>
 
-waggle treats that as a **routing** problem rather than a permissions one. The wall stays up, and
-the door is per-message and consensual in both directions.
+<p align="center">
+  <img src="docs/assets/waggle-setup-meadow-hero.png" alt="A dancing bee at a hive beside a meadow, with other hives in the distance" width="100%">
+</p>
 
-You add **one dedicated agent** to your community. It carries the crossing, and everything it does
-it does as that agent, in your channels, where you can watch it.
+<p align="center">
+  <sub><em>A returning forager carries a bearing home; the hive decides what passes the door.</em></sub>
+</p>
 
 ---
 
-## What it does
+## What is this, really?
 
-| Lane | Direction | What crosses |
+Waggle lets a private community meet the open network on its own terms. One dedicated bridge agent carries traffic across the boundary, while people keep their own identities and the community keeps its walls.
+
+Members can federate an opted-in post outward under their own Nostr keys. Replies and outside messages come back to a door that is closed by default: a person admits what belongs in the room. Sealed direct and group traffic is carried, never opened.
+
+The bridge holds only its own two operational identities—its Buzz posting key and its Nostr bridge key—and never holds a member’s key. That makes the bridge a route with a narrow, visible job, rather than a proxy for everyone’s voice.
+
+---
+
+## Stuff you do in Waggle
+
+- **Take a conversation public without becoming a bot.** A member chooses a post, and it is published under that member’s own key.
+- **Invite the outside world without opening an inbox.** Public replies land in a default-closed quarantine until a human releases them.
+- **Work with an outside agent as a participant.** A signed, revocable grant admits a specific identity; revoking it takes effect without a restart.
+- **Bring selected voices home.** A consented feed can enter the community, where people can read it without leaving the room.
+- **Reach an admitted guest from inside.** A mention can return as a sealed DM even when the guest cannot read the private community relay.
+
+---
+
+## A look inside
+
+<table>
+  <tr>
+    <td width="62%" valign="top">
+      <img src="docs/assets/waggle-setup-meadow-hero.png" alt="Waggle’s meadow-and-hive welcome illustration" width="100%"><br>
+      <sub><strong>The meadow meets the hive.</strong> A warm front door for a system with firm boundaries.</sub>
+    </td>
+    <td width="38%" valign="top">
+      <img src="docs/assets/two-doors.svg" alt="Diagram showing a member-controlled outward door and a human-approved inward door" width="100%"><br>
+      <sub><strong>Two doors, two decisions.</strong> Members choose what goes out; people choose what comes in.</sub>
+    </td>
+  </tr>
+</table>
+
+---
+
+## How it works
+
+| Lane | Direction | Boundary |
 |---|---|---|
-| **Out door** | community → open | A member opts a post outward; it publishes **under their own key**. The bridge routes, it does not author. |
-| **In door** | open → community | Replies arrive in a **default-closed quarantine** and enter only when a human releases them with one word in-channel. |
-| **Sealed lanes** | both | End-to-end encrypted direct and group traffic, carried by envelope and derived address — **never opened**. |
-| **Return lane** | community → guest | A mention reaches an admitted outsider as a sealed DM. The community relay will not serve an external key, so the bridge is the only party that can. |
+| **Out door** | community → open Nostr | The member opts in; the note is signed by that member, not the bridge. |
+| **In door** | open Nostr → community | The bridge quarantines first; a human explicitly releases what enters. |
+| **Return lane** | community → admitted guest | The bridge delivers a sealed mention to the guest’s external key. |
+| **Sealed lanes** | both directions | The bridge routes NIP-17/NIP-59 and Concord traffic without decrypting it. |
 
-It holds **exactly one private key — its own posting identity** — and no member's. That identity is
-deliberately lean and re-mintable, so a compromise costs a re-mint rather than a person's voice. A
-bounded loss, not no loss, which is why detection and rotation carry the security story rather than
-encryption at rest.
+<p align="center">
+  <img src="docs/assets/two-doors.svg" alt="The two Waggle doors: a member-controlled outward door and a human-approved inward door" width="760">
+</p>
 
-## Status
+---
 
-| | |
-|---|---|
-| ✅ **Out door** | a member's note federated, confirmed by cold read-back on more than one relay |
-| ✅ **In door** | caught, deduplicated across relays, delivered as one channel post |
-| ✅ **Round trip** | a public reply came back *through the quarantine* and was released by a human |
-| ✅ **Cold-stranger walk-in** | a key minted moments earlier, with no grant and no history, held at the gate |
-| ✅ **Granted participants** | signed, revocable grants admit an outside identity; revocation applies without a restart |
-| ✅ **Return leg** | a mention carried out to a guest whose key cannot read the community relay |
-| ✅ **Tamper detection** | proven by drill — an unjournalled post by the poster key alarms; a journalled one does not |
+## Why Waggle is different
 
-No claim above rests on a relay's acceptance. Cold read-back only.
+Most bridges make a private community open, make a bot speak for its members, or ask a service to hold everyone’s keys. Waggle does none of those.
 
-## Quick start
+One boundary, one bridge identity, and evidence that matches the action: signed grants and public control state, plus durable delivery and operational records. The bridge routes; it does not author. Admission is explicit, signed, and revocable. The safety story is deliberately operational: narrow custody, observable crossings, durable delivery records, and a re-mintable bridge key.
+
+---
+
+## What is actually true today
+
+| ✅ Works today | 🚧 Being wired up | 💭 Strong opinions, pending code |
+|---|---|---|
+| Member-signed outward federation and cold read-back | Broader live wake and delivery proof coverage | Native foreign-signed rendering inside Buzz |
+| Default-closed inbound quarantine and human release | More packaged deployment paths | A world where every bridge defaults to human choice |
+| Signed, revocable participant grants | Additional operational consoles | |
+| Return-leg sealed delivery to admitted guests | | |
+| Consent-gated feed following and tripwire detection | | |
+
+<sub>“Works today” means exercised against the real exported functions and verified by read-back where a relay is involved. It does not mean a relay’s acceptance alone.</sub>
+
+---
+
+## Getting started
 
 ```sh
 git clone https://github.com/JAFairweather/waggle && cd waggle
 npm ci
-node tools/waggle-init.mjs        # guided setup — prompts only for what is missing
-npm test                          # the safety gates, exercised
+node tools/waggle-init.mjs
+npm test
 ```
 
-`waggle-init --check` reports readiness and changes nothing. Full walkthrough:
-**[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)**.
+`waggle-init --check` reports readiness without changing anything. The full guided walkthrough is in **[Getting started](docs/GETTING_STARTED.md)**.
 
-Two things the setup will not do, deliberately: it never asks an agent for its own key — the
-administrator seats credentials directly — and it never takes a secret as a command argument.
-
-## Tools
-
-| | |
-|---|---|
-| `tools/waggle-init.mjs` | guided operator setup and an honest readiness check |
-| `tools/participant-init.mjs` | onboard an outside participant, and **verify the loop closes** |
-| `tools/grant-setup.sh` | issue tasking grants interactively — one signer approval for the batch |
-| `tools/grant.mjs` | the grant pen: issue `440`, revoke `441`, list by subject |
-| `tools/approve.mjs` | release a quarantined message from the command line |
-| `tools/tripwire.mjs` | out-of-process detection of signing the bridge never did |
-| `tools/mint-auth-tag.mjs` | mint an owner attestation locally; the owner key never leaves your machine |
-| `console/` | see who is admitted and by whose signature — `npm run console`, bound to loopback |
-
-The console is served from your own machine on purpose. Its whole promise is *"here is exactly what
-you are about to sign"*, and that promise is only worth something if you control the page making it.
-
-For whole-feed watches, an authorized approver can also use the signed in-Buzz staging console:
-`waggle mirror <npub>` adds a feed and `waggle unmirror <npub>` removes it. This is a plain
-director-curated watchlist, not a grant; the watched person’s separate mirror-consent is what
-authorizes ingestion when consent enforcement is enabled.
-
-## Configuration
-
-`config.json` (git-ignored) holds the relay set, the channels messages land in, the watch tiers, the
-approvers and grantors, and the rate caps. It carries **no secrets** — those live in `.env`, mode
-`0600`. Start from `config.example.json`, or let `waggle-init` fill it.
-
-| Var | Default | Meaning |
-|---|---|---|
-| `FORWARD_MODE` | `buzz` | `buzz` delivers; `dryrun` logs only |
-| `SEALED_LANES` | `on` | `off` runs the public read lane only — required on a second instance, since dedup is per-process |
-| `SINCE_SECS` | `172800` (48h) | startup lookback. **Keep ≥48h**: NIP-59 backdates a gift-wrap's `created_at` by up to two days, so a `since=now` subscription silently drops fresh messages |
-| `DEL_SINCE_SECS` | `172800` | deletion lookback — longer than the watermark on purpose, since a delete issued during downtime must not be missed |
-| `SEEN_CAP` | `100000` | ids retained in the durable dedup store |
-
-## Deploy
-
-Everything is in **[`deploy/`](deploy/README.md)**: systemd units for both lanes
-(`waggle-sealed.service`, and `waggle-read.service` under a non-root user), a provisioning script,
-a push-style `deploy.sh`, an nftables ruleset, and the migration runbook.
-
-Two habits worth taking from it. The firewall permits **NTP egress** on purpose — a dropped clock
-silently corrupts every time-based gate. And `deploy/verify-deployed.sh` compares what is *running*
-against what git says, because a stale build is invisible while every status surface reads healthy.
-
-## Tests
-
-`npm test` runs 31 suites against the **real** exported functions with synthetic events — no
-sockets, no production state:
-
-boot · suite roster · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant
-admission · admission return-lane lifecycle · message rendering · deployed-build verification · return lane · return-lane scan ·
-return-lane no-miss · return-lane pending · relay ingress · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · recipient DM relays · watchlist hot-reload · signed owner control state
-
-The rendering suite is the one to read if you are reviewing. It tests what the bridge **refuses**,
-not only what it does: a hostile note tries to ping the approver, mint an `APPROVED BY` heading,
-break out of its quote and open a code fence — and must come out inert *and still readable*, because
-a guard the approver cannot read through is a guard that stops them approving anything.
-
-## Documentation
-
-- **[docs/SPEC_EXTERNAL.md](docs/SPEC_EXTERNAL.md)** — architecture, safety gates, moderation model,
-  terms posture, roadmap. Generated from an internal source of truth; never hand-edited.
-- **[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)** — standing one up, end to end.
-- **[docs/CONCORD_CONSUMER.md](docs/CONCORD_CONSUMER.md)** — the group-chat consumer and its trust
-  boundary: the bridge routes by derived plane address and never unwraps; a *participant* holds the
-  invite and decrypts in its own runtime.
-- **[docs/DM_TRUST_ALLOWLIST.md](docs/DM_TRUST_ALLOWLIST.md)** — which senders an agent acts on, why
-  listening is not obeying, and the residual cost attack that cannot be gated away.
-- **[SECURITY.md](SECURITY.md)** — private reporting, what is in scope, and what is *not* a
-  vulnerability.
-
-## Built on
-
-NIP-01 · NIP-09 deletion propagation · NIP-10 threading · NIP-17/NIP-59 sealed messages · NIP-42
-relay auth · NIP-46 remote signing · NIP-65 outbox lists · NIP-OA owner attestation · Concord
-CORD-01/03 for group planes · and draft
-**[NIP-DA (#2411)](https://github.com/nostr-protocol/nips/pull/2411)** for the grant-based admission
-tier — this repo is its working reference consumer.
-
-## The honest limitation
-
-An inbound note is re-posted under the bridge's identity with explicit attribution, because the
-platform cannot yet render an event signed by someone outside it. That is the one change which would
-make this native rather than bridged: with native foreign-signed rendering, a guest appears in a
-community **as themselves**, with a signature anyone can verify, while the community keeps full
-control of admission.
-
-Everything above runs today with zero platform changes.
+The setup intentionally never asks an agent to supply its own key, and never accepts a secret as a command argument.
 
 ---
 
-MIT. Issues and roadmap are public: <https://github.com/JAFairweather/waggle/issues>
+## Tests
+
+`npm test` runs 31 suites against real exported functions with synthetic events—no production state and no network sockets. The suite is designed to prove what the bridge refuses as carefully as what it delivers:
+
+boot · suite roster · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant admission · admission return-lane lifecycle · message rendering · deployed-build verification · return lane · return-lane scan · return-lane no-miss · return-lane pending · relay ingress · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · recipient DM relays · watchlist hot-reload · signed owner control state
+
+---
+
+## The details, when you want them
+
+- **[External specification](docs/SPEC_EXTERNAL.md)** — architecture, safety gates, moderation model, and roadmap.
+- **[Getting started](docs/GETTING_STARTED.md)** — stand up a bridge end to end.
+- **[Concord consumer](docs/CONCORD_CONSUMER.md)** — derived-address group routing and its no-decrypt boundary.
+- **[DM trust allowlist](docs/DM_TRUST_ALLOWLIST.md)** — listening is not obeying.
+- **[Key custody](docs/KEY_CUSTODY.md)** — what the bridge holds and why.
+- **[Security policy](SECURITY.md)** — private reporting and scope.
+
+---
+
+## What it is not
+
+- Not a way to turn every member into a bridge-owned account.
+- Not a public inbox pushed into a private community.
+- Not a custodial signing service.
+- Not an invisible automation layer. Crossings should remain inspectable by the people whose community it is.
+
+<p align="center">
+  <sub>waggle 🐝</sub><br>
+  <sub>MIT · Built for communities that want a door, not a hole in the wall.</sub>
+</p>
