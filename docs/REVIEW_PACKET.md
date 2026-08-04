@@ -51,8 +51,9 @@ standard is cold read-back.
    relay can carry an original signed instruction but cannot become its author.
 4. **Failure direction.** Missing grants, stale policy, unreadable relay state, malformed
    events, and unresolved routing all fail closed.
-5. **Operator experience.** The owner should be able to install, inspect, follow, consent,
-   grant, revoke, and diagnose without learning the bridge's internal storage layout.
+5. **Operator experience.** The owner should be able to install, inspect, follow, inspect
+   consent state, request consent, grant, revoke, and diagnose without learning the
+   bridge's internal storage layout. Consent itself remains the participant's decision.
 
 ## Useful review questions
 
