@@ -9,29 +9,35 @@
 // envelope kinds (kind:13 seal, kind:1059 wrap) and a closed catalogue of bodies. No caller may
 // hand it a free string either.
 //
-// This module also OWNS THE KEY. Signing is not the only thing a private key does — the relay
-// lane unseals inbound wraps with it too — and a ban on `finalizeEvent` alone would leave
-// BRIDGE_SK spread across the file with nothing to stop the next signer appearing beside a
-// decrypt. So the key is derived here, never exported, and callers get capabilities instead:
+// This module also owns the identity CAPABILITY. The local key or remote Bunker connection lives
+// one layer lower in nostr_signer.mjs; no caller can reach that backend directly. Callers get only:
 // `bridgePubkey()`, `hasBridgeKey()`, `openSealed()`, `sealAndWrap()`.
 //
 // INV-A3-2  exactly one function per transport invokes a signer. This is the Nostr one.
-import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, verifyEvent } from 'nostr-tools/pure'
-import * as nip19 from 'nostr-tools/nip19'
+import { finalizeEvent, generateSecretKey, getEventHash, verifyEvent } from 'nostr-tools/pure'
 import * as nip44 from 'nostr-tools/nip44'
+import { loadNostrSigner } from './nostr_signer.mjs'
 
 // --- The key, held here and nowhere else ------------------------------------------------------
-const BRIDGE_SK = (() => {
-  const raw = process.env.BUZZ_PRIVATE_KEY
-  if (!raw) return null
-  try { return raw.startsWith('nsec1') ? nip19.decode(raw).data : Uint8Array.from(Buffer.from(raw, 'hex')) } catch { return null }
-})()
-const BRIDGE_PK = BRIDGE_SK ? getPublicKey(BRIDGE_SK) : null
+const BRIDGE_SIGNER = loadNostrSigner()
+const BRIDGE_PK = BRIDGE_SIGNER?.pubkey || null
 
 // The PUBLIC key is safe to hand out and is needed all over bridge.mjs for REQ filters and
 // self-comparison. The secret never leaves this module.
 export const bridgePubkey = () => BRIDGE_PK
-export const hasBridgeKey = () => !!BRIDGE_SK
+export const hasBridgeKey = () => !!BRIDGE_SIGNER
+export const bridgeSignerMode = () => !BRIDGE_SIGNER ? 'none' : BRIDGE_SIGNER.remote ? 'nip46' : 'local'
+
+async function signExact(template, label) {
+  if (!BRIDGE_SIGNER || !BRIDGE_PK) reject(`no bridge signer for ${label}`)
+  const event = JSON.parse(JSON.stringify(await BRIDGE_SIGNER.signEvent(template)))
+  let valid = false
+  try { valid = verifyEvent(event) } catch { valid = false }
+  if (!valid || event.pubkey !== BRIDGE_PK || event.kind !== template.kind ||
+      event.created_at !== template.created_at || event.content !== template.content ||
+      JSON.stringify(event.tags) !== JSON.stringify(template.tags)) reject(`bridge signer changed or invalidated ${label}`)
+  return event
+}
 
 // NIP-78 application data. This is deliberately an addressable event: consumers ask for the
 // latest `d=waggle-control-state` record from THIS bridge key, never try to infer operational
@@ -135,15 +141,15 @@ const controlState = (v) => {
 
 // The sole public-event capability held by bridge.mjs.  The body and tags are fixed by the
 // validator above; a caller supplies state, never event shape, kind, tags, or arbitrary content.
-export function signControlState(state) {
-  if (!BRIDGE_SK || !BRIDGE_PK) reject('no bridge key to sign control state')
+export async function signControlState(state) {
+  if (!BRIDGE_SIGNER || !BRIDGE_PK) reject('no bridge signer to sign control state')
   const checked = controlState(state)
-  return finalizeEvent({
+  return signExact({
     kind: CONTROL_STATE_KIND,
     created_at: checked.observed_at,
     tags: [['d', 'waggle-control-state'], ['h', checked.hive.id], ['v', '1']],
     content: JSON.stringify(checked),
-  }, BRIDGE_SK)
+  }, 'control state')
 }
 
 // --- In-door consent (docs/CONSENT.md §5/§7) --------------------------------------------------
@@ -311,13 +317,13 @@ export function buildBody(template, slots = {}) {
 // unauthenticated input on the §7 DoS surface. A single open-it-all helper would quietly decrypt
 // the inner rumor before anything had proven the seal was authentic, and the ordering would be
 // lost in a refactor with nothing to catch it. Keep them separate.
-export function openSeal(ev) {
-  if (!BRIDGE_SK) reject('no bridge key to open sealed mail')
-  return JSON.parse(nip44.decrypt(ev.content, nip44.getConversationKey(BRIDGE_SK, ev.pubkey)))
+export async function openSeal(ev) {
+  if (!BRIDGE_SIGNER) reject('no bridge signer to open sealed mail')
+  return JSON.parse(await BRIDGE_SIGNER.nip44Decrypt(ev.pubkey, ev.content))
 }
-export function openRumor(seal) {
-  if (!BRIDGE_SK) reject('no bridge key to open sealed mail')
-  return JSON.parse(nip44.decrypt(seal.content, nip44.getConversationKey(BRIDGE_SK, seal.pubkey)))
+export async function openRumor(seal) {
+  if (!BRIDGE_SIGNER) reject('no bridge signer to open sealed mail')
+  return JSON.parse(await BRIDGE_SIGNER.nip44Decrypt(seal.pubkey, seal.content))
 }
 
 // --- The one signing call on this transport ---------------------------------------------------
@@ -329,7 +335,7 @@ export function openRumor(seal) {
 // it is signed by a THROWAWAY, which is why this traffic never appears on the wire as the poster
 // key — and why the wrap id can never trip the tripwire.
 export async function sealAndWrap({ template, to, slots }, publish) {
-  if (!BRIDGE_SK) reject('no bridge key to seal with')
+  if (!BRIDGE_SIGNER) reject('no bridge signer to seal with')
   if (typeof template !== 'string') reject('sealAndWrap requires a catalogue template name, not a string body')
   const toHex = hex64(to, 'recipient')
   const text = buildBody(template, slots)
@@ -341,10 +347,10 @@ export async function sealAndWrap({ template, to, slots }, publish) {
 
   const rumor = { kind: 14, pubkey: BRIDGE_PK, created_at: now, tags: [['p', toHex]], content: text }
   rumor.id = getEventHash(rumor)
-  const seal = finalizeEvent({
+  const seal = await signExact({
     kind: 13, created_at: fuzzed(), tags: [],
-    content: nip44.encrypt(JSON.stringify(rumor), nip44.getConversationKey(BRIDGE_SK, toHex)),
-  }, BRIDGE_SK)
+    content: await BRIDGE_SIGNER.nip44Encrypt(toHex, JSON.stringify(rumor)),
+  }, 'NIP-17 seal')
   const wsk = generateSecretKey()
   const wrap = finalizeEvent({
     kind: 1059, created_at: fuzzed(), tags: [['p', toHex]],

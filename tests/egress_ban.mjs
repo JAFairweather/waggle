@@ -98,25 +98,24 @@ for (const f of files) {
 }
 
 // ---------------------------------------------------------------------------------------------
-console.log('\n-- Nostr transport: only nostr_egress.mjs may sign or hold the key (INV-A3-2) --')
+console.log('\n-- Nostr transport: one semantic chokepoint plus one isolated signer backend (INV-A3-2) --')
 //
-// INV-A3-2 wants exactly one function per transport to invoke a signer. Both halves now hold:
-// egress.mjs owns the Buzz CLI, nostr_egress.mjs owns the in-process NIP-59 signing AND the
-// bridge key itself. The key matters as much as the signer here — signing is not the only thing
-// a private key does (the relay lane unseals with it), and a ban on `finalizeEvent` alone would
-// leave BRIDGE_SK spread across the file with nothing stopping the next signer appearing beside
-// a decrypt.
+// nostr_egress owns the closed event/body vocabulary and invokes the identity signer only through
+// signExact. nostr_signer owns the local-key/NIP-46 backend. The only other low-level signature is
+// nostr_egress's deliberately ephemeral gift-wrap key; it can never author as the bridge.
 for (const f of files) {
   const text = readFileSync(join(SRC, f), 'utf8')
   // Count CALLS, not the import line: `finalizeEvent(` with a paren.
   const calls = (text.match(/finalizeEvent\s*\(/g) || []).length
-  const holdsKey = /BRIDGE_SK/.test(text)
   if (f === 'nostr_egress.mjs') {
-    ok(`${f}: holds the signer (expected)`, calls > 0)
-    ok(`${f}: holds the bridge key (expected)`, holdsKey)
+    ok(`${f}: has exactly one ephemeral-wrap signer call`, calls === 1)
+    ok(`${f}: identity signing goes only through signExact`, /BRIDGE_SIGNER\.signEvent\(template\)/.test(text))
+  } else if (f === 'nostr_signer.mjs') {
+    ok(`${f}: has exactly the NIP-46 client and local-backend signer calls`, calls === 2)
+    ok(`${f}: is not a closed-body/event-shape API`, !/export\s+(?:async\s+)?function\s+(?:sign|emit)/.test(text))
   } else {
     ok(`${f}: no finalizeEvent call site`, calls === 0)
-    ok(`${f}: never references BRIDGE_SK`, !holdsKey)
+    ok(`${f}: cannot import the signer backend directly`, !/from\s+['\"].*nostr_signer\.mjs['\"]/.test(text))
   }
 }
 {

@@ -58,8 +58,16 @@ The key lives in a bunker; the bridge sends unsigned events and gets signatures 
 compromise then yields the ability to request signatures while the attacker holds the host — not
 the key itself.** Revoke the session and the capability ends; the identity survives.
 
+The Nostr transport implements this now. Configure `WAGGLE_BUNKER_URI_FILE` and
+`WAGGLE_NIP46_CLIENT_NSEC_FILE` together; both files must be regular, non-symlink, mode-0600
+files. The bridge sends exact unsigned templates to the bunker and rejects any returned event
+whose signature, author, kind, timestamp, tags, or content differs. NIP-44 encryption and
+decryption also happen through the bunker, so the identity nsec never reaches the host.
+
 This is the intended direction (#54). It is the only option in the table that alters the live
-answer rather than the cold one.
+answer rather than the cold one. The migration is not complete yet: Buzz channel posting still
+uses the `buzz` CLI and its local `BUZZ_PRIVATE_KEY`; see the deployment guide for the exact
+boundary.
 
 ---
 
