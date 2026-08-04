@@ -363,8 +363,8 @@ export function renderTemplate(templateName, slots) {
 //
 // Everything above is about what may be SAID. This is the only place anything is signed on the
 // Buzz transport. If a second execFile appears anywhere in src/, the ban test (§2.3) fails.
-let runBuzz = (args) => new Promise((resolve, rejectP) => {
-  execFile('buzz', args, (e, so, se) => {
+let runBuzz = (args, options = undefined) => new Promise((resolve, rejectP) => {
+  execFile('buzz', args, options, (e, so, se) => {
     if (e) { const wrapped = new Error(String(se || e.message).trim()); wrapped.cause = e; return rejectP(wrapped) }
     resolve(String(so || ''))
   })
@@ -393,11 +393,17 @@ const READS = {
 
 export const READ_NAMES = Object.freeze(Object.keys(READS))
 
+// A read that wedges in the CLI must not make the caller pile up more reads behind it.  The
+// bridge's pollers have their own backoff; this is the lower transport bound that releases an
+// in-flight poll when the API never responds at all.  Writes deliberately keep their existing
+// semantics: this timeout is only for idempotent read verbs.
+export const READ_TIMEOUT_MS = Number(process.env.BUZZ_READ_TIMEOUT_MS || 20_000)
+
 // query(name, params) -> Promise<stdout>. A closed set, argv built from typed values.
 export function query(name, params = {}) {
   const build = READS[name]
   if (!build) reject('read', `unknown read verb ${JSON.stringify(name)}`)
-  return runBuzz(build(params))
+  return runBuzz(build(params), { timeout: READ_TIMEOUT_MS })
 }
 
 function argvFor(spec, descriptor, content) {

@@ -374,20 +374,33 @@ if (PUB) {
 }
 
 // Channel-name resolution: public.inbox / staging_inbox may be a Buzz channel NAME instead
-// of a UUID — resolved once at boot (and by tools) via `buzz channels list`, so config reads
-// as intent ("waggle-test") instead of hex. Unresolvable names are fatal in buzz mode.
+// of a UUID — resolved at boot (and by tools) via `buzz channels list`, so config reads as
+// intent ("waggle-test") instead of hex.  A missing NAME is a configuration error and remains
+// fatal.  A failed READ is different: the API can be unavailable or briefly misrouted, so the
+// lane remains default-closed and retries in-process rather than systemd-restarting every 5s.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const CHANNEL_RESOLVE_RETRY_MAX_MS = Number(process.env.CHANNEL_RESOLVE_RETRY_MAX_MS || 60_000)
+let channelResolveFailures = 0
+function channelResolveDelayMs() {
+  return Math.min(CHANNEL_RESOLVE_RETRY_MAX_MS, 1000 * (2 ** Math.min(6, Math.max(0, channelResolveFailures - 1))))
+}
 function resolveChannels(cb) {
   const pending = PUB ? [PUB.inbox, PUB.staging, ...PUB.scanChannels, ...PUB.relayChannels].filter(v => v && !UUID_RE.test(v)) : []
   if (!pending.length) return cb()
   if (FORWARD_MODE !== 'buzz') { err(`WARN: channel name(s) ${pending.join(', ')} left unresolved in ${FORWARD_MODE} mode`); return cb() }
+  const retry = (reason) => {
+    channelResolveFailures++
+    const delay = channelResolveDelayMs()
+    err(`WAIT: cannot resolve channel name(s) ${pending.join(', ')} — ${reason}; public lane remains default-closed, retrying in ${delay}ms`)
+    setTimeout(() => resolveChannels(cb), delay)
+  }
   query('channels_list').then((so) => {
     const byName = new Map()
     try {
       for (const c of JSON.parse(String(so).slice(String(so).indexOf('[')))) {
         byName.set(String(c.name || '').toLowerCase(), c.id || c.channel_id || c.uuid)
       }
-    } catch { err('FATAL: could not parse `buzz channels list` output'); process.exit(1) }
+    } catch { return retry('could not parse `buzz channels list` output') }
     const one = (v, what) => {
       if (!v || UUID_RE.test(v)) return v
       const id = byName.get(v.toLowerCase())
@@ -399,13 +412,10 @@ function resolveChannels(cb) {
     PUB.staging = one(PUB.staging, 'staging_inbox')
     PUB.scanChannels = PUB.scanChannels.map((v, i) => one(v, `scan_channel[${i}]`))
     PUB.relayChannels = PUB.relayChannels.map((v, i) => one(v, `relay_channel[${i}]`))
+    channelResolveFailures = 0
     cb()
   }).catch((e) => {
-    // Unresolvable channel names are FATAL in buzz mode — booting with a name we could not
-    // resolve would route nowhere, silently. Default closed: refuse to start rather than run
-    // half-addressed. (process.exit inside `one` throws past this catch by design; re-exit.)
-    err(`FATAL: cannot resolve channel names — 'buzz channels list' failed: ${e.message}`)
-    process.exit(1)
+    retry(`'buzz channels list' failed: ${e.message}`)
   })
 }
 
@@ -1926,16 +1936,47 @@ async function retryPendingCarries(opts = {}) {
 }
 
 let cmdCursor = 0
-function pollCommands() {
-  query('messages_get', { channel: PUB.staging, limit: 30 }).then((so) => {
+let commandPollInFlight = false
+let commandPollFailures = 0
+let commandPollNextAt = 0
+const COMMAND_POLL_BACKOFF_MAX_MS = Number(process.env.COMMAND_POLL_BACKOFF_MAX_MS || 60_000)
+function commandPollDelayMs() {
+  return Math.min(COMMAND_POLL_BACKOFF_MAX_MS, 1000 * (2 ** Math.min(6, Math.max(0, commandPollFailures - 1))))
+}
+// A Buzz API outage is not a bridge crash.  Keep at most one command read in flight, then back
+// off idempotent retries.  We leave the command cursor untouched on failure, so recovery cannot
+// skip an approval made while the API was unavailable.
+async function pollCommands(now = Date.now()) {
+  if (commandPollInFlight || now < commandPollNextAt) return false
+  commandPollInFlight = true
+  try {
+    const so = await query('messages_get', { channel: PUB.staging, limit: 30 })
     let msgs
-    try { msgs = JSON.parse(String(so).slice(String(so).indexOf('['))) } catch { return err('commands: unparseable staging read') }
+    try { msgs = JSON.parse(String(so).slice(String(so).indexOf('['))) } catch { throw new Error('unparseable staging read') }
     for (const m of msgs) { if ((m.created_at || 0) >= cmdCursor - 300) handleCommand(m).catch(er => err(`commands: ${er.message}`)) }
     scanReturnLane(msgs)
       .then(() => retryPendingCarries())                  // #117: owed carries, independent of the cursor
       .catch(er => err(`return lane: staging carry failed: ${er.message}`))
     cmdCursor = Math.floor(Date.now() / 1000)
-  })
+    commandPollFailures = 0
+    commandPollNextAt = 0
+    return true
+  } catch (e) {
+    commandPollFailures++
+    const delay = commandPollDelayMs()
+    commandPollNextAt = now + delay
+    err(`commands: staging read failed: ${e.message} — lane stays alive; retrying in ${delay}ms`)
+    return false
+  } finally {
+    commandPollInFlight = false
+  }
+}
+function __resetReadPollingForTests() {
+  cmdCursor = 0
+  commandPollInFlight = false
+  commandPollFailures = 0
+  commandPollNextAt = 0
+  channelResolveFailures = 0
 }
 
 // A5-scan: NO-MISS ACROSS DOWNTIME (#5). A blind newest-page read (`--limit N`, no since) drops
@@ -2274,7 +2315,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
