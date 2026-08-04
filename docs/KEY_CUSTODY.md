@@ -21,9 +21,11 @@ key as a migration fallback or signs and decrypts remotely through the paired
 file is a revocable NIP-46 client key, not the transport identity nsec.
 
 The sealed forwarding lanes carry envelopes by derived address without opening them. The
-separate relay-ingress and return paths deliberately open envelopes addressed to the bridge so
-they can validate and route the enclosed event; remote mode performs those NIP-44 operations in
-the bunker rather than placing the identity nsec on the bridge host.
+separate relay-ingress path deliberately opens envelopes addressed to the bridge so it can
+validate and route the enclosed event. Return and acknowledgement paths do not open inbound
+payloads; they seal new outbound envelopes to their recipients. Remote mode performs both the
+relay-ingress decrypts and outbound NIP-44 encryption in the bunker rather than placing the
+identity nsec on the bridge host.
 
 The custody question is therefore capability-specific, not a claim that one local key covers
 the whole bridge.
