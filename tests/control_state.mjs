@@ -32,7 +32,7 @@ writeFileSync(CFG, JSON.stringify({
   },
 }))
 
-const { buildControlState, processConsentEvent, mirrorAsked, mirrorRevoked, PUB } = await import('../src/bridge.mjs')
+const { buildControlState, processConsentEvent, mirrorAsked, mirrorRevoked, PUB, handleControlStateCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D } = await import('../src/bridge.mjs')
 const { signControlState, CONTROL_STATE_KIND } = await import('../src/nostr_egress.mjs')
 const { scopeHash } = await import('../src/consent.mjs')
 
@@ -64,12 +64,31 @@ t('state has the fixed address and no secret/config fields',
   !/config|secret|channel|private_key/i.test(signed.content))
 const body = JSON.parse(signed.content)
 t('state contains only the declared owner-visible fields',
-  Object.keys(body).sort().join(',') === 'bridge,follows,hive,observed_at,v' &&
+  Object.keys(body).sort().join(',') === 'bridge,follows,hive,observed_at,publishing,v' &&
   Object.keys(body.follows[0]).sort().join(',') === 'consent,pubkey')
 
 let rejected = false
 try { signControlState({ ...buildControlState(), follows: [{ pubkey: watched, consent: 'free prose' }] }) } catch { rejected = true }
 t('an arbitrary status cannot be signed', rejected)
+
+const command = (sk, enabled, created_at = Math.floor(Date.now() / 1000), target = getPublicKey(bridgeSk)) => wire(finalizeEvent({
+  kind: CONTROL_COMMAND_KIND, created_at, content: JSON.stringify({ v: 1, enabled }),
+  tags: [['d', CONTROL_COMMAND_D], ['p', target]],
+}, sk))
+const beforePublish = PUB.controlStatePublish
+const nonApprover = command(generateSecretKey(), !beforePublish)
+t('a non-approver cannot change the public-state setting', !handleControlStateCommand(nonApprover).ok && PUB.controlStatePublish === beforePublish)
+const wrongRecipient = command(watchedSk, !beforePublish, Math.floor(Date.now() / 1000), 'b'.repeat(64))
+t('a command for another bridge cannot change the setting', !handleControlStateCommand(wrongRecipient).ok && PUB.controlStatePublish === beforePublish)
+// The test fixture has no approver by default; make the consenting participant one expressly.
+PUB.approvers.push(getPublicKey(watchedSk))
+const fresh = command(watchedSk, !beforePublish)
+let published = 0
+const applied = handleControlStateCommand(fresh, async () => { published++; return 1 })
+t('a fresh approver command persists and changes the setting', applied.ok && PUB.controlStatePublish === !beforePublish)
+t('the bridge emits a signed acknowledgement state', published === 1)
+const replay = handleControlStateCommand(fresh, async () => { published++; return 1 })
+t('the same command cannot be replayed', !replay.ok && PUB.controlStatePublish === !beforePublish)
 
 console.log(`\n${pass}/${n} passed`)
 process.exit(pass === n ? 0 : 1)
