@@ -43,18 +43,22 @@ lane = sys.argv[3]
 
 if lane == "sealed":
     import re
+    from urllib.parse import urlparse
     fail = 0
     relays = config.get("relays") or []
     recipients = config.get("recipients") or []
     channels = config.get("channels") or []
     names = {r.get("name") for r in recipients if isinstance(r, dict) and r.get("name")}
     print("live sealed routing policy: %s" % sys.argv[1])
-    if not relays:
-        print("  MISSING  relays         no Armada relays — the sealed lane connects to nothing"); fail = 1
+    valid_relay = lambda value: isinstance(value, str) and (lambda u: u.scheme == "wss" and bool(u.netloc) and not u.username and not u.password)(urlparse(value))
+    bad_relays = [r for r in relays if not valid_relay(r)]
+    if not relays or bad_relays:
+        print("  MISSING  relays         need wss:// relay URLs with hosts (%d invalid)" % len(bad_relays)); fail = 1
     else: print("  ok       relays         %d entries" % len(relays))
-    bad_recipients = [r for r in recipients if not isinstance(r, dict) or not r.get("name") or not r.get("inbox") or str(r.get("inbox", "")).startswith("INBOX_UUID_") or not re.fullmatch(r"[0-9a-f]{64}", str(r.get("npub_hex", "")))]
+    valid_inbox = lambda value: bool(re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", str(value), re.I))
+    bad_recipients = [r for r in recipients if not isinstance(r, dict) or not r.get("name") or not valid_inbox(r.get("inbox")) or not re.fullmatch(r"[0-9a-f]{64}", str(r.get("npub_hex", "")))]
     if not recipients or bad_recipients:
-        print("  MISSING  recipients     need named seats with 64-hex pubkeys and real inboxes (%d invalid)" % len(bad_recipients)); fail = 1
+        print("  MISSING  recipients     need named seats with 64-hex pubkeys and canonical inbox UUIDs (%d invalid)" % len(bad_recipients)); fail = 1
     else: print("  ok       recipients     %d entries" % len(recipients))
     bad_channels = []
     for c in channels:

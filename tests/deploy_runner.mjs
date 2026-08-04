@@ -48,7 +48,7 @@ const verifyPolicy = (body, lane) => {
   try { return { code: 0, out: execFileSync('bash', [join(REPO, 'deploy/verify-config.sh'), policyConfig, lane], { encoding: 'utf8' }) } }
   catch (e) { return { code: e.status ?? 1, out: (e.stdout || '') + (e.stderr || '') } }
 }
-const seat = { name: 'Agent', npub_hex: 'a'.repeat(64), inbox: 'real-inbox' }
+const seat = { name: 'Agent', npub_hex: 'a'.repeat(64), inbox: '11111111-1111-4111-8111-111111111111' }
 const sealedPolicy = { relays: ['wss://relay.example'], recipients: [seat], channels: [{ name: 'general', plane_pubkey: 'b'.repeat(64), recipients: ['Agent'] }] }
 const sealedGood = verifyPolicy(sealedPolicy, 'sealed')
 check(sealedGood.code === 0 && /complete — sealed/.test(sealedGood.out),
@@ -56,6 +56,12 @@ check(sealedGood.code === 0 && /complete — sealed/.test(sealedGood.out),
 const sealedBad = verifyPolicy({ ...sealedPolicy, channels: [{ ...sealedPolicy.channels[0], recipients: ['Missing'] }] }, 'sealed')
 check(sealedBad.code === 2 && /MISSING  channels/.test(sealedBad.out),
   'sealed policy fails closed when a channel fan names an unknown recipient')
+const sealedBadRelay = verifyPolicy({ ...sealedPolicy, relays: ['not-a-websocket'] }, 'sealed')
+check(sealedBadRelay.code === 2 && /MISSING  relays/.test(sealedBadRelay.out),
+  'sealed policy fails closed on a malformed relay URL')
+const sealedBadInbox = verifyPolicy({ ...sealedPolicy, recipients: [{ ...seat, inbox: 'not-an-inbox' }] }, 'sealed')
+check(sealedBadInbox.code === 2 && /MISSING  recipients/.test(sealedBadInbox.out),
+  'sealed policy fails closed on a malformed delivery inbox UUID')
 rmSync(policyFixture, { recursive: true, force: true })
 
 // The bridge persists signed operator decisions in config.json. ProtectSystem=strict remains
