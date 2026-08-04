@@ -67,4 +67,3 @@ Please report security-sensitive findings privately as described in
 [SECURITY.md](../SECURITY.md). Ordinary design and implementation findings can use the
 repository's issue tracker. A useful review names the exact document, source location, or
 event shape and distinguishes a demonstrated defect from a design preference.
-
