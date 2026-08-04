@@ -1691,7 +1691,8 @@ async function returnLaneSend(toHex, descriptor, meta, publish = publishWrapToRe
     const publisher = recipientRelays ? (wrap) => publishWrapToRelayList(wrap, recipientRelays) : publish
     // A3 §2.5: the seal/wrap construction and the key both live in nostr_egress.mjs. `descriptor`
     // is {template, slots} — there is no parameter here that could carry a composed sentence.
-    const { wrap, accepted, bytes } = await sealAndWrap({ template: descriptor.template, to: toHex, slots: descriptor.slots }, publisher)
+    const { wrap, accepted, bytes } = await sealAndWrap({ template: descriptor.template, to: toHex,
+      slots: descriptor.slots, sourceEvent: descriptor.sourceEvent || null }, publisher)
     // Journal stamped with the accept-count so the durable record is landed-reality, not intent: a
     // 0/N carry is written accepted:0, never a false "sent". The wrap's author is ephemeral and can
     // never trip the tripwire, so this record is a written-down intent — worth making a truthful one;
@@ -1869,6 +1870,17 @@ async function scanReturnLane(msgs, opts = {}) {
       if (rlDropOnce(m.id)) err(`RETURN drop[author]: ${String(m.id).slice(0, 12)}… signer ${from.slice(0, 12)}… not in scan_authors`)
       continue
     }
+    // A working-channel carry must preserve a verifiable original author. The bridge attests
+    // transport; it never becomes the human tasking principal. Staging retains its older
+    // human-gated shape, while the explicit scan-author path fails closed on unsigned input.
+    if (gateActive) {
+      let validSource = false
+      try { validSource = verifyEvent(JSON.parse(JSON.stringify(m))) } catch { validSource = false }
+      if (!validSource || Number(m.kind) !== 9) {
+        if (rlDropOnce(m.id)) err(`RETURN drop[source]: ${String(m.id).slice(0, 12)}… is not a valid signed kind:9 event`)
+        continue
+      }
+    }
     const body = String(m.content || '')
     const tags = Array.isArray(m.tags) ? m.tags : []
     const ptags = tags.filter(t => t[0] === 'p' && t[1]).map(t => String(t[1]).toLowerCase())
@@ -1894,6 +1906,7 @@ async function scanReturnLane(msgs, opts = {}) {
       const accepted = await returnLaneSend(r.npub_hex, {
         template: 'return_carry',
         slots: { mention: r.mention, why: repliedTo && !mentioned ? 'reply' : 'mention', body },
+        sourceEvent: gateActive ? m : null,
       }, { src: m.id, why: repliedTo && !mentioned ? 'reply' : 'mention' }, opts.publish)
       // Persist-on-landed: durable dedup only once the seal reached a relay. A silent 0/N is rolled
       // back so the overlap re-read (and a restart) re-carry it — a rare re-carry beats a lost mention.
@@ -1904,7 +1917,7 @@ async function scanReturnLane(msgs, opts = {}) {
         dropRlSeen(key)
         // Owed, durably. The overlap re-read may still catch it first; enqueue is idempotent and
         // does not reset the attempt count, so the two paths cannot inflate each other.
-        rlPending.enqueue(key, { to: r.npub_hex, mention: r.mention, why: repliedTo && !mentioned ? 'reply' : 'mention', body, src: m.id })
+        rlPending.enqueue(key, { to: r.npub_hex, mention: r.mention, why: repliedTo && !mentioned ? 'reply' : 'mention', body, src: m.id, sourceEvent: gateActive ? m : null })
       }
     }
   }
@@ -1938,6 +1951,7 @@ async function retryPendingCarries(opts = {}) {
     const accepted = await returnLaneSend(item.to, {
       template: 'return_carry',
       slots: { mention: item.mention, why: item.why, body: item.body },
+      sourceEvent: item.sourceEvent || null,
     }, { src: item.src, why: item.why, retry: n }, opts.publish)
     if (accepted >= 1) {
       markRlSeen(key)

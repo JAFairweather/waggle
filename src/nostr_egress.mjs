@@ -16,7 +16,7 @@
 // `bridgePubkey()`, `hasBridgeKey()`, `openSealed()`, `sealAndWrap()`.
 //
 // INV-A3-2  exactly one function per transport invokes a signer. This is the Nostr one.
-import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey } from 'nostr-tools/pure'
+import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import * as nip44 from 'nostr-tools/nip44'
 
@@ -312,7 +312,7 @@ export function openRumor(seal) {
 // signed by the BRIDGE key (a NIP-17 seal names its real sender, so it must be); the wrap around
 // it is signed by a THROWAWAY, which is why this traffic never appears on the wire as the poster
 // key — and why the wrap id can never trip the tripwire.
-export async function sealAndWrap({ template, to, slots }, publish) {
+export async function sealAndWrap({ template, to, slots, sourceEvent = null }, publish) {
   if (!BRIDGE_SK) reject('no bridge key to seal with')
   if (typeof template !== 'string') reject('sealAndWrap requires a catalogue template name, not a string body')
   const toHex = hex64(to, 'recipient')
@@ -323,7 +323,25 @@ export async function sealAndWrap({ template, to, slots }, publish) {
   // correlate a channel message with a delivery by timing alone.
   const fuzzed = () => now - Math.floor(Math.random() * 172800)
 
-  const rumor = { kind: 14, pubkey: BRIDGE_PK, created_at: now, tags: [['p', toHex]], content: text }
+  const tags = [['p', toHex]]
+  if (sourceEvent != null) {
+    if (template !== 'return_carry') reject('source attestation is valid only for return_carry')
+    const source = sourceEvent && typeof sourceEvent === 'object' && !Array.isArray(sourceEvent)
+      ? { id: String(sourceEvent.id || '').toLowerCase(), pubkey: String(sourceEvent.pubkey || '').toLowerCase(),
+          created_at: Number(sourceEvent.created_at), kind: Number(sourceEvent.kind),
+          tags: sourceEvent.tags, content: sourceEvent.content, sig: String(sourceEvent.sig || '').toLowerCase() }
+      : null
+    if (!source || !/^[0-9a-f]{64}$/.test(source.id) || !/^[0-9a-f]{64}$/.test(source.pubkey) ||
+        !Number.isInteger(source.created_at) || source.created_at <= 0 || source.kind !== 9 ||
+        !Array.isArray(source.tags) || typeof source.content !== 'string' || !/^[0-9a-f]{128}$/.test(source.sig) ||
+        Buffer.byteLength(JSON.stringify(source)) > 256 * 1024 || !verifyEvent(JSON.parse(JSON.stringify(source)))) {
+      reject('return carry source is not a valid signed kind:9 event')
+    }
+    // This tag is inside the encrypted rumor. It preserves the original signed channel event;
+    // the bridge attests transport, while the receiving runtime independently verifies author.
+    tags.push(['waggle-source', Buffer.from(JSON.stringify(source)).toString('base64url')])
+  }
+  const rumor = { kind: 14, pubkey: BRIDGE_PK, created_at: now, tags, content: text }
   rumor.id = getEventHash(rumor)
   const seal = finalizeEvent({
     kind: 13, created_at: fuzzed(), tags: [],
