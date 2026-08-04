@@ -1549,6 +1549,21 @@ function buildControlState() {
           : mirrorAsked.has(pubkey) ? 'asked'
             : 'pending',
     })),
+    // Owner-observable, public-safe operations summary (#67). These are bounded policy facts and
+    // aggregate counters only: no channel UUIDs, host paths, relay URLs, credentials, or payloads.
+    operations: {
+      trust: { trusted_repliers: PUB.trustedRepliers.length, muted_authors: PUB.muted.length, watched_notes: PUB.events.length },
+      lanes: { public_read: true, sealed: SEALED_LANES, return_watch: PUB.scanChannels.length > 0, relay_ingress: PUB.relayChannels.length > 0 },
+      gates: {
+        consent_required: PUB.mirrorRequireConsent,
+        ask_per_hour: PUB.mirrorAskPerHour,
+        public_content_bytes: PUB.maxContentBytes,
+        public_replier_per_min: PUB.replierPerMin,
+        public_channel_per_min: PUB.channelPerMin,
+        public_lane_per_hour: PUB.lanePerHour,
+      },
+      drops: { relay_preauth: relayDropTotalPreAuth(), relay_not_relay: relayDropCounts.notRelay },
+    },
   }
 }
 
