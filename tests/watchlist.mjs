@@ -86,10 +86,11 @@ t('the original watch_authors entry survived every mutation', cfgAuthors().inclu
 
 // --- 6. persistence failure is fail-closed ----------------------------------------------------
 // The config write is the commit point: a temporary live mutation would lie to the operator and
-// reverse at the next restart. Remove write permission from the file, then prove neither add nor
-// remove changes the active set or triggers a relay re-subscribe.
+// reverse at the next restart. An atomic replace needs write permission on its parent directory,
+// not on the old file, so remove directory write permission and prove neither add nor remove
+// changes the active set or triggers a relay re-subscribe.
 const Y = getPublicKey(generateSecretKey())
-chmodSync(CFG, 0o444)
+chmodSync(tmp, 0o555)
 const beforeFailedAdd = fired
 const failedAdd = addWatchAuthor(Y)
 t('a failed persist refuses an add', failedAdd.ok === false)
@@ -100,7 +101,7 @@ const failedRemove = removeWatchAuthor(existing)
 t('a failed persist refuses a removal', failedRemove.ok === false)
 t('  a failed removal does NOT alter the live watched set', PUB.authors.includes(existing))
 t('  a failed removal does NOT refresh relay filters', fired === beforeFailedRemove)
-chmodSync(CFG, 0o644)
+chmodSync(tmp, 0o700)
 
 // --- 7. signed staging-console commands -------------------------------------------------------
 // `watch` already means reply-follow, so whole-feed administration is explicitly namespaced:
