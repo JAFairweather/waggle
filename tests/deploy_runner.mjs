@@ -36,6 +36,36 @@ const check = (cond, msg) => { if (!cond) { console.error('  ✗', msg); failed+
 const runnerSource = readFileSync(join(REPO, SCRIPT), 'utf8')
 check(/CONFIG_VERIFY_CMD="\$\{WB_CONFIG_VERIFY_CMD:-bash /.test(runnerSource),
   'production policy verifier honors its bash runtime instead of forcing /bin/sh')
+check(runnerSource.includes('\\"$TREE/config.json\\" \\"$LANE\\"'),
+  'production policy verifier receives the explicit deployment lane')
+
+// The two production lanes have different policy surfaces. A sealed Concord bridge must not be
+// rejected for intentionally lacking the public read lane, but its own seats and fans stay strict.
+const policyFixture = mkdtempSync(join(tmpdir(), 'wb-policy-'))
+const policyConfig = join(policyFixture, 'config.json')
+const verifyPolicy = (body, lane) => {
+  writeFileSync(policyConfig, JSON.stringify(body))
+  try { return { code: 0, out: execFileSync('bash', [join(REPO, 'deploy/verify-config.sh'), policyConfig, lane], { encoding: 'utf8' }) } }
+  catch (e) { return { code: e.status ?? 1, out: (e.stdout || '') + (e.stderr || '') } }
+}
+const seat = { name: 'Agent', npub_hex: 'a'.repeat(64), inbox: '11111111-1111-4111-8111-111111111111' }
+const sealedPolicy = { relays: ['wss://relay.example'], recipients: [seat], channels: [{ name: 'general', plane_pubkey: 'b'.repeat(64), recipients: ['Agent'] }] }
+const sealedGood = verifyPolicy(sealedPolicy, 'sealed')
+check(sealedGood.code === 0 && /complete — sealed/.test(sealedGood.out),
+  'sealed policy accepts complete sealed routing without a public block')
+const sealedBad = verifyPolicy({ ...sealedPolicy, channels: [{ ...sealedPolicy.channels[0], recipients: ['Missing'] }] }, 'sealed')
+check(sealedBad.code === 2 && /MISSING  channels/.test(sealedBad.out),
+  'sealed policy fails closed when a channel fan names an unknown recipient')
+const sealedBadRelay = verifyPolicy({ ...sealedPolicy, relays: ['not-a-websocket'] }, 'sealed')
+check(sealedBadRelay.code === 2 && /MISSING  relays/.test(sealedBadRelay.out),
+  'sealed policy fails closed on a malformed relay URL')
+const sealedCredentialRelay = verifyPolicy({ ...sealedPolicy, relays: ['wss://relay.example/?token=secret'] }, 'sealed')
+check(sealedCredentialRelay.code === 2 && /MISSING  relays/.test(sealedCredentialRelay.out),
+  'sealed policy fails closed on relay URL query credentials')
+const sealedBadInbox = verifyPolicy({ ...sealedPolicy, recipients: [{ ...seat, inbox: 'not-an-inbox' }] }, 'sealed')
+check(sealedBadInbox.code === 2 && /MISSING  recipients/.test(sealedBadInbox.out),
+  'sealed policy fails closed on a malformed delivery inbox UUID')
+rmSync(policyFixture, { recursive: true, force: true })
 
 // The bridge persists signed operator decisions in config.json. ProtectSystem=strict remains
 // load-bearing, so the service may write that one policy file and data/, never its code tree.

@@ -14,7 +14,7 @@
 # So: check the SHAPE against config.example.json, and check the fields whose emptiness is
 # invisible at runtime. Report counts, never values.
 #
-#   sudo deploy/verify-config.sh [path-to-config.json]
+#   sudo deploy/verify-config.sh [path-to-config.json] [read|sealed]
 #
 #   0  complete
 #   2  a required field is missing or empty
@@ -23,7 +23,10 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CFG="${1:-/opt/waggle-read/config.json}"
+LANE="${2:-read}"
 EXAMPLE="$HERE/../config.example.json"
+
+case "$LANE" in read|sealed) ;; *) echo "verify-config: lane must be read or sealed"; exit 3 ;; esac
 
 if [ ! -r "$CFG" ]; then
   echo "verify-config: cannot read $CFG — re-run with sudo, or pass the path."
@@ -32,10 +35,46 @@ if [ ! -r "$CFG" ]; then
 fi
 [ -r "$EXAMPLE" ] || { echo "verify-config: missing $EXAMPLE"; exit 3; }
 
-python3 - "$CFG" "$EXAMPLE" <<'PY'
+python3 - "$CFG" "$EXAMPLE" "$LANE" <<'PY'
 import json, sys
 
-live = json.load(open(sys.argv[1])).get("public", {})
+config = json.load(open(sys.argv[1]))
+lane = sys.argv[3]
+
+if lane == "sealed":
+    import re
+    from urllib.parse import urlparse
+    fail = 0
+    relays = config.get("relays") or []
+    recipients = config.get("recipients") or []
+    channels = config.get("channels") or []
+    names = {r.get("name") for r in recipients if isinstance(r, dict) and r.get("name")}
+    print("live sealed routing policy: %s" % sys.argv[1])
+    valid_relay = lambda value: isinstance(value, str) and (lambda u: u.scheme == "wss" and bool(u.netloc) and not u.username and not u.password and not u.query and not u.fragment)(urlparse(value))
+    bad_relays = [r for r in relays if not valid_relay(r)]
+    if not relays or bad_relays:
+        print("  MISSING  relays         need wss:// relay URLs with hosts (%d invalid)" % len(bad_relays)); fail = 1
+    else: print("  ok       relays         %d entries" % len(relays))
+    valid_inbox = lambda value: bool(re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", str(value), re.I))
+    bad_recipients = [r for r in recipients if not isinstance(r, dict) or not r.get("name") or not valid_inbox(r.get("inbox")) or not re.fullmatch(r"[0-9a-f]{64}", str(r.get("npub_hex", "")))]
+    if not recipients or bad_recipients:
+        print("  MISSING  recipients     need named seats with 64-hex pubkeys and canonical inbox UUIDs (%d invalid)" % len(bad_recipients)); fail = 1
+    else: print("  ok       recipients     %d entries" % len(recipients))
+    bad_channels = []
+    for c in channels:
+        refs = c.get("recipients") if isinstance(c, dict) else None
+        if not isinstance(c, dict) or not c.get("name") or not re.fullmatch(r"[0-9a-f]{64}", str(c.get("plane_pubkey", ""))) or not isinstance(refs, list) or not refs or any(n not in names for n in refs):
+            bad_channels.append(c)
+    if not channels or bad_channels:
+        print("  MISSING  channels       need named 64-hex planes fanning only to configured recipients (%d invalid)" % len(bad_channels)); fail = 1
+    else: print("  ok       channels       %d entries" % len(channels))
+    print()
+    if fail:
+        print("FAILED — the sealed bridge will start and route less than you think."); sys.exit(2)
+    print("complete — sealed relays, seats, inboxes, and channel fans are populated.")
+    sys.exit(0)
+
+live = config.get("public", {})
 example = json.load(open(sys.argv[2])).get("public", {})
 
 # Fields whose absence the bridge cannot complain about at runtime: it starts fine and simply

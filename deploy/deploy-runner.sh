@@ -69,7 +69,7 @@ alarm() { echo "deploy-runner[$LANE] ALARM: $*" >&2; }
 # verify-config.sh deliberately uses bash (`pipefail` + BASH_SOURCE). Invoking it through `sh`
 # ignores its shebang on Debian/Ubuntu, where /bin/sh is dash, and makes every otherwise-good
 # deploy fail after shipping with `set: Illegal option -o pipefail`.
-CONFIG_VERIFY_CMD="${WB_CONFIG_VERIFY_CMD:-bash \"$HUB/deploy/verify-config.sh\" \"$TREE/config.json\"}"
+CONFIG_VERIFY_CMD="${WB_CONFIG_VERIFY_CMD:-bash \"$HUB/deploy/verify-config.sh\" \"$TREE/config.json\" \"$LANE\"}"
 
 # Default CI-state resolver: GitHub Actions records results as CHECK-RUNS (not legacy commit
 # statuses), so ask the check-runs API for this exact sha and aggregate. Unauthenticated for a
