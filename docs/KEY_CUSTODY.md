@@ -1,8 +1,11 @@
 # Key custody
 
-The bridge needs its posting key available to sign. There is no arrangement in which it does
-not. This document is about **where that key rests when it is not being used**, what each option
-actually buys, and — more importantly — what none of them buy.
+The bridge needs signing capability for two distinct operational identities: the Buzz poster
+used for channel writes and the Nostr transport identity used for relay envelopes. The Buzz CLI
+still requires its local `BUZZ_PRIVATE_KEY`. The Nostr identity can instead live behind a NIP-46
+bunker, leaving only a revocable connection credential on the host. This document is about
+**where those capabilities live**, what each option actually buys, and — more importantly — what
+none of them buy.
 
 Read the last section first if you only read one.
 
@@ -10,11 +13,20 @@ Read the last section first if you only read one.
 
 ## What the bridge holds
 
-**Exactly one private key: its own posting identity.** No member's key, ever. A member's outward
-post is signed in that member's own runtime; the bridge routes it. The sealed lanes are carried
-by envelope and derived address and are never opened.
+**Only its own operational identities; no member's key, ever.** A member's outward post is
+signed in that member's own runtime; the bridge routes it. The Buzz poster capability currently
+comes from the local `BUZZ_PRIVATE_KEY`. The Nostr transport identity either uses that same local
+key as a migration fallback or signs and decrypts remotely through the paired
+`WAGGLE_BUNKER_URI_FILE` and `WAGGLE_NIP46_CLIENT_NSEC_FILE` connection credentials. The latter
+file is a revocable NIP-46 client key, not the transport identity nsec.
 
-That single key is the whole custody question.
+The sealed forwarding lanes carry envelopes by derived address without opening them. The
+separate relay-ingress and return paths deliberately open envelopes addressed to the bridge so
+they can validate and route the enclosed event; remote mode performs those NIP-44 operations in
+the bunker rather than placing the identity nsec on the bridge host.
+
+The custody question is therefore capability-specific, not a claim that one local key covers
+the whole bridge.
 
 ---
 
@@ -25,7 +37,7 @@ That single key is the whole custody question.
 | **Plain `.env`** | `0600`, owned by the service user | ✗ | ✗ |
 | **SOPS / age** | ciphertext at rest, decrypted at deploy | ✓ | ✗ |
 | **`systemd-creds`** | encrypted, bound to the host TPM | ✓ | ✗ |
-| **Remote signer (NIP-46)** | key never on the host at all | ✓ | **✓** |
+| **Remote signer (NIP-46)** | Nostr identity key never on the host; revocable client key remains | ✓ | **✓, for the Nostr identity** |
 
 ### Plain `.env` — the default, and a real choice
 
@@ -54,7 +66,7 @@ Reasonable if you would rather not run SOPS. It buys the same thing SOPS buys.
 
 ### Remote signer (NIP-46) — the only one that changes the picture
 
-The key lives in a bunker; the bridge sends unsigned events and gets signatures back. **A host
+The Nostr identity key lives in a bunker; the bridge sends unsigned events and gets signatures back. **A host
 compromise then yields the ability to request signatures while the attacker holds the host — not
 the key itself.** Revoke the session and the capability ends; the identity survives.
 
@@ -75,7 +87,8 @@ boundary.
 
 **Sealing protects the cold copy. It does not protect a live host.**
 
-The service must have the plaintext key **in memory** to sign. Whoever holds the host's
+In local-key mode, the service must have the plaintext identity key **in memory** to sign.
+Whoever holds the host's
 credentials can obtain a decrypt — read it from the process, from `$CREDENTIALS_DIRECTORY`, from
 the decrypted env, or simply by asking the service to sign for them. SOPS and `systemd-creds`
 both raise the cost of *stealing a disk*. Neither raises the cost of *owning the box*.
@@ -108,8 +121,9 @@ Sealing is complementary to that, never a substitute for it.
   choice. Make it knowingly.
 - **Backups or snapshots leave your control** → seal it. `systemd-creds` if you want no extra
   tooling; SOPS if you already run it.
-- **You want the live answer, not the cold one** → remote signer (#54). Nothing else in the table
-  gets you there.
+- **You want the live answer for the Nostr transport identity, not the cold one** → remote signer
+  (#54). Nothing else in the table gets you there. The Buzz poster remains a separate local-key
+  migration boundary until the Buzz write path gains an equivalent policy-enforcing signer.
 
 Whichever you pick, the tripwire and a rehearsed rotation matter more than the choice.
 
