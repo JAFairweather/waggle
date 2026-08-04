@@ -1283,37 +1283,33 @@ const WATCH_REFRESHERS = new Set()
 function refreshWatched() {
   for (const f of WATCH_REFRESHERS) { try { f() } catch (e) { err(`watchlist: refresh failed: ${e?.message || '?'}`) } }
 }
-function addWatchAuthor(pk) {
+function changeWatchAuthor(pk, action, commandAt = null) {
   const hex = String(pk || '').trim().toLowerCase()
   if (!/^[0-9a-f]{64}$/.test(hex)) return { ok: false, reason: 'not a 64-hex pubkey' }
-  if (PUB.authors.includes(hex)) return { ok: true, already: true }
-  // Persistence is the commit point.  A runtime-only addition would work until the next
-  // restart, then silently disappear — worse than refusing the operator's request.  Write
-  // first; only a durable success may alter the active filter.
-  if (!mutateConfig(c => { c.public.watch_authors = Array.from(new Set([...(c.public.watch_authors || []).map(s => String(s).toLowerCase()), hex])) })) {
+  const exists = PUB.authors.includes(hex)
+  const wantAdd = action === 'mirror'
+  if (!['mirror', 'unmirror'].includes(action)) return { ok: false, reason: 'invalid watchlist action' }
+  // The author list and signed-command watermark are one durable transaction.  If this write
+  // fails, neither state advances; an accepted command can never mutate the list without also
+  // becoming non-replayable.
+  if (!mutateConfig(c => {
+    const current = (c.public.watch_authors || []).map(s => String(s).toLowerCase())
+    c.public.watch_authors = wantAdd ? Array.from(new Set([...current, hex])) : current.filter(a => a !== hex)
+    if (commandAt != null) c.public.watchlist_command_at = commandAt
+  })) {
     return { ok: false, reason: 'could not persist watchlist' }
   }
-  PUB.authors.push(hex)
+  if (commandAt != null) PUB.watchlistCommandAt = commandAt
+  if (wantAdd && !exists) PUB.authors.push(hex)
+  if (!wantAdd && exists) PUB.authors.splice(PUB.authors.indexOf(hex), 1)
   refreshWatched()
   scheduleControlState()
-  log(`watchlist: +${hex.slice(0, 12)}… — now ${PUB.authors.length} watched, subscription updated (no restart)`)
-  return { ok: true, added: true }
+  log(`watchlist: ${wantAdd ? '+' : '-'}${hex.slice(0, 12)}… — now ${PUB.authors.length} watched, subscription updated (no restart)`)
+  return { ok: true, ...(wantAdd ? (exists ? { already: true } : { added: true }) : (exists ? { removed: true } : { already: true })) }
 }
+function addWatchAuthor(pk) { return changeWatchAuthor(pk, 'mirror') }
 function removeWatchAuthor(pk) {
-  const hex = String(pk || '').trim().toLowerCase()
-  if (!/^[0-9a-f]{64}$/.test(hex)) return { ok: false, reason: 'not a 64-hex pubkey' }
-  const i = PUB.authors.indexOf(hex)
-  if (i === -1) return { ok: true, already: true }
-  // Same transaction boundary as add: do not let a failed write create a temporary live
-  // removal that a restart reverses.
-  if (!mutateConfig(c => { c.public.watch_authors = (c.public.watch_authors || []).map(s => String(s).toLowerCase()).filter(a => a !== hex) })) {
-    return { ok: false, reason: 'could not persist watchlist' }
-  }
-  PUB.authors.splice(i, 1)
-  refreshWatched()
-  scheduleControlState()
-  log(`watchlist: -${hex.slice(0, 12)}… — now ${PUB.authors.length} watched, subscription updated (no restart)`)
-  return { ok: true, removed: true }
+  return changeWatchAuthor(pk, 'unmirror')
 }
 
 // A3: this took a `text: string` until #134, and its unrecognized-verb caller passed runtime
@@ -1618,10 +1614,8 @@ function handleWatchlistControlCommand(ev) {
   if (!body || body.v !== 1 || !['mirror', 'unmirror'].includes(body.action) || !/^[0-9a-f]{64}$/i.test(String(body.target || '')) || Object.keys(body).sort().join(',') !== 'action,target,v') return { ok: false, reason: 'invalid command body' }
   if (ev.created_at <= PUB.watchlistCommandAt) return { ok: false, reason: 'superseded command' }
   const target = String(body.target).toLowerCase()
-  const result = body.action === 'mirror' ? addWatchAuthor(target) : removeWatchAuthor(target)
+  const result = changeWatchAuthor(target, body.action, ev.created_at)
   if (!result.ok) return result
-  if (!mutateConfig(c => { c.public.watchlist_command_at = ev.created_at })) return { ok: false, reason: 'could not persist command ordering' }
-  PUB.watchlistCommandAt = ev.created_at
   log(`watchlist: ${body.action} accepted from approver ${author.slice(0, 12)}… (${ev.id.slice(0, 12)}…)`)
   return { ok: true, action: body.action, target, ...result }
 }
