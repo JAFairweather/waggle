@@ -3,7 +3,7 @@
 // The console must never read config.json. This drives the real bridge-derived payload through
 // the bridge-key signer, checks its wire signature, and proves the consent lifecycle is rendered
 // as owner-observable state without creating a free-form public publishing capability.
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
@@ -32,7 +32,7 @@ writeFileSync(CFG, JSON.stringify({
   },
 }))
 
-const { buildControlState, processConsentEvent, mirrorAsked, mirrorRevoked, PUB, handleControlStateCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D } = await import('../src/bridge.mjs')
+const { buildControlState, processConsentEvent, mirrorAsked, mirrorRevoked, PUB, handleControlStateCommand, handleWatchlistControlCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D } = await import('../src/bridge.mjs')
 const { signControlState, CONTROL_STATE_KIND } = await import('../src/nostr_egress.mjs')
 const { scopeHash } = await import('../src/consent.mjs')
 
@@ -89,6 +89,27 @@ t('a fresh approver command persists and changes the setting', applied.ok && PUB
 t('the bridge emits a signed acknowledgement state', published === 1)
 const replay = handleControlStateCommand(fresh, async () => { published++; return 1 })
 t('the same command cannot be replayed', !replay.ok && PUB.controlStatePublish === !beforePublish)
+
+const mirrorTarget = getPublicKey(generateSecretKey())
+const watchCommand = (action, target, created_at = Math.floor(Date.now() / 1000) + 2, tags = [['d', WATCHLIST_COMMAND_D], ['p', getPublicKey(bridgeSk)]]) => wire(finalizeEvent({
+  kind: CONTROL_COMMAND_KIND, created_at, content: JSON.stringify({ v: 1, action, target }),
+  tags,
+}, watchedSk))
+const add = watchCommand('mirror', mirrorTarget)
+const added = handleWatchlistControlCommand(add)
+t('a signed browser mirror command persists and hot-adds a watched author', added.ok && added.added && PUB.authors.includes(mirrorTarget))
+t('the mirror and its replay watermark commit together in one config write', (() => { const p = JSON.parse(readFileSync(CFG, 'utf8')).public; return p.watch_authors.includes(mirrorTarget) && p.watchlist_command_at === add.created_at })())
+t('a browser command has a narrow schema and cannot be replayed', !handleWatchlistControlCommand(add).ok)
+const duplicateRecipient = watchCommand('mirror', getPublicKey(generateSecretKey()), add.created_at + 1, [['d', WATCHLIST_COMMAND_D], ['p', getPublicKey(bridgeSk)], ['p', getPublicKey(bridgeSk)]])
+t('a multi-recipient command cannot widen a fixed bridge target', !handleWatchlistControlCommand(duplicateRecipient).ok)
+const extraTag = watchCommand('mirror', getPublicKey(generateSecretKey()), add.created_at + 1, [['d', WATCHLIST_COMMAND_D], ['p', getPublicKey(bridgeSk)], ['client', 'untrusted']])
+t('a command address has no extensible tags', !handleWatchlistControlCommand(extraTag).ok)
+const remove = watchCommand('unmirror', mirrorTarget, add.created_at + 1)
+const removed = handleWatchlistControlCommand(remove)
+t('a signed browser unmirror command persists and hot-removes a watched author', removed.ok && removed.removed && !PUB.authors.includes(mirrorTarget))
+
+const followingPage = readFileSync(new URL('../console/following.html', import.meta.url), 'utf8')
+t('the Following console signs only the narrow watchlist command, never a bridge config request', /\['d','waggle-watchlist'\]/.test(followingPage) && /JSON\.stringify\(\{v:1,action,target\}\)/.test(followingPage) && !/fetch\([^)]*config\.json/.test(followingPage))
 
 console.log(`\n${pass}/${n} passed`)
 process.exit(pass === n ? 0 : 1)

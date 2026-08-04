@@ -41,7 +41,7 @@ import { emit, query, checkConfigRenderable } from './egress.mjs'
 import { bridgePubkey, hasBridgeKey, openSeal, openRumor, sealAndWrap, consentTosBlock, signControlState } from './nostr_egress.mjs'
 import { verifyConsent } from './consent.mjs'   // in-door consent (#131/#132, docs/CONSENT.md §8)
 import { createHash, randomBytes } from 'node:crypto'
-import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, unlinkSync, openSync, closeSync, fsyncSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // Extracted leaf modules (#154). Each is dependency-free of config and ambient state, which is why
@@ -324,6 +324,7 @@ const PUB = cfg.public ? {
   controlStatePublish: /^(1|true|yes|on)$/i.test(String(cfg.public.control_state_publish || '')),
   controlStateRefreshSecs: Number(cfg.public.control_state_refresh_secs != null ? cfg.public.control_state_refresh_secs : 300),
   controlStateCommandAt: Number(cfg.public.control_state_command_at || 0),
+  watchlistCommandAt: Number(cfg.public.watchlist_command_at || 0),
 } : null
 
 // §7 version-binding, from ONE producer (crew review of #199 → #200). The gate's expected hash, the
@@ -1264,12 +1265,28 @@ function fetchEventById(id, mkSocket) {
 }
 
 function mutateConfig(fn) {
+  let temporary = null
   try {
     const fresh = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'))
     fn(fresh)
-    writeFileSync(CONFIG_PATH, JSON.stringify(fresh, null, 2) + '\n')
+    // Never truncate the live config in place.  A successful command must leave either the
+    // complete old document or the complete new document, including its replay watermark.
+    // fsync both the replacement and parent directory so a power loss cannot report a command
+    // accepted while silently losing the state that makes it non-replayable.
+    temporary = `${CONFIG_PATH}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
+    writeFileSync(temporary, JSON.stringify(fresh, null, 2) + '\n', { mode: 0o600 })
+    const fileFd = openSync(temporary, 'r')
+    try { fsyncSync(fileFd) } finally { closeSync(fileFd) }
+    renameSync(temporary, CONFIG_PATH)
+    temporary = null
+    const dirFd = openSync(dirname(CONFIG_PATH), 'r')
+    try { fsyncSync(dirFd) } finally { closeSync(dirFd) }
     return true
-  } catch (e) { err(`commands: config write failed: ${e.message}`); return false }
+  } catch (e) {
+    if (temporary) { try { unlinkSync(temporary) } catch { /* best-effort cleanup */ } }
+    err(`commands: config write failed: ${e.message}`)
+    return false
+  }
 }
 
 // --- watchlist hot-reload (#206 stage 1) ------------------------------------------------------
@@ -1282,37 +1299,33 @@ const WATCH_REFRESHERS = new Set()
 function refreshWatched() {
   for (const f of WATCH_REFRESHERS) { try { f() } catch (e) { err(`watchlist: refresh failed: ${e?.message || '?'}`) } }
 }
-function addWatchAuthor(pk) {
+function changeWatchAuthor(pk, action, commandAt = null) {
   const hex = String(pk || '').trim().toLowerCase()
   if (!/^[0-9a-f]{64}$/.test(hex)) return { ok: false, reason: 'not a 64-hex pubkey' }
-  if (PUB.authors.includes(hex)) return { ok: true, already: true }
-  // Persistence is the commit point.  A runtime-only addition would work until the next
-  // restart, then silently disappear — worse than refusing the operator's request.  Write
-  // first; only a durable success may alter the active filter.
-  if (!mutateConfig(c => { c.public.watch_authors = Array.from(new Set([...(c.public.watch_authors || []).map(s => String(s).toLowerCase()), hex])) })) {
+  const exists = PUB.authors.includes(hex)
+  const wantAdd = action === 'mirror'
+  if (!['mirror', 'unmirror'].includes(action)) return { ok: false, reason: 'invalid watchlist action' }
+  // The author list and signed-command watermark are one durable transaction.  If this write
+  // fails, neither state advances; an accepted command can never mutate the list without also
+  // becoming non-replayable.
+  if (!mutateConfig(c => {
+    const current = (c.public.watch_authors || []).map(s => String(s).toLowerCase())
+    c.public.watch_authors = wantAdd ? Array.from(new Set([...current, hex])) : current.filter(a => a !== hex)
+    if (commandAt != null) c.public.watchlist_command_at = commandAt
+  })) {
     return { ok: false, reason: 'could not persist watchlist' }
   }
-  PUB.authors.push(hex)
+  if (commandAt != null) PUB.watchlistCommandAt = commandAt
+  if (wantAdd && !exists) PUB.authors.push(hex)
+  if (!wantAdd && exists) PUB.authors.splice(PUB.authors.indexOf(hex), 1)
   refreshWatched()
   scheduleControlState()
-  log(`watchlist: +${hex.slice(0, 12)}… — now ${PUB.authors.length} watched, subscription updated (no restart)`)
-  return { ok: true, added: true }
+  log(`watchlist: ${wantAdd ? '+' : '-'}${hex.slice(0, 12)}… — now ${PUB.authors.length} watched, subscription updated (no restart)`)
+  return { ok: true, ...(wantAdd ? (exists ? { already: true } : { added: true }) : (exists ? { removed: true } : { already: true })) }
 }
+function addWatchAuthor(pk) { return changeWatchAuthor(pk, 'mirror') }
 function removeWatchAuthor(pk) {
-  const hex = String(pk || '').trim().toLowerCase()
-  if (!/^[0-9a-f]{64}$/.test(hex)) return { ok: false, reason: 'not a 64-hex pubkey' }
-  const i = PUB.authors.indexOf(hex)
-  if (i === -1) return { ok: true, already: true }
-  // Same transaction boundary as add: do not let a failed write create a temporary live
-  // removal that a restart reverses.
-  if (!mutateConfig(c => { c.public.watch_authors = (c.public.watch_authors || []).map(s => String(s).toLowerCase()).filter(a => a !== hex) })) {
-    return { ok: false, reason: 'could not persist watchlist' }
-  }
-  PUB.authors.splice(i, 1)
-  refreshWatched()
-  scheduleControlState()
-  log(`watchlist: -${hex.slice(0, 12)}… — now ${PUB.authors.length} watched, subscription updated (no restart)`)
-  return { ok: true, removed: true }
+  return changeWatchAuthor(pk, 'unmirror')
 }
 
 // A3: this took a `text: string` until #134, and its unrecognized-verb caller passed runtime
@@ -1517,6 +1530,7 @@ function publishWrapToRelays(wrap, mkSocket) {
 const CONTROL_STATE_DELAY_MS = 250
 const CONTROL_COMMAND_KIND = 30078
 const CONTROL_COMMAND_D = 'waggle-control'
+const WATCHLIST_COMMAND_D = 'waggle-watchlist'
 const CONTROL_COMMAND_MAX_AGE_SECS = 15 * 60
 let controlStateTimer = null
 
@@ -1581,7 +1595,7 @@ function handleControlStateCommand(ev, publish = publishControlState) {
   let sigOk; try { sigOk = verifyEvent(ev) } catch { sigOk = false }
   if (!sigOk) return { ok: false, reason: 'invalid signature' }
   const tags = ev.tags || []
-  if (!tags.some(t => t[0] === 'd' && t[1] === CONTROL_COMMAND_D) || !tags.some(t => t[0] === 'p' && String(t[1]).toLowerCase() === BRIDGE_PK)) return { ok: false, reason: 'not addressed to this bridge' }
+  if (tags.length !== 2 || tags[0]?.[0] !== 'd' || tags[0]?.[1] !== CONTROL_COMMAND_D || tags[0].length !== 2 || tags[1]?.[0] !== 'p' || String(tags[1]?.[1]).toLowerCase() !== BRIDGE_PK || tags[1].length !== 2) return { ok: false, reason: 'not addressed to this bridge' }
   const now = Math.floor(Date.now() / 1000)
   if (!Number.isInteger(ev.created_at) || ev.created_at > now + 300 || now - ev.created_at > CONTROL_COMMAND_MAX_AGE_SECS) return { ok: false, reason: 'stale command' }
   let body
@@ -1597,6 +1611,29 @@ function handleControlStateCommand(ev, publish = publishControlState) {
   Promise.resolve(publish(undefined, true)).catch(() => {})
   log(`control state: ${body.enabled ? 'ENABLED' : 'DISABLED'} by approver ${author.slice(0, 12)}… (${ev.id.slice(0, 12)}…)`)
   return { ok: true, enabled: body.enabled }
+}
+
+// A browser never writes config.json or reaches the private staging plane. It may sign this
+// exact, bridge-addressed NIP-78 command: the browser equivalent of `waggle mirror <npub>`.
+function handleWatchlistControlCommand(ev) {
+  if (!ev || ev.kind !== CONTROL_COMMAND_KIND || !PUB || !BRIDGE_PK) return { ok: false, reason: 'not a watchlist command' }
+  const author = String(ev.pubkey || '').toLowerCase()
+  if (!PUB.approvers.includes(author)) return { ok: false, reason: 'author is not an approver' }
+  let sigOk; try { sigOk = verifyEvent(ev) } catch { sigOk = false }
+  if (!sigOk) return { ok: false, reason: 'invalid signature' }
+  const tags = ev.tags || []
+  if (tags.length !== 2 || tags[0]?.[0] !== 'd' || tags[0]?.[1] !== WATCHLIST_COMMAND_D || tags[0].length !== 2 || tags[1]?.[0] !== 'p' || String(tags[1]?.[1]).toLowerCase() !== BRIDGE_PK || tags[1].length !== 2) return { ok: false, reason: 'not addressed to this bridge' }
+  const now = Math.floor(Date.now() / 1000)
+  if (!Number.isInteger(ev.created_at) || ev.created_at > now + 300 || now - ev.created_at > CONTROL_COMMAND_MAX_AGE_SECS) return { ok: false, reason: 'stale command' }
+  let body
+  try { body = JSON.parse(ev.content) } catch { return { ok: false, reason: 'invalid body' } }
+  if (!body || body.v !== 1 || !['mirror', 'unmirror'].includes(body.action) || !/^[0-9a-f]{64}$/i.test(String(body.target || '')) || Object.keys(body).sort().join(',') !== 'action,target,v') return { ok: false, reason: 'invalid command body' }
+  if (ev.created_at <= PUB.watchlistCommandAt) return { ok: false, reason: 'superseded command' }
+  const target = String(body.target).toLowerCase()
+  const result = changeWatchAuthor(target, body.action, ev.created_at)
+  if (!result.ok) return result
+  log(`watchlist: ${body.action} accepted from approver ${author.slice(0, 12)}… (${ev.id.slice(0, 12)}…)`)
+  return { ok: true, action: body.action, target, ...result }
 }
 
 function scheduleControlState() {
@@ -2146,7 +2183,7 @@ function connectPublic(url) {
       // #206: owner-console control events. NIP-78 is shared with the read-only state record,
       // but a distinct `d` tag, an approver author filter, and a bridge p-tag make this a narrow
       // command inbox rather than a general public-event subscription.
-      if (BRIDGE_PK && PUB.approvers.length) ws.send(JSON.stringify(['REQ', 'pctl', { kinds: [CONTROL_COMMAND_KIND], authors: PUB.approvers, '#d': [CONTROL_COMMAND_D], '#p': [BRIDGE_PK], since: Math.floor(Date.now() / 1000) - CONTROL_COMMAND_MAX_AGE_SECS, limit: 100 }]))
+      if (BRIDGE_PK && PUB.approvers.length) ws.send(JSON.stringify(['REQ', 'pctl', { kinds: [CONTROL_COMMAND_KIND], authors: PUB.approvers, '#d': [CONTROL_COMMAND_D, WATCHLIST_COMMAND_D], '#p': [BRIDGE_PK], since: Math.floor(Date.now() / 1000) - CONTROL_COMMAND_MAX_AGE_SECS, limit: 100 }]))
       // Re-open the record-id subscriptions on reconnect. New 440s refresh this live after
       // verification; these existing ids cover a revocation that arrives without a bridge p-tag.
       subscribeConsentRevocations()
@@ -2175,7 +2212,7 @@ function connectPublic(url) {
       try { m = JSON.parse(d.toString()) } catch { return }
       if (m[0] === 'EVENT') {
         const ev = m[2]
-        if (ev && ev.kind === CONTROL_COMMAND_KIND) { handleControlStateCommand(ev); return }
+        if (ev && ev.kind === CONTROL_COMMAND_KIND) { if (handleControlStateCommand(ev).ok) return; handleWatchlistControlCommand(ev); return }
         if (ev && (ev.kind === NIPDA.grant || ev.kind === NIPDA.revocation)) {
           const before = grantSet.size
           processGrantEvent(ev)
@@ -2222,7 +2259,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
