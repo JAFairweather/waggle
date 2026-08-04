@@ -86,7 +86,15 @@
   th{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;
     color:var(--faint);text-align:left;padding:0 12px 8px 0;border-bottom:1px solid var(--line);font-weight:600}
   td{padding:10px 12px 10px 0;border-bottom:1px solid var(--line);vertical-align:top;color:var(--dim)}
-  td.who{color:var(--text);font-family:var(--mono);font-size:12.5px;white-space:nowrap}
+  td.who{color:var(--text);min-width:220px}
+  .identity{display:flex;align-items:center;gap:10px;min-width:0}
+  .identity-avatar,.identity-fallback{width:34px;height:34px;flex:none;border-radius:50%;object-fit:cover;
+    border:1px solid var(--line-strong);background:var(--panel-2)}
+  .identity-fallback{display:grid;place-items:center;font-family:var(--display);font-weight:700;color:var(--gold-bright)}
+  .identity-copy{min-width:0;display:grid;line-height:1.2;gap:3px}
+  .identity-name{color:var(--text);font-size:13.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .identity-npub{color:var(--faint);font-family:var(--mono);font-size:10.5px;font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .record{color:var(--text);font-family:var(--mono);font-size:12.5px;white-space:nowrap}
   .pill{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;
     text-transform:uppercase;padding:2px 8px;border-radius:999px;border:1px solid}
   .pill.live{color:var(--good);border-color:var(--good)}
@@ -316,6 +324,56 @@ const CAP_LABEL = {
 const capLabel = (c) => CAP_LABEL[c] || c
 
 let lastGrants = null, lastSubjectNote = '', lastGrantor = null
+// Profiles are a presentation layer, never access policy. Kind:0 metadata is signed, but its
+// human-facing fields are still chosen by the person who owns the key, so every value is escaped
+// before it reaches the access page. A missing/bad profile falls back to the public key rather
+// than making an admission disappear.
+const profiles = new Map()
+const validPubkey = (v) => /^[0-9a-f]{64}$/i.test(String(v || ''))
+const npubOf = (pubkey) => validPubkey(pubkey) ? nip19.npubEncode(pubkey) : ''
+const profileName = (pubkey) => {
+  const p = profiles.get(pubkey)
+  return p?.display_name || p?.name || p?.nip05 || short(pubkey)
+}
+const profilePicture = (pubkey) => {
+  const picture = profiles.get(pubkey)?.picture
+  try {
+    const u = new URL(picture)
+    return /^https?:$/.test(u.protocol) ? u.href : null
+  } catch { return null }
+}
+function identityCell(pubkey) {
+  const name = profileName(pubkey)
+  const npub = npubOf(pubkey)
+  const picture = profilePicture(pubkey)
+  const avatar = picture
+    ? `<img class="identity-avatar" src="${esc(picture)}" alt="" referrerpolicy="no-referrer">`
+    : `<span class="identity-fallback" aria-hidden="true">${esc(name.slice(0, 1).toUpperCase() || '?')}</span>`
+  return `<div class="identity">${avatar}<div class="identity-copy"><span class="identity-name" title="${esc(name)}">${esc(name)}</span>`
+    + `<i class="identity-npub" title="${esc(npub)}">${esc(npub || short(pubkey))}</i></div></div>`
+}
+async function loadProfiles(pubkeys) {
+  const wanted = [...new Set(pubkeys.filter(validPubkey).map(p => p.toLowerCase()))]
+  const missing = wanted.filter(p => !profiles.has(p))
+  if (!missing.length) return
+  // Fetch public profiles separately from grants. The access list remains usable immediately;
+  // this best-effort read only replaces opaque key fragments with the owner's own kind:0 card.
+  const results = await Promise.all(RELAYS.map(url => query(url, { kinds: [0], authors: missing, limit: 500 })))
+  const newest = new Map()
+  for (const result of results) for (const event of result.out) {
+    if (!validPubkey(event?.pubkey) || !verifyEvent(event)) continue
+    if (!missing.includes(event.pubkey)) continue
+    const old = newest.get(event.pubkey)
+    if (!old || event.created_at > old.created_at) newest.set(event.pubkey, event)
+  }
+  for (const pubkey of missing) {
+    const event = newest.get(pubkey)
+    let metadata = null
+    try { metadata = event ? JSON.parse(event.content) : null } catch { /* invalid metadata remains a key fallback */ }
+    profiles.set(pubkey, metadata && typeof metadata === 'object' ? metadata : null)
+  }
+  renderRows()
+}
 function renderRows() {
   const rows = $('rows')
   if (lastGrants === null) return              // never read yet — leave the "sign in to see" prompt
@@ -325,14 +383,14 @@ function renderRows() {
   }
   rows.innerHTML = lastGrants.map(g => `
       <tr>
-        <td class="who">${esc(short(g.grantee))}</td>
+        <td class="who">${identityCell(g.grantee)}</td>
         <td><span class="pill ${g.live ? 'live' : 'revoked'}">${g.live ? 'Active' : 'Removed'}</span></td>
         <td>${esc(capLabel(g.cap))}</td>
         <td>${g.scopeLabel === 'opaque'
               ? `<span title="This approval names its channel as a salted hash, so a passer-by cannot tell which one it is. Enter the channel above and it will resolve.">Hidden</span>`
               : g.scopeLabel}</td>
         <td>${new Date(g.at * 1000).toISOString().slice(0, 16).replace('T', ' ')}</td>
-        <td class="who">${short(g.id)}</td>
+        <td class="record">${short(g.id)}</td>
         <td>${g.live && signer && signerPk === lastGrantor
             ? `<button class="btn ghost" style="margin:0;padding:5px 12px;font-size:12.5px" onclick="__revoke('${esc(g.id)}','${esc(short(g.grantee))}')">Revoke</button>`
             : ''}</td>
@@ -741,6 +799,9 @@ $('go').addEventListener('click', async () => {
     lastGrantor = grantor
     lastSubjectNote = subject ? ' bound to that subject' : ''
     renderRows()
+    // Do not make a profile relay stall hold the verified grant results hostage. Render first,
+    // then enrich each key with its latest signed kind:0 identity when the profile reads return.
+    void loadProfiles(out.map(g => g.grantee))
 
     st.className = 'status ok'
     st.textContent = `${out.filter(g => g.live).length} live · ${out.filter(g => !g.live).length} revoked · `
