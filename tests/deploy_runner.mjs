@@ -24,6 +24,9 @@ import { fileURLToPath } from 'node:url'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCRIPT = 'deploy/deploy-runner.sh'
+// Fixture trees intentionally omit the private live policy. Production uses the runner default;
+// individual tests may override this seam to prove that policy failure blocks DEPLOYED_SHA.
+process.env.WB_CONFIG_VERIFY_CMD = ':'
 let failed = 0
 const check = (cond, msg) => { if (!cond) { console.error('  ✗', msg); failed++ } else { console.log('  ✓', msg) } }
 

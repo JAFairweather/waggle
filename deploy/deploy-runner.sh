@@ -176,6 +176,13 @@ sh -c "$RESTART_CMD \"$UNIT\"" || { alarm "restart of $UNIT failed"; exit 1; }
 # --- post-deploy: what is on disk MUST equal git at the sha we shipped -------------------
 log "verifying deployed tree against $SHORT"
 if sh "$HUB/deploy/verify-deployed.sh" "$LANE" "$TREE" "$TARGET_SHA"; then
+  # Code provenance alone is not a healthy bridge. config.json is deliberately never shipped,
+  # so verify its live routing policy separately and fail closed if it is absent or incomplete.
+  CONFIG_VERIFY_CMD="${WB_CONFIG_VERIFY_CMD:-sh \"$HUB/deploy/verify-config.sh\" \"$TREE/config.json\"}"
+  if ! sh -c "$CONFIG_VERIFY_CMD"; then
+    alarm "live routing policy is incomplete or unreadable — DEPLOYED_SHA left unchanged"
+    exit 1
+  fi
   # DEPLOYED_SHA is written ONLY here — after verify passes (#136).
   #
   # It used to be written before the restart, reasoning that a crash mid-restart should still
@@ -192,7 +199,7 @@ if sh "$HUB/deploy/verify-deployed.sh" "$LANE" "$TREE" "$TARGET_SHA"; then
   # The trade, stated: provenance becomes "last VERIFIED sha" rather than "last shipped sha".
   # That is the more useful of the two — it is the question verify-deployed.sh asks anyway.
   printf '%s\n' "$TARGET_SHA" > "$TREE/DEPLOYED_SHA.tmp" && mv "$TREE/DEPLOYED_SHA.tmp" "$TREE/DEPLOYED_SHA"
-  log "deploy OK — $TREE now at $SHORT, verified"
+  log "deploy OK — $TREE now at $SHORT, code and live policy verified"
   exit 0
 else
   alarm "post-deploy drift at $SHORT — deployed tree does NOT match git; investigate now"
