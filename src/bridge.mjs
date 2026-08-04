@@ -603,6 +603,20 @@ const scopeHash = (channelId, saltHex) =>
     Buffer.from('waggle/da-scope/v1'), Buffer.from([0]), Buffer.from(String(channelId)), Buffer.from(saltHex, 'hex'),
   ])).digest('hex')
 const grantSet = new Map() // grantee pubkey -> { grantId, grantor }
+// An admission grant is also the recipient's return address. Keeping the dynamic
+// portion derived from grantSet (rather than writing it into config) makes a 441
+// remove reachability as well as authority. A configured entry can add the ergonomic
+// @handle and author bindings; an admitted-only entry deliberately has neither.
+function activeReturnLane() {
+  if (!PUB) return []
+  const byPubkey = new Map(PUB.returnLane.map(r => [r.npub_hex, r]))
+  for (const pk of grantSet.keys()) {
+    // `guest` is presentation only. It is never used as a textual routing handle:
+    // admitted-only identities receive explicit p-tags and replies, not every @guest.
+    if (!byPubkey.has(pk)) byPubkey.set(pk, { npub_hex: pk, mention: 'guest', authors: [], dynamic: true })
+  }
+  return [...byPubkey.values()]
+}
 function processGrantEvent(ev) {
   if (!ev || !ev.id || !PUB) return
   const grantors = PUB.grantors
@@ -1010,7 +1024,7 @@ async function forwardPublic(ev, why, dest, quarantine) {
   // If this public note is an admitted agent's OWN words (author === a return_lane delivery key),
   // record the repost as agent-authored so the return-lane detector never echoes it back and can
   // resolve a later reply to it. Keyed on the agent's real key, never on the bridge that signs it.
-  const agent = PUB ? ((PUB.returnLane.find(r => r.npub_hex === String(ev.pubkey || '').toLowerCase()) || {}).npub_hex || null) : null
+  const agent = PUB ? ((activeReturnLane().find(r => r.npub_hex === String(ev.pubkey || '').toLowerCase()) || {}).npub_hex || null) : null
   const nowSec = Math.floor(Date.now() / 1000)
   const { clamped, outOfRange } = clampCreated(ev.created_at, nowSec)
   if (FORWARD_MODE !== 'buzz') {
@@ -1767,7 +1781,8 @@ function agentAuthoredBy(buzzId) {
 // only ever moves bytes to an address. The one place a body could reach a prompt is the action
 // layer, where the wake is content-free and the body is read-plane data (design §5).
 async function scanReturnLane(msgs, opts = {}) {
-  if (!PUB.returnLane.length || !hasBridgeKey()) return
+  const recipients = activeReturnLane()
+  if (!recipients.length || !hasBridgeKey()) return
   const gateActive = opts.authors !== undefined            // an explicit (even empty) gate is default-closed
   const gate = gateActive ? new Set(opts.authors || []) : null
   for (const m of msgs || []) {
@@ -1785,7 +1800,7 @@ async function scanReturnLane(msgs, opts = {}) {
     const parents = tags.filter(t => t[0] === 'e' && t[1] && t[3] === 'reply').map(t => String(t[1]).toLowerCase())
     // No break: one message fans out to EVERY matching recipient, each deduped on its own
     // (source × recipient) key. "@a @b" reaching only one of them was finding #4.
-    for (const r of PUB.returnLane) {
+    for (const r of recipients) {
       const key = rlKey(m.id, r.npub_hex)
       if (rlSeen.has(key)) continue                        // this recipient already carried for this message
       // Echo: never carry the recipient's own words back. Three forms, all the agent's own:
@@ -1795,7 +1810,7 @@ async function scanReturnLane(msgs, opts = {}) {
       const boundUnique = r.authors.some(a => a === from && !PUB.sharedAuthorKeys.has(a))
       if (from === r.npub_hex || boundUnique || agentAuthoredBy(m.id) === r.npub_hex) continue
       const mentioned = ptags.includes(r.npub_hex) ||
-        new RegExp('@' + r.mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])', 'i').test(body)
+        (!r.dynamic && !!r.mention && new RegExp('@' + r.mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])', 'i').test(body))
       const repliedTo = parents.some(pid => agentAuthoredBy(pid) === r.npub_hex)
       if (!mentioned && !repliedTo) continue
       addRlSeen(key)                                       // in-memory now: no double-carry within this scan/overlap
@@ -1827,7 +1842,7 @@ async function scanReturnLane(msgs, opts = {}) {
 // stops. The bound converts it into a loud, dated, per-recipient report — and a dead-letter that
 // is logged and dropped, never a queue that grows forever.
 async function retryPendingCarries(opts = {}) {
-  if (!PUB || !PUB.returnLane.length || !hasBridgeKey()) return
+  if (!PUB || !activeReturnLane().length || !hasBridgeKey()) return
   const owed = rlPending.entries()
   if (!owed.length) return
   let landed = 0, dead = 0
@@ -2207,7 +2222,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
@@ -2282,8 +2297,8 @@ if (!process.env.WB_NO_BOOT) {
       log(`approval console: watching staging for commands from ${PUB.approvers.length} approver(s)`)
       pollCommands(); setInterval(pollCommands, 15000)
     }
-    if (PUB.scanChannels.length && PUB.returnLane.length && hasBridgeKey() && FORWARD_MODE === 'buzz') {
-      log(`return-lane scan: ${PUB.scanChannels.length} channel(s) · ${PUB.returnLane.length} recipient(s) · signer gate ${PUB.scanAuthors.length} key(s)`)
+    if (PUB.scanChannels.length && hasBridgeKey() && FORWARD_MODE === 'buzz') {
+      log(`return-lane scan: ${PUB.scanChannels.length} channel(s) · ${activeReturnLane().length} recipient(s) · signer gate ${PUB.scanAuthors.length} key(s)`)
       // Silence-is-not-calm: a configured scan with an empty gate routes NOTHING, so say so loudly
       // rather than let it look like "no mentions." Set scan_authors (or declare approvers/grantors).
       if (!PUB.scanAuthors.length) err('WARN: scan_channels configured but scan_authors gate is EMPTY — default-closed, NO mentions will route until the crew roster is set.')
