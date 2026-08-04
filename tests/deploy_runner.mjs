@@ -309,6 +309,24 @@ try {
   check(/\/\/ shipped change/.test(readFileSync(join(nt, 'src', 'log.mjs'), 'utf8')),
     'NEGATIVE CONTROL — the new code actually reached the tree')
 
+  // #104: "already current" is also a live health check. A box-side routing-policy
+  // edit can happen after a successful deploy, with no new git SHA to trigger the
+  // no-op gate. It must alarm on every tick and never restart the lane or mutate the
+  // last verified watermark.
+  rmSync(nm, { force: true })
+  const currentBadPolicy = tick(nt, CODE_SHA, nm, { WB_CONFIG_VERIFY_CMD: 'false' })
+  check(currentBadPolicy.code === 1, 'already-current with incomplete policy -> exit 1')
+  check(/policy is incomplete/.test(currentBadPolicy.out), 'already-current incomplete policy -> loud alarm')
+  check(!existsSync(nm), 'already-current incomplete policy -> lane NOT restarted')
+  check(readFileSync(join(nt, 'DEPLOYED_SHA'), 'utf8').trim() === CODE_SHA,
+    'already-current incomplete policy -> last verified SHA is retained')
+  const currentBadPolicyAgain = tick(nt, CODE_SHA, nm, { WB_CONFIG_VERIFY_CMD: 'false' })
+  check(currentBadPolicyAgain.code === 1 && /will re-alarm next tick/.test(currentBadPolicyAgain.out),
+    'already-current incomplete policy -> subsequent tick re-alarms')
+  const currentGoodPolicy = tick(nt, CODE_SHA, nm)
+  check(currentGoodPolicy.code === 0 && /already current/.test(currentGoodPolicy.out),
+    'already-current with healthy policy -> exits cleanly after verification')
+
   // Being unable to answer the question is not a reason to skip work: a recorded SHA the hub
   // does not have (force-push, rebase, a restored tree) must fall through to a full deploy.
   rmSync(nm, { force: true })
