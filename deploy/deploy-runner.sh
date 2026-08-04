@@ -64,6 +64,9 @@ SHIP='src tests tools package.json package-lock.json config.example.json'
 
 log() { echo "deploy-runner[$LANE] $*"; }
 alarm() { echo "deploy-runner[$LANE] ALARM: $*" >&2; }
+# The private routing policy is a deploy gate even when the new commit changes no shipped code.
+# A docs-only tick must never advance DEPLOYED_SHA past an incomplete live config.
+CONFIG_VERIFY_CMD="${WB_CONFIG_VERIFY_CMD:-sh \"$HUB/deploy/verify-config.sh\" \"$TREE/config.json\"}"
 
 # Default CI-state resolver: GitHub Actions records results as CHECK-RUNS (not legacy commit
 # statuses), so ask the check-runs API for this exact sha and aggregate. Unauthenticated for a
@@ -145,8 +148,12 @@ if [ "$DEPLOYED_SHA" != "none" ] && git -C "$HUB" cat-file -e "${DEPLOYED_SHA}^{
   CHANGED=$(git -C "$HUB" diff --name-only "$DEPLOYED_SHA" "$TARGET_SHA" -- $SHIP 2>/dev/null || echo '?')
   if [ -z "$CHANGED" ]; then
     log "no shipped files changed between $(git -C "$HUB" rev-parse --short "$DEPLOYED_SHA") and $SHORT — recording without restarting"
-    printf '%s\n' "$TARGET_SHA" > "$TREE/DEPLOYED_SHA.tmp" && mv "$TREE/DEPLOYED_SHA.tmp" "$TREE/DEPLOYED_SHA"
+    if ! sh -c "$CONFIG_VERIFY_CMD"; then
+      alarm "live routing policy is incomplete or unreadable — DEPLOYED_SHA left unchanged"
+      exit 1
+    fi
     if sh "$HUB/deploy/verify-deployed.sh" "$LANE" "$TREE" "$TARGET_SHA"; then
+      printf '%s\n' "$TARGET_SHA" > "$TREE/DEPLOYED_SHA.tmp" && mv "$TREE/DEPLOYED_SHA.tmp" "$TREE/DEPLOYED_SHA"
       log "no-op deploy OK — $TREE already matches $SHORT, verified, lane untouched"
       exit 0
     else
@@ -178,7 +185,6 @@ log "verifying deployed tree against $SHORT"
 if sh "$HUB/deploy/verify-deployed.sh" "$LANE" "$TREE" "$TARGET_SHA"; then
   # Code provenance alone is not a healthy bridge. config.json is deliberately never shipped,
   # so verify its live routing policy separately and fail closed if it is absent or incomplete.
-  CONFIG_VERIFY_CMD="${WB_CONFIG_VERIFY_CMD:-sh \"$HUB/deploy/verify-config.sh\" \"$TREE/config.json\"}"
   if ! sh -c "$CONFIG_VERIFY_CMD"; then
     alarm "live routing policy is incomplete or unreadable — DEPLOYED_SHA left unchanged"
     exit 1

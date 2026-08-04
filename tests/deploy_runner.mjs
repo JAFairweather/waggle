@@ -248,6 +248,19 @@ try {
     'docs-only -> SHA still recorded, so the next tick is not re-evaluated')
   check(/verified/.test(docsTick.out), 'docs-only -> tree still VERIFIED, not merely assumed')
 
+  // #104: the no-op path is still a deploy decision. It must refuse an incomplete private
+  // routing policy and leave the old watermark so the next timer tick re-alarms.
+  const policyTree = join(work, 'tree-noop-policy')
+  mkdirSync(policyTree, { recursive: true })
+  const policyMarker = join(policyTree, '.restarted')
+  const policyBase = tick(policyTree, TARGET, policyMarker)
+  check(policyBase.code === 0, 'no-op policy gate: baseline deploy succeeds')
+  const policyDocs = tick(policyTree, DOCS_SHA, policyMarker, { WB_CONFIG_VERIFY_CMD: 'false' })
+  check(policyDocs.code === 1, 'docs-only with incomplete policy -> exit 1')
+  check(/policy is incomplete/.test(policyDocs.out), 'docs-only incomplete policy -> loud alarm')
+  check(readFileSync(join(policyTree, 'DEPLOYED_SHA'), 'utf8').trim() === TARGET,
+    'docs-only incomplete policy -> old DEPLOYED_SHA retained for retry')
+
   // NEGATIVE CONTROL. The checks above pass just as happily if the gate skipped everything
   // unconditionally — a runner that never restarts and one that restarts only when needed are
   // indistinguishable until a real code change is put through it.
