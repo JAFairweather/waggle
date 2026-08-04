@@ -32,7 +32,7 @@ Waggle lets a private community meet the open network on its own terms. One dedi
 
 Members can federate an opted-in post outward under their own Nostr keys. Replies and outside messages come back to a door that is closed by default: a person admits what belongs in the room. Sealed direct and group traffic is carried, never opened.
 
-The bridge holds only its own two operational identities—its Buzz posting key and its Nostr bridge key—and never holds a member’s key. That makes the bridge a route with a narrow, visible job, rather than a proxy for everyone’s voice.
+The bridge uses only its own operational identities—its Buzz poster and Nostr transport identity—and never holds a member’s key. The Nostr identity can sign and decrypt through a NIP-46 bunker; Buzz posting still uses the dedicated local CLI key. That makes the bridge a route with a narrow, visible job, rather than a proxy for everyone’s voice.
 
 ---
 
@@ -82,7 +82,7 @@ The bridge holds only its own two operational identities—its Buzz posting key 
 
 Most bridges make a private community open, make a bot speak for its members, or ask a service to hold everyone’s keys. Waggle does none of those.
 
-One boundary, one bridge identity, and evidence that matches the action: signed grants and public control state, plus durable delivery and operational records. The bridge routes; it does not author. Admission is explicit, signed, and revocable. The safety story is deliberately operational: narrow custody, observable crossings, durable delivery records, and a re-mintable bridge key.
+One boundary, dedicated bridge identities, and evidence that matches the action: signed grants and public control state, plus durable delivery and operational records. Members author outward posts themselves; where Buzz requires a bridge-authored carrier or repost, Waggle preserves and verifies the source provenance rather than pretending the carrier is the speaker. Admission is explicit, signed, and revocable. The safety story is deliberately operational: narrow custody, observable crossings, durable delivery records, and re-mintable bridge identities.
 
 ---
 

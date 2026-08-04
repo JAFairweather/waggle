@@ -5,8 +5,9 @@ community and the open Nostr network. Public posts from your community members
 federate outward under their own keys; replies from the open network come back
 through a **default-closed quarantine** that a human clears with a one-word,
 in-channel approval. Sealed lanes carry end-to-end-encrypted DM and group traffic
-straight through, untouched. The bridge is **non-custodial**: it holds exactly one
-private key — its own posting identity — and never a member's.
+straight through, untouched. The bridge is **non-custodial with respect to members**:
+it never holds a member's key. Its dedicated Buzz poster still needs a local CLI key;
+its Nostr transport identity can instead sign and decrypt through a NIP-46 bunker.
 
 Standing one up is roughly two dozen steps across identities, a host, configuration,
 discoverability, and admission — with private keys moving between several of them. No
@@ -76,6 +77,12 @@ it, and you seat its credentials on the host yourself.
   never leaves your machine; only the public tag is emitted.
 - **Publish the agent profile with a PNG avatar, not SVG.** Buzz renders SVG as a blank
   circle, which reads as an impostor account.
+
+For the Nostr transport identity, prefer a remote signer: seat a mode-0600
+`WAGGLE_BUNKER_URI_FILE` and its mode-0600 `WAGGLE_NIP46_CLIENT_NSEC_FILE`. The second file is
+only the revocable NIP-46 connection key, not the identity nsec. Both must be regular files,
+never symlinks. Local-key mode remains available for development and migration; do not confuse
+it with the still-local `BUZZ_PRIVATE_KEY` used by the Buzz CLI.
 
 ## 2 · Configuration — the knobs that matter
 
@@ -160,6 +167,15 @@ in [deploy/README.md](../deploy/README.md).
 
 `waggle-init.mjs --check` rolls the config half of this into one readiness verdict; the
 host half is yours to confirm on the box.
+
+### Participant and agent authority
+
+Admission and instruction authority are separate grants. An `admit` grant lets an outside
+identity use the bridge lane. A `task` or `task+act` grant lets that identity's own authenticated
+message instruct a particular agent runtime. A working-channel carrier additionally needs its
+own `task-relay` grant; that makes it transport, never the original author. Missing, stale,
+revoked, or unverifiable authority fails closed to data-only delivery. Quoted or forwarded
+third-party text stays data even when the surrounding message is authorised.
 
 ## When it's *not* working
 
