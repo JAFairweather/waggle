@@ -16,7 +16,7 @@
 // `bridgePubkey()`, `hasBridgeKey()`, `openSealed()`, `sealAndWrap()`.
 //
 // INV-A3-2  exactly one function per transport invokes a signer. This is the Nostr one.
-import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey } from 'nostr-tools/pure'
+import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import * as nip44 from 'nostr-tools/nip44'
 
@@ -255,6 +255,22 @@ const CATALOGUE = {
         carried(body).replace(/\r/g, '').split('\n').join('\n> ') +
         `\n\n_carried out by waggle's return lane. Replying to this message reaches nobody; ` +
         `post from your own key and the bridge brings it back in._`
+    },
+  },
+  // Machine-readable carrier contract for a grant-aware Nvoy runtime. The original kind:9 is
+  // embedded byte-for-byte in semantic fields and verified again here; Waggle's seal proves only
+  // transport/channel provenance and never replaces the original author's signature.
+  return_task_carry: {
+    whys: ['mention', 'reply'],
+    build: ({ channel, why, source }, spec) => {
+      const ch = String(channel || '').toLowerCase()
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(ch)) reject('task carry channel is not a UUID')
+      if (!spec.whys.includes(why)) reject(`task carry reason not in {${spec.whys.join('|')}}: ${JSON.stringify(why)}`)
+      const ev = source && typeof source === 'object' && !Array.isArray(source) ? JSON.parse(JSON.stringify(source)) : reject('task carry source is not an event')
+      if (Object.keys(ev).sort().join(',') !== 'content,created_at,id,kind,pubkey,sig,tags' || ev.kind !== 9) reject('task carry source is not an exact kind:9 wire event')
+      let ok = false; try { ok = verifyEvent(ev) } catch { ok = false }
+      if (!ok) reject('task carry source signature is invalid')
+      return JSON.stringify({ v: 1, type: 'waggle-channel-task-carry', channel: ch, reason: why, source: ev })
     },
   },
   // In-door consent request (docs/CONSENT.md §5). waggle's FIRST unsolicited outbound seal to a

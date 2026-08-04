@@ -264,6 +264,9 @@ const PUB = cfg.public ? {
   returnLane: (cfg.public.return_lane || []).map(r => ({
     npub_hex: String(r.npub_hex || r.npub || '').toLowerCase(),
     mention: String(r.mention || '').replace(/^@/, ''),
+    // Typed carries preserve a complete signed source event for Nvoy's two-grant channel
+    // authority path. Omitted stays on the human-readable, data-only legacy carry.
+    protocol: String(r.protocol || '') === 'nvoy-task-carry-v1' ? 'nvoy-task-carry-v1' : null,
     // The Buzz-side key(s) that sign THIS agent's own words in-channel. Distinct from npub_hex:
     // npub_hex is the delivery address (the agent's real Nostr key, which the community relay
     // will not serve), while an external agent's posts arrive signed by a Buzz-side key. Binding
@@ -625,7 +628,7 @@ function activeReturnLane() {
   for (const pk of grantSet.keys()) {
     // `guest` is presentation only. It is never used as a textual routing handle:
     // admitted-only identities receive explicit p-tags and replies, not every @guest.
-    if (!byPubkey.has(pk)) byPubkey.set(pk, { npub_hex: pk, mention: 'guest', authors: [], dynamic: true })
+    if (!byPubkey.has(pk)) byPubkey.set(pk, { npub_hex: pk, mention: 'guest', authors: [], protocol: null, dynamic: true })
   }
   return [...byPubkey.values()]
 }
@@ -1833,6 +1836,27 @@ function agentAuthoredBy(buzzId) {
   return e && e.agent ? e.agent : null
 }
 
+function sourceWireEvent(message) {
+  if (!message || typeof message !== 'object') return null
+  const event = { id: message.id, pubkey: message.pubkey, created_at: message.created_at,
+    kind: message.kind, tags: message.tags, content: message.content, sig: message.sig }
+  if (event.kind !== 9 || !/^[0-9a-f]{64}$/.test(String(event.id || '')) ||
+      !/^[0-9a-f]{64}$/.test(String(event.pubkey || '')) || !Array.isArray(event.tags) ||
+      typeof event.content !== 'string' || !/^[0-9a-f]{128}$/.test(String(event.sig || ''))) return null
+  let ok = false; try { ok = verifyEvent(JSON.parse(JSON.stringify(event))) } catch { ok = false }
+  return ok ? event : null
+}
+
+function carryDescriptor(recipient, message, why, channel) {
+  if (recipient.protocol !== 'nvoy-task-carry-v1') {
+    return { template: 'return_carry', slots: { mention: recipient.mention, why, body: String(message.content || '') } }
+  }
+  const ch = String(channel || '').toLowerCase()
+  const source = sourceWireEvent(message)
+  if (!UUID_RE.test(ch) || !source) throw new Error('typed task carry requires a resolved scan-channel UUID and a valid signed kind:9 source event')
+  return { template: 'return_task_carry', slots: { channel: ch, why, source } }
+}
+
 // Scan a batch of channel messages for return-lane triggers and carry each out — exactly once.
 // Two trigger types:
 //   • @mention — a resolved p-tag EXACTLY equal to the recipient's delivery key (Buzz resolves an
@@ -1890,11 +1914,13 @@ async function scanReturnLane(msgs, opts = {}) {
         (!r.dynamic && !!r.mention && new RegExp('@' + r.mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])', 'i').test(body))
       const repliedTo = parents.some(pid => agentAuthoredBy(pid) === r.npub_hex)
       if (!mentioned && !repliedTo) continue
+      const why = repliedTo && !mentioned ? 'reply' : 'mention'
+      let descriptor
+      try { descriptor = carryDescriptor(r, m, why, opts.channel) }
+      catch (e) { err(`RETURN drop[task-carry]: ${String(m.id).slice(0, 12)}… -> ${r.npub_hex.slice(0, 12)}…: ${e.message}`); continue }
       addRlSeen(key)                                       // in-memory now: no double-carry within this scan/overlap
-      const accepted = await returnLaneSend(r.npub_hex, {
-        template: 'return_carry',
-        slots: { mention: r.mention, why: repliedTo && !mentioned ? 'reply' : 'mention', body },
-      }, { src: m.id, why: repliedTo && !mentioned ? 'reply' : 'mention' }, opts.publish)
+      const accepted = await returnLaneSend(r.npub_hex, descriptor,
+        { src: m.id, why, protocol: r.protocol || 'return-carry-v1', channel: opts.channel || null }, opts.publish)
       // Persist-on-landed: durable dedup only once the seal reached a relay. A silent 0/N is rolled
       // back so the overlap re-read (and a restart) re-carry it — a rare re-carry beats a lost mention.
       if (accepted >= 1) {
@@ -1904,7 +1930,8 @@ async function scanReturnLane(msgs, opts = {}) {
         dropRlSeen(key)
         // Owed, durably. The overlap re-read may still catch it first; enqueue is idempotent and
         // does not reset the attempt count, so the two paths cannot inflate each other.
-        rlPending.enqueue(key, { to: r.npub_hex, mention: r.mention, why: repliedTo && !mentioned ? 'reply' : 'mention', body, src: m.id })
+        rlPending.enqueue(key, { to: r.npub_hex, mention: r.mention, why, body, src: m.id,
+          protocol: r.protocol || null, channel: opts.channel || null, source: r.protocol === 'nvoy-task-carry-v1' ? sourceWireEvent(m) : null })
       }
     }
   }
@@ -1935,10 +1962,14 @@ async function retryPendingCarries(opts = {}) {
       continue
     }
     const n = rlPending.attempt(key)                            // recorded BEFORE the send
-    const accepted = await returnLaneSend(item.to, {
-      template: 'return_carry',
-      slots: { mention: item.mention, why: item.why, body: item.body },
-    }, { src: item.src, why: item.why, retry: n }, opts.publish)
+    let descriptor
+    try {
+      descriptor = item.protocol === 'nvoy-task-carry-v1'
+        ? { template: 'return_task_carry', slots: { channel: item.channel, why: item.why, source: item.source } }
+        : { template: 'return_carry', slots: { mention: item.mention, why: item.why, body: item.body } }
+    } catch (e) { err(`RETURN retry invalid: ${String(item.src).slice(0, 12)}…: ${e.message}`); rlPending.remove(key); continue }
+    const accepted = await returnLaneSend(item.to, descriptor,
+      { src: item.src, why: item.why, protocol: item.protocol || 'return-carry-v1', channel: item.channel || null, retry: n }, opts.publish)
     if (accepted >= 1) {
       markRlSeen(key)
       rlPending.remove(key)
@@ -2056,7 +2087,7 @@ function scanChannel(ch, fetchPage = scanFetchPage) {
         // A full page still above the floor may be truncating the backlog — walk back. Stop once a
         // page yields nothing new, so a same-timestamp cluster can never spin forever.
         if (added > 0 && (msgs || []).length >= SCAN_PAGE_LIMIT && Number.isFinite(oldest) && oldest > floor) return page(oldest)
-        try { await scanReturnLane(acc, { authors: PUB.scanAuthors }) }
+        try { await scanReturnLane(acc, { authors: PUB.scanAuthors, channel: ch }) }
         catch (er) { err(`scan: return-lane carry failed for ${String(ch).slice(0, 8)}…: ${er.message}`) }
         // The cursor advances regardless of any 0/N carry above (a dropped rlSeen key re-carries only
         // while it stays inside the overlap window, and each such attempt is itself a loud 0/N). So the
