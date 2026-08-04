@@ -38,7 +38,7 @@ import WebSocket from 'ws'
 import { verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import { emit, query, checkConfigRenderable } from './egress.mjs'
-import { bridgePubkey, hasBridgeKey, openSeal, openRumor, sealAndWrap, consentTosBlock, signControlState } from './nostr_egress.mjs'
+import { bridgePubkey, bridgeSignerMode, hasBridgeKey, openSeal, openRumor, sealAndWrap, consentTosBlock, signControlState } from './nostr_egress.mjs'
 import { verifyConsent } from './consent.mjs'   // in-door consent (#131/#132, docs/CONSENT.md §8)
 import { createHash, randomBytes } from 'node:crypto'
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, unlinkSync, openSync, closeSync, fsyncSync } from 'node:fs'
@@ -1611,7 +1611,7 @@ async function publishControlState(publish = publishControlStateToRelays, force 
   const state = buildControlState()
   if ((!PUB?.controlStatePublish && !force) || !state || !hasBridgeKey()) return 0
   let event
-  try { event = signControlState(state) }
+  try { event = await signControlState(state) }
   catch (e) { err(`control state: refused to sign: ${e?.message || '?'}`); return 0 }
   const accepted = await publish(event).catch(() => 0)
   if (accepted >= 1) log(`control state -> ${accepted}/${PUB.relays.length} relay(s): ${state.follows.length} followed author(s) (${event.id.slice(0, 12)}…)`)
@@ -1784,7 +1784,7 @@ async function postRelay(ev, sender, dest, wantCh, body) {
     err(`RELAY[buzz] ERR -> ${dest}: ${e.message} — claim rolled back, will retry`)
   })
 }
-function handleRelayIngress(ev) {
+async function handleRelayIngress(ev) {
   if (!hasBridgeKey() || !PUB) return
   markLatency(ev.id, 'relay.observed')
   const nowMs = Date.now()
@@ -1796,13 +1796,13 @@ function handleRelayIngress(ev) {
   relayDecWin.push(nowMs)
   // ---- expensive step: decryption of UNAUTHENTICATED input (the §7 DoS surface) ----
   let seal
-  try { seal = openSeal(ev) }
+  try { seal = await openSeal(ev) }
   catch { return relayDrop('decrypt', ev.id) }
   let ok = false
   try { ok = verifyEvent(seal) } catch { ok = false }
   if (!ok || seal.kind !== 13) return relayDrop('verify', ev.id)            // authorship proof (§2.4)
   let rumor
-  try { rumor = openRumor(seal) }
+  try { rumor = await openRumor(seal) }
   catch { return relayDrop('decrypt', ev.id) }
   if (!rumor || String(rumor.pubkey) !== String(seal.pubkey)) return relayDrop('mismatch', ev.id) // bind unsigned rumor
   // ---- the sender is now AUTHENTICATED: every drop below is ACKED ----
@@ -2406,6 +2406,7 @@ if (!process.env.WB_NO_BOOT) {
     if (problems.length) { err('FATAL: refusing to start — a value that cannot render would silently drop every message on that path.'); process.exit(1) }
   }
   log(`waggle — mode=${FORWARD_MODE}, ${TARGETS.length} recipients, ${RELAYS.length} relays, ${PLANE_AUTHORS.length} channel plane(s), dm-since=${SINCE} (${SINCE_SECS}s), chan-since=${CHANNEL_SINCE} (${CHANNEL_SINCE_SECS}s)`)
+  log(`  Nostr identity signer: ${bridgeSignerMode() === 'nip46' ? 'REMOTE (NIP-46; identity nsec absent from host)' : bridgeSignerMode() === 'local' ? 'LOCAL (legacy BUZZ_PRIVATE_KEY)' : 'OFF'}`)
   if (!SEALED_LANES) {
     log('sealed lanes: DISABLED (SEALED_LANES=off) — DM + Concord channel routing OFF; running PUBLIC read lane only')
     if (!PUB) { err('FATAL: SEALED_LANES=off but no public read lane configured (cfg.public.inbox) — nothing to do.'); process.exit(1) }

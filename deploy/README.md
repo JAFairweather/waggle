@@ -249,6 +249,27 @@ BUZZ_PRIVATE_KEY=...           # the BRIDGE posting identity — never an agent 
 BUZZ_AUTH_TAG=...
 ```
 
+### Keyless Nostr identity signing (NIP-46)
+
+The relay-facing Nostr lanes can sign and perform NIP-44 through a bunker, so the bridge identity
+nsec never exists on this host. Put the shareable bunker URI and its dedicated NIP-46 client
+credential in separate regular files owned by the service user, both mode `0600`, then add only
+their paths to the service environment:
+
+```ini
+WAGGLE_BUNKER_URI_FILE=/etc/waggle/credentials/bridge.bunker-uri
+WAGGLE_NIP46_CLIENT_NSEC_FILE=/etc/waggle/credentials/bridge.client-nsec
+```
+
+Both variables are required together. Symlinks, empty files, and files readable by group or
+world are refused at startup. The client credential authenticates this one bunker session; it
+cannot sign as the bridge identity. Startup reports `Nostr identity signer: REMOTE` without
+logging either credential or URI.
+
+This first #54 slice covers Nostr seals, wraps, consent asks, control state, and NIP-44 opening.
+Buzz channel posting still uses the `buzz` CLI and therefore still requires `BUZZ_PRIVATE_KEY`;
+do not remove it from a `FORWARD_MODE=buzz` service yet.
+
 
 ## Admission grants (§4.1 S3) — who may admit a participant
 

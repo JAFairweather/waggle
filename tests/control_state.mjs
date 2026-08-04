@@ -57,7 +57,7 @@ const revocation = wire(finalizeEvent({ kind: 441, created_at: now + 1, content:
 processConsentEvent(revocation)
 t('the participant withdrawal becomes revoked', stateOf() === 'revoked' && mirrorRevoked.has(watched))
 
-const signed = wire(signControlState(buildControlState()))
+const signed = wire(await signControlState(buildControlState()))
 t('state is a signed NIP-78 application event', signed.kind === CONTROL_STATE_KIND && verifyEvent(signed))
 t('state has the fixed address and no secret/config fields',
   signed.tags.some(t => t[0] === 'd' && t[1] === 'waggle-control-state') &&
@@ -72,14 +72,14 @@ t('state contains only the declared owner-visible fields',
 
 const currentState = buildControlState()
 const { v: legacyV, observed_at: legacyObservedAt, hive: legacyHive, bridge: legacyBridge, publishing: legacyPublishing, follows: legacyFollows } = currentState
-const legacy = signControlState({ v: legacyV, observed_at: legacyObservedAt, hive: legacyHive, bridge: legacyBridge, publishing: legacyPublishing, follows: legacyFollows })
+const legacy = await signControlState({ v: legacyV, observed_at: legacyObservedAt, hive: legacyHive, bridge: legacyBridge, publishing: legacyPublishing, follows: legacyFollows })
 t('a legacy v1 control state remains signable for existing bridges', verifyEvent(wire(legacy)) && !('operations' in JSON.parse(legacy.content)))
 
 let rejected = false
-try { signControlState({ ...buildControlState(), follows: [{ pubkey: watched, consent: 'free prose' }] }) } catch { rejected = true }
+try { await signControlState({ ...buildControlState(), follows: [{ pubkey: watched, consent: 'free prose' }] }) } catch { rejected = true }
 t('an arbitrary status cannot be signed', rejected)
 let invented = false
-try { signControlState({ ...buildControlState(), operations: { ...buildControlState().operations, drops: { ...buildControlState().operations.drops, narrative: 'invented log text' } } }) } catch { invented = true }
+try { await signControlState({ ...buildControlState(), operations: { ...buildControlState().operations, drops: { ...buildControlState().operations.drops, narrative: 'invented log text' } } }) } catch { invented = true }
 t('an arbitrary operational field cannot be signed', invented)
 
 const command = (sk, enabled, created_at = Math.floor(Date.now() / 1000), target = getPublicKey(bridgeSk)) => wire(finalizeEvent({
