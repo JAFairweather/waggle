@@ -50,7 +50,7 @@ if lane == "sealed":
     channels = config.get("channels") or []
     names = {r.get("name") for r in recipients if isinstance(r, dict) and r.get("name")}
     print("live sealed routing policy: %s" % sys.argv[1])
-    valid_relay = lambda value: isinstance(value, str) and (lambda u: u.scheme == "wss" and bool(u.netloc) and not u.username and not u.password)(urlparse(value))
+    valid_relay = lambda value: isinstance(value, str) and (lambda u: u.scheme == "wss" and bool(u.netloc) and not u.username and not u.password and not u.query and not u.fragment)(urlparse(value))
     bad_relays = [r for r in relays if not valid_relay(r)]
     if not relays or bad_relays:
         print("  MISSING  relays         need wss:// relay URLs with hosts (%d invalid)" % len(bad_relays)); fail = 1

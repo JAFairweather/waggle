@@ -59,6 +59,9 @@ check(sealedBad.code === 2 && /MISSING  channels/.test(sealedBad.out),
 const sealedBadRelay = verifyPolicy({ ...sealedPolicy, relays: ['not-a-websocket'] }, 'sealed')
 check(sealedBadRelay.code === 2 && /MISSING  relays/.test(sealedBadRelay.out),
   'sealed policy fails closed on a malformed relay URL')
+const sealedCredentialRelay = verifyPolicy({ ...sealedPolicy, relays: ['wss://relay.example/?token=secret'] }, 'sealed')
+check(sealedCredentialRelay.code === 2 && /MISSING  relays/.test(sealedCredentialRelay.out),
+  'sealed policy fails closed on relay URL query credentials')
 const sealedBadInbox = verifyPolicy({ ...sealedPolicy, recipients: [{ ...seat, inbox: 'not-an-inbox' }] }, 'sealed')
 check(sealedBadInbox.code === 2 && /MISSING  recipients/.test(sealedBadInbox.out),
   'sealed policy fails closed on a malformed delivery inbox UUID')
