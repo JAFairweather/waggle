@@ -145,14 +145,14 @@ that merely ran.** The suite was green through all of them.
 
 ## Tests
 
-`npm test` — 41 suites, against the real exported functions with synthetic events. No sockets,
+`npm test` — 42 suites, against the real exported functions with synthetic events. No sockets,
 no production state, no writes outside a temp dir.
 
-boot · suite roster · off-box policy protocol · policy journal · policy-owned Buzz artifacts · off-box policy service · Nostr remote signer · read resilience · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant
+boot · suite roster · off-box policy protocol · policy journal · policy-owned Buzz artifacts · off-box policy service · forced-command policy runner · Nostr remote signer · read resilience · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant
 admission · admission return-lane lifecycle · message rendering · deployed-build verification · routing-policy snapshot · latency trace · return lane · return-lane scan · typed channel task carry ·
 return-lane no-miss · return-lane pending · relay ingress · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · recipient DM relays · DM relay-list publisher · watchlist hot-reload · signed owner control state
 
-CI runs them on push and PR. **If a run reports fewer than 41, the branch is on a stale base.**
+CI runs them on push and PR. **If a run reports fewer than 42, the branch is on a stale base.**
 The count of record is the `test` script in `package.json`; a prose count that disagrees with it
 is the prose being wrong.
 
