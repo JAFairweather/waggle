@@ -27,7 +27,7 @@ process.env.RLPENDING_PATH = resolve(dir, 'pending.log')
 process.env.BUZZ_PRIVATE_KEY = Buffer.from(bridgeSk).toString('hex')
 process.env.FORWARD_MODE = 'buzz'; process.env.WB_NO_BOOT = '1'
 
-const { scanReturnLane, PUB, grantSet } = await import('../src/bridge.mjs')
+const { scanReturnLane, sourceWireRejectReason, PUB, grantSet } = await import('../src/bridge.mjs')
 grantSet.set(participant, { grantId: '1'.repeat(64), grantor: author })
 let pass = 0, fail = 0
 const ok = (name, value) => { console.log(`${value ? 'ok  ' : 'FAIL'} — ${name}`); value ? pass++ : fail++ }
@@ -45,6 +45,10 @@ ok('the complete source wire event survives field-for-field',
   ['id', 'pubkey', 'created_at', 'kind', 'content', 'sig'].every(key => carry.source[key] === source[key]) &&
   JSON.stringify(carry.source.tags) === JSON.stringify(source.tags) && verifyEvent(JSON.parse(JSON.stringify(carry.source))))
 ok('the original signer—not Waggle—remains independently provable', carry.source.pubkey === author && carry.source.pubkey !== bridge)
+ok('source diagnostics disclose only field shape, never signed values',
+  sourceWireRejectReason({ ...source, sig: undefined }) === 'sig:undefined:0' &&
+  sourceWireRejectReason({ ...source, content: 7 }) === 'content:number' &&
+  sourceWireRejectReason({ ...source, content: source.content + ' tampered' }) === 'signature-or-id-mismatch')
 
 const second = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 1785870002,
   tags: [['p', participant]], content: 'another signed source' }, authorSk)))
