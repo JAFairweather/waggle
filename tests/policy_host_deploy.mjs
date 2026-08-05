@@ -85,6 +85,8 @@ ok('policy host pulls code without a GitHub-to-production SSH credential',
 ok('only an exact commit with successful CI can promote',
   deployRunner.includes('TARGET_SHA=$(git -C "$HUB" rev-parse') && deployRunner.includes('case "$STATE"') &&
   deployRunner.includes('success)') && deployRunner.includes('failure)') && deployRunner.includes('pending)'))
+ok('GitHub CI promotion requires the complete reported check-run set',
+  deployRunner.includes('check-runs?per_page=100') && deployRunner.includes('r.length!==total'))
 ok('release archive is a closed runtime list and excludes host policy and credentials',
   deployRunner.includes('"$TARGET_SHA" src tools deploy package.json package-lock.json') &&
   !deployRunner.includes('config.json') && !deployRunner.includes('poster.bunker-uri'))
@@ -128,6 +130,18 @@ const promoted = spawnSync('/bin/sh', ['deploy/policy-host-deploy-runner.sh'], {
 ok('green exact commit promotes and verifies a staged release', promoted.status === 0 && existsSync(resolve(fixtureTree, 'package.json')))
 ok('successful promotion retains the prior release', existsSync(resolve(fixtureReleases, 'previous', 'previous-proof')))
 ok('successful promotion records the exact verified SHA', readFileSync(fixtureSha, 'utf8').trim() === fixtureHead)
+
+// A successful-looking first page must not authorize promotion when total_count proves another
+// check run was omitted. This drives the real GitHub parsing path with only curl replaced.
+const fakeBin = resolve(deployFixture, 'bin')
+mkdirSync(fakeBin)
+writeFileSync(resolve(fakeBin, 'curl'), `#!/bin/sh\nprintf '%s\\n' '{"total_count":2,"check_runs":[{"status":"completed","conclusion":"success"}]}'\n`, { mode: 0o700 })
+const truncated = spawnSync('/bin/sh', ['deploy/policy-host-deploy-runner.sh'], { cwd: root,
+  env: { ...fixtureEnv, WP_REF: fixtureHead, WP_SHA_FILE: resolve(deployFixture, 'truncated-sha'),
+    WP_CI_STATE_CMD: '', PATH: `${fakeBin}:${process.env.PATH}` }, encoding: 'utf8' })
+ok('NEGATIVE CONTROL — a truncated successful check-run page fails closed',
+  truncated.status === 0 && /CI state unavailable/.test(truncated.stderr) &&
+  !existsSync(resolve(deployFixture, 'truncated-sha')))
 
 // Create a second local commit, force final verification to fail, and prove directory rotation
 // restores the first candidate while leaving its SHA as the last verified deployment.

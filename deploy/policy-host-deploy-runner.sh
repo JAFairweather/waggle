@@ -26,12 +26,15 @@ mkdir -p "$RELEASE_ROOT"
 
 ci_state_github() {
   sha=$1
-  url="https://api.github.com/repos/$SLUG/commits/$sha/check-runs"
+  # One complete page is sufficient only when GitHub says every run fit on it. If a repository
+  # ever grows past 100 checks, fail closed instead of promoting from a successful-looking prefix.
+  url="https://api.github.com/repos/$SLUG/commits/$sha/check-runs?per_page=100"
   if [ -n "${GH_TOKEN:-}" ]; then set -- -H "Authorization: Bearer $GH_TOKEN"; else set --; fi
   json=$(curl -fsSL -H 'Accept: application/vnd.github+json' "$@" "$url" 2>/dev/null) || { echo error; return; }
   printf '%s' "$json" | node -e '
     let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{
-      try { const r=JSON.parse(s).check_runs||[];
+      try { const body=JSON.parse(s), r=body.check_runs||[], total=body.total_count;
+        if(!Number.isSafeInteger(total)||total<0||r.length!==total) return console.log("error");
         if(!r.length||r.some(x=>x.status!=="completed")) return console.log("pending");
         console.log(r.every(x=>x.conclusion==="success")?"success":"failure");
       } catch (_) { console.log("error") }
