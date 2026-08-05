@@ -1,0 +1,44 @@
+[Unit]
+Description=waggle off-box Buzz policy transaction
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=waggle-policy
+Group=waggle-policy
+WorkingDirectory=/opt/waggle-policy
+ExecStart=/usr/bin/node /opt/waggle-policy/tools/buzz-policy-service.mjs
+LoadCredential=policy.json:/etc/waggle-policy/policy.json
+LoadCredential=poster.bunker-uri:/etc/waggle-policy/credentials/poster.bunker-uri
+LoadCredential=poster.client-nsec:/etc/waggle-policy/credentials/poster.client-nsec
+Environment=WAGGLE_POLICY_CONFIG_FILE=%d/policy.json
+Environment=WAGGLE_BUNKER_URI_FILE=%d/poster.bunker-uri
+Environment=WAGGLE_NIP46_CLIENT_NSEC_FILE=%d/poster.client-nsec
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+TimeoutStartSec=130
+RuntimeMaxSec=125
+UMask=0077
+MemoryMax=256M
+TasksMax=32
+CPUQuota=100%
+
+# The SSH ingress identity reaches only the Unix socket.  This process alone can
+# read the NIP-46 pairing, and it can write only its durable journal.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/opt/waggle-policy
+ReadWritePaths=/var/lib/waggle-policy/journal
