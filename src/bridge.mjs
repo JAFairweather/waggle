@@ -51,6 +51,7 @@ import { markLatency } from './latency.mjs'
 import { durableSet, durableQueue } from './stores.mjs'
 import { fanout } from './fanout.mjs'
 import { recipientDmRelays } from './dm_relays.mjs'
+import { quarantineSlotsFromSource } from './buzz_policy_core.mjs'
 import { defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased } from './render.mjs'
 import { hex as concordHex, publicChannel, openChannelWrap } from './concord_lib.mjs'
 
@@ -1111,7 +1112,7 @@ async function forwardPublic(ev, why, dest, quarantine) {
   // resolve a later reply to it. Keyed on the agent's real key, never on the bridge that signs it.
   const agent = PUB ? ((activeReturnLane().find(r => r.npub_hex === String(ev.pubkey || '').toLowerCase()) || {}).npub_hex || null) : null
   const nowSec = Math.floor(Date.now() / 1000)
-  const { clamped, outOfRange } = clampCreated(ev.created_at, nowSec)
+  const { outOfRange } = clampCreated(ev.created_at, nowSec)
   if (FORWARD_MODE !== 'buzz') {
     log(`PUBLIC[dryrun] -> ${quarantine ? 'STAGING' : 'inbox'} ${dest}: kind1 ${ev.id.slice(0, 12)}… by ${author}… (${why})${outOfRange ? ' [clamped]' : ''} :: ${JSON.stringify((ev.content || '').slice(0, 80))}`)
     return
@@ -1123,7 +1124,10 @@ async function forwardPublic(ev, why, dest, quarantine) {
   // sanitized, rendered outside the fence) plus the npub, which is what a reader can
   // actually paste into a client. Best-effort with a 2s budget; falls back to npub alone.
   let name = null
-  if (!process.env.WB_STUB_SEND) { try { name = await fetchProfileName(ev.pubkey) } catch { name = null } }
+  // Quarantine is the first remote-policy migration family. Its authored bytes are source-only:
+  // a relay-selected kind:0 or local clock clamp would make an exact local/remote shadow
+  // comparison impossible and let host state choose participant-visible policy output.
+  if (!quarantine && !process.env.WB_STUB_SEND) { try { name = await fetchProfileName(ev.pubkey) } catch { name = null } }
   let npub = null
   try { npub = nip19.npubEncode(ev.pubkey) } catch { npub = null }
   // Heavily contracted npub for the attribution line — enough to recognize/verify, not a wall.
@@ -1137,16 +1141,7 @@ async function forwardPublic(ev, why, dest, quarantine) {
     ? {
       template: 'quarantine_header',
       dest,
-      slots: {
-        body,
-        approver: (quarantine && PUB.approverMention) || undefined,
-        name,
-        npub: npub || ev.pubkey,
-        ts: clamped,
-        claimedTs: outOfRange && ev.created_at ? Number(ev.created_at) : undefined,
-        why,
-        id: ev.id,
-      },
+      slots: quarantineSlotsFromSource(ev, { approverMention: PUB.approverMention }),
     }
     : { template: 'released_post', dest, slots: { body, name, npubShort, liveRefs } }
   // Test seam: exercise the full buzz-mode path (markSeen/watermark/posted-map) without a

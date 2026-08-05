@@ -87,6 +87,23 @@ const channel = value => {
   return text
 }
 
+// The local bridge and off-box policy must derive the quarantine body from one implementation.
+// Only the complete signed source may choose participant-visible bytes: no relay-selected kind:0,
+// local clock clamp, or host-supplied display name can make shadow outputs diverge.
+export function quarantineSlotsFromSource(sourceEvent, { approverMention = '' } = {}) {
+  const source = verifyWireEvent(JSON.parse(JSON.stringify(sourceEvent)))
+  return Object.freeze({
+    body: source.content,
+    approver: approverMention || undefined,
+    name: undefined,
+    npub: npubEncode(source.pubkey),
+    ts: source.created_at,
+    claimedTs: undefined,
+    why: 'reply to our note',
+    id: source.id,
+  })
+}
+
 // First operation family: a signed public reply to one of the policy service's own watched
 // event ids.  The requester cannot pick the route, state, display name, body, or attribution;
 // all are derived from the complete signed source and policy-owned state.
@@ -100,16 +117,7 @@ export function decideQuarantineHeader(request, { stagingChannel, watchedEventId
   const decision = Object.freeze({
     template: 'quarantine_header',
     dest: channel(stagingChannel),
-    slots: Object.freeze({
-      body: source.content,
-      approver: approverMention || undefined,
-      name: undefined,
-      npub: npubEncode(source.pubkey),
-      ts: source.created_at,
-      claimedTs: undefined,
-      why: 'reply to our note',
-      id: source.id,
-    }),
+    slots: quarantineSlotsFromSource(source, { approverMention }),
   })
   POLICY_DECISIONS.add(decision)
   DECISION_REQUESTS.set(decision, request)
