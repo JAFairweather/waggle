@@ -289,6 +289,40 @@ try {
   check('the bounded drill passes no signer material through its process environment',
     !/ALARM_(?:NSEC|BUNKER|NIP46|TO)=/.test(drillHelper) &&
     drillHelper.includes('TRIPWIRE_DRILL=1') && drillHelper.includes('BUZZ_RELAY_URL='))
+
+  const fakeSystemctl = resolve(dir, 'systemctl-fixture.sh')
+  const systemctlLog = resolve(dir, 'systemctl.log')
+  writeFileSync(fakeSystemctl, `#!/bin/sh
+printf '%s\\n' "$*" >> "$TRIPWIRE_TEST_LOG"
+if [ "$1" = is-active ]; then exit 0; fi
+if [ "$1" = start ] && [ "$2" = waggle-tripwire.service ]; then exit "\${TRIPWIRE_TEST_START_CODE:-0}"; fi
+exit 0
+`)
+  chmodSync(fakeSystemctl, 0o700)
+  const failedBoundedDrill = spawnSync('sh', [DRILL_HELPER, 'wss://relay.example'], {
+    env: { ...process.env, TRIPWIRE_SYSTEMCTL: fakeSystemctl, TRIPWIRE_TEST_LOG: systemctlLog,
+      TRIPWIRE_TEST_START_CODE: '4' }, encoding: 'utf8',
+  })
+  const failedCalls = readFileSync(systemctlLog, 'utf8').trim().split('\n')
+  check('a failed production drill preserves its failure and still performs both cleanup actions',
+    failedBoundedDrill.status === 4 &&
+    failedCalls.includes('unset-environment TRIPWIRE_DRILL BUZZ_RELAY_URL') &&
+    failedCalls.at(-1) === 'start waggle-tripwire.timer', `exit ${failedBoundedDrill.status}`)
+  writeFileSync(systemctlLog, '')
+  const acceptedBoundedDrill = spawnSync('sh', [DRILL_HELPER, 'wss://relay.example'], {
+    env: { ...process.env, TRIPWIRE_SYSTEMCTL: fakeSystemctl, TRIPWIRE_TEST_LOG: systemctlLog,
+      TRIPWIRE_TEST_START_CODE: '0' }, encoding: 'utf8',
+  })
+  const acceptedCalls = readFileSync(systemctlLog, 'utf8').trim().split('\n')
+  check('an accepted bounded drill stops, drills, clears, and restores in order',
+    acceptedBoundedDrill.status === 0 && acceptedCalls.join('|') === [
+      'is-active --quiet waggle-tripwire.timer',
+      'stop waggle-tripwire.timer',
+      'set-environment TRIPWIRE_DRILL=1 BUZZ_RELAY_URL=wss://relay.example',
+      'start waggle-tripwire.service',
+      'unset-environment TRIPWIRE_DRILL BUZZ_RELAY_URL',
+      'start waggle-tripwire.timer',
+    ].join('|'))
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }
