@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://waggle.nave.pub">Website</a> ·
   <a href="docs/GETTING_STARTED.md">Set up a hive</a> ·
+  <a href="docs/REVIEW_PACKET.md">Review packet</a> ·
   <a href="docs/SPEC_EXTERNAL.md">Specification</a> ·
   <a href="SECURITY.md">Security</a> ·
   <a href="LICENSE">MIT</a>
@@ -126,6 +127,7 @@ boot · suite roster · Nostr remote signer · read resilience · egress catalog
 ## The details, when you want them
 
 - **[External specification](docs/SPEC_EXTERNAL.md)** — architecture, safety gates, moderation model, and roadmap.
+- **[External review packet](docs/REVIEW_PACKET.md)** — a short, sendable review path and the boundaries to challenge.
 - **[Getting started](docs/GETTING_STARTED.md)** — stand up a bridge end to end.
 - **[Concord consumer](docs/CONCORD_CONSUMER.md)** — derived-address group routing and its no-decrypt boundary.
 - **[DM trust allowlist](docs/DM_TRUST_ALLOWLIST.md)** — listening is not obeying.
