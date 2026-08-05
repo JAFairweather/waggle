@@ -46,6 +46,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // Extracted leaf modules (#154). Each is dependency-free of config and ambient state, which is why
 // these four came out first — the split is staged, not big-bang.
+import { LANE_IDS, LANES, RELEASED } from './lanes.mjs'   // the trust gradient's one source (#282)
 import { log, err } from './log.mjs'
 import { markLatency } from './latency.mjs'
 import { durableSet, durableQueue } from './stores.mjs'
@@ -1291,13 +1292,16 @@ function routePublic(ev) {
   // reply from anyone else is an untrusted stranger and is quarantined.
   const trusted = PUB.authors.includes(ev.pubkey)
   let why = null, quarantine = false
-  if (trusted) why = 'mirrored feed'
-  else if (grantSet.has(ev.pubkey)) why = 'granted participant' // §4.1 S3: admitted by signed 440, revocable by 441
+  // Lane names come from src/lanes.mjs so the classifier, the egress validator and the
+  // console's routing view cannot disagree about the gradient (#282).
+  const [MIRRORED, GRANTED, STANDING, REPLY] = LANE_IDS
+  if (trusted) why = MIRRORED
+  else if (grantSet.has(ev.pubkey)) why = GRANTED // §4.1 S3: admitted by signed 440, revocable by 441
   else if (PUB.events.length) {
     const es = (ev.tags || []).filter(t => t[0] === 'e').map(t => t[1])
     if (es.some(id => PUB.events.includes(id))) {
-      if (PUB.trustedRepliers.includes(ev.pubkey)) why = 'standing follow' // reply-trust: no queue, no feed mirror
-      else { why = 'reply to our note'; quarantine = true }
+      if (PUB.trustedRepliers.includes(ev.pubkey)) why = STANDING // reply-trust: no queue, no feed mirror
+      else { why = REPLY; quarantine = true }
     }
   }
   if (!why) return
@@ -1309,7 +1313,11 @@ function routePublic(ev) {
   // follows are already consensual (they hold a key / were vouched by the maintainer) and are not
   // gated here. A held reply is dropped BEFORE staging — the invisible pre-consent hold §6 requires,
   // so the community never sees un-consented content. Never a silent drop (§7).
-  if (PUB.mirrorRequireConsent && (why === 'mirrored feed' || why === 'reply to our note')) {
+  // Which lanes the in-door gate covers is a PROPERTY OF THE LANE (lanes.mjs consentGated),
+  // not a pair of names repeated here: a granted participant holds a key and a standing
+  // follow was vouched, so both are already consensual. Deriving it means adding a lane
+  // cannot silently escape the gate by not being mentioned at this line.
+  if (PUB.mirrorRequireConsent && LANES.some(l => l.id === why && l.consentGated)) {
     const author = String(ev.pubkey).toLowerCase()
     // Consent must be PRESENT and (when a current-terms hash is configured) bound to THOSE terms.
     // §7 promises a material ToS change does not silently ride an old yes: with mirror_expected_tos_hash
@@ -1597,7 +1605,7 @@ async function handleCommand(m) {
     try { ok = verifyEvent(ev) } catch { ok = false }
     if (!ok) return replyInStaging(m.id, 'console_ack', { verb: 'bad_signature' })
     if (!rateOk(ev, PUB.inbox, Date.now())) return replyInStaging(m.id, 'console_ack', { verb: 'rate_capped' })
-    forwardPublic(ev, 'released from quarantine', PUB.inbox, false)
+    forwardPublic(ev, RELEASED, PUB.inbox, false)
   }
   let granted = false
   if (word === 'follow') {

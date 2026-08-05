@@ -2,7 +2,8 @@
 // policy shadow. No transport, credential, signer, journal, endpoint, or ambient configuration.
 import { renderQuarantined } from './render.mjs'
 
-const REASONS = new Set(['mirrored feed', 'granted participant', 'standing follow', 'reply to our note', 'released from quarantine'])
+import { WHY_VALUES } from './lanes.mjs'   // the trust gradient's one source (#282)
+const REASONS = new Set(WHY_VALUES)
 const fail = message => { throw new Error(`quarantine-projection: ${message}`) }
 const handle = value => {
   if (!value) return ''
