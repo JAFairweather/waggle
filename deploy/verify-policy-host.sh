@@ -9,7 +9,7 @@ grep -q '^Match User waggle-policy-ingress$' /etc/ssh/sshd_config.d/60-waggle-po
   grep -q '^    ForceCommand /usr/bin/node /opt/waggle-policy/tools/buzz-policy-forward.mjs$' /etc/ssh/sshd_config.d/60-waggle-policy.conf && ok 'fixed SSH command' || bad 'fixed SSH command'
 sshd -t && ok 'sshd configuration parses' || bad 'sshd configuration'
 test "$(stat -c '%U:%G %a' /etc/waggle-policy/policy.json 2>/dev/null)" = 'root:root 600' && ok 'fixed policy config' || bad 'policy config ownership/mode'
-for file in poster.bunker-uri poster.client-nsec; do
+for file in poster.bunker-uri poster.client-nsec recovery.secret; do
   test "$(stat -c '%U:%G %a' "/etc/waggle-policy/credentials/$file" 2>/dev/null)" = 'root:root 600' && ok "$file" || bad "$file ownership/mode"
 done
 test "$(stat -c '%U:%G %a' /var/lib/waggle-policy/journal 2>/dev/null)" = 'waggle-policy:waggle-policy 700' && ok 'private durable journal' || bad 'journal ownership/mode'

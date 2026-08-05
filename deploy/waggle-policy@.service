@@ -11,9 +11,11 @@ ExecStart=/usr/bin/node /opt/waggle-policy/tools/buzz-policy-service.mjs
 LoadCredential=policy.json:/etc/waggle-policy/policy.json
 LoadCredential=poster.bunker-uri:/etc/waggle-policy/credentials/poster.bunker-uri
 LoadCredential=poster.client-nsec:/etc/waggle-policy/credentials/poster.client-nsec
+LoadCredential=recovery.secret:/etc/waggle-policy/credentials/recovery.secret
 Environment=WAGGLE_POLICY_CONFIG_FILE=%d/policy.json
 Environment=WAGGLE_BUNKER_URI_FILE=%d/poster.bunker-uri
 Environment=WAGGLE_NIP46_CLIENT_NSEC_FILE=%d/poster.client-nsec
+Environment=WAGGLE_POLICY_RECOVERY_SECRET_FILE=%d/recovery.secret
 StandardInput=socket
 StandardOutput=socket
 StandardError=journal

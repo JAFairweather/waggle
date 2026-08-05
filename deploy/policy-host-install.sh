@@ -35,4 +35,4 @@ install -m 0644 -o root -g root "$ROOT/deploy/waggle-policy@.service" /etc/syste
 systemctl daemon-reload
 
 echo "policy-host identities, forced SSH capability, socket, and state tree installed"
-echo "NEXT: install a root-owned release at /opt/waggle-policy; create the three 0600 root:root files documented in deploy/POLICY_HOST.md; run the verifier; only then enable waggle-policy.socket"
+echo "NEXT: install a root-owned release at /opt/waggle-policy; create the four 0600 root:root files documented in deploy/POLICY_HOST.md; run the verifier; only then enable waggle-policy.socket"

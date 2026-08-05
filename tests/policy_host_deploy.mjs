@@ -16,7 +16,7 @@ ok('socket and transaction have explicit resource ceilings', has(socket, /^MaxCo
 ok('only the ingress group can enter the policy socket', has(socket, /^SocketUser=waggle-policy$/m) && has(socket, /^SocketGroup=waggle-policy-ingress$/m) && has(socket, /^SocketMode=0660$/m))
 ok('the credential-bearing transaction runs as the non-login policy identity', has(service, /^User=waggle-policy$/m) && has(service, /^Group=waggle-policy$/m))
 ok('policy process can write only its journal', has(service, /^ProtectSystem=strict$/m) && has(service, /^ReadOnlyPaths=\/opt\/waggle-policy$/m) && has(service, /^ReadWritePaths=\/var\/lib\/waggle-policy\/journal$/m))
-ok('root-only sources enter through private systemd credential copies', (service.match(/^LoadCredential=/gm) || []).length === 3 && (service.match(/^Environment=.*=%d\//gm) || []).length === 3 && !service.includes('EnvironmentFile='))
+ok('root-only sources enter through private systemd credential copies', (service.match(/^LoadCredential=/gm) || []).length === 4 && (service.match(/^Environment=.*=%d\//gm) || []).length === 4 && !service.includes('EnvironmentFile='))
 ok('service sandbox retains only required socket/network families', has(service, /^RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6$/m) && has(service, /^NoNewPrivileges=yes$/m) && has(service, /^PrivateDevices=yes$/m))
 ok('SSH ingress is forced, key-only, and has no forwarding or PTY', ['ForceCommand ', 'AuthenticationMethods publickey', 'PermitTTY no', 'AllowAgentForwarding no', 'AllowTcpForwarding no', 'AllowStreamLocalForwarding no', 'X11Forwarding no', 'PermitTunnel no'].every(x => sshd.includes(x)))
 ok('the forward edge has one compiled socket and imports no signer', forward.includes("const SOCKET = '/run/waggle-policy/request.sock'") && !/^import .*nostr_signer/m.test(forward) && !/process\.env/.test(forward))
@@ -24,7 +24,7 @@ ok('the forward edge refuses caller argv', forward.includes('process.argv.length
 ok('installer keeps key/config/code root-owned and journal policy-owned', install.includes("chown root:root /etc/ssh/authorized_keys/waggle-policy-ingress") && install.includes('/etc/waggle-policy/credentials') && install.includes('/var/lib/waggle-policy/journal'))
 ok('installer validates sshd before reload', install.indexOf('"$SSHD" -t') > 0 && install.indexOf('"$SSHD" -t') < install.indexOf('systemctl reload ssh.service'))
 ok('installer does not arm the socket before policy and credentials exist', !/enable --now waggle-policy\.socket/.test(install))
-ok('verifier checks credentials, immutable release files, and active/enabled state', ['poster.bunker-uri', 'poster.client-nsec', 'root:root 600', 'tools/buzz-policy-service.mjs', 'is-enabled', 'is-active'].every(x => verify.includes(x)))
+ok('verifier checks credentials, immutable release files, and active/enabled state', ['poster.bunker-uri', 'poster.client-nsec', 'recovery.secret', 'root:root 600', 'tools/buzz-policy-service.mjs', 'is-enabled', 'is-active'].every(x => verify.includes(x)))
 
 const weakened = service.replace('ReadWritePaths=/var/lib/waggle-policy/journal', 'ReadWritePaths=/opt/waggle-policy /etc/waggle-policy')
 ok('NEGATIVE CONTROL — writable code/config would be detected', !has(weakened, /^ReadWritePaths=\/var\/lib\/waggle-policy\/journal$/m))

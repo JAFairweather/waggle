@@ -69,10 +69,12 @@ symlinks:
 ```text
 /etc/waggle-policy/credentials/poster.bunker-uri
 /etc/waggle-policy/credentials/poster.client-nsec
+/etc/waggle-policy/credentials/recovery.secret
 ```
 
-The second file is the revocable NIP-46 transport client, not the poster identity nsec. The source
-files remain unreadable to both runtime accounts. `LoadCredential=` gives each socket-activated
+The second file is the revocable NIP-46 transport client, not the poster identity nsec. The recovery
+file is a fresh 32–128 character URL-safe secret used only for the operator's explicit orphan
+transition. The source files remain unreadable to both runtime accounts. `LoadCredential=` gives each socket-activated
 transaction its own mode-0400 copies under systemd's private credential directory; the existing
 strict file loader validates those copies before use.
 

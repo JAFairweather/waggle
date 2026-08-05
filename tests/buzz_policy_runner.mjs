@@ -28,6 +28,12 @@ writeFileSync(configPath, `${JSON.stringify(configValue)}\n`, { mode: 0o600 })
 const config = loadBuzzPolicyConfig(configPath)
 t('a mode-0600 fixed config creates an internal artifact policy', config.policy_instance === 'jaf-hive' && config.artifactPolicy.posterPubkey === poster)
 t('the policy-host recovery secret is loaded only from its private file', config.recoverySecret === 'recovery_secret_0123456789abcdef')
+const credentialConfigPath = join(root, 'credential-policy.json')
+const { recovery_secret_file: _omitted, ...credentialConfig } = configValue
+writeFileSync(credentialConfigPath, `${JSON.stringify(credentialConfig)}\n`, { mode: 0o600 })
+const credentialConfigLoaded = loadBuzzPolicyConfig(credentialConfigPath, { WAGGLE_POLICY_RECOVERY_SECRET_FILE: recoveryPath })
+t('a fixed systemd credential path supplies recovery without widening policy JSON',
+  credentialConfigLoaded.recovery_secret_file === recoveryPath && credentialConfigLoaded.recoverySecret === config.recoverySecret)
 
 const source = JSON.parse(JSON.stringify(finalizeEvent({ kind: 1, created_at: now - 1, tags: [['e', 'd'.repeat(64)]], content: 'wisdom' }, generateSecretKey())))
 const raw = canonicalJson({ version: 1, policy_instance: 'jaf-hive', operation: 'quarantine_header', catalogue_version: 'c'.repeat(64), observed_at: now, evidence: { source_event: source } })
