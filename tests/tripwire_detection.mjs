@@ -27,6 +27,9 @@ const ROOT = resolve(HERE, '..')
 const TOOL = resolve(ROOT, 'tools', 'tripwire.mjs')
 const INIT = resolve(ROOT, 'tools', 'tripwire-alarm-init.mjs')
 const DROP_IN = resolve(ROOT, 'deploy', 'tripwire-alarm.conf')
+const BUNKER_DROP_IN = resolve(ROOT, 'deploy', 'tripwire-alarm-bunker.conf')
+const BASE_UNIT = resolve(ROOT, 'deploy', 'tripwire.service')
+const DRILL_HELPER = resolve(ROOT, 'deploy', 'tripwire-drill.sh')
 const POSTER = 'npub1s36nypljc6h88tey0kshf688eyd8myu636ctfs4e3d2w54nhsmnqfhaent'
 // Written per-run into the temp dir. The real log at data/tripwire-alarms.log is evidence an
 // operator is meant to trust; a test must not leave fake alarms in it.
@@ -216,6 +219,19 @@ try {
   check('live drill refuses a missing explicit relay before any publication',
     noExplicitRelay.code === 1 && /requires exactly one explicit BUZZ_RELAY_URL/.test(noExplicitRelay.out) && receivedWrap === null,
     `exit ${noExplicitRelay.code}`)
+  const badDrillEnv = await runAsync([TOOL, '--poster', POSTER], {
+    ...drillEnv, TRIPWIRE_DRILL: 'true',
+  })
+  check('the service drill flag is closed to the single documented value',
+    badDrillEnv.code === 1 && /must be exactly 1/.test(badDrillEnv.out), `exit ${badDrillEnv.code}`)
+  relayAccept = true; receivedWrap = null
+  const serviceDrill = await runAsync([TOOL, '--poster', POSTER], {
+    ...drillEnv, TRIPWIRE_DRILL: '1',
+  })
+  check('the systemd-compatible service flag runs the same accepted sealed-DM drill',
+    serviceDrill.code === 0 && /DRILL OK/.test(serviceDrill.out) && receivedWrap?.kind === 1059,
+    `exit ${serviceDrill.code}`)
+  receivedWrap = null
   const queryCredentialRelay = await runAsync([TOOL, '--poster', POSTER, '--drill-alarm'], {
     ...drillEnv, BUZZ_RELAY_URL: `${relayUrl}/?token=secret`,
   })
@@ -246,6 +262,33 @@ try {
   check('the drop-in maps systemd credential paths without replacing the detector command',
     dropIn.includes('Environment=ALARM_NSEC_FILE=%d/alarm.nsec') &&
     dropIn.includes('Environment=ALARM_TO_FILE=%d/alarm.to') && !dropIn.includes('ExecStart='))
+
+  const baseUnit = readFileSync(BASE_UNIT, 'utf8')
+  check('the base detector unit contains no signer credential mode',
+    !baseUnit.includes('LoadCredential=alarm.') &&
+    !baseUnit.includes('Environment=ALARM_NSEC_FILE=') &&
+    !baseUnit.includes('Environment=ALARM_BUNKER_URI_FILE='))
+
+  const bunkerDropIn = readFileSync(BUNKER_DROP_IN, 'utf8')
+  check('the preferred Bunker drop-in loads only pairing and recipient credential files',
+    bunkerDropIn.includes('LoadCredential=alarm.bunker-uri:/etc/waggle-tripwire/alarm.bunker-uri') &&
+    bunkerDropIn.includes('LoadCredential=alarm.client-nsec:/etc/waggle-tripwire/alarm.client-nsec') &&
+    bunkerDropIn.includes('LoadCredential=alarm.to:/etc/waggle-tripwire/alarm.to') &&
+    !bunkerDropIn.includes('LoadCredential=alarm.nsec:'))
+  check('the preferred drop-in passes only systemd credential paths and never replaces detection',
+    bunkerDropIn.includes('Environment=ALARM_BUNKER_URI_FILE=%d/alarm.bunker-uri') &&
+    bunkerDropIn.includes('Environment=ALARM_NIP46_CLIENT_NSEC_FILE=%d/alarm.client-nsec') &&
+    bunkerDropIn.includes('Environment=ALARM_TO_FILE=%d/alarm.to') &&
+    !bunkerDropIn.includes('ExecStart=') && !/bunker:\/\//.test(bunkerDropIn))
+
+  const drillHelper = readFileSync(DRILL_HELPER, 'utf8')
+  check('the bounded systemd drill always clears its flag and restores an active timer',
+    drillHelper.includes('trap cleanup EXIT HUP INT TERM') &&
+    drillHelper.includes('unset-environment TRIPWIRE_DRILL BUZZ_RELAY_URL') &&
+    drillHelper.includes('TIMER_WAS_ACTIVE') && !drillHelper.includes('systemctl revert'))
+  check('the bounded drill passes no signer material through its process environment',
+    !/ALARM_(?:NSEC|BUNKER|NIP46|TO)=/.test(drillHelper) &&
+    drillHelper.includes('TRIPWIRE_DRILL=1') && drillHelper.includes('BUZZ_RELAY_URL='))
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }

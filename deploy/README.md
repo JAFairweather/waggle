@@ -373,20 +373,19 @@ sudo systemctl restart waggle-tripwire.service
 The last command is the negative control and may report `QUIET` or `OK`; it must no longer report
 `no alarm delivery path configured`. The positive drill below must then produce a sealed DM.
 
-Run the live delivery drill with only public values and credential **paths** in the environment:
+Run the repository-managed bounded drill through the installed unit and its Bunker credential
+drop-in. The helper stops and restores an active timer and clears its one-shot manager variables
+even when the service fails. Only the public relay URL and drill flag enter the service
+environment; signer material still arrives solely through `LoadCredential=`:
 
 ```
-sudo env \
-  ALARM_NSEC_FILE=/etc/waggle-tripwire/alarm.nsec \
-  ALARM_TO_FILE=/etc/waggle-tripwire/alarm.to \
-  BUZZ_RELAY_URL=wss://relay.nave.pub \
-  /usr/bin/node /opt/waggle-read/tools/tripwire.mjs \
-  --poster <bridge-poster-npub-or-hex> --drill-alarm
+sudo sh /opt/waggle-hub-read/deploy/tripwire-drill.sh wss://relay.nave.pub
 ```
 
 Exit 0 means at least one relay accepted the sealed test alert; exit 4 means nobody accepted it.
 The recipient must still confirm the labelled `TRIPWIRE DRILL` DM arrived—relay acceptance alone
-is not recipient read-back.
+is not recipient read-back. Confirm afterward that the timer is active and the manager no longer
+contains `TRIPWIRE_DRILL`; the helper treats cleanup failure as a failed drill.
 
 The watcher **pulls** the journals (so the box needs no credentials to the watcher — a journal
 is only public event ids, nothing sensitive), on its own timer just ahead of the tripwire tick.
