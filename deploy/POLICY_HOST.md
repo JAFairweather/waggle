@@ -159,3 +159,27 @@ local signer. `off` is the default. The SSH client pins a dedicated identity and
 uses the forced account with no remote command, disables ambient identities, TTY and forwarding,
 and sends only the canonical evidence packet on stdin. Do not use a management key or a mutable
 user `known_hosts` file for either path.
+
+## 6. Automatic releases after bootstrap
+
+The trust bootstrap above is the only manual deployment. Do **not** give GitHub Actions a root SSH
+key. Instead, clone this repository as `/opt/waggle-policy-hub`, install the committed
+`policy-host-deploy-runner.service` and `.timer` into `/etc/systemd/system`, and enable the timer.
+The policy host polls `main`, accepts only an exact commit whose CI checks are green, exports a
+closed runtime file set, installs dependencies without lifecycle scripts, and promotes it only
+after installation and verification pass. A failed install, restart, or verification restores the
+prior release and leaves the old deployment watermark in place.
+
+```sh
+install -m 0644 deploy/policy-host-deploy-runner.service /etc/systemd/system/
+install -m 0644 deploy/policy-host-deploy-runner.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now policy-host-deploy-runner.timer
+systemctl start policy-host-deploy-runner.service
+journalctl -u policy-host-deploy-runner.service -n 50 --no-pager
+```
+
+For a private repository, `/etc/waggle-policy/deploy-runner.env` may contain a **read-only** GitHub
+token at mode `0600`. It is never loaded into either policy worker. Production signing credentials,
+policy JSON, ingress private keys, and recovery authority remain host-local and outside every
+release archive.

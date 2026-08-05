@@ -90,6 +90,22 @@ const shadowRunner = readFileSync(new URL('../src/buzz_policy_shadow_runner.mjs'
 const shadowProjection = readFileSync(new URL('../src/buzz_policy_projection.mjs', import.meta.url), 'utf8')
 t('derive-only executable imports no signer, submission, or journal module',
   !/nostr_signer|buzz_policy_artifacts|buzz_policy_service|policy_journal|egress\.mjs/.test(`${shadowTool}\n${shadowRunner}\n${shadowProjection}`))
+const shadowRoot = new URL('../', import.meta.url)
+const closure = new Map()
+const walkImports = url => {
+  const key = url.href
+  if (closure.has(key)) return
+  const sourceText = readFileSync(url, 'utf8'); closure.set(key, sourceText)
+  for (const match of sourceText.matchAll(/(?:import|export)\s+(?:[^'";]+?\s+from\s+)?['"](\.\.?\/[^'"]+)['"]/g)) {
+    const child = new URL(match[1], url)
+    if (child.href.startsWith(shadowRoot.href)) walkImports(child)
+  }
+}
+walkImports(new URL('../tools/buzz-policy-shadow.mjs', import.meta.url))
+const closureText = [...closure.entries()].map(([path, text]) => `${path}\n${text}`).join('\n')
+t('the full derive-worker import closure contains no transport, signer, submission, or journal capability',
+  !/node:(?:child_process|net|http|https|tls|dgram)|nostr_signer|buzz_policy_artifacts|buzz_policy_service|policy_journal/.test(closureText) &&
+  !/\bfetch\s*\(/.test(closureText) && closure.size >= 6)
 
 const orphanSource = JSON.parse(JSON.stringify(finalizeEvent({ kind: 1, created_at: now - 2, tags: [['e', 'd'.repeat(64)]], content: 'other wisdom' }, generateSecretKey())))
 const orphanRaw = canonicalJson({ version: 1, policy_instance: 'jaf-hive', operation: 'quarantine_header', catalogue_version: 'c'.repeat(64), observed_at: now, evidence: { source_event: orphanSource } })

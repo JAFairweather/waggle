@@ -1,0 +1,11 @@
+[Unit]
+Description=waggle policy host — check for a CI-green release every three minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=3min
+RandomizedDelaySec=45s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

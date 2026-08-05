@@ -254,6 +254,12 @@ that the Buzz poster key is off the bridge host:
    `[0,pubkey,created_at,kind,tags,content]`, never a signed event. The shadow host chooses
    `evaluation_time`; the bridge reruns the local projection at that remote-owned time and compares
    the decision plus SHA-256 preimage digest.
+   Bridge modes are closed and distinct: `observe` reports mismatch/unavailability and denies
+   burn-in credit while preserving today's local delivery; `enforce-shadow` holds delivery on
+   mismatch or unavailable shadow with a recorded bounded reason. Only after a clean enforced
+   rehearsal may an operation move to remote-only. The two SSH capabilities are distinct by key
+   algorithm + key blob (comments are ignored), and CI audits the derive worker's complete
+   transitive import closure for signer, submission, journal, and network capabilities.
    For `quarantine_header`, both paths call the same source-only projection: the signed kind:1
    supplies body, author, source timestamp, reply target, and source id. Replaceable kind:0 data and
    local clock clamping are excluded from authored bytes; one captured `observed_at` will supply the
