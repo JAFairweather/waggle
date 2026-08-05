@@ -1,5 +1,6 @@
 import { generateSecretKey, finalizeEvent } from 'nostr-tools/pure'
 import { BUZZ_POLICY_VERSION, canonicalJson, decodePolicyRequest, decideQuarantineHeader, policyIdempotencyKey, quarantineSlotsFromSource } from '../src/buzz_policy_core.mjs'
+import { renderTemplate } from '../src/egress.mjs'
 
 let fails = 0
 const t = (name, ok) => { console.log(`${ok ? 'ok  ' : 'FAIL'} — ${name}`); if (!ok) fails++ }
@@ -29,7 +30,9 @@ const forged = { ...source, content: 'changed after signing' }
 rejects('tampered source evidence is refused', () => decodePolicyRequest(canonicalJson({ ...packet, evidence: { source_event: forged } }), opts), /signature or id/)
 const edgeSource = JSON.parse(JSON.stringify(finalizeEvent({ kind: 1, created_at: 8_640_000_000_000, tags: [['e', watched]], content: 'last renderable instant' }, generateSecretKey())))
 const edgeDecoded = decodePolicyRequest(canonicalJson({ ...packet, evidence: { source_event: edgeSource } }), opts)
-t('the last ECMAScript-renderable source timestamp is accepted', quarantineSlotsFromSource(edgeDecoded.evidence.source_event).ts === edgeSource.created_at)
+const edgeSlots = quarantineSlotsFromSource(edgeDecoded.evidence.source_event)
+t('the last ECMAScript-renderable source timestamp reaches actual catalogue rendering',
+  edgeSlots.ts === edgeSource.created_at && renderTemplate('quarantine_header', edgeSlots).includes('+275760-09-13T00:00:00.000Z'))
 const beyondDateSource = JSON.parse(JSON.stringify(finalizeEvent({ kind: 1, created_at: 8_640_000_000_001, tags: [['e', watched]], content: 'signed but not renderable' }, generateSecretKey())))
 rejects('a signed source timestamp beyond the catalogue Date boundary is refused', () => decodePolicyRequest(canonicalJson({ ...packet, evidence: { source_event: beyondDateSource } }), opts), /complete kind:1/)
 
