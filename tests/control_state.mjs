@@ -10,6 +10,9 @@ import { generateSecretKey, getEventHash, getPublicKey, finalizeEvent, verifyEve
 import * as nip44 from 'nostr-tools/nip44'
 import { sealedTaskRouteCommand } from '../console/task-route-envelope.mjs'
 import { consoleSigner, CONSOLE_SESSION_KEY } from '../console/signer-session.mjs'
+import { confirmedFreshSigner } from '../console/confirmed-fresh-signer.mjs'
+import { controlStateFresh, newestFreshControlState, requireFreshControlState,
+  CONTROL_STATE_MAX_AGE_SECS, CONTROL_STATE_MAX_FORWARD_SKEW_SECS } from '../console/control-state-freshness.mjs'
 
 const tmp = mkdtempSync(join(tmpdir(), 'wb-control-state-'))
 const CFG = join(tmp, 'config.json')
@@ -189,6 +192,35 @@ const selectedSigner = await consoleSigner({ storage: fakeStorage, parse: value 
   restore: session => session.kind === 'nip46' ? restoredSigner : null,
   browserSigner: () => ({ marker: 'ambient-window-nostr' }) })
 t('the route Console reuses the Access tab Bunker session instead of ambient window.nostr', selectedSigner === restoredSigner)
+const freshnessNow = 2_000_000_000
+t('the shared control-state clock pins the estate policy at fifteen minutes old and sixty seconds ahead',
+  CONTROL_STATE_MAX_AGE_SECS === 900 && CONTROL_STATE_MAX_FORWARD_SKEW_SECS === 60)
+t('the shared control-state clock accepts current state and its exact age/skew boundaries',
+  controlStateFresh(freshnessNow, freshnessNow) &&
+  controlStateFresh(freshnessNow - CONTROL_STATE_MAX_AGE_SECS, freshnessNow) &&
+  controlStateFresh(freshnessNow + CONTROL_STATE_MAX_FORWARD_SKEW_SECS, freshnessNow))
+t('the shared control-state clock rejects stale, far-future, fractional, zero, and missing timestamps',
+  !controlStateFresh(freshnessNow - CONTROL_STATE_MAX_AGE_SECS - 1, freshnessNow) &&
+  !controlStateFresh(freshnessNow + CONTROL_STATE_MAX_FORWARD_SKEW_SECS + 1, freshnessNow) &&
+  !controlStateFresh(freshnessNow + 0.5, freshnessNow) && !controlStateFresh(0, freshnessNow) &&
+  !controlStateFresh(undefined, freshnessNow))
+const freshCandidate = { observed_at: freshnessNow - 1, marker: 'current' }
+const futureCandidate = { observed_at: freshnessNow + CONTROL_STATE_MAX_FORWARD_SKEW_SECS + 1, marker: 'future' }
+t('a far-future record cannot suppress the newest currently valid control state',
+  newestFreshControlState([freshCandidate, futureCandidate], freshnessNow) === freshCandidate)
+let signingBoundaryRefused = false
+try { requireFreshControlState(freshCandidate, freshnessNow + CONTROL_STATE_MAX_AGE_SECS + 1) } catch { signingBoundaryRefused = true }
+t('state that expires after loading is refused at the signing boundary', signingBoundaryRefused)
+let confirmationClock = freshnessNow, signerOpenedAfterConfirmation = 0, confirmationExpiryRefused = false
+try {
+  await confirmedFreshSigner({ observed_at: confirmationClock }, 'confirm', {
+    confirmFn: () => { confirmationClock += CONTROL_STATE_MAX_AGE_SECS + 1; return true },
+    now: () => confirmationClock,
+    signerFactory: async () => { signerOpenedAfterConfirmation++; return {} },
+  })
+} catch { confirmationExpiryRefused = true }
+t('time advancing during confirmation prevents the signer from opening',
+  confirmationExpiryRefused && signerOpenedAfterConfirmation === 0)
 let undefinedSealRefused = false
 try {
   await sealedTaskRouteCommand({ ...ownerSigner, signEvent: async () => undefined },
@@ -249,7 +281,22 @@ const configPage = readFileSync(new URL('../console/config.html', import.meta.ur
 const taskRoutesPage = readFileSync(new URL('../console/task-routes.mjs', import.meta.url), 'utf8')
 const taskEnvelope = readFileSync(new URL('../console/task-route-envelope.mjs', import.meta.url), 'utf8')
 const operationsPage = readFileSync(new URL('../console/config-operations.mjs', import.meta.url), 'utf8')
-t('the Config console closes the entire signed state and renders only fresh verified public operations', /config-operations\.mjs/.test(configPage) && /verifyEvent/.test(operationsPage) && /exact\(state, \['v', 'observed_at', 'hive', 'bridge', 'publishing', 'follows', 'operations'\]\)/.test(operationsPage) && /exact\(state\.hive, \['id', 'name', 'handle'\]\)/.test(operationsPage) && /state\.follows\.every/.test(operationsPage) && /newest\.observed_at <= now \+ 60/.test(operationsPage) && /now - newest\.observed_at <= 900/.test(operationsPage) && /Verified signed state from/.test(operationsPage) && /Aggregate counts only/.test(operationsPage) && !/fetch\([^)]*config\.json/.test(operationsPage) && !/\/config\.json/.test(operationsPage))
+const confirmedSignerPage = readFileSync(new URL('../console/confirmed-fresh-signer.mjs', import.meta.url), 'utf8')
+t('the Config console closes the entire signed state and renders only fresh verified public operations', /config-operations\.mjs/.test(configPage) && /verifyEvent/.test(operationsPage) && /exact\(state, \['v', 'observed_at', 'hive', 'bridge', 'publishing', 'follows', 'operations'\]\)/.test(operationsPage) && /exact\(state\.hive, \['id', 'name', 'handle'\]\)/.test(operationsPage) && /state\.follows\.every/.test(operationsPage) && /newestFreshControlState/.test(operationsPage) && /Verified signed state from/.test(operationsPage) && /Aggregate counts only/.test(operationsPage) && !/fetch\([^)]*config\.json/.test(operationsPage) && !/\/config\.json/.test(operationsPage))
+t('every owner-control surface restores the shared signer session instead of selecting ambient NIP-07 directly',
+  /consoleSigner/.test(followingPage) && /confirmedFreshSigner/.test(configPage) &&
+  /consoleSigner/.test(confirmedSignerPage) && /consoleSigner/.test(taskRoutesPage) &&
+  !/nip07Signer/.test(followingPage) && !/nip07Signer/.test(configPage))
+t('all four control-state readers select from the same forward-skew and staleness contract',
+  /newestFreshControlState/.test(followingPage) && /newestFreshControlState/.test(configPage) &&
+  /newestFreshControlState/.test(taskRoutesPage) && /newestFreshControlState/.test(operationsPage))
+t('every public owner-control signer rechecks freshness immediately before opening its signer',
+  /requireFreshControlState\(activeState\).*consoleSigner/s.test(followingPage) &&
+  /confirmedFreshSigner\(live/.test(configPage) &&
+  /confirmFn\(prompt\).*requireFreshControlState\(state, now\(\)\).*signerFactory\(\)/s.test(confirmedSignerPage))
+const accessPage = readFileSync(new URL('../console/index.html', import.meta.url), 'utf8')
+t('the Access page describes its actual signer boundary instead of claiming to be read-only',
+  /Keys stay with your signer/.test(accessPage) && !/Read-only, and deliberately/.test(accessPage))
 t('the Config route form emits only an encrypted gift wrap and never publishes its private tuple', /task-routes\.mjs/.test(configPage) && /waggle-task-route/.test(taskRoutesPage) && /nvoy-task-carry-v1/.test(taskRoutesPage) && /nip44\.encrypt/.test(taskEnvelope) && /kind:1059/.test(taskEnvelope) && /nip44Encrypt/.test(taskEnvelope) && /consoleSigner/.test(taskRoutesPage) && !/kind:30078/.test(taskRoutesPage + taskEnvelope) && !/fetch\([^)]*config\.json/.test(taskRoutesPage) && !/\/config\.json/.test(taskRoutesPage))
 
 console.log(`\n${pass}/${n} passed`)
