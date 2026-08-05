@@ -43,5 +43,14 @@ const hugeKey = '8'.repeat(64)
 writeFileSync(resolve(dir, `${hugeKey}.json`), 'x'.repeat(96 * 1024 + 1), { mode: 0o600 })
 rejects('an oversized record is refused before parsing', () => first.get(hugeKey), /record size/)
 
+const orphanKey = '9'.repeat(64), orphanRequest = '3'.repeat(64), recoverySecret = 'recovery_secret_0123456789abcdef'
+new PolicyJournal(dir).claim(orphanKey, orphanRequest, 500)
+const recovery = new PolicyJournal(dir, { recoverySecret })
+rejects('a bridge process cannot resolve an orphan without the policy-host secret', () => recovery.resolveOrphan(orphanKey, orphanRequest, 500, { recoverySecret: 'wrong_secret_0123456789abcdefgh', receipt }), /authorization failed/)
+rejects('an operator cannot resolve a stale observation of the claim', () => recovery.resolveOrphan(orphanKey, orphanRequest, 499, { recoverySecret, receipt }), /changed since operator inspection/)
+const resolved = recovery.resolveOrphan(orphanKey, orphanRequest, 500, { recoverySecret, receipt, completedAt: 510 })
+t('an operator can terminalize a proven-dead orphan without claiming the post failed', resolved.status === 'terminal' && resolved.result === 'ambiguous' && resolved.buzz_event_id === null)
+t('restart converges on the signed ambiguous receipt', new PolicyJournal(dir).claim(orphanKey, orphanRequest, 520).record.receipt === receipt)
+
 console.log(fails ? `\npolicy_journal: ${fails} FAILED` : '\npolicy_journal: all checks passed')
 process.exit(fails ? 1 : 0)
