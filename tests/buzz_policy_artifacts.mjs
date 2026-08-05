@@ -4,7 +4,7 @@ import { schnorr } from '@noble/curves/secp256k1'
 import { sha256 } from '@noble/hashes/sha256'
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils'
 import { decodePolicyRequest, decideQuarantineHeader, canonicalJson, policyIdempotencyKey } from '../src/buzz_policy_core.mjs'
-import { createArtifactPolicy, buildBuzzEvent, signExactBuzzEvent, buildNip98Authorization, signExactNip98, buildSignedReceipt } from '../src/buzz_policy_artifacts.mjs'
+import { createArtifactPolicy, buildBuzzEvent, signExactBuzzEvent, buildNip98Authorization, signExactNip98, submitBuzzEvent, buildSignedReceipt } from '../src/buzz_policy_artifacts.mjs'
 
 let fails = 0
 const t = (name, ok) => { console.log(`${ok ? 'ok  ' : 'FAIL'} — ${name}`); if (!ok) fails++ }
@@ -37,6 +37,28 @@ const evilPolicy = createArtifactPolicy({ posterPubkey: poster, authTag: ['auth'
 await rejects('a caller cannot swap a different policy object into NIP-98 construction', () => buildNip98Authorization(signed, { ...evilPolicy }, { nonce: 'nonce_0123456789', now }), /internally configured artifact policy/)
 const key = policyIdempotencyKey(request, decision)
 await rejects('a host-fabricated request cannot choose idempotency', () => policyIdempotencyKey({ ...request }, decision), /not bound to this verified request/)
+let submitted
+const acceptedOutcome = await submitBuzzEvent(signed, signedAuth, policy, { now, fetchImpl: async (url, init) => {
+  submitted = { url, init }
+  return new globalThis.Response(JSON.stringify({ event_id: signed.id, accepted: true, message: '' }), { status: 200 })
+} })
+t('the policy service submits exact bytes and keeps authorization inside the call', submitted.url === policy.endpoint && submitted.init.body === canonicalJson(signed) && submitted.init.headers.authorization.startsWith('Nostr ') && submitted.init.headers['x-auth-tag'] === JSON.stringify(policy.authTag) && acceptedOutcome.result === 'accepted')
+await rejects('NIP-98 for another payload cannot be submitted', () => submitBuzzEvent({ ...signed, content: 'changed' }, signedAuth, policy, { now, fetchImpl: async () => new globalThis.Response() }), /signature or id|exact submission/)
+await rejects('a stale but valid NIP-98 event is refused before network I/O', () => submitBuzzEvent(signed, signedAuth, policy, { now: now + 61, fetchImpl: async () => new globalThis.Response() }), /freshness window/)
+await rejects('a redirect is never followed as authority', () => submitBuzzEvent(signed, signedAuth, policy, { now, fetchImpl: async () => new globalThis.Response('', { status: 302 }) }), /retryable/)
+await rejects('a transient relay response stays retryable', () => submitBuzzEvent(signed, signedAuth, policy, { now, fetchImpl: async () => new globalThis.Response('', { status: 503 }) }), /retryable/)
+await rejects('a proxy or WAF 403 cannot mint a terminal refusal', () => submitBuzzEvent(signed, signedAuth, policy, { now, fetchImpl: async () => new globalThis.Response('{"error":"denied"}', { status: 403, headers: { 'content-type': 'application/json' } }) }), /not an authoritative exact-event outcome/)
+const boundedPolicy = createArtifactPolicy({ posterPubkey: poster, authTag: ['auth', owner, conditions, authSig], endpoint: 'https://nave.example/events', maxResponseBytes: 1024 })
+await rejects('an oversized response is refused before interpretation', () => submitBuzzEvent(signed, signedAuth, boundedPolicy, { now, fetchImpl: async () => new globalThis.Response('x'.repeat(1025)) }), /exceeds the policy limit/)
+await rejects('a success response for another event is refused', () => submitBuzzEvent(signed, signedAuth, policy, { now, fetchImpl: async () => new globalThis.Response(JSON.stringify({ event_id: 'f'.repeat(64), accepted: true, message: '' }), { status: 200 }) }), /event binding/)
+const refusedOutcome = await submitBuzzEvent(signed, signedAuth, policy, { now, fetchImpl: async () => new globalThis.Response(JSON.stringify({ event_id: signed.id, accepted: false, message: 'policy refusal' }), { status: 200 }) })
+t('an authoritative accepted:false is a terminal refusal', refusedOutcome.result === 'rejected' && refusedOutcome.reasonCode === 'relay_refused')
+const foreignOwnerSk = generateSecretKey(), foreignOwner = getPublicKey(foreignOwnerSk)
+const foreignSig = bytesToHex(schnorr.sign(sha256(utf8ToBytes(`nostr:agent-auth:${poster}:${conditions}`)), foreignOwnerSk))
+const foreignPolicy = createArtifactPolicy({ posterPubkey: poster, authTag: ['auth', foreignOwner, conditions, foreignSig], endpoint: 'https://nave.example/events' })
+let foreignFetches = 0
+await rejects('a valid foreign owner policy cannot submit this event', () => submitBuzzEvent(signed, signedAuth, foreignPolicy, { now, fetchImpl: async () => { foreignFetches++; return new globalThis.Response() } }), /configured owner attestation/)
+t('owner-policy mismatch is refused before network I/O', foreignFetches === 0)
 const receiptFields = { version: 1, policy_instance: packet.policy_instance, operation: packet.operation, catalogue_version: packet.catalogue_version,
   request_digest: createHash('sha256').update(raw).digest('hex'), idempotency_key: key, source_ids: [source.id], buzz_channel: decision.dest,
   endpoint_authority: 'nave.example', buzz_event_id: signed.id, result: 'accepted', reason_code: 'accepted', response_digest: 'e'.repeat(64), completed_at: now }
@@ -45,6 +67,9 @@ t('the return is a signed canonical receipt, not the signed Buzz event', receipt
 await rejects('a signer cannot substitute the receipt identity', () => buildSignedReceipt(receiptFields, { signEvent: event => finalizeEvent(event, bad) }, policy, { now }), /changed policy-owned/)
 await rejects('receipt fields cannot be widened', () => buildSignedReceipt({ ...receiptFields, authorization: 'reusable' }, sign, policy, { now }), /invalid shape/)
 await rejects('a receipt cannot name a caller-selected endpoint', () => buildSignedReceipt({ ...receiptFields, endpoint_authority: 'evil.example' }, sign, policy, { now }), /endpoint_authority is not policy-owned/)
+const rejectedFields = { ...receiptFields, result: refusedOutcome.result, reason_code: refusedOutcome.reasonCode, response_digest: refusedOutcome.responseDigest }
+const rejectedReceipt = await buildSignedReceipt(rejectedFields, sign, policy, { now })
+t('an authoritative refusal becomes a signed terminal receipt', JSON.parse(rejectedReceipt.content).reason_code === 'relay_refused')
 
 console.log(fails ? `\nbuzz_policy_artifacts: ${fails} FAILED` : '\nbuzz_policy_artifacts: all checks passed')
 process.exit(fails ? 1 : 0)
