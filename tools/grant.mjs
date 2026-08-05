@@ -154,7 +154,11 @@ if (cmd === 'whoami') {
     ? (agentRaw.startsWith('npub1') ? nip19.decode(agentRaw).data : (HEX64.test(agentRaw) ? agentRaw.toLowerCase() : die('--agent must be npub or 64-hex')))
     : channelId(chanRaw)
   const cap = flag('--cap') || (agentRaw ? 'task' : 'admit')
-  const allowed = agentRaw ? ['task', 'task+act'] : ['admit']
+  // The console offers the same sets (console/index.html ISSUABLE), so the two signing
+  // surfaces cannot disagree about what is grantable. `task-relay` is a carrier grant
+  // over an agent, enforced by the agent's runtime rather than by this bridge; `admit+read`
+  // stays out of both because conveying it means handling channel key material.
+  const allowed = agentRaw ? ['task', 'task+act', 'task-relay'] : ['admit']
   if (!allowed.includes(cap)) die(`--cap ${cap} is not valid for this scope; expected one of: ${allowed.join(', ')}`)
   // One fresh salt PER grant, never one for the batch: a shared salt would make two grants into
   // the same subject linkable, which is the exact property the salt exists to prevent.
