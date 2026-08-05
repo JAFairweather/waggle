@@ -32,6 +32,22 @@ chmod 0600 /etc/waggle/policy-client/id_ed25519
 chmod 0600 /etc/waggle/policy-client/shadow_ed25519
 ```
 
+Create `/etc/waggle/policy-client/known_hosts` from the policy host's independently verified SSH
+host-key fingerprint; do not trust an unauthenticated first connection. Keep both source files
+`root:root` mode `0600`, then install the optional read-lane credential drop-in only after they
+exist:
+
+```sh
+install -m 0600 -o root -g root /secure-transfer/verified_known_hosts /etc/waggle/policy-client/known_hosts
+install -d -m 0755 /etc/systemd/system/waggle-read.service.d
+install -m 0644 deploy/waggle-policy-shadow-client.conf \
+  /etc/systemd/system/waggle-read.service.d/policy-shadow.conf
+systemctl daemon-reload
+```
+
+The service receives read-only systemd credential copies. Neither source path is exposed in the
+process environment, and the bridge refuses loose, missing, symlinked, or ambient SSH files.
+
 Copy only the two `.pub` files to the policy-host operator. The live and shadow keys must differ;
 do not reuse either as a management or deploy key.
 
@@ -134,3 +150,12 @@ Do not enable a bridge remote-only route until shadow output matches the local p
 family has every positive, hostile, replay, restart, ambiguity, and withdrawal test required by §10.
 For shadow comparison, use the shadow response's `evaluation_time` for the local projection and
 compare its `decision` and `unsigned_event_sha256`; never compare or request signature bytes.
+
+The bridge enables this per operation family through `public.policy_shadow`. Start with `mode:
+"observe"`: unavailable or mismatching shadow output is loud and earns no burn-in credit, but the
+existing local quarantine delivery continues. After a sustained exact-match burn-in, switch to
+`mode: "enforce-shadow"`: unavailable or mismatching output remains owed and never reaches the
+local signer. `off` is the default. The SSH client pins a dedicated identity and known-hosts file,
+uses the forced account with no remote command, disables ambient identities, TTY and forwarding,
+and sends only the canonical evidence packet on stdin. Do not use a management key or a mutable
+user `known_hosts` file for either path.
