@@ -63,7 +63,7 @@ process.env.FORWARD_MODE = 'buzz'
 process.env.WB_STUB_SEND = '1'
 process.env.WB_NO_BOOT = '1'
 
-const { scanReturnLane, recordPosted, PUB } = await import('../src/bridge.mjs')
+const { scanReturnLane, recordPosted, PUB, grantSet } = await import('../src/bridge.mjs')
 
 let fails = 0
 const ok = (n, c) => { console.log(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) fails++ }
@@ -136,6 +136,13 @@ ok('a registry-attributed event is echo-skipped', d.length === 0)
 
 // --- reply-to-agent via the registry, no body mention needed ----------------
 recordPosted({ id: 'orig-p', author: claude, buzz: 'parenta', dest: 'chan', q: false, ts: 0, agent: claude })
+grantSet.set(claude, { grantId: '1'.repeat(64), grantor: crew })
+Object.assign(PUB.returnLane[0], { managedTaskRoute: true, scan_channel: 'chan', scan_author: crew })
+d = await scanDelta([{ id: 'rep0', pubkey: outsider, content: 'a direct reply from outside the author allowlist',
+  tags: [['e', 'parenta', '', 'reply']] }], { authors: PUB.scanAuthors, channel: 'chan' })
+ok('a signed direct reply crosses both the spam gate and managed sender binding as data', d.length === 1 && toOf(d[0]) === short(claude))
+ok('the outside direct reply is still labelled reply, never promoted here', d[0]?.why === 'reply')
+grantSet.delete(claude); delete PUB.returnLane[0].managedTaskRoute; delete PUB.returnLane[0].scan_channel; delete PUB.returnLane[0].scan_author
 d = await scanDelta([{ id: 'rep1', pubkey: crew, content: 'good point, agreed', tags: [['e', 'parenta', '', 'reply']] }])
 ok('a reply to an agent-authored post is carried', d.length === 1 && toOf(d[0]) === short(claude))
 ok('it is labelled a reply, not a mention', d[0]?.why === 'reply')
