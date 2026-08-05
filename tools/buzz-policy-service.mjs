@@ -9,7 +9,7 @@ try {
   if (process.argv.length !== 2) throw new Error('buzz-policy-service: arguments are not accepted')
   const configPath = String(process.env.WAGGLE_POLICY_CONFIG_FILE || '')
   if (!configPath) throw new Error('buzz-policy-service: WAGGLE_POLICY_CONFIG_FILE is required')
-  const config = loadBuzzPolicyConfig(configPath)
+  const config = loadBuzzPolicyConfig(configPath, process.env, { requireRecovery: false })
   signer = loadNostrSigner()
   const raw = await readBoundedPolicyRequest(process.stdin)
   process.stdout.write(await runBuzzPolicyRequest(raw, config, signer))

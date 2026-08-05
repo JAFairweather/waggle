@@ -1,9 +1,10 @@
 # Off-box policy service operator runbook
 
 This is the policy-host side of the remote Buzz writer. It does **not** belong on the
-Waggle bridge host. The bridge receives a forced-command SSH key that can invoke only
-`tools/buzz-policy-service.mjs`; the policy host alone holds the Bunker pairing, private
-policy configuration, journal, and recovery secret.
+Waggle bridge host. The bridge receives a forced-command SSH key whose credential-free
+ingress can reach only the policy host's fixed Unix socket. A separate socket-activated,
+sandboxed identity runs `tools/buzz-policy-service.mjs`; the policy host alone holds the
+Bunker pairing, private policy configuration, journal, and recovery secret.
 
 The service is not yet a replacement for every Buzz write family. Follow the migration
 gates in [DESIGN_OFFBOX_BUZZ_POLICY.md](DESIGN_OFFBOX_BUZZ_POLICY.md#10--migration-gates)
@@ -11,9 +12,11 @@ before removing the bridge's existing local poster path.
 
 ## Private files
 
-Create both files as the dedicated policy-service Unix user, outside the checkout. They
-must be real regular files, owned privately, and mode `0600`; their parent directory and
-the journal directory must not be writable by the bridge account.
+Create the policy and three credential source files as `root:root` mode `0600`, outside
+the checkout. They must be real regular files; their parent directory and journal must
+not be writable by the bridge or SSH-ingress account. The socket-activated transaction
+receives private mode-0400 copies of only `policy.json`, `poster.bunker-uri`, and
+`poster.client-nsec` through systemd credentials. It never receives `recovery.secret`.
 
 `policy.json` has exactly this shape:
 
@@ -28,30 +31,32 @@ the journal directory must not be writable by the bridge account.
   "poster_pubkey": "<64-hex Buzz poster pubkey>",
   "auth_tag": ["auth", "<owner pubkey>", "<NIP-OA conditions>", "<owner signature>"],
   "endpoint": "https://<fixed Buzz host>/events",
-  "journal_path": "/var/lib/waggle-policy/journal",
-  "recovery_secret_file": "/etc/waggle-policy/recovery.secret"
+  "journal_path": "/var/lib/waggle-policy/journal"
 }
 ```
 
 `recovery.secret` contains one 32–128 character URL-safe random value. It is never an
 argument, environment value, receipt field, log field, bridge credential, or Bunker
-credential. The ordinary request path loads it only so the same journal can enforce the
-operator-only orphan transition; untrusted requests cannot select that transition.
+credential. The ordinary request path neither receives nor loads it. Only the explicit
+local operator command in “Resolving a pre-prepare orphan” names and loads that file.
 
-Set `WAGGLE_POLICY_CONFIG_FILE` to the absolute `policy.json` path in the policy-host
-service environment. Configure `src/nostr_signer.mjs` there with the policy service's
-NIP-46/Bunker pairing, and verify its reported pubkey equals `poster_pubkey`.
+The installed socket unit fixes exactly three systemd credential paths: policy plus the
+two Bunker pairing files. Configure the Bunker URI and revocable NIP-46 client credential
+there, and verify the signer's reported pubkey equals `poster_pubkey`. Recovery remains
+root-only outside that unit. See [the packaged host procedure](../deploy/POLICY_HOST.md).
 
 ## Forced command
 
-The bridge's SSH public key must be restricted server-side to the zero-argument runner.
-Disable shell, PTY, forwarding, agent forwarding, X11, and user-selected commands. The
-runner accepts one bounded canonical JSON request on stdin and emits only canonical
-status plus a signed receipt. It never returns a signed Buzz event, NIP-98 authorization,
-auth tag, recovery secret, or Bunker credential.
+The bridge's SSH public key is restricted server-side to the credential-free forwarder.
+Shell, PTY, forwarding, agent forwarding, X11, and user-selected commands are disabled.
+The ingress account owns no policy, signer, credential, or journal file; it can write only
+to the fixed Unix socket. The separate transaction accepts one bounded canonical JSON
+request and emits only canonical status plus a signed receipt. It never returns a signed
+Buzz event, NIP-98 authorization, auth tag, recovery secret, or Bunker credential.
 
-Exercise the negative control before enabling the key: adding any argument must exit 2
-with `arguments are not accepted`.
+Exercise the negative controls before enabling the key: arbitrary remote commands must
+still hit the fixed forwarder (or fail), arguments to either Node adapter must exit 2,
+and the ingress user must be unable to read `/etc/waggle-policy` or the journal.
 
 ## Resolving a pre-prepare orphan
 
@@ -60,6 +65,9 @@ record its exact `claimed_at`, then provide the **same canonical request bytes**
 
 ```sh
 WAGGLE_POLICY_CONFIG_FILE=/etc/waggle-policy/policy.json \
+WAGGLE_POLICY_RECOVERY_SECRET_FILE=/etc/waggle-policy/credentials/recovery.secret \
+WAGGLE_BUNKER_URI_FILE=/etc/waggle-policy/credentials/poster.bunker-uri \
+WAGGLE_NIP46_CLIENT_NSEC_FILE=/etc/waggle-policy/credentials/poster.client-nsec \
   node tools/buzz-policy-resolve-orphan.mjs --claimed-at 1234567890 \
   < canonical-request.json
 ```
