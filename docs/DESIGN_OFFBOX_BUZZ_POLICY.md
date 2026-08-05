@@ -248,6 +248,10 @@ that the Buzz poster key is off the bridge host:
 2. For each family in §5, add positive, hostile-evidence, replay, concurrent, restart, stale-policy,
    Bunker-mismatch, ambiguous-submit, and compromised-requester tests.
 3. Run local and remote paths in shadow mode; require identical derived event bytes and decisions.
+   For `quarantine_header`, both paths call the same source-only projection: the signed kind:1
+   supplies body, author, source timestamp, reply target, and source id. Replaceable kind:0 data and
+   local clock clamping are excluded from authored bytes; one captured `observed_at` will supply the
+   unsigned kind:9 timestamp to both paths during the shadow transaction.
 4. Enable remote-only for one family. Failure must hold; it must never fall back to the local key.
 5. Prove a live post and withdrawal, verify the signed receipts, then repeat for every family.
 6. Remove `BUZZ_PRIVATE_KEY` and the Buzz CLI write capability from both waggle lanes.

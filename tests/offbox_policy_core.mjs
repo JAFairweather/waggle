@@ -1,5 +1,5 @@
 import { generateSecretKey, finalizeEvent } from 'nostr-tools/pure'
-import { BUZZ_POLICY_VERSION, canonicalJson, decodePolicyRequest, decideQuarantineHeader, policyIdempotencyKey } from '../src/buzz_policy_core.mjs'
+import { BUZZ_POLICY_VERSION, canonicalJson, decodePolicyRequest, decideQuarantineHeader, policyIdempotencyKey, quarantineSlotsFromSource } from '../src/buzz_policy_core.mjs'
 
 let fails = 0
 const t = (name, ok) => { console.log(`${ok ? 'ok  ' : 'FAIL'} — ${name}`); if (!ok) fails++ }
@@ -27,10 +27,18 @@ rejects('unsafe numeric evidence cannot enter canonical policy input', () => can
 rejects('oversize input is refused before evidence verification', () => decodePolicyRequest(' '.repeat(128 * 1024 + 1), opts), /exceeds/)
 const forged = { ...source, content: 'changed after signing' }
 rejects('tampered source evidence is refused', () => decodePolicyRequest(canonicalJson({ ...packet, evidence: { source_event: forged } }), opts), /signature or id/)
+const edgeSource = JSON.parse(JSON.stringify(finalizeEvent({ kind: 1, created_at: 8_640_000_000_000, tags: [['e', watched]], content: 'last renderable instant' }, generateSecretKey())))
+const edgeDecoded = decodePolicyRequest(canonicalJson({ ...packet, evidence: { source_event: edgeSource } }), opts)
+t('the last ECMAScript-renderable source timestamp is accepted', quarantineSlotsFromSource(edgeDecoded.evidence.source_event).ts === edgeSource.created_at)
+const beyondDateSource = JSON.parse(JSON.stringify(finalizeEvent({ kind: 1, created_at: 8_640_000_000_001, tags: [['e', watched]], content: 'signed but not renderable' }, generateSecretKey())))
+rejects('a signed source timestamp beyond the catalogue Date boundary is refused', () => decodePolicyRequest(canonicalJson({ ...packet, evidence: { source_event: beyondDateSource } }), opts), /complete kind:1/)
 
 const decision = decideQuarantineHeader(decoded, { stagingChannel: channel, watchedEventIds: [watched], approverMention: 'jafairweather' })
 t('destination comes only from policy state', decision.dest === channel)
 t('body and attribution come only from the signed source', decision.slots.body === source.content && decision.slots.id === source.id)
+t('quarantine rendering uses the signed source timestamp without host clamping', decision.slots.ts === source.created_at && decision.slots.claimedTs === undefined)
+t('quarantine rendering refuses relay-selected profile decoration', decision.slots.name === undefined && decision.slots.npub.startsWith('npub1'))
+t('the local and remote paths share one byte projection', JSON.stringify(decision.slots) === JSON.stringify(quarantineSlotsFromSource(source, { approverMention: 'jafairweather' })))
 t('the policy derives quarantine reason rather than accepting a route assertion', decision.slots.why === 'reply to our note')
 rejects('an unrelated signed public note cannot be routed', () => decideQuarantineHeader(decoded, { stagingChannel: channel, watchedEventIds: ['f'.repeat(64)] }), /not a reply/)
 

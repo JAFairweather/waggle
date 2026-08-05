@@ -11,6 +11,10 @@ export const BUZZ_POLICY_OPERATIONS = Object.freeze(['quarantine_header'])
 const HEX64 = /^[0-9a-f]{64}$/
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const EVENT_KEYS = new Set(['id', 'pubkey', 'created_at', 'kind', 'tags', 'content', 'sig'])
+// ECMAScript Date's TimeClip boundary is ±8.64e15 milliseconds. Quarantine rendering
+// intentionally preserves the source timestamp, so refuse signed-but-unrenderable seconds at
+// policy admission rather than letting catalogue rendering throw after a decision is minted.
+const MAX_RENDERABLE_UNIX_SECONDS = 8_640_000_000_000
 const REQUEST_KEYS = new Set(['version', 'policy_instance', 'operation', 'catalogue_version', 'observed_at', 'evidence'])
 const EVIDENCE_KEYS = Object.freeze({ quarantine_header: new Set(['source_event']) })
 const POLICY_REQUESTS = new WeakSet()
@@ -48,7 +52,8 @@ function verifyWireEvent(event) {
   exactKeys(event, EVENT_KEYS, 'source_event')
   if (!HEX64.test(String(event.id || '')) || !HEX64.test(String(event.pubkey || '')) ||
       !/^[0-9a-f]{128}$/.test(String(event.sig || '')) || !Number.isSafeInteger(event.created_at) ||
-      event.created_at < 0 || event.kind !== 1 || !Array.isArray(event.tags) ||
+      event.created_at < 0 || event.created_at > MAX_RENDERABLE_UNIX_SECONDS ||
+      event.kind !== 1 || !Array.isArray(event.tags) ||
       typeof event.content !== 'string') fail('source_event is not a complete kind:1 wire event')
   if (!event.tags.every(tag => Array.isArray(tag) && tag.every(value => typeof value === 'string'))) fail('source_event has malformed tags')
   let valid = false
@@ -87,6 +92,23 @@ const channel = value => {
   return text
 }
 
+// The local bridge and off-box policy must derive the quarantine body from one implementation.
+// Only the complete signed source may choose participant-visible bytes: no relay-selected kind:0,
+// local clock clamp, or host-supplied display name can make shadow outputs diverge.
+export function quarantineSlotsFromSource(sourceEvent, { approverMention = '' } = {}) {
+  const source = verifyWireEvent(JSON.parse(JSON.stringify(sourceEvent)))
+  return Object.freeze({
+    body: source.content,
+    approver: approverMention || undefined,
+    name: undefined,
+    npub: npubEncode(source.pubkey),
+    ts: source.created_at,
+    claimedTs: undefined,
+    why: 'reply to our note',
+    id: source.id,
+  })
+}
+
 // First operation family: a signed public reply to one of the policy service's own watched
 // event ids.  The requester cannot pick the route, state, display name, body, or attribution;
 // all are derived from the complete signed source and policy-owned state.
@@ -100,16 +122,7 @@ export function decideQuarantineHeader(request, { stagingChannel, watchedEventId
   const decision = Object.freeze({
     template: 'quarantine_header',
     dest: channel(stagingChannel),
-    slots: Object.freeze({
-      body: source.content,
-      approver: approverMention || undefined,
-      name: undefined,
-      npub: npubEncode(source.pubkey),
-      ts: source.created_at,
-      claimedTs: undefined,
-      why: 'reply to our note',
-      id: source.id,
-    }),
+    slots: quarantineSlotsFromSource(source, { approverMention }),
   })
   POLICY_DECISIONS.add(decision)
   DECISION_REQUESTS.set(decision, request)
