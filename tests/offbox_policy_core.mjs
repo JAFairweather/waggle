@@ -36,7 +36,9 @@ rejects('an unrelated signed public note cannot be routed', () => decideQuaranti
 
 const key = policyIdempotencyKey(decoded, decision)
 t('idempotency key is stable and opaque', key === policyIdempotencyKey(decoded, decision) && /^[0-9a-f]{64}$/.test(key))
-t('policy-resolved destination is part of idempotency', key !== policyIdempotencyKey(decoded, { ...decision, dest: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' }))
+const otherDecision = decideQuarantineHeader(decoded, { stagingChannel: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', watchedEventIds: [watched] })
+t('policy-resolved destination is part of idempotency', key !== policyIdempotencyKey(decoded, otherDecision))
+rejects('a host-shaped decision cannot enter idempotency', () => policyIdempotencyKey(decoded, { ...decision }), /internally derived/)
 
 console.log(fails ? `\noffbox_policy_core: ${fails} FAILED` : '\noffbox_policy_core: all checks passed')
 process.exit(fails ? 1 : 0)

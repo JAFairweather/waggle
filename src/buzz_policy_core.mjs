@@ -13,6 +13,7 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const EVENT_KEYS = new Set(['id', 'pubkey', 'created_at', 'kind', 'tags', 'content', 'sig'])
 const REQUEST_KEYS = new Set(['version', 'policy_instance', 'operation', 'catalogue_version', 'observed_at', 'evidence'])
 const EVIDENCE_KEYS = Object.freeze({ quarantine_header: new Set(['source_event']) })
+const POLICY_DECISIONS = new WeakSet()
 
 const fail = message => { throw new Error(`buzz-policy: ${message}`) }
 const exactKeys = (value, allowed, label) => {
@@ -91,7 +92,7 @@ export function decideQuarantineHeader(request, { stagingChannel, watchedEventId
   const watched = new Set(watchedEventIds.map(value => String(value).toLowerCase()).filter(value => HEX64.test(value)))
   const replyTargets = source.tags.filter(tag => tag[0] === 'e' && HEX64.test(String(tag[1] || '').toLowerCase())).map(tag => tag[1].toLowerCase())
   if (!replyTargets.some(id => watched.has(id))) fail('source_event is not a reply to a policy-watched event')
-  return Object.freeze({
+  const decision = Object.freeze({
     template: 'quarantine_header',
     dest: channel(stagingChannel),
     slots: Object.freeze({
@@ -105,10 +106,12 @@ export function decideQuarantineHeader(request, { stagingChannel, watchedEventId
       id: source.id,
     }),
   })
+  POLICY_DECISIONS.add(decision)
+  return decision
 }
 
 export function policyIdempotencyKey(request, decision) {
-  if (!request || !decision) fail('request and decision are required')
+  if (!request || !POLICY_DECISIONS.has(decision)) fail('an internally derived policy decision is required')
   const sourceIds = [request.evidence.source_event.id]
   return createHash('sha256').update(canonicalJson([
     request.version, request.policy_instance, request.catalogue_version,
