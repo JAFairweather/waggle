@@ -1,7 +1,7 @@
 // config-operations.mjs — independently verified, public-safe #67 operations view.
 // It deliberately reads the bridge's signed control state from relays, never bridge config.
 import { verifyEvent } from 'nostr-tools'
-import { controlStateFresh } from './control-state-freshness.mjs'
+import { newestFreshControlState } from './control-state-freshness.mjs'
 
 const RELAYS = ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub', 'wss://jskitty.com/nostr']
 const $ = id => document.getElementById(id)
@@ -54,9 +54,9 @@ async function refresh() {
   const bridge = String($('bridge')?.value || '').trim().toLowerCase()
   if (!/^[0-9a-f]{64}$/.test(bridge)) return
   const events = (await Promise.all(RELAYS.map(relay => query(relay, bridge)))).flat()
-  let newest = null
-  for (const event of events) { const state = stateFrom(event, bridge); if (state && (!newest || state.observed_at > newest.observed_at)) newest = state }
-  if (newest && controlStateFresh(newest.observed_at)) render(newest)
+  const states = events.map(event => stateFrom(event, bridge)).filter(Boolean)
+  const newest = newestFreshControlState(states)
+  if (newest) render(newest)
 }
 
 $('load').addEventListener('click', () => setTimeout(refresh, 80))

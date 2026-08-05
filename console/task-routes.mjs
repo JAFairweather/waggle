@@ -4,7 +4,7 @@
 import { nip19, verifyEvent } from 'nostr-tools'
 import { sealedTaskRouteCommand } from './task-route-envelope.mjs'
 import { consoleSigner } from './signer-session.mjs'
-import { controlStateFresh } from './control-state-freshness.mjs'
+import { newestFreshControlState } from './control-state-freshness.mjs'
 
 const RELAYS = ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub', 'wss://jskitty.com/nostr']
 const $ = id => document.getElementById(id)
@@ -36,15 +36,15 @@ function query(relay, bridge, timeout = 8000) {
 async function freshBridge() {
   const bridge = hex($('bridge').value)
   const events = (await Promise.all(RELAYS.map(relay => query(relay, bridge)))).flat()
-  let newest = null
+  const states = []
   for (const event of events) {
     try {
       if (!verifyEvent(event) || event.kind !== 30078 || event.pubkey !== bridge || !event.tags.some(tag => tag[0] === 'd' && tag[1] === 'waggle-control-state')) continue
       const state = JSON.parse(event.content)
-      if (state.v === 1 && state.bridge === bridge && Number.isInteger(state.observed_at) && (!newest || state.observed_at > newest.observed_at)) newest = state
+      if (state.v === 1 && state.bridge === bridge && Number.isInteger(state.observed_at)) states.push(state)
     } catch {}
   }
-  if (!newest || !controlStateFresh(newest.observed_at)) throw new Error('Load a fresh verified bridge state before changing a route.')
+  if (!newestFreshControlState(states)) throw new Error('Load a fresh verified bridge state before changing a route.')
   return bridge
 }
 function publish(event) {
