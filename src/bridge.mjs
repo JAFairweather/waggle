@@ -35,7 +35,7 @@
 import WebSocket from 'ws'
 // Only verifyEvent remains here: every signing symbol moved to nostr_egress.mjs with the key
 // (A3 §2.5). Verification is a public-key operation and belongs wherever input is judged.
-import { verifyEvent } from 'nostr-tools/pure'
+import { getEventHash, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import { emit, query, checkConfigRenderable } from './egress.mjs'
 import { bridgePubkey, bridgeSignerMode, hasBridgeKey, openSeal, openRumor, sealAndWrap, consentTosBlock, signControlState } from './nostr_egress.mjs'
@@ -254,6 +254,20 @@ const BRIDGE_PK = bridgePubkey()
 
 const POSTED_CAP = Number(process.env.POSTED_CAP || 100000)
 const DEL_SINCE_SECS = Number(process.env.DEL_SINCE_SECS || 172800) // 48h
+const TASK_ROUTE_PROTOCOL = 'nvoy-task-carry-v1'
+const TASK_ROUTE_MESSAGE_TYPE = 'waggle-task-route'
+function normalizedTaskRoute(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const participant = String(value.participant || '').toLowerCase()
+  const sender = String(value.sender || '').toLowerCase()
+  const channel = String(value.channel || '').toLowerCase()
+  const mention = String(value.mention || '').replace(/^@/, '').toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(participant) || !/^[0-9a-f]{64}$/.test(sender) ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(channel) || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(mention) ||
+      String(value.protocol || TASK_ROUTE_PROTOCOL) !== TASK_ROUTE_PROTOCOL) return null
+  return Object.freeze({ participant, sender, channel, mention, protocol: TASK_ROUTE_PROTOCOL })
+}
+const configuredTaskRoutes = Object.freeze((cfg.public?.task_routes || []).map(normalizedTaskRoute).filter(Boolean))
 function bumpPubWatermark(ts) {
   if (!Number.isFinite(ts) || ts <= 0 || (pubWatermark && ts <= pubWatermark)) return
   pubWatermark = ts
@@ -289,9 +303,11 @@ const PUB = cfg.public ? {
   trustedRepliers: (cfg.public.trusted_repliers || []).map(s => String(s).toLowerCase()),
   // Pubkeys allowed to issue in-channel approval commands (signed kind:9 replies in staging).
   approvers: (cfg.public.approvers || []).map(s => String(s).toLowerCase()),
+  taskRoutes: [...configuredTaskRoutes],
+  taskRouteCommandAt: Number(cfg.public.task_route_command_at || 0),
   // [{ npub_hex, mention }] — an admitted participant, and the @name that reaches them in
   // channel. Empty by default: the return lane carries nothing until someone is named.
-  returnLane: (cfg.public.return_lane || []).map(r => ({
+  returnLane: [...(cfg.public.return_lane || []).map(r => ({
     npub_hex: String(r.npub_hex || r.npub || '').toLowerCase(),
     mention: String(r.mention || '').replace(/^@/, ''),
     // Typed carries preserve a complete signed source event for Nvoy's two-grant channel
@@ -312,13 +328,18 @@ const PUB = cfg.public ? {
     authors: (Array.isArray(r.authors) ? r.authors : (r.author != null ? [r.author] : []))
       .map(s => String(s || '').toLowerCase())
       .filter(s => /^[0-9a-f]{64}$/.test(s) && s !== String(BRIDGE_PK || '').toLowerCase()),
-  })).filter(r => /^[0-9a-f]{64}$/.test(r.npub_hex) && r.mention),
+    managedTaskRoute: false,
+  })).filter(r => /^[0-9a-f]{64}$/.test(r.npub_hex) && r.mention), ...configuredTaskRoutes.map(r => ({
+    npub_hex: r.participant, mention: r.mention, protocol: r.protocol, authors: [],
+    scan_channel: r.channel, scan_author: r.sender, managedTaskRoute: true,
+  }))],
   // Working channel(s) the return-lane detector scans for @mentions of, and replies to, an
   // admitted agent. Resolved at boot like inbox/staging. DEFAULT EMPTY, and NEVER implicitly
   // staging: pollCommands keeps reading staging alone for signed approval commands, and
   // working-channel traffic must never reach handleCommand (a #connector post is not a console
   // command). A name or a UUID; unresolvable names are fatal in buzz mode.
-  scanChannels: (cfg.public.scan_channels || []).map(v => String(v || '')).filter(Boolean),
+  manualScanChannels: (cfg.public.scan_channels || []).map(v => String(v || '')).filter(Boolean),
+  scanChannels: [...new Set([...(cfg.public.scan_channels || []).map(v => String(v || '')).filter(Boolean), ...configuredTaskRoutes.map(r => r.channel)])],
   // Relay lane (DESIGN_RELAY_INGRESS): channels an admitted agent may inject into by sealing a
   // request to waggle's OWN key, instead of publishing a public kind:1 first. DEFAULT EMPTY, and
   // NEVER implicitly inbox — an unlisted destination is dropped loudly. Resolved at boot like
@@ -387,10 +408,11 @@ if (PUB) {
 // key is never admitted: it is skip-self/echo, keyed through the registry, not this gate.
 if (PUB) {
   const explicit = Array.isArray(cfg.public.scan_authors) && cfg.public.scan_authors.length
-  PUB.scanAuthors = (explicit
+  PUB.manualScanAuthors = (explicit
     ? cfg.public.scan_authors.map(s => String(s).toLowerCase())
     : [...new Set([...PUB.approvers, ...PUB.grantors, ...PUB.trustedRepliers])]
-  ).filter(k => /^[0-9a-f]{64}$/.test(k) && k !== String(BRIDGE_PK || '').toLowerCase())
+  ).filter((k, i, a) => /^[0-9a-f]{64}$/.test(k) && k !== String(BRIDGE_PK || '').toLowerCase() && a.indexOf(k) === i)
+  PUB.scanAuthors = [...new Set([...PUB.manualScanAuthors, ...configuredTaskRoutes.map(r => r.sender)])]
 
   // Author-binding consumption (finding #2). An entry's bound author key lets echo-skip fire on
   // the agent's OWN in-channel posts even though they arrive signed by a Buzz-side key, not the
@@ -444,6 +466,7 @@ function resolveChannels(cb) {
     }
     PUB.inbox = one(PUB.inbox, 'inbox')
     PUB.staging = one(PUB.staging, 'staging_inbox')
+    PUB.manualScanChannels = PUB.manualScanChannels.map((v, i) => one(v, `scan_channel[${i}]`))
     PUB.scanChannels = PUB.scanChannels.map((v, i) => one(v, `scan_channel[${i}]`))
     PUB.relayChannels = PUB.relayChannels.map((v, i) => one(v, `relay_channel[${i}]`))
     channelResolveFailures = 0
@@ -658,13 +681,20 @@ const grantSet = new Map() // grantee pubkey -> { grantId, grantor }
 // @handle and author bindings; an admitted-only entry deliberately has neither.
 function activeReturnLane() {
   if (!PUB) return []
-  const byPubkey = new Map(PUB.returnLane.map(r => [r.npub_hex, r]))
+  // Legacy manually-declared return routes retain their historical behavior. Console-managed
+  // task routes are different: admission is a live prerequisite, so a 441 revocation removes
+  // them from the active fan-out immediately without deleting the owner's saved route policy.
+  // Preserve multiple managed routes for the same participant: one agent may legitimately be
+  // bound to several channels or authorized senders.  Deduplicating by participant here would
+  // silently discard all but one conversation.
+  const routes = PUB.returnLane.filter(r => !r.managedTaskRoute || grantSet.has(r.npub_hex))
+  const represented = new Set(routes.map(route => route.npub_hex))
   for (const pk of grantSet.keys()) {
     // `guest` is presentation only. It is never used as a textual routing handle:
     // admitted-only identities receive explicit p-tags and replies, not every @guest.
-    if (!byPubkey.has(pk)) byPubkey.set(pk, { npub_hex: pk, mention: 'guest', authors: [], protocol: null, dynamic: true })
+    if (!represented.has(pk)) routes.push({ npub_hex: pk, mention: 'guest', authors: [], protocol: null, dynamic: true })
   }
-  return [...byPubkey.values()]
+  return routes
 }
 function processGrantEvent(ev) {
   if (!ev || !ev.id || !PUB) return
@@ -900,7 +930,7 @@ function route(ev) {
   // Relay lane (DESIGN_RELAY_INGRESS): a wrap p-tagged to waggle's OWN key is mail for us to open,
   // not a lane we carry for an agent — handled before the forward path, since our key is not in
   // TARGETS. Fully inert while relay_channels is empty (default-closed).
-  if (BRIDGE_PK && PUB && PUB.relayChannels && PUB.relayChannels.length && ps.includes(BRIDGE_PK)) return handleRelayIngress(ev)
+  if (BRIDGE_PK && PUB && ps.includes(BRIDGE_PK) && (PUB.relayChannels.length || PUB.approvers.length)) return dispatchBridgeWrap(ev)
   const hits = ps.filter(p => TARGETS.includes(p))
   if (!hits.length) return // not for us; do NOT record — keep the dedup store to real deliveries
   // Record dedup ONLY for a genuinely committed delivery: buzz mode into at least
@@ -1712,6 +1742,104 @@ function handleWatchlistControlCommand(ev) {
   return { ok: true, action: body.action, target, ...result }
 }
 
+function installTaskRoutes(routes) {
+  PUB.taskRoutes = routes
+  PUB.returnLane = [
+    ...PUB.returnLane.filter(route => !route.managedTaskRoute),
+    ...routes.map(route => ({ npub_hex: route.participant, mention: route.mention,
+      protocol: route.protocol, authors: [], scan_channel: route.channel,
+      scan_author: route.sender, managedTaskRoute: true })),
+  ]
+  PUB.scanChannels = [...new Set([...PUB.manualScanChannels, ...routes.map(route => route.channel)])]
+  PUB.scanAuthors = [...new Set([...PUB.manualScanAuthors, ...routes.map(route => route.sender)])]
+}
+
+// Owner-managed task routes are policy data, not deployment data.  The Console signs one exact
+// NIP-17 seal and encrypts it to the bridge.  Relays see only an ephemeral 1059 addressed to the
+// bridge — never the private channel, participant, sender, or mention tuple inside it.
+function applyTaskRouteCommand({ author, createdAt, body, id }) {
+  if (!PUB || !BRIDGE_PK) return { ok: false, reason: 'task routes unavailable' }
+  if (!PUB.approvers.includes(String(author || '').toLowerCase())) return { ok: false, reason: 'author is not an approver' }
+  const now = Math.floor(Date.now() / 1000)
+  if (!Number.isInteger(createdAt) || createdAt > now + 300 || now - createdAt > CONTROL_COMMAND_MAX_AGE_SECS) return { ok: false, reason: 'stale command' }
+  if (!body || body.v !== 1 || body.type !== TASK_ROUTE_MESSAGE_TYPE || !['upsert', 'remove'].includes(body.action) ||
+      Object.keys(body).sort().join(',') !== 'action,channel,mention,participant,protocol,sender,type,v') return { ok: false, reason: 'invalid command body' }
+  const route = normalizedTaskRoute(body)
+  if (!route) return { ok: false, reason: 'invalid task route' }
+  if (createdAt <= PUB.taskRouteCommandAt) return { ok: false, reason: 'superseded command' }
+  if (body.action === 'upsert' && !grantSet.has(route.participant)) return { ok: false, reason: 'participant is not admitted' }
+  const same = value => value.participant === route.participant && value.sender === route.sender &&
+    value.channel === route.channel && value.mention === route.mention && value.protocol === route.protocol
+  const routes = body.action === 'upsert'
+    ? (PUB.taskRoutes.some(same) ? [...PUB.taskRoutes] : [...PUB.taskRoutes, route])
+    : PUB.taskRoutes.filter(value => !same(value))
+  if (!mutateConfig(c => {
+    c.public.task_routes = routes.map(value => ({ ...value }))
+    c.public.task_route_command_at = createdAt
+  })) return { ok: false, reason: 'could not persist task route' }
+  PUB.taskRouteCommandAt = createdAt
+  installTaskRoutes(routes)
+  ensureScanPolling()
+  scheduleControlState()
+  log(`task route: ${body.action} ${route.channel.slice(0, 8)}…/${route.sender.slice(0, 12)}… -> ${route.participant.slice(0, 12)}… @${route.mention} (${String(id).slice(0, 12)}…)`)
+  return { ok: true, action: body.action, route }
+}
+
+// Legacy public commands are deliberately rejected: route tuples contain private operational
+// identifiers and must never be recoverable from a relay's public event history.
+function handleTaskRouteControlCommand() {
+  return { ok: false, reason: 'task-route commands must be sealed' }
+}
+
+async function handleSealedTaskRouteControl(ev, { openSealFn = openSeal, openRumorFn = openRumor } = {}) {
+  if (!ev || ev.kind !== 1059 || !PUB || !BRIDGE_PK || !hasBridgeKey()) return { handled: false }
+  if (relaySeen.has(ev.id) || relayInFlight.has(ev.id)) return { handled: true, ok: true, duplicate: true }
+  let wrapValid = false
+  try { wrapValid = verifyEvent(ev) } catch { wrapValid = false }
+  if (!wrapValid || Object.keys(ev).sort().join(',') !== 'content,created_at,id,kind,pubkey,sig,tags') return { handled: true, ok: false, reason: 'invalid wrap' }
+  const ps = (ev.tags || []).filter(tag => tag[0] === 'p')
+  if (ps.length !== 1 || ps[0].length !== 2 || String(ps[0][1]).toLowerCase() !== BRIDGE_PK) return { handled: false }
+  if (Buffer.byteLength(JSON.stringify(ev)) > PUB.relayMaxWrapBytes) return { handled: true, ok: false, reason: 'wrap over cap' }
+  const nowMs = Date.now()
+  slide(relayDecWin, nowMs, 60_000)
+  if (relayDecWin.length >= PUB.relayDecryptBudget) return { handled: true, ok: false, reason: 'decrypt budget' }
+  relayDecWin.push(nowMs)
+  relayInFlight.add(ev.id)
+  try {
+    let seal
+    try { seal = await openSealFn(ev) } catch { return { handled: true, ok: false, reason: 'cannot decrypt wrap' } }
+    let valid = false
+    try { valid = verifyEvent(seal) } catch { valid = false }
+    if (!valid || seal.kind !== 13 || Object.keys(seal).sort().join(',') !== 'content,created_at,id,kind,pubkey,sig,tags' ||
+        !Array.isArray(seal.tags) || seal.tags.length) return { handled: true, ok: false, reason: 'invalid seal' }
+    // A valid non-owner seal may belong to the separate admitted relay lane. Leave it for that
+    // handler; only an authenticated approver can make us spend the second decryption here.
+    if (!PUB.approvers.includes(String(seal.pubkey || '').toLowerCase())) return { handled: false, openedSeal: seal, budgetCharged: true }
+    let rumor
+    try { rumor = await openRumorFn(seal) } catch { return { handled: true, ok: false, reason: 'cannot decrypt rumor' } }
+    if (!rumor || Object.keys(rumor).sort().join(',') !== 'content,created_at,id,kind,pubkey,tags' || rumor.kind !== 14 || String(rumor.pubkey || '').toLowerCase() !== String(seal.pubkey).toLowerCase() ||
+        rumor.id !== getEventHash(rumor)) return { handled: true, ok: false, reason: 'invalid rumor' }
+    const tags = rumor.tags || []
+    if (tags.length !== 1 || tags[0]?.[0] !== 'p' || tags[0].length !== 2 || String(tags[0][1]).toLowerCase() !== BRIDGE_PK) return { handled: true, ok: false, reason: 'wrong recipient' }
+    let body
+    try { body = JSON.parse(rumor.content) } catch { return { handled: false, openedSeal: seal, openedRumor: rumor, budgetCharged: true } }
+    if (body?.type !== TASK_ROUTE_MESSAGE_TYPE) return { handled: false, openedSeal: seal, openedRumor: rumor, budgetCharged: true }
+    const result = applyTaskRouteCommand({ author: seal.pubkey, createdAt: rumor.created_at, body, id: ev.id })
+    if (result.ok) markRelaySeen(ev.id)
+    else err(`task route: rejected sealed command ${ev.id.slice(0, 12)}… — ${result.reason}`)
+    return { handled: true, ...result }
+  } finally { relayInFlight.delete(ev.id) }
+}
+
+function dispatchBridgeWrap(ev) {
+  if (!PUB?.approvers.length) return PUB?.relayChannels.length ? handleRelayIngress(ev) : undefined
+  return handleSealedTaskRouteControl(ev).then(result => {
+    if (!result.handled && PUB.relayChannels.length) return handleRelayIngress(ev, {
+      openedSeal: result.openedSeal, openedRumor: result.openedRumor, budgetCharged: result.budgetCharged,
+    })
+  }).catch(e => err(`task route: sealed command handler failed: ${e.message}`))
+}
+
 function scheduleControlState() {
   if (process.env.WB_NO_BOOT || controlStateTimer || !PUB?.controlStatePublish || !PUB.relays.length) return
   controlStateTimer = setTimeout(() => {
@@ -1825,27 +1953,30 @@ async function postRelay(ev, sender, dest, wantCh, body) {
     err(`RELAY[buzz] ERR -> ${dest}: ${e.message} — claim rolled back, will retry`)
   })
 }
-async function handleRelayIngress(ev, { openSealFn = openSeal, openRumorFn = openRumor, postRelayFn = postRelay } = {}) {
+async function handleRelayIngress(ev, { openSealFn = openSeal, openRumorFn = openRumor, postRelayFn = postRelay,
+  openedSeal = null, openedRumor = null, budgetCharged = false } = {}) {
   if (!hasBridgeKey() || !PUB) return
   markLatency(ev.id, 'relay.observed')
   const nowMs = Date.now()
   if (relaySeen.has(ev.id) || relayInFlight.has(ev.id)) return              // §6 dedup BEFORE decrypt
   const wrapBytes = Buffer.byteLength(JSON.stringify(ev))
   if (wrapBytes > PUB.relayMaxWrapBytes) return relayDrop('size', ev.id)     // §7 hard cap, cheap
-  slide(relayDecWin, nowMs, 60_000)
-  if (relayDecWin.length >= PUB.relayDecryptBudget) return relayDrop('budget', ev.id, false) // §7, transient
-  relayDecWin.push(nowMs)
+  if (!budgetCharged) {
+    slide(relayDecWin, nowMs, 60_000)
+    if (relayDecWin.length >= PUB.relayDecryptBudget) return relayDrop('budget', ev.id, false) // §7, transient
+    relayDecWin.push(nowMs)
+  }
   relayInFlight.add(ev.id)
   try {
     // ---- expensive step: decryption of UNAUTHENTICATED input (the §7 DoS surface) ----
-    let seal
-    try { seal = await openSealFn(ev) }
+    let seal = openedSeal
+    try { if (!seal) seal = await openSealFn(ev) }
     catch { return relayDrop('decrypt', ev.id) }
     let ok = false
     try { ok = verifyEvent(seal) } catch { ok = false }
     if (!ok || seal.kind !== 13) return relayDrop('verify', ev.id)            // authorship proof (§2.4)
-    let rumor
-    try { rumor = await openRumorFn(seal) }
+    let rumor = openedRumor
+    try { if (!rumor) rumor = await openRumorFn(seal) }
     catch { return relayDrop('decrypt', ev.id) }
     if (!rumor || String(rumor.pubkey) !== String(seal.pubkey)) return relayDrop('mismatch', ev.id) // bind unsigned rumor
     // ---- the sender is now AUTHENTICATED: every drop below is ACKED ----
@@ -1955,6 +2086,11 @@ async function scanReturnLane(msgs, opts = {}) {
     // No break: one message fans out to EVERY matching recipient, each deduped on its own
     // (source × recipient) key. "@a @b" reaching only one of them was finding #4.
     for (const r of recipients) {
+      // Owner-managed task routes bind BOTH the source channel and original signer to this
+      // recipient.  The legacy global scan set remains supported, but a route created through
+      // the Console cannot accidentally fan a message from another watched channel/author into
+      // this participant merely because both appear in the global unions.
+      if (r.managedTaskRoute && (r.scan_channel !== String(opts.channel || '').toLowerCase() || r.scan_author !== from)) continue
       const key = rlKey(m.id, r.npub_hex)
       if (rlSeen.has(key)) continue                        // this recipient already carried for this message
       // Echo: never carry the recipient's own words back. Three forms, all the agent's own:
@@ -2170,6 +2306,16 @@ async function pollScanChannels() {
   }
 }
 
+let scanPollingTimer = null
+function ensureScanPolling() {
+  if (process.env.WB_NO_BOOT || scanPollingTimer || !PUB?.scanChannels.length || !hasBridgeKey() || FORWARD_MODE !== 'buzz') return false
+  log(`return-lane scan: ${PUB.scanChannels.length} channel(s) · ${activeReturnLane().length} recipient(s) · signer gate ${PUB.scanAuthors.length} key(s)`)
+  if (!PUB.scanAuthors.length) err('WARN: scan_channels configured but scan_authors gate is EMPTY — default-closed, NO mentions will route until the crew roster is set.')
+  pollScanChannels().catch(e => err(`scan: initial poll failed: ${e.message}`))
+  scanPollingTimer = setInterval(() => pollScanChannels().catch(e => err(`scan: poll failed: ${e.message}`)), 15000)
+  return true
+}
+
 // --- relay connections ------------------------------------------------------
 function connect(url) {
   let ws, alive = false
@@ -2353,7 +2499,7 @@ function connectPublic(url) {
       // `since: SINCE` (not PUB.since) because NIP-59 randomises `created_at` backwards by up to
       // two days — a watermark-tight window would silently drop a legitimately backdated wrap.
       // Re-serving is safe: `relaySeen` dedups durably, before decryption.
-      if (BRIDGE_PK && PUB.relayChannels.length) {
+      if (BRIDGE_PK && (PUB.relayChannels.length || PUB.approvers.length)) {
         ws.send(JSON.stringify(['REQ', 'pr', { kinds: [1059], '#p': [BRIDGE_PK], since: SINCE }]))
       }
       // Safety: flush even if a relay never sends EOSE for a subscription.
@@ -2367,7 +2513,11 @@ function connectPublic(url) {
       try { m = JSON.parse(d.toString()) } catch { return }
       if (m[0] === 'EVENT') {
         const ev = m[2]
-        if (ev && ev.kind === CONTROL_COMMAND_KIND) { if (handleControlStateCommand(ev).ok) return; handleWatchlistControlCommand(ev); return }
+        if (ev && ev.kind === CONTROL_COMMAND_KIND) {
+          if (handleControlStateCommand(ev).ok) return
+          if (handleWatchlistControlCommand(ev).ok) return
+          return
+        }
         if (ev && (ev.kind === NIPDA.grant || ev.kind === NIPDA.revocation)) {
           const before = grantSet.size
           processGrantEvent(ev)
@@ -2394,7 +2544,10 @@ function connectPublic(url) {
         // an instruction to relay, not a note to sort into a flush window. Buffering one would
         // delay it behind backfill and — worse — subject it to the `backfillLimit` overflow drop,
         // where a legitimate request would be discarded as if it were surplus history.
-        if (ev && ev.kind === 1059 && BRIDGE_PK && PUB.relayChannels.length) { handleRelayIngress(ev); return }
+        if (ev && ev.kind === 1059 && BRIDGE_PK && (PUB.relayChannels.length || PUB.approvers.length)) {
+          dispatchBridgeWrap(ev)
+          return
+        }
         if (eosed) { if (ev && ev.kind === 5) routeDelete(ev); else routePublic(ev); return }
         // A4: bound the pre-EOSE buffer app-side too — overflow dropped WITH a log, never silent.
         if (buf.length >= PUB.backfillLimit) { err(`[pub ${url}] backfill buffer cap ${PUB.backfillLimit} — dropping ${ev?.id ? ev.id.slice(0, 12) : '?'}…`); return }
@@ -2414,7 +2567,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, pollScanChannels, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTaskRouteControlCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
@@ -2490,14 +2643,7 @@ if (!process.env.WB_NO_BOOT) {
       log(`approval console: watching staging for commands from ${PUB.approvers.length} approver(s)`)
       pollCommands(); setInterval(pollCommands, 15000)
     }
-    if (PUB.scanChannels.length && hasBridgeKey() && FORWARD_MODE === 'buzz') {
-      log(`return-lane scan: ${PUB.scanChannels.length} channel(s) · ${activeReturnLane().length} recipient(s) · signer gate ${PUB.scanAuthors.length} key(s)`)
-      // Silence-is-not-calm: a configured scan with an empty gate routes NOTHING, so say so loudly
-      // rather than let it look like "no mentions." Set scan_authors (or declare approvers/grantors).
-      if (!PUB.scanAuthors.length) err('WARN: scan_channels configured but scan_authors gate is EMPTY — default-closed, NO mentions will route until the crew roster is set.')
-      pollScanChannels().catch(e => err(`scan: initial poll failed: ${e.message}`))
-      setInterval(() => pollScanChannels().catch(e => err(`scan: poll failed: ${e.message}`)), 15000)
-    }
+    ensureScanPolling()
     })
   } else {
     log('public read lane: inactive (no cfg.public.inbox)')

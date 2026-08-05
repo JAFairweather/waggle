@@ -142,6 +142,9 @@ ok('resolveRelayDest rejects empty', resolveRelayDest('') === null)
 
 // --- route() dispatches the branch ------------------------------------------
 {
+  // A real read lane has owner approvers as well as relay ingress. Prove the encrypted control
+  // discriminator hands a non-owner seal through without consuming or double-decrypting it.
+  PUB.approvers.push(getPublicKey(generateSecretKey()))
   const sk = generateSecretKey(); const { wrap, senderPk } = wrapFor(sk, { body: 'via route' })
   admit(senderPk)
   route(wrap); await tick()

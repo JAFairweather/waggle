@@ -6,7 +6,9 @@
 import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, rmdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
+import { generateSecretKey, getEventHash, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
+import * as nip44 from 'nostr-tools/nip44'
+import { sealedTaskRouteCommand } from '../console/task-route-envelope.mjs'
 
 const tmp = mkdtempSync(join(tmpdir(), 'wb-control-state-'))
 const CFG = join(tmp, 'config.json')
@@ -24,6 +26,7 @@ process.env.PUB_WATERMARK_PATH = join(tmp, 'watermark')
 process.env.POSTED_MAP_PATH = join(tmp, 'posted.log')
 process.env.MIRRORASKED_PATH = join(tmp, 'asked.log')
 process.env.SEND_JOURNAL_PATH = SEND_JOURNAL
+process.env.RELAYSEEN_PATH = join(tmp, 'relay-lane-seen.log')
 writeFileSync(CFG, JSON.stringify({
   relays: [], recipients: [],
   public: {
@@ -34,7 +37,10 @@ writeFileSync(CFG, JSON.stringify({
   },
 }))
 
-const { buildControlState, publishControlState, processConsentEvent, mirrorAsked, mirrorRevoked, PUB, handleControlStateCommand, handleWatchlistControlCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D } = await import('../src/bridge.mjs')
+const { buildControlState, publishControlState, processConsentEvent, mirrorAsked, mirrorRevoked, PUB,
+  grantSet, activeReturnLane, handleControlStateCommand, handleWatchlistControlCommand,
+  handleTaskRouteControlCommand, handleSealedTaskRouteControl, CONTROL_COMMAND_KIND,
+  CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TASK_ROUTE_PROTOCOL } = await import('../src/bridge.mjs')
 const { signControlState, CONTROL_STATE_KIND } = await import('../src/nostr_egress.mjs')
 const { scopeHash } = await import('../src/consent.mjs')
 
@@ -151,12 +157,75 @@ const remove = watchCommand('unmirror', mirrorTarget, add.created_at + 1)
 const removed = handleWatchlistControlCommand(remove)
 t('a signed browser unmirror command persists and hot-removes a watched author', removed.ok && removed.removed && !PUB.authors.includes(mirrorTarget))
 
+const participant = getPublicKey(generateSecretKey())
+const taskChannel = '88888888-8888-4888-8888-888888888888'
+const taskBody = (action, target = participant, channel = taskChannel) => ({ v: 1, type: 'waggle-task-route', action, channel,
+  sender: getPublicKey(watchedSk), participant: target, mention: 'codex', protocol: TASK_ROUTE_PROTOCOL })
+const taskCommand = (body, created_at, sk = watchedSk) => {
+  const rumor = { kind: 14, pubkey: getPublicKey(sk), created_at, content: JSON.stringify(body), tags: [['p', getPublicKey(bridgeSk)]] }
+  rumor.id = getEventHash(rumor)
+  const seal = wire(finalizeEvent({ kind: 13, created_at, content: 'encrypted', tags: [] }, sk))
+  const wrap = wire(finalizeEvent({ kind: 1059, created_at, content: 'opaque', tags: [['p', getPublicKey(bridgeSk)]] }, generateSecretKey()))
+  return { wrap, open: { openSealFn: async () => seal, openRumorFn: async () => rumor } }
+}
+const applyTask = async (body, created_at, sk) => {
+  const command = taskCommand(body, created_at, sk)
+  return handleSealedTaskRouteControl(command.wrap, command.open)
+}
+t('a public task-route event is rejected so private route tuples cannot leak to relays', !handleTaskRouteControlCommand({}).ok)
+const refusedRoute = await applyTask(taskBody('upsert'), now + 10)
+t('an owner cannot route to a participant who is not already admitted', !refusedRoute.ok && /not admitted/.test(refusedRoute.reason))
+grantSet.set(participant, { grantId: '1'.repeat(64), grantor: getPublicKey(watchedSk) })
+const routeAt = now + 11
+const ownerSigner = {
+  getPublicKey: async () => getPublicKey(watchedSk),
+  signEvent: async event => wire(finalizeEvent(event, watchedSk)),
+  nip44Encrypt: async (recipient, plaintext) => nip44.encrypt(plaintext, nip44.getConversationKey(watchedSk, recipient)),
+}
+let alteredSealRefused = false
+try {
+  await sealedTaskRouteCommand({ ...ownerSigner, signEvent: async event => wire(finalizeEvent({ ...event, content: 'substituted' }, watchedSk)) },
+    getPublicKey(bridgeSk), taskBody('upsert'), routeAt)
+} catch { alteredSealRefused = true }
+t('the Console refuses a signer that alters the encrypted route seal', alteredSealRefused)
+const realWrap = await sealedTaskRouteCommand(ownerSigner, getPublicKey(bridgeSk), taskBody('upsert'), routeAt)
+const extraOuterField = await handleSealedTaskRouteControl({ ...realWrap, extra: 'not part of NIP-59' })
+t('the bridge refuses an extensible outer envelope even when its Nostr signature still verifies', !extraOuterField.ok && /invalid wrap/.test(extraOuterField.reason))
+const routed = await handleSealedTaskRouteControl(realWrap)
+t('an owner-signed task route persists and activates without a restart', routed.ok &&
+  PUB.scanChannels.includes(taskChannel) && PUB.scanAuthors.includes(getPublicKey(watchedSk)) &&
+  PUB.returnLane.some(route => route.npub_hex === participant && route.protocol === TASK_ROUTE_PROTOCOL && route.managedTaskRoute))
+t('the task route and replay watermark commit in one config write', (() => {
+  const p = JSON.parse(readFileSync(CFG, 'utf8')).public
+  return p.task_route_command_at === routeAt && p.task_routes.length === 1 && p.task_routes[0].participant === participant
+})())
+const secondTaskChannel = '99999999-9999-4999-8999-999999999999'
+const secondRoute = await applyTask(taskBody('upsert', participant, secondTaskChannel), now + 12)
+t('one admitted identity can retain distinct routes into multiple conversations', secondRoute.ok &&
+  activeReturnLane().filter(route => route.managedTaskRoute && route.npub_hex === participant).length === 2)
+const routeReplay = await applyTask(taskBody('upsert'), routeAt)
+const widened = await applyTask({ ...taskBody('upsert'), destination: 'invented' }, now + 13)
+t('a sealed task-route command has an exact schema and cannot be replayed', !routeReplay.ok && !widened.ok)
+const stranger = await applyTask(taskBody('remove'), now + 14, generateSecretKey())
+t('a sealed route from a non-approver cannot change owner policy', stranger.handled === false)
+const routeRemoved = await applyTask(taskBody('remove'), now + 15)
+t('removing one route preserves the participant’s other conversation', routeRemoved.ok &&
+  PUB.returnLane.filter(route => route.managedTaskRoute && route.npub_hex === participant).length === 1 &&
+  JSON.parse(readFileSync(CFG, 'utf8')).public.task_routes.length === 1)
+const lastRouteRemoved = await applyTask(taskBody('remove', participant, secondTaskChannel), now + 16)
+t('the same signed control plane can remove the final managed task route', lastRouteRemoved.ok &&
+  !PUB.returnLane.some(route => route.managedTaskRoute && route.npub_hex === participant) &&
+  JSON.parse(readFileSync(CFG, 'utf8')).public.task_routes.length === 0)
+
 const followingPage = readFileSync(new URL('../console/following.html', import.meta.url), 'utf8')
 t('the Following console signs only the narrow watchlist command, never a bridge config request', /\['d','waggle-watchlist'\]/.test(followingPage) && /JSON\.stringify\(\{v:1,action,target\}\)/.test(followingPage) && !/fetch\([^)]*config\.json/.test(followingPage))
 
 const configPage = readFileSync(new URL('../console/config.html', import.meta.url), 'utf8')
+const taskRoutesPage = readFileSync(new URL('../console/task-routes.mjs', import.meta.url), 'utf8')
+const taskEnvelope = readFileSync(new URL('../console/task-route-envelope.mjs', import.meta.url), 'utf8')
 const operationsPage = readFileSync(new URL('../console/config-operations.mjs', import.meta.url), 'utf8')
 t('the Config console closes the entire signed state and renders only fresh verified public operations', /config-operations\.mjs/.test(configPage) && /verifyEvent/.test(operationsPage) && /exact\(state, \['v', 'observed_at', 'hive', 'bridge', 'publishing', 'follows', 'operations'\]\)/.test(operationsPage) && /exact\(state\.hive, \['id', 'name', 'handle'\]\)/.test(operationsPage) && /state\.follows\.every/.test(operationsPage) && /newest\.observed_at <= now \+ 60/.test(operationsPage) && /now - newest\.observed_at <= 900/.test(operationsPage) && /Verified signed state from/.test(operationsPage) && /Aggregate counts only/.test(operationsPage) && !/fetch\([^)]*config\.json/.test(operationsPage) && !/\/config\.json/.test(operationsPage))
+t('the Config route form emits only an encrypted gift wrap and never publishes its private tuple', /task-routes\.mjs/.test(configPage) && /waggle-task-route/.test(taskRoutesPage) && /nvoy-task-carry-v1/.test(taskRoutesPage) && /nip44\.encrypt/.test(taskEnvelope) && /kind:1059/.test(taskEnvelope) && /nip44Encrypt/.test(taskEnvelope) && !/kind:30078/.test(taskRoutesPage + taskEnvelope) && !/fetch\([^)]*config\.json/.test(taskRoutesPage) && !/\/config\.json/.test(taskRoutesPage))
 
 console.log(`\n${pass}/${n} passed`)
 process.exit(pass === n ? 0 : 1)

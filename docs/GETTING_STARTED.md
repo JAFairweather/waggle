@@ -177,6 +177,15 @@ own `task-relay` grant; that makes it transport, never the original author. Miss
 revoked, or unverifiable authority fails closed to data-only delivery. Quoted or forwarded
 third-party text stays data even when the surrounding message is authorised.
 
+Do not hand-edit `scan_channels`, `scan_authors`, or `return_lane` to connect a desktop agent.
+After admitting the participant, open **Console → Config → Agent channel route**. Enter the Buzz
+channel UUID, the agent npub, the authorized sender, and its mention handle. The browser signs and
+NIP-44 encrypts a closed `waggle-task-route` command to the bridge inside an ephemeral NIP-59 gift
+wrap; relays never see that private route tuple. The bridge verifies the owner and admission,
+persists it under `public.task_routes`, and starts the scanner without a restart. Removing the same
+exact route is also owner-signed and encrypted. One identity may hold several routes, while every
+route remains bound to its own source channel and original signer.
+
 ## When it's *not* working
 
 - **No `[pub …] open, subscribing` line** → relay connectivity or a bad relay URL. The

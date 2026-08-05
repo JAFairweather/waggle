@@ -15,8 +15,8 @@ const authorSk = generateSecretKey(), author = getPublicKey(authorSk)
 const channel = 'a8186b53-537d-46ad-a7e7-b6486c58970e'
 writeFileSync(resolve(dir, 'config.json'), JSON.stringify({ relays: [], recipients: [], public: {
   relays: ['wss://example.invalid'], inbox: channel, staging_inbox: channel,
-  watch_authors: [], watch_events: [], approvers: [], grantors: [], scan_authors: [author], scan_channels: [channel],
-  return_lane: [{ npub_hex: participant, mention: 'codex', protocol: 'nvoy-task-carry-v1' }],
+  watch_authors: [], watch_events: [], approvers: [], grantors: [],
+  task_routes: [{ participant, sender: author, channel, mention: 'codex', protocol: 'nvoy-task-carry-v1' }],
 } }))
 process.env.CONFIG_PATH = resolve(dir, 'config.json')
 process.env.SEND_JOURNAL_PATH = resolve(dir, 'send-journal.log')
@@ -27,7 +27,8 @@ process.env.RLPENDING_PATH = resolve(dir, 'pending.log')
 process.env.BUZZ_PRIVATE_KEY = Buffer.from(bridgeSk).toString('hex')
 process.env.FORWARD_MODE = 'buzz'; process.env.WB_NO_BOOT = '1'
 
-const { scanReturnLane, PUB } = await import('../src/bridge.mjs')
+const { scanReturnLane, PUB, grantSet } = await import('../src/bridge.mjs')
+grantSet.set(participant, { grantId: '1'.repeat(64), grantor: author })
 let pass = 0, fail = 0
 const ok = (name, value) => { console.log(`${value ? 'ok  ' : 'FAIL'} — ${name}`); value ? pass++ : fail++ }
 const source = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 1785870000,
@@ -54,6 +55,21 @@ await scanReturnLane([JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created
   tags: [['p', participant]], content: 'wrong channel assertion' }, authorSk)))],
 { authors: PUB.scanAuthors, channel: 'not-a-channel', publish: async wrap => { wraps.push(wrap); return 2 } })
 ok('an unresolved/non-UUID source channel is refused', wraps.length === 1)
+
+const otherSk = generateSecretKey(), other = getPublicKey(otherSk)
+const wrongSender = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 1785870004,
+  tags: [['p', participant]], content: 'right mention, wrong authorized sender' }, otherSk)))
+await scanReturnLane([wrongSender], { authors: [author, other], channel, publish: async wrap => { wraps.push(wrap); return 2 } })
+ok('a managed route binds its original signer even when the global scan gate contains that signer for another route', wraps.length === 1)
+const wrongChannel = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 1785870005,
+  tags: [['p', participant]], content: 'right sender, wrong channel' }, authorSk)))
+await scanReturnLane([wrongChannel], { authors: [author], channel: '99999999-9999-4999-8999-999999999999', publish: async wrap => { wraps.push(wrap); return 2 } })
+ok('a managed route binds its source channel instead of inheriting the global channel union', wraps.length === 1)
+grantSet.delete(participant)
+const revoked = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 1785870006,
+  tags: [['p', participant]], content: 'admission revoked' }, authorSk)))
+await scanReturnLane([revoked], { authors: [author], channel, publish: async wrap => { wraps.push(wrap); return 2 } })
+ok('revoking participant admission removes a saved managed route from active fan-out', wraps.length === 1)
 
 console.log(`\n${pass}/${pass + fail} passed`)
 process.exit(fail ? 1 : 0)
