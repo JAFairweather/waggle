@@ -4,6 +4,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+Slice=waggle-policy.slice
 User=waggle-policy
 Group=waggle-policy
 WorkingDirectory=/opt/waggle-policy
@@ -22,8 +23,8 @@ StandardError=journal
 TimeoutStartSec=130
 RuntimeMaxSec=125
 UMask=0077
-MemoryMax=256M
-TasksMax=32
+MemoryMax=192M
+TasksMax=16
 CPUQuota=100%
 
 # The SSH ingress identity reaches only the Unix socket.  This process alone can

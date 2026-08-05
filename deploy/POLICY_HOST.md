@@ -33,7 +33,9 @@ Copy only `id_ed25519.pub` to the policy-host operator. Do not reuse a managemen
 
 On the policy host, place the exact CI-green release at `/opt/waggle-policy`. The resulting tree
 must be `root:root`, directories `0755`, and files non-writable by group/other. Install dependencies
-as root with `npm ci --omit=dev`; runtime identities must not own `node_modules`.
+as root with `npm ci --omit=dev --ignore-scripts`, remove `node_modules/.bin`, and do not include
+`.git` or any symlink. The installer records a root-only digest manifest for the complete runtime
+closure; runtime identities must not own or modify any part of `node_modules`.
 
 From that release tree, as root:
 
@@ -42,7 +44,10 @@ WAGGLE_POLICY_CLIENT_PUB="$(cat /secure-transfer/id_ed25519.pub)" \
   sh deploy/policy-host-install.sh
 ```
 
-The installer validates `sshd` before reload and installs—but does not enable—the request socket.
+The installer validates `sshd` before reload, records the complete release manifest, and
+installs—but does not enable—the request socket. The socket admits at most four concurrent
+connections (two per source), and every transaction joins `waggle-policy.slice`, whose memory,
+task, and CPU ceilings apply to the aggregate rather than multiplying without bound.
 
 ## 3. Fixed policy and Bunker pairing
 

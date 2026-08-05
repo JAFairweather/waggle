@@ -8,7 +8,8 @@ SocketGroup=waggle-policy-ingress
 SocketMode=0660
 Accept=yes
 RemoveOnStop=yes
-MaxConnections=16
+MaxConnections=4
+MaxConnectionsPerSource=2
 
 [Install]
 WantedBy=sockets.target

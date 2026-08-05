@@ -1,0 +1,7 @@
+[Unit]
+Description=aggregate ceiling for waggle off-box policy transactions
+
+[Slice]
+MemoryMax=384M
+TasksMax=48
+CPUQuota=100%
