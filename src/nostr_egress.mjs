@@ -76,7 +76,11 @@ function exactPreparedReaction(event) {
 export async function submitRelayActionReaction(prepared, fetchImpl = globalThis.fetch) {
   const event = exactPreparedReaction(prepared)
   let endpoint
-  try { endpoint = new URL('/events', String(process.env.BUZZ_RELAY_URL || 'http://localhost:3000')) } catch { reject('BUZZ_RELAY_URL is invalid') }
+  // A Nostr relay URL is commonly wss:// and is not necessarily the Buzz event API. Keep the
+  // write authority on a separately named, fixed HTTPS origin; accept the historical variable
+  // only when it already names an HTTP(S) API so existing deployments do not break silently.
+  const endpointBase = String(process.env.BUZZ_EVENT_ENDPOINT || process.env.BUZZ_RELAY_URL || 'http://localhost:3000')
+  try { endpoint = new URL('/events', endpointBase) } catch { reject('BUZZ_EVENT_ENDPOINT is invalid') }
   if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash ||
       (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(endpoint.hostname)))) reject('Buzz event endpoint must be HTTPS or loopback HTTP')
   const body = JSON.stringify(event)

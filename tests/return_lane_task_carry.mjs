@@ -27,6 +27,7 @@ process.env.RLPENDING_PATH = resolve(dir, 'pending.log')
 process.env.RLREACTION_PATH = resolve(dir, 'reactions.log')
 process.env.RLREACTIONSEEN_PATH = resolve(dir, 'reactions-seen.log')
 process.env.BUZZ_PRIVATE_KEY = Buffer.from(bridgeSk).toString('hex')
+process.env.BUZZ_EVENT_ENDPOINT = 'https://hive.example/events'
 process.env.FORWARD_MODE = 'buzz'; process.env.WB_NO_BOOT = '1'
 
 const { scanReturnLane, sourceWireRejectReason, PUB, grantSet, rlPending, retryPendingCarries, rlReactionPending, rlReactionSeen, retryPendingReactions, rlKey, dropRlSeen } = await import('../src/bridge.mjs')
@@ -50,14 +51,16 @@ ok('a landed relay action reacts once to the exact originating Buzz event', reac
 ok('the exact reaction id is durably tripwire-journaled before submission starts', journalWasReadyAtSubmit)
 ok('the bridge-authored kind:7 is recorded in the tripwire send journal',
   readFileSync(process.env.SEND_JOURNAL_PATH, 'utf8').split('\n').some(line => { try { const row = JSON.parse(line); return row.kind === 7 && row.lane === 'return-reaction' && row.source === source.id } catch { return false } }))
-let submittedBody = '', submittedAuth = ''
-const exactSubmitted = await submitRelayActionReaction(reactions[0], async (_url, request) => {
+let submittedBody = '', submittedAuth = '', submittedUrl = ''
+const exactSubmitted = await submitRelayActionReaction(reactions[0], async (url, request) => {
+  submittedUrl = String(url)
   submittedBody = request.body
   submittedAuth = request.headers.authorization
   return { ok: true, status: 200, text: async () => JSON.stringify({ event_id: reactions[0].id, accepted: true, message: 'stored' }) }
 })
 ok('the writer submits the byte-identical prepared event with exact-body NIP-98 authorization',
-  exactSubmitted === reactions[0].id && submittedBody === JSON.stringify(reactions[0]) && submittedAuth.startsWith('Nostr '))
+  exactSubmitted === reactions[0].id && submittedUrl === 'https://hive.example/events' &&
+  submittedBody === JSON.stringify(reactions[0]) && submittedAuth.startsWith('Nostr '))
 let alteredPreparedRejected = false
 try { await submitRelayActionReaction({ ...reactions[0], content: '❤️' }, async () => { throw new Error('must not submit') }) } catch { alteredPreparedRejected = true }
 ok('the exact-event submitter refuses altered prepared bytes before network access', alteredPreparedRejected)
