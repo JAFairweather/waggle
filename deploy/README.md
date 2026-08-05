@@ -359,6 +359,23 @@ regular non-symlink files with mode `0600`. The Bunker identity must have no gra
 application authority. Its client pairing remains a credential even though it cannot reveal
 or export the identity nsec.
 
+To stage those three files without ever putting the Bunker URI or client credential on argv or
+in an environment variable, save the URI temporarily in a root-owned mode-0600 file, then feed
+it only on stdin. The initializer refuses an existing destination so a working pairing is never
+partially overwritten:
+
+```
+sudo node tools/tripwire-alarm-bunker-init.mjs \
+  --directory /etc/waggle-tripwire \
+  --recipient <operator-npub> \
+  --poster <bridge-poster-npub-or-hex> \
+  < /root/alarm.bunker-uri
+sudo shred -u /root/alarm.bunker-uri 2>/dev/null || sudo rm -f /root/alarm.bunker-uri
+```
+
+The tool prints only the two public npubs and destination paths. It generates a fresh revocable
+NIP-46 client credential locally; the alarm identity nsec remains in the Bunker.
+
 For an existing watcher—especially the live on-box unit that first merges read- and sealed-lane
 journals—do **not** replace its `ExecStart` with the generic off-host template. Install only the
 credential drop-in, preserving the already-verified detector command:

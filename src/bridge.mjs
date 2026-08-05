@@ -2231,11 +2231,12 @@ async function retryPendingReactions(send = submitRelayActionReaction) {
 //     is a bridge event the registry records as authored for this recipient. No body match needed.
 //
 // opts.authors, when supplied, is a SIGNER gate (spam/abuse control + defense-in-depth — NOT the
-// load-bearing safety property; that is the wake/payload split in the action layer). A message
-// whose signer is outside it is dropped, LOUDLY, before any carry-out. Supplying the option at all
-// makes the gate default-closed: an explicitly-empty gate passes nobody (a misconfiguration that
-// is WARNed at boot, never silent). The staging path passes no option and stays open — staging is
-// human-gated content already.
+// load-bearing safety property; that is the wake/payload split in the action layer). A new mention
+// from outside it is dropped, LOUDLY. One narrow exception preserves a conversation the agent
+// itself opened: a signed direct reply to an event recorded for that recipient is carried as data.
+// The downstream broker still requires its independent live task grant before promotion, so this
+// exception cannot turn the replier into an instructor. Supplying the option at all otherwise
+// makes the gate default-closed. The staging path passes no option and stays open.
 //
 // The carried body is DATA, never instruction: it is quoted into a sealed 1059 delivered to the
 // recipient's own key. Nothing here starts a session, evaluates, or acts on the body — this lane
@@ -2252,7 +2253,12 @@ async function scanReturnLane(msgs, opts = {}) {
   for (const m of msgs || []) {
     if (!m || !m.id) continue
     const from = String(m.pubkey || '').toLowerCase()
-    if (gateActive && !gate.has(from)) {                   // signer gate — logged once per id, never silent
+    const tags = Array.isArray(m.tags) ? m.tags : []
+    // Resolve only a direct reply marker, never a root/thread association. The registry is
+    // bridge-authored state: an outsider cannot nominate an arbitrary event as an agent post.
+    const parents = tags.filter(t => t[0] === 'e' && t[1] && t[3] === 'reply').map(t => String(t[1]).toLowerCase())
+    const repliesToAgent = parents.some(pid => !!agentAuthoredBy(pid))
+    if (gateActive && !gate.has(from) && !repliesToAgent) { // signer gate — logged once per id, never silent
       if (rlDropOnce(m.id)) err(`RETURN drop[author]: ${String(m.id).slice(0, 12)}… signer ${from.slice(0, 12)}… not in scan_authors`)
       continue
     }
@@ -2264,20 +2270,20 @@ async function scanReturnLane(msgs, opts = {}) {
       continue
     }
     const body = String(m.content || '')
-    const tags = Array.isArray(m.tags) ? m.tags : []
     const ptags = tags.filter(t => t[0] === 'p' && t[1]).map(t => String(t[1]).toLowerCase())
-    // Direct parent(s) only — the `reply`-marked e-tag. NOT the `root` tag: matching root would
-    // deliver every message in a thread the agent started, not the replies actually to it.
-    const parents = tags.filter(t => t[0] === 'e' && t[1] && t[3] === 'reply').map(t => String(t[1]).toLowerCase())
     let carried = false
     // No break: one message fans out to EVERY matching recipient, each deduped on its own
     // (source × recipient) key. "@a @b" reaching only one of them was finding #4.
     for (const r of recipients) {
+      const repliedTo = parents.some(pid => agentAuthoredBy(pid) === r.npub_hex)
       // Owner-managed task routes bind BOTH the source channel and original signer to this
       // recipient.  The legacy global scan set remains supported, but a route created through
       // the Console cannot accidentally fan a message from another watched channel/author into
-      // this participant merely because both appear in the global unions.
-      if (r.managedTaskRoute && (r.scan_channel !== String(opts.channel || '').toLowerCase() || r.scan_author !== from)) continue
+      // this participant merely because both appear in the global unions. A direct reply to an
+      // event already recorded for this recipient is the one exception: it continues that exact
+      // conversation as data even when the replier is not the route's instruction principal.
+      if (r.managedTaskRoute && (r.scan_channel !== String(opts.channel || '').toLowerCase() ||
+          (r.scan_author !== from && !repliedTo))) continue
       const key = rlKey(m.id, r.npub_hex)
       if (rlSeen.has(key)) continue                        // this recipient already carried for this message
       // Echo: never carry the recipient's own words back. Three forms, all the agent's own:
@@ -2288,7 +2294,6 @@ async function scanReturnLane(msgs, opts = {}) {
       if (from === r.npub_hex || boundUnique || agentAuthoredBy(m.id) === r.npub_hex) continue
       const mentioned = ptags.includes(r.npub_hex) ||
         (!r.dynamic && !!r.mention && new RegExp('@' + r.mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])', 'i').test(body))
-      const repliedTo = parents.some(pid => agentAuthoredBy(pid) === r.npub_hex)
       if (!mentioned && !repliedTo) continue
       const why = repliedTo && !mentioned ? 'reply' : 'mention'
       let descriptor
