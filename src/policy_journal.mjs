@@ -3,7 +3,7 @@
 // first claim atomic across forced-command processes; an atomic rename makes completion
 // terminal. Nothing here signs or interprets evidence.
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { resolve } from 'node:path'
 
 const HEX64 = /^[0-9a-f]{64}$/
@@ -47,9 +47,9 @@ function validate(record, expectedKey = '') {
     record.receipt_digest = hex(record.receipt_digest, 'receipt_digest')
     if (createHash('sha256').update(record.receipt).digest('hex') !== record.receipt_digest) fail('receipt_digest does not match receipt bytes')
     if (record.buzz_event_id !== null) record.buzz_event_id = hex(record.buzz_event_id, 'buzz_event_id')
-    if (!['accepted', 'refused'].includes(record.result)) fail('terminal result is invalid')
+    if (!['accepted', 'refused', 'ambiguous'].includes(record.result)) fail('terminal result is invalid')
     if (record.result === 'accepted' && !record.buzz_event_id) fail('an accepted record requires buzz_event_id')
-    if (record.result === 'refused' && record.buzz_event_id !== null) fail('a refused record cannot name a Buzz event')
+    if (record.result !== 'accepted' && record.buzz_event_id !== null) fail('a non-accepted record cannot name a Buzz event')
     integer(record.completed_at, 'completed_at')
   }
   return Object.freeze(record)
@@ -82,13 +82,15 @@ function fsyncDirectory(directory) {
 }
 
 export class PolicyJournal {
-  constructor(directory) {
+  constructor(directory, { recoverySecret = '' } = {}) {
     if (!directory || typeof directory !== 'string') fail('directory is required')
     this.directory = resolve(directory)
     mkdirSync(this.directory, { recursive: true, mode: 0o700 })
     const st = lstatSync(this.directory)
     if (!st.isDirectory() || st.isSymbolicLink() || (st.mode & 0o777) !== 0o700) fail('directory must be private, real, and mode 0700')
     this.owned = new Set()
+    this.recoverySecret = String(recoverySecret || '')
+    if (this.recoverySecret && !/^[A-Za-z0-9_-]{32,128}$/.test(this.recoverySecret)) fail('recoverySecret must be 32..128 URL-safe characters')
   }
 
   path(key) { return resolve(this.directory, `${hex(key, 'key')}.json`) }
@@ -149,5 +151,25 @@ export class PolicyJournal {
       if (fd !== undefined) { try { closeSync(fd) } catch { /* best effort */ } }
       try { unlinkSync(tmp) } catch (e) { if (e.code !== 'ENOENT') throw e }
     }
+  }
+
+  // Explicit crash resolution. The recovery secret belongs only to the policy host;
+  // the untrusted bridge never receives it. An operator uses this after proving the
+  // former worker is dead. The exact claimed_at comparison prevents resolving a stale
+  // observation, and `ambiguous` burns the key without claiming the external post failed.
+  resolveOrphan(key, requestDigest, expectedClaimedAt, { recoverySecret, receipt, completedAt = Math.floor(Date.now() / 1000) } = {}) {
+    const k = hex(key, 'key'), digest = hex(requestDigest, 'request_digest')
+    if (!this.recoverySecret) fail('orphan recovery is disabled')
+    const supplied = String(recoverySecret || '')
+    const left = Buffer.from(this.recoverySecret), right = Buffer.from(supplied)
+    if (left.length !== right.length || !timingSafeEqual(left, right)) fail('orphan recovery authorization failed')
+    const existing = readRecord(this.path(k), k)
+    if (!existing) fail('cannot resolve an unclaimed key')
+    if (existing.request_digest !== digest) fail('request digest does not own this claim')
+    if (existing.status === 'terminal') return existing
+    if (existing.claimed_at !== integer(expectedClaimedAt, 'expectedClaimedAt')) fail('in-flight claim changed since operator inspection')
+    this.owned.add(k)
+    try { return this.commit(k, digest, { receipt, result: 'ambiguous', completedAt }) }
+    finally { this.owned.delete(k) }
   }
 }
