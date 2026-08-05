@@ -10,6 +10,7 @@ import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nos
 
 const tmp = mkdtempSync(join(tmpdir(), 'wb-control-state-'))
 const CFG = join(tmp, 'config.json')
+const SEND_JOURNAL = join(tmp, 'send-journal.log')
 const HIVE = 'a'.repeat(64)
 const CHANNEL = '77777777-7777-7777-7777-777777777777'
 const bridgeSk = generateSecretKey()
@@ -22,6 +23,7 @@ process.env.SEEN_PATH = join(tmp, 'seen.log')
 process.env.PUB_WATERMARK_PATH = join(tmp, 'watermark')
 process.env.POSTED_MAP_PATH = join(tmp, 'posted.log')
 process.env.MIRRORASKED_PATH = join(tmp, 'asked.log')
+process.env.SEND_JOURNAL_PATH = SEND_JOURNAL
 writeFileSync(CFG, JSON.stringify({
   relays: [], recipients: [],
   public: {
@@ -32,7 +34,7 @@ writeFileSync(CFG, JSON.stringify({
   },
 }))
 
-const { buildControlState, processConsentEvent, mirrorAsked, mirrorRevoked, PUB, handleControlStateCommand, handleWatchlistControlCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D } = await import('../src/bridge.mjs')
+const { buildControlState, publishControlState, processConsentEvent, mirrorAsked, mirrorRevoked, PUB, handleControlStateCommand, handleWatchlistControlCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D } = await import('../src/bridge.mjs')
 const { signControlState, CONTROL_STATE_KIND } = await import('../src/nostr_egress.mjs')
 const { scopeHash } = await import('../src/consent.mjs')
 
@@ -69,6 +71,12 @@ t('state contains only the declared owner-visible fields',
   Object.keys(body.follows[0]).sort().join(',') === 'consent,pubkey' &&
   Object.keys(body.operations).sort().join(',') === 'drops,gates,lanes,trust' &&
   Object.keys(body.operations.drops).sort().join(',') === 'relay_not_relay,relay_preauth')
+
+let publishedControlId = ''
+const acceptedControl = await publishControlState(async (event) => { publishedControlId = event.id; return 1 }, true)
+const controlJournal = readFileSync(SEND_JOURNAL, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+t('an accepted control-state publication is recorded for the out-of-process tripwire',
+  acceptedControl === 1 && controlJournal.some(row => row.id === publishedControlId && row.kind === CONTROL_STATE_KIND && row.operation === 'control_state'))
 
 const currentState = buildControlState()
 const { v: legacyV, observed_at: legacyObservedAt, hive: legacyHive, bridge: legacyBridge, publishing: legacyPublishing, follows: legacyFollows } = currentState

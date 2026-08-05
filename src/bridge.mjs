@@ -1618,7 +1618,13 @@ async function publishControlState(publish = publishControlStateToRelays, force 
   try { event = await signControlState(state) }
   catch (e) { err(`control state: refused to sign: ${e?.message || '?'}`); return 0 }
   const accepted = await publish(event).catch(() => 0)
-  if (accepted >= 1) log(`control state -> ${accepted}/${PUB.relays.length} relay(s): ${state.follows.length} followed author(s) (${event.id.slice(0, 12)}…)`)
+  if (accepted >= 1) {
+    // This is authored by the same poster identity the tripwire watches.  Every other landed
+    // poster event is journaled at its send boundary; omitting this periodic NIP-78 snapshot
+    // made each legitimate refresh look exactly like out-of-process key theft.
+    journalSend(event.id, { kind: event.kind, operation: 'control_state' })
+    log(`control state -> ${accepted}/${PUB.relays.length} relay(s): ${state.follows.length} followed author(s) (${event.id.slice(0, 12)}…)`)
+  }
   else err('control state: reached no relay — console will correctly show state unavailable')
   return accepted
 }
