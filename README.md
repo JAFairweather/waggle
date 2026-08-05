@@ -118,9 +118,9 @@ The setup intentionally never asks an agent to supply its own key, and never acc
 
 ## Tests
 
-`npm test` runs 40 suites against real exported functions with synthetic events—no production state and no network sockets. The suite is designed to prove what the bridge refuses as carefully as what it delivers:
+`npm test` runs 42 suites against real exported functions with synthetic events—no production state and no network sockets. The suite is designed to prove what the bridge refuses as carefully as what it delivers:
 
-boot · suite roster · off-box policy protocol · policy journal · policy-owned Buzz artifacts · Nostr remote signer · read resilience · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant admission · admission return-lane lifecycle · message rendering · deployed-build verification · routing-policy snapshot · latency trace · return lane · return-lane scan · typed channel task carry · return-lane no-miss · return-lane pending · relay ingress · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · recipient DM relays · DM relay-list publisher · watchlist hot-reload · signed owner control state
+boot · suite roster · off-box policy protocol · policy journal · policy-owned Buzz artifacts · off-box policy service · forced-command policy runner · Nostr remote signer · read resilience · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant admission · admission return-lane lifecycle · message rendering · deployed-build verification · routing-policy snapshot · latency trace · return lane · return-lane scan · typed channel task carry · return-lane no-miss · return-lane pending · relay ingress · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · recipient DM relays · DM relay-list publisher · watchlist hot-reload · signed owner control state
 
 ---
 
