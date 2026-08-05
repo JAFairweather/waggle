@@ -17,6 +17,7 @@
 import { finalizeEvent, generateSecretKey, getEventHash, verifyEvent } from 'nostr-tools/pure'
 import * as nip44 from 'nostr-tools/nip44'
 import { loadNostrSigner } from './nostr_signer.mjs'
+import { createHash, randomBytes } from 'node:crypto'
 
 // --- The key, held here and nowhere else ------------------------------------------------------
 const BRIDGE_SIGNER = loadNostrSigner()
@@ -37,6 +38,69 @@ async function signExact(template, label) {
       event.created_at !== template.created_at || event.content !== template.content ||
       JSON.stringify(event.tags) !== JSON.stringify(template.tags)) reject(`bridge signer changed or invalidated ${label}`)
   return event
+}
+
+const configuredBuzzAuthTag = () => {
+  const raw = String(process.env.BUZZ_AUTH_TAG || '').trim()
+  if (!raw) return null
+  let tag
+  try { tag = JSON.parse(raw) } catch { reject('BUZZ_AUTH_TAG is not JSON') }
+  if (!Array.isArray(tag) || tag.length !== 4 || tag[0] !== 'auth' || !tag.every(v => typeof v === 'string')) reject('BUZZ_AUTH_TAG is not one exact auth tag')
+  return tag
+}
+
+// Closed kind:7 transaction for the return-lane acknowledgement. Preparation and submission are
+// deliberately separate capabilities: bridge.mjs durably stores the exact signed event and its
+// tripwire row between them. A restart therefore retries identical bytes, never re-signs.
+export async function prepareRelayActionReaction(targetId, now = Math.floor(Date.now() / 1000)) {
+  const target = hex64(targetId, 'reaction target')
+  const auth = configuredBuzzAuthTag()
+  return signExact({ kind: 7, created_at: Math.floor(num(now, 'reaction created_at')),
+    tags: [...(auth ? [auth] : []), ['e', target]], content: '👍' }, 'relay action reaction')
+}
+
+function exactPreparedReaction(event) {
+  const wire = JSON.parse(JSON.stringify(event))
+  let valid = false
+  try { valid = verifyEvent(wire) } catch { valid = false }
+  const auth = configuredBuzzAuthTag()
+  const expectedTags = [...(auth ? [auth] : []), ['e', wire.tags?.find(t => t[0] === 'e')?.[1]]]
+  if (!valid || wire.pubkey !== BRIDGE_PK || wire.kind !== 7 || wire.content !== '👍' ||
+      Object.keys(wire).sort().join(',') !== 'content,created_at,id,kind,pubkey,sig,tags' ||
+      !/^[0-9a-f]{64}$/.test(String(expectedTags.at(-1)?.[1] || '')) || JSON.stringify(wire.tags) !== JSON.stringify(expectedTags)) {
+    reject('prepared relay action reaction is invalid or outside the closed template')
+  }
+  return wire
+}
+
+export async function submitRelayActionReaction(prepared, fetchImpl = globalThis.fetch) {
+  const event = exactPreparedReaction(prepared)
+  let endpoint
+  // A Nostr relay URL is commonly wss:// and is not necessarily the Buzz event API. Keep the
+  // write authority on a separately named, fixed HTTPS origin; accept the historical variable
+  // only when it already names an HTTP(S) API so existing deployments do not break silently.
+  const endpointBase = String(process.env.BUZZ_EVENT_ENDPOINT || process.env.BUZZ_RELAY_URL || 'http://localhost:3000')
+  try { endpoint = new URL('/events', endpointBase) } catch { reject('BUZZ_EVENT_ENDPOINT is invalid') }
+  if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash ||
+      (endpoint.protocol !== 'https:' && !(endpoint.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(endpoint.hostname)))) reject('Buzz event endpoint must be HTTPS or loopback HTTP')
+  const body = JSON.stringify(event)
+  const auth = await signExact({ kind: 27235, created_at: Math.floor(Date.now() / 1000), content: '', tags: [
+    ['u', endpoint.toString()], ['method', 'POST'], ['payload', createHash('sha256').update(body).digest('hex')],
+    ['nonce', randomBytes(24).toString('base64url')],
+  ] }, 'relay action NIP-98 authorization')
+  const headers = { authorization: `Nostr ${Buffer.from(JSON.stringify(auth)).toString('base64')}`, 'content-type': 'application/json' }
+  const authTag = configuredBuzzAuthTag()
+  if (authTag) headers['x-auth-tag'] = JSON.stringify(authTag)
+  let response
+  try { response = await fetchImpl(endpoint, { method: 'POST', redirect: 'manual', signal: globalThis.AbortSignal.timeout(30_000), headers, body }) }
+  catch (e) { throw new Error(`Buzz reaction submission outcome unknown: ${e?.name || 'network error'}`) }
+  const text = await response.text()
+  if (Buffer.byteLength(text) > 64 * 1024) throw new Error('Buzz reaction response exceeded 64 KiB')
+  if (!response.ok) throw new Error(`Buzz reaction submission failed HTTP ${response.status}`)
+  let result
+  try { result = JSON.parse(text) } catch { throw new Error('Buzz reaction response was not JSON') }
+  if (result?.event_id !== event.id || result?.accepted !== true) throw new Error('Buzz reaction response did not accept the exact prepared event')
+  return event.id
 }
 
 // NIP-78 application data. This is deliberately an addressable event: consumers ask for the

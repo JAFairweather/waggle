@@ -5,7 +5,8 @@
 #   SEALED_LANES=off           # this instance runs the public lane ONLY (sealed lanes are
 #                              # per-process-deduped — two instances running them = double delivery)
 #   FORWARD_MODE=dryrun        # flip to 'buzz' only at cutover (see deploy/README.md)
-#   BUZZ_RELAY_URL=...  BUZZ_PRIVATE_KEY=...  BUZZ_AUTH_TAG=...
+#   BUZZ_RELAY_URL=...  BUZZ_EVENT_ENDPOINT=https://<fixed Buzz host>/events
+#   BUZZ_PRIVATE_KEY=...  BUZZ_AUTH_TAG=...
 # Optional keyless Nostr transport (both mode-0600 files are required together):
 #   WAGGLE_BUNKER_URI_FILE=/etc/waggle/credentials/bridge.bunker-uri
 #   WAGGLE_NIP46_CLIENT_NSEC_FILE=/etc/waggle/credentials/bridge.client-nsec

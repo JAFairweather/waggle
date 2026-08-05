@@ -283,6 +283,15 @@ const CATALOGUE = {
       reject('enum', `watchlist_ack verb fell through: ${JSON.stringify(verb)}`)
     },
   },
+
+  // Visible delivery confirmation for a Buzz message that triggered a return-lane carry. The
+  // emoji is catalogue-owned: the bridge may acknowledge this one closed operation, never react
+  // with caller-supplied sentiment or prose.
+  relay_action_reaction: {
+    action: 'reaction',
+    slots: {},
+    render: () => null,
+  },
 }
 
 export const TEMPLATE_NAMES = Object.freeze(Object.keys(CATALOGUE))
@@ -440,6 +449,7 @@ function argvFor(spec, descriptor, content) {
     case 'reply':  return ['messages', 'send', '--channel', SLOT_TYPES.channel(descriptor.dest), '--reply-to', SLOT_TYPES.id(descriptor.parentId), '--content', content]
     case 'edit':   return ['messages', 'edit', '--event', SLOT_TYPES.id(descriptor.targetId), '--content', content]
     case 'delete': return ['messages', 'delete', '--event', SLOT_TYPES.id(descriptor.targetId), '--reason-code', 'nip09', '--public-reason', 'withdrawn by author (NIP-09)']
+    case 'reaction': return ['reactions', 'add', '--event', SLOT_TYPES.id(descriptor.targetId), '--emoji', '👍']
     default:       return reject('action', `unknown action ${JSON.stringify(spec.action)}`)
   }
 }

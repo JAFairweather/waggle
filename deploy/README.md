@@ -245,6 +245,7 @@ firewall → root-SSH off → reboot test. (Same verify-before-lock philosophy a
 SEALED_LANES=off
 FORWARD_MODE=dryrun            # buzz only at cutover step 4c
 BUZZ_RELAY_URL=...
+BUZZ_EVENT_ENDPOINT=https://<fixed Buzz host>/events  # exact-event API; never a wss relay URL
 BUZZ_PRIVATE_KEY=...           # the BRIDGE posting identity — never an agent key
 BUZZ_AUTH_TAG=...
 ```

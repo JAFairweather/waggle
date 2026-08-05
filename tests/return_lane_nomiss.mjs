@@ -63,6 +63,7 @@ let fails = 0
 const ok = (n, c) => { console.log(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) fails++ }
 const journal = () => existsSync(process.env.SEND_JOURNAL_PATH)
   ? readFileSync(process.env.SEND_JOURNAL_PATH, 'utf8').split('\n').filter(Boolean).map(JSON.parse) : []
+const carries = () => journal().filter(row => row.lane === 'return')
 const short = k => k.slice(0, 12)
 
 // --- synthetic backlog: 7 crew messages inside the 48h window, newest-first ids m1..m7 -----------
@@ -104,15 +105,15 @@ ok('the newest page does not even contain the buried mention (hazard reproduced)
 
 // --- ATOMIC DRAIN: a read that fails mid-walk carries nothing and never advances the cursor -------
 // Page 1 succeeds (3 msgs, none a mention), page 2 errors → acc is dropped, cursor untouched.
-let before = journal().length
+let before = carries().length
 await scanChannel('failchan', makeFetch(2))
-ok('a mid-drain read failure carries NOTHING', journal().length === before)
+ok('a mid-drain read failure carries NOTHING', carries().length === before)
 ok('a failed drain never advances the cursor (next poll re-reads)', loadScanCursors().failchan === undefined)
 
 // --- NO-MISS: a clean paginated drain carries the buried mention despite the page limit -----------
-before = journal().length
+before = carries().length
 await scanChannel('scanchan', makeFetch())
-let carried = journal().slice(before)
+let carried = carries().slice(before)
 const toBuried = carried.filter(e => e.to === short(claude))
 ok('the buried mention is delivered (no-miss across the backlog)',
   toBuried.length === 2)                        // buried m7 + recent m2, both @claude, one carry each
@@ -125,10 +126,10 @@ ok('the next poll now reads from cursor-minus-overlap, not the 48h floor',
 
 // --- OVERLAP is a no-op: the re-read re-scans an already-carried mention, rlSeen suppresses it -----
 // scanSince is now (now-1)-5 = now-6, so the re-read window includes the RECENT mention (now-2).
-before = journal().length
+before = carries().length
 await scanChannel('scanchan', makeFetch())
 ok('the overlap re-read carries nothing new (durable rlSeen suppresses the re-send)',
-  journal().length === before)
+  carries().length === before)
 ok('the recent mention was inside the overlap window (the re-read really did re-scan it)',
   scanSince('scanchan') <= (now - 2))
 

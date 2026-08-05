@@ -1,7 +1,7 @@
 // Extracted from bridge.mjs by #154. Behaviour is byte-identical; only the file boundary is new.
 //
 // Depends only on node:fs, node:path and the logger — no config, no lane knowledge.
-import { readFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, appendFileSync, existsSync, mkdirSync, openSync, writeFileSync, fsyncSync, closeSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { log, err } from './log.mjs'
 
@@ -26,17 +26,37 @@ import { log, err } from './log.mjs'
 // `mem` is the Set itself, exposed because the lanes (and the suites) check it directly.
 function durableSet({ path, cap, label, noun }) {
   const mem = new Set()
+  const append = (text, durable = false) => {
+    let fileFd = null, dirFd = null
+    try {
+      const directory = dirname(path)
+      mkdirSync(directory, { recursive: true })
+      if (!durable) { appendFileSync(path, text); return true }
+      fileFd = openSync(path, 'a', 0o600)
+      writeFileSync(fileFd, text); fsyncSync(fileFd); closeSync(fileFd); fileFd = null
+      dirFd = openSync(directory, 'r'); fsyncSync(dirFd); closeSync(dirFd); dirFd = null
+      return true
+    } catch (e) {
+      err(`${label}: append failed: ${e.message}`)
+      return false
+    } finally {
+      if (fileFd !== null) { try { closeSync(fileFd) } catch {} }
+      if (dirFd !== null) { try { closeSync(dirFd) } catch {} }
+    }
+  }
   return {
     mem,
     has: (k) => mem.has(k),
     claim: (k) => { mem.add(k) },
     rollback: (k) => { mem.delete(k) },
-    commit(k) {
+    commit(k, durable = false) {
+      const already = mem.has(k)
       mem.add(k)
       // Truncated at 64 so a full event id still prints whole, while a long composite key
       // (source × recipient) cannot flood the journal the tripwire reads.
-      try { appendFileSync(path, k + '\n') }
-      catch (e) { err(`${label}: append failed for ${String(k).slice(0, 64)}: ${e.message}`) }
+      if (append(k + '\n', durable)) return true
+      if (!already) mem.delete(k)
+      return false
     },
     load() {
       // The mkdir on the missing-file path is what guarantees the directory exists for every
@@ -70,19 +90,44 @@ function durableSet({ path, cap, label, noun }) {
 // to the last `cap` records.
 function durableQueue({ path, cap, label }) {
   const mem = new Map()   // key -> { item, attempts }
-  const append = (rec) => {
-    try { appendFileSync(path, JSON.stringify(rec) + '\n') }
-    catch (e) { err(`${label}: append failed for ${String(rec.k).slice(0, 64)}: ${e.message}`) }
+  const append = (rec, durable = false) => {
+    let fileFd = null, dirFd = null
+    try {
+      const directory = dirname(path), text = JSON.stringify(rec) + '\n'
+      mkdirSync(directory, { recursive: true })
+      if (!durable) { appendFileSync(path, text); return true }
+      fileFd = openSync(path, 'a', 0o600)
+      writeFileSync(fileFd, text); fsyncSync(fileFd); closeSync(fileFd); fileFd = null
+      dirFd = openSync(directory, 'r'); fsyncSync(dirFd); closeSync(dirFd); dirFd = null
+      return true
+    } catch (e) {
+      err(`${label}: append failed for ${String(rec.k).slice(0, 64)}: ${e.message}`)
+      return false
+    } finally {
+      if (fileFd !== null) { try { closeSync(fileFd) } catch {} }
+      if (dirFd !== null) { try { closeSync(dirFd) } catch {} }
+    }
   }
   return {
     mem,
     size: () => mem.size,
     has: (k) => mem.has(k),
     entries: () => [...mem.entries()].map(([k, v]) => ({ key: k, item: v.item, attempts: v.attempts })),
-    enqueue(k, item) {
-      if (mem.has(k)) return                       // already owed; do not reset its attempt count
+    enqueue(k, item, durable = false) {
+      if (mem.has(k)) return true                  // already owed; do not reset its attempt count
       mem.set(k, { item, attempts: 0 })
-      append({ k, v: item })
+      if (append({ k, v: item }, durable)) return true
+      mem.delete(k)                                // memory may never claim durability that failed
+      return false
+    },
+    update(k, item, durable = false) {
+      const current = mem.get(k)
+      if (!current) return false
+      const previous = current.item
+      current.item = item
+      if (append({ k, v: item, a: current.attempts }, durable)) return true
+      current.item = previous
+      return false
     },
     // Recording the attempt BEFORE the retry is deliberate: a crash mid-retry must not buy a free
     // attempt, or a permanently-failing item could loop forever across restarts and never reach
@@ -90,13 +135,16 @@ function durableQueue({ path, cap, label }) {
     attempt(k) {
       const e = mem.get(k)
       if (!e) return 0
-      e.attempts += 1
-      append({ k, a: e.attempts })
-      return e.attempts
+      const next = e.attempts + 1
+      if (!append({ k, a: next })) return e.attempts
+      e.attempts = next
+      return next
     },
-    remove(k) {
-      if (!mem.delete(k)) return false
-      append({ k, d: 1 })
+    remove(k, durable = false) {
+      const existing = mem.get(k)
+      if (!existing) return false
+      if (!append({ k, d: 1 }, durable)) return false
+      mem.delete(k)
       return true
     },
     load() {
@@ -108,7 +156,7 @@ function durableQueue({ path, cap, label }) {
         try { r = JSON.parse(line) } catch { continue }   // a torn final write is skipped, not fatal
         if (!r || !r.k) continue
         if (r.d) { mem.delete(r.k); continue }
-        if (r.v !== undefined) { mem.set(r.k, { item: r.v, attempts: 0 }); continue }
+        if (r.v !== undefined) { mem.set(r.k, { item: r.v, attempts: Number.isSafeInteger(r.a) && r.a >= 0 ? r.a : 0 }); continue }
         if (r.a !== undefined && mem.has(r.k)) mem.get(r.k).attempts = r.a
       }
       log(`${label}: loaded ${mem.size} owed item(s) from ${path}${lines.length > kept.length ? ` (pruned ${lines.length - kept.length})` : ''}`)
