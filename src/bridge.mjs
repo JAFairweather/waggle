@@ -2117,6 +2117,20 @@ function sourceWireEvent(message) {
   return ok ? event : null
 }
 
+// Keep source rejection diagnosable without logging channel content, tags, signatures, or keys.
+// The message listing is an API projection of a Nostr event; if that projection ever omits or
+// normalizes a signed field, "bad source" alone cannot distinguish schema drift from tampering.
+function sourceWireRejectReason(message) {
+  if (!message || typeof message !== 'object') return 'not-object'
+  if (message.kind !== 9) return `kind:${typeof message.kind}:${String(message.kind)}`
+  if (!/^[0-9a-f]{64}$/.test(String(message.id || ''))) return `id:${typeof message.id}:${String(message.id || '').length}`
+  if (!/^[0-9a-f]{64}$/.test(String(message.pubkey || ''))) return `pubkey:${typeof message.pubkey}:${String(message.pubkey || '').length}`
+  if (!Array.isArray(message.tags)) return `tags:${typeof message.tags}`
+  if (typeof message.content !== 'string') return `content:${typeof message.content}`
+  if (!/^[0-9a-f]{128}$/.test(String(message.sig || ''))) return `sig:${typeof message.sig}:${String(message.sig || '').length}`
+  return 'signature-or-id-mismatch'
+}
+
 function carryDescriptor(recipient, message, why, channel) {
   if (recipient.protocol !== 'nvoy-task-carry-v1') {
     return { template: 'return_carry', slots: { mention: recipient.mention, why, body: String(message.content || '') } }
@@ -2167,7 +2181,7 @@ async function scanReturnLane(msgs, opts = {}) {
     // including legacy recipients. The bridge is transport, never a substitute author. Staging
     // deliberately keeps its older human-gated shape because it supplies no signer gate.
     if (gateActive && !sourceWireEvent(m)) {
-      if (rlDropOnce(m.id)) err(`RETURN drop[source]: ${String(m.id).slice(0, 12)}… is not a valid signed kind:9 event`)
+      if (rlDropOnce(m.id)) err(`RETURN drop[source]: ${String(m.id).slice(0, 12)}… is not a valid signed kind:9 event (${sourceWireRejectReason(m)})`)
       continue
     }
     const body = String(m.content || '')
@@ -2660,7 +2674,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests }
 
 // --- boot -------------------------------------------------------------------
