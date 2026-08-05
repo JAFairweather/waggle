@@ -79,9 +79,11 @@ symlinks:
 
 The second file is the revocable NIP-46 transport client, not the poster identity nsec. The recovery
 file is a fresh 32–128 character URL-safe secret used only for the operator's explicit orphan
-transition. The source files remain unreadable to both runtime accounts. `LoadCredential=` gives each socket-activated
-transaction its own mode-0400 copies under systemd's private credential directory; the existing
-strict file loader validates those copies before use.
+transition. It is deliberately **not** loaded into the socket-activated service. The policy and two
+Bunker source files remain unreadable to both runtime accounts; `LoadCredential=` gives each
+transaction its own mode-0400 copies under systemd's private credential directory, and the existing
+strict file loader validates those copies before use. The recovery source remains root-only and is
+named explicitly only by the local operator command in `docs/OFFBOX_POLICY_RUNBOOK.md`.
 
 ## 4. Network boundary
 

@@ -34,6 +34,9 @@ writeFileSync(credentialConfigPath, `${JSON.stringify(credentialConfig)}\n`, { m
 const credentialConfigLoaded = loadBuzzPolicyConfig(credentialConfigPath, { WAGGLE_POLICY_RECOVERY_SECRET_FILE: recoveryPath })
 t('a fixed systemd credential path supplies recovery without widening policy JSON',
   credentialConfigLoaded.recovery_secret_file === recoveryPath && credentialConfigLoaded.recoverySecret === config.recoverySecret)
+const ordinaryConfig = loadBuzzPolicyConfig(configPath, { WAGGLE_POLICY_RECOVERY_SECRET_FILE: recoveryPath }, { requireRecovery: false })
+t('ordinary ingress neither loads nor retains operator recovery authority',
+  !Object.hasOwn(ordinaryConfig, 'recoverySecret') && !Object.hasOwn(ordinaryConfig, 'recovery_secret_file'))
 
 const source = JSON.parse(JSON.stringify(finalizeEvent({ kind: 1, created_at: now - 1, tags: [['e', 'd'.repeat(64)]], content: 'wisdom' }, generateSecretKey())))
 const raw = canonicalJson({ version: 1, policy_instance: 'jaf-hive', operation: 'quarantine_header', catalogue_version: 'c'.repeat(64), observed_at: now, evidence: { source_event: source } })

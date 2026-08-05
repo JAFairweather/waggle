@@ -10,10 +10,6 @@ import { processBuzzPolicyRequest, resolveBuzzPolicyOrphan } from './buzz_policy
 
 const HEX64 = /^[0-9a-f]{64}$/, UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const fail = message => { throw new Error(`buzz-policy-runner: ${message}`) }
-const exactKeys = (value, keys) => {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join(',') !== [...keys].sort().join(',')) fail('config has an invalid shape')
-}
-
 function privateText(path, maxBytes = 64 * 1024) {
   let fd
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW) } catch { fail('config cannot be read as a regular non-symlink file') }
@@ -24,27 +20,34 @@ function privateText(path, maxBytes = 64 * 1024) {
   } finally { closeSync(fd) }
 }
 
-export function loadBuzzPolicyConfig(path, env = process.env) {
+export function loadBuzzPolicyConfig(path, env = process.env, { requireRecovery = true } = {}) {
   let config
   try { config = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(privateText(path))) } catch (error) {
     if (String(error?.message || '').startsWith('buzz-policy-runner:')) throw error
     fail('config is not valid UTF-8 JSON')
   }
-  const fixedRecoveryPath = String(env.WAGGLE_POLICY_RECOVERY_SECRET_FILE || '').trim()
   const configKeys = ['version', 'policy_instance', 'catalogue_version', 'staging_channel', 'watched_event_ids',
     'approver_mention', 'poster_pubkey', 'auth_tag', 'endpoint', 'journal_path']
-  exactKeys(config, fixedRecoveryPath ? configKeys : [...configKeys, 'recovery_secret_file'])
+  const actualKeys = Object.keys(config).sort().join(',')
+  const baseShape = [...configKeys].sort().join(','), recoveryShape = [...configKeys, 'recovery_secret_file'].sort().join(',')
+  if (actualKeys !== baseShape && actualKeys !== recoveryShape) fail('config has an invalid shape')
   if (config.version !== 1 || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(config.policy_instance)) fail('config version or policy_instance is invalid')
   if (!HEX64.test(config.catalogue_version) || !UUID.test(config.staging_channel)) fail('config catalogue or channel is invalid')
   if (!Array.isArray(config.watched_event_ids) || !config.watched_event_ids.every(id => HEX64.test(id)) || new Set(config.watched_event_ids).size !== config.watched_event_ids.length) fail('watched_event_ids are invalid')
   if (typeof config.approver_mention !== 'string' || Buffer.byteLength(config.approver_mention) > 128) fail('approver_mention is invalid')
-  const recoverySecretFile = fixedRecoveryPath || config.recovery_secret_file
-  if (!isAbsolute(config.journal_path) || !isAbsolute(recoverySecretFile)) fail('journal and recovery-secret paths must be absolute')
-  const recoverySecret = new TextDecoder('utf-8', { fatal: true }).decode(privateText(recoverySecretFile, 256)).trim()
-  if (!/^[A-Za-z0-9_-]{32,128}$/.test(recoverySecret)) fail('recovery secret is invalid')
+  if (!isAbsolute(config.journal_path)) fail('journal path must be absolute')
+  let recoverySecretFile = null, recoverySecret = null
+  if (requireRecovery) {
+    recoverySecretFile = String(env.WAGGLE_POLICY_RECOVERY_SECRET_FILE || '').trim() || config.recovery_secret_file
+    if (!isAbsolute(recoverySecretFile || '')) fail('recovery-secret path must be absolute')
+    recoverySecret = new TextDecoder('utf-8', { fatal: true }).decode(privateText(recoverySecretFile, 256)).trim()
+    if (!/^[A-Za-z0-9_-]{32,128}$/.test(recoverySecret)) fail('recovery secret is invalid')
+  }
   const artifactPolicy = createArtifactPolicy({ posterPubkey: config.poster_pubkey, authTag: config.auth_tag, endpoint: config.endpoint })
-  return Object.freeze({ ...config, recovery_secret_file: recoverySecretFile,
-    watched_event_ids: Object.freeze([...config.watched_event_ids]), artifactPolicy, recoverySecret })
+  const loaded = { ...config, watched_event_ids: Object.freeze([...config.watched_event_ids]), artifactPolicy }
+  if (requireRecovery) Object.assign(loaded, { recovery_secret_file: recoverySecretFile, recoverySecret })
+  else { delete loaded.recovery_secret_file }
+  return Object.freeze(loaded)
 }
 
 export async function readBoundedPolicyRequest(stream, maxBytes = 128 * 1024) {
@@ -62,7 +65,7 @@ export async function readBoundedPolicyRequest(stream, maxBytes = 128 * 1024) {
 export async function runBuzzPolicyRequest(raw, config, signer, deps = {}) {
   if (!config?.artifactPolicy) fail('verified config is required')
   if (!signer || signer.pubkey !== config.poster_pubkey) fail('Bunker signer identity does not match poster_pubkey')
-  const journal = deps.journal || new PolicyJournal(config.journal_path, { recoverySecret: config.recoverySecret })
+  const journal = deps.journal || new PolicyJournal(config.journal_path)
   const result = await processBuzzPolicyRequest(raw, { policyInstance: config.policy_instance,
     catalogueVersion: config.catalogue_version, stagingChannel: config.staging_channel,
     watchedEventIds: config.watched_event_ids, approverMention: config.approver_mention,
