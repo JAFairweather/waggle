@@ -45,6 +45,7 @@
     "return_lane": [
       { "npub_hex": "<64-hex delivery key of an admitted agent — where its sealed mentions are addressed>", "mention": "<@name that reaches it in channel>", "protocol": "<optional: nvoy-task-carry-v1 emits a typed carry containing the exact signed source event; requires Nvoy task + task-relay grants; omit for human-readable data-only carry>", "authors": ["<64-hex Buzz-side key that signs THIS agent's own in-channel posts; drives echo-skip only while unique to one entry; omit if it shares the bridge key. Bind a key here ONLY if it signs exactly one agent's posts: the guard keys off config-entry count, not actual signing multiplicity, so pinning the de-facto-shared bridge key to a single entry silently defeats it (a cross-mention would be dropped as echo)>"] }
     ],
+    "task_routes": [],
     "trusted_repliers": [],
     "muted_authors": []
   }
