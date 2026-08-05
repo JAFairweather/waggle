@@ -14,14 +14,18 @@
 // a parallel path would prove nothing about the path that matters.
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, lstatSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { getPublicKey } from 'nostr-tools/pure'
+import * as nip19 from 'nostr-tools/nip19'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '..')
 const TOOL = resolve(ROOT, 'tools', 'tripwire.mjs')
+const INIT = resolve(ROOT, 'tools', 'tripwire-alarm-init.mjs')
+const DROP_IN = resolve(ROOT, 'deploy', 'tripwire-alarm.conf')
 const POSTER = 'npub1s36nypljc6h88tey0kshf688eyd8myu636ctfs4e3d2w54nhsmnqfhaent'
 // Written per-run into the temp dir. The real log at data/tripwire-alarms.log is evidence an
 // operator is meant to trust; a test must not leave fake alarms in it.
@@ -129,6 +133,56 @@ try {
     /no alarm delivery path configured/.test(neg.out))
   check('a firing alarm with no delivery path says nobody was told',
     /ALARM NOT DELIVERED/.test(pos.out))
+
+  console.log('\nalarm credential files')
+  const credentials = resolve(dir, 'credentials')
+  const init = spawnSync('node', [INIT, '--directory', credentials, '--recipient', POSTER], { encoding: 'utf8' })
+  check('initializer succeeds without accepting a secret', init.status === 0, init.stderr)
+  check('initializer output never prints an nsec', !/nsec1/i.test((init.stdout || '') + (init.stderr || '')))
+  const alarmNsecPath = resolve(credentials, 'alarm.nsec')
+  const alarmToPath = resolve(credentials, 'alarm.to')
+  check('alarm nsec is written mode 0600', (lstatSync(alarmNsecPath).mode & 0o777) === 0o600)
+  check('recipient is written mode 0600', (lstatSync(alarmToPath).mode & 0o777) === 0o600)
+  const alarmSecret = nip19.decode(readFileSync(alarmNsecPath, 'utf8').trim()).data
+  check('initializer mints a separate identity', getPublicKey(alarmSecret) !== nip19.decode(POSTER).data)
+  check('initializer refuses to overwrite a live credential directory',
+    spawnSync('node', [INIT, '--directory', credentials, '--recipient', POSTER], { encoding: 'utf8' }).status === 1)
+
+  const credentialRun = spawnSync('node', [TOOL, '--since-min', '60', '--journal', full, '--events-from', eventsFile], {
+    env: { ...process.env, POSTER, ALARM_NSEC: '', ALARM_TO: '', ALARM_NSEC_FILE: alarmNsecPath, ALARM_TO_FILE: alarmToPath, ALARM_LOG_PATH: ALARMS },
+    encoding: 'utf8',
+  })
+  const credentialOut = (credentialRun.stdout || '') + (credentialRun.stderr || '')
+  check('credential-file configuration is accepted on a clean run', credentialRun.status === 0, `exit ${credentialRun.status}`)
+  check('configured credential files remove the no-delivery warning', !/no alarm delivery path configured/.test(credentialOut))
+
+  chmodSync(alarmNsecPath, 0o644)
+  const loose = spawnSync('node', [TOOL, '--journal', full, '--events-from', eventsFile], {
+    env: { ...process.env, POSTER, ALARM_NSEC: '', ALARM_TO: '', ALARM_NSEC_FILE: alarmNsecPath, ALARM_TO_FILE: alarmToPath, ALARM_LOG_PATH: ALARMS },
+    encoding: 'utf8',
+  })
+  check('group/world-readable secret is rejected', loose.status === 1 && /must not be group\/world accessible/.test((loose.stderr || '') + (loose.stdout || '')))
+  chmodSync(alarmNsecPath, 0o600)
+
+  const symlink = resolve(dir, 'alarm-link.nsec')
+  symlinkSync(alarmNsecPath, symlink)
+  const linked = spawnSync('node', [TOOL, '--journal', full, '--events-from', eventsFile], {
+    env: { ...process.env, POSTER, ALARM_NSEC: '', ALARM_TO: '', ALARM_NSEC_FILE: symlink, ALARM_TO_FILE: alarmToPath, ALARM_LOG_PATH: ALARMS },
+    encoding: 'utf8',
+  })
+  check('symlinked secret is rejected', linked.status === 1 && /non-symlink/.test((linked.stderr || '') + (linked.stdout || '')))
+
+  const publicHex = nip19.decode(POSTER).data
+  const hexInit = spawnSync('node', [INIT, '--directory', resolve(dir, 'hex-recipient'), '--recipient', publicHex], { encoding: 'utf8' })
+  check('a public 64-hex recipient is not mistaken for an nsec', hexInit.status === 0, hexInit.stderr)
+
+  const dropIn = readFileSync(DROP_IN, 'utf8')
+  check('the live-safe drop-in loads both systemd credentials',
+    dropIn.includes('LoadCredential=alarm.nsec:/etc/waggle-tripwire/alarm.nsec') &&
+    dropIn.includes('LoadCredential=alarm.to:/etc/waggle-tripwire/alarm.to'))
+  check('the drop-in maps systemd credential paths without replacing the detector command',
+    dropIn.includes('Environment=ALARM_NSEC_FILE=%d/alarm.nsec') &&
+    dropIn.includes('Environment=ALARM_TO_FILE=%d/alarm.to') && !dropIn.includes('ExecStart='))
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }

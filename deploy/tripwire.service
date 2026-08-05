@@ -17,12 +17,13 @@
 #
 # WorkingDirectory is a checkout of THIS repo on the watcher host (off-host: your Mac / a
 # second box — recommended; on-box fallback: point it at the sealed tree). Adjust the paths
-# and User below to that host. tripwire.env (0600, owner-only, NEVER committed) sets:
+# and User below to that host. tripwire.env (0600, owner-only, NEVER committed) sets only:
 #   POSTER=<npub|hex of the bridge poster key>   # the PUBLIC key — this watcher never signs as poster
 #   SEND_JOURNAL_PATH=<path to the (synced) send-journal.log>
-#   ALARM_NSEC=<dedicated alarm key nsec>        # rule 1 — separate identity
-#   ALARM_TO=<npub to DM on alarm>
 #   BUZZ_RELAY_URL=<relay>                       # extra public relays are read from config.json
+# The alarm identity and recipient are root-owned files loaded through systemd credentials:
+#   /etc/waggle-tripwire/alarm.nsec              # dedicated zero-authority key, mode 0600
+#   /etc/waggle-tripwire/alarm.to                # operator-owned recipient npub, mode 0600
 [Unit]
 Description=waggle tripwire — detect out-of-process signing by the bridge poster key
 After=network-online.target
@@ -37,7 +38,12 @@ WorkingDirectory=/opt/waggle
 # mean a single missed run never opens a detection gap (see tripwire.timer).
 ExecStart=/usr/bin/node tools/tripwire.mjs --since-min 60
 EnvironmentFile=/opt/waggle/tripwire.env
+LoadCredential=alarm.nsec:/etc/waggle-tripwire/alarm.nsec
+LoadCredential=alarm.to:/etc/waggle-tripwire/alarm.to
+Environment=ALARM_NSEC_FILE=%d/alarm.nsec
+Environment=ALARM_TO_FILE=%d/alarm.to
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
+UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

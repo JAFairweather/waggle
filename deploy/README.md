@@ -304,9 +304,18 @@ detection a property of the **install**, not of anyone remembering to run a scri
 
 1. **The alarm is signed by a SEPARATE key, never the poster key.** An alarm signed by the
    identity under suspicion is worthless — a thief holding the poster nsec could forge the
-   all-clear too. Set `ALARM_NSEC` to a **dedicated** key with zero authority (its only
-   power is sending a DM), so it is safe to hold on the watcher and disposable if the
-   watcher is lost. Never set it to `BUZZ_PRIVATE_KEY`.
+   all-clear too. Mint a **dedicated** key with zero authority directly into systemd credential
+   files (its only power is sending a DM). The initializer never accepts or prints an nsec:
+
+   ```
+   sudo node tools/tripwire-alarm-init.mjs \
+     --recipient <operator-npub> \
+     --poster <bridge-poster-npub> \
+     --directory /etc/waggle-tripwire
+   ```
+
+   The resulting `alarm.nsec` and `alarm.to` are mode 0600. Never set it to
+   `BUZZ_PRIVATE_KEY`, and do not copy it into `tripwire.env`.
 2. **Off-host is stronger.** A compromised box can silence an on-box watcher before it
    fires. The recommended posture runs the tripwire on a **separate host** (your Mac, a
    second droplet) against a synced copy of the journal — a box compromise then cannot kill
@@ -327,13 +336,30 @@ never opens a gap.
 On a **watcher host** that is not the box — clone this repo, `npm ci`, then:
 
 ```
-# tripwire.env (0600, owner-only, NEVER committed):
+# tripwire.env (0600, owner-only, NEVER committed; PUBLIC values only):
 POSTER=<npub of the bridge poster key>          # PUBLIC key only — the watcher never signs as poster
 SEND_JOURNAL_PATH=/opt/waggle/data/journal-sealed.log:/opt/waggle/data/journal-read.log  # BOTH lanes, :-separated (below)
-ALARM_NSEC=<dedicated alarm key nsec>           # rule 1 — a fresh, zero-authority key
-ALARM_TO=<npub to DM on alarm>
 BUZZ_RELAY_URL=<relay>                          # extra public relays come from config.json
 ```
+
+`deploy/tripwire.service` loads `/etc/waggle-tripwire/alarm.nsec` and `alarm.to` with
+systemd `LoadCredential=`. The secret therefore stays out of the unit environment, command
+line, repo, and logs.
+
+For an existing watcher—especially the live on-box unit that first merges read- and sealed-lane
+journals—do **not** replace its `ExecStart` with the generic off-host template. Install only the
+credential drop-in, preserving the already-verified detector command:
+
+```
+sudo install -d -m 0755 /etc/systemd/system/waggle-tripwire.service.d
+sudo install -m 0644 deploy/tripwire-alarm.conf \
+  /etc/systemd/system/waggle-tripwire.service.d/alarm.conf
+sudo systemctl daemon-reload
+sudo systemctl restart waggle-tripwire.service
+```
+
+The last command is the negative control and may report `QUIET` or `OK`; it must no longer report
+`no alarm delivery path configured`. The positive drill below must then produce a sealed DM.
 
 The watcher **pulls** the journals (so the box needs no credentials to the watcher — a journal
 is only public event ids, nothing sensitive), on its own timer just ahead of the tripwire tick.
@@ -364,6 +390,12 @@ sudo systemctl enable --now tripwire.timer
 systemctl list-timers tripwire.timer
 ```
 
+Run the positive drill and confirm the sealed DM arrives at the operator identity before
+accepting a clean timer tick. For rotation, initialize a fresh directory, switch both
+`LoadCredential=` source paths together, daemon-reload, rerun the delivery drill, and only then
+retire the old directory. If no relay accepts the DM, preserve the alarm log, repair relay
+reachability, and rerun the drill; a logged alarm does not prove anyone was notified.
+
 On macOS (no systemd) run the same script from a `launchd` job or `cron` on the same
 30-min cadence — the units are a convenience, `tools/tripwire.mjs` is the whole detector.
 
@@ -385,7 +417,7 @@ mistakes and crude theft; only off-host catches an adversary who owns the host.
   process.`
 - **Positive control (must fire):** temporarily point `--journal` at an empty file (or sign
   one test event off-process) so a real on-relay post is unaccounted — the run must print
-  `🚨 TRIPWIRE`, append `data/tripwire-alarms.log`, exit 2, and (if `ALARM_*` are set) DM the
+  `🚨 TRIPWIRE`, append `data/tripwire-alarms.log`, exit 2, and (if alarm credentials are loaded) DM the
   alarm. Restore the real journal path after.
 
 Alert on **exit 2 / unit failure** (`systemctl --failed`, or an `OnFailure=` handler) as the
