@@ -11,14 +11,18 @@
 //
 //   node tests/watchlist.mjs
 
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync, mkdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure'
 
 const tmp = mkdtempSync(join(tmpdir(), 'wb-watchlist-'))
+const configDir = join(tmp, 'tree')
+const stateDir = join(tmp, 'data')
+mkdirSync(configDir)
+mkdirSync(stateDir)
 const CHAN = '77777777-7777-7777-7777-777777777777'
-const CFG = join(tmp, 'config.json')
+const CFG = join(configDir, 'config.json')
 const existing = getPublicKey(generateSecretKey())   // a pre-existing static watch author
 const approverSk = generateSecretKey(), approver = getPublicKey(approverSk)
 writeFileSync(CFG, JSON.stringify({
@@ -28,11 +32,14 @@ writeFileSync(CFG, JSON.stringify({
 process.env.WB_NO_BOOT = '1'
 process.env.FORWARD_MODE = 'dryrun'
 process.env.CONFIG_PATH = CFG
-process.env.SEEN_PATH = join(tmp, 'seen.log')
+process.env.SEEN_PATH = join(stateDir, 'seen.log')
 process.env.PUB_WATERMARK_PATH = join(tmp, 'wm')
 process.env.POSTED_MAP_PATH = join(tmp, 'pm.log')
+// Match production's systemd boundary: the bridge may update the existing config inode and its
+// data directory, but it cannot create/rename anything in the source-tree parent.
+chmodSync(configDir, 0o555)
 
-const { addWatchAuthor, removeWatchAuthor, WATCH_REFRESHERS, PUB, routePublic, handleCommand } = await import('../src/bridge.mjs')
+const { addWatchAuthor, removeWatchAuthor, WATCH_REFRESHERS, PUB, routePublic, handleCommand, recoverConfigJournal } = await import('../src/bridge.mjs')
 
 const realLog = console.log.bind(console)
 let n = 0, pass = 0
@@ -63,6 +70,7 @@ const r = addWatchAuthor(X)
 t('addWatchAuthor returns added', r.ok === true && r.added === true)
 t('  PUB.authors now includes X', PUB.authors.includes(X))
 t('  the config file persisted X (survives a real reboot)', cfgAuthors().includes(X))
+t('  the crash journal was cleared after the fsynced config write', !existsSync(join(stateDir, 'config-write-journal.json')))
 t('  the relay re-subscribe refresher fired (posts will actually be fetched)', fired === firedBefore + 1)
 t('  now X\'s feed post IS routed as mirrored feed', mirrored(routeOf(feedPost(sk))))
 
@@ -85,12 +93,11 @@ t('  X\'s feed post is no longer mirrored', !mirrored(routeOf(feedPost(sk))))
 t('the original watch_authors entry survived every mutation', cfgAuthors().includes(existing) && PUB.authors.includes(existing))
 
 // --- 6. persistence failure is fail-closed ----------------------------------------------------
-// The config write is the commit point: a temporary live mutation would lie to the operator and
-// reverse at the next restart. An atomic replace needs write permission on its parent directory,
-// not on the old file, so remove directory write permission and prove neither add nor remove
-// changes the active set or triggers a relay re-subscribe.
+// The journal is the commit point: a temporary live mutation would lie to the operator and
+// reverse at the next restart. Remove state-directory write permission and prove neither add nor
+// remove changes the active set or triggers a relay re-subscribe.
 const Y = getPublicKey(generateSecretKey())
-chmodSync(tmp, 0o555)
+chmodSync(stateDir, 0o555)
 const beforeFailedAdd = fired
 const failedAdd = addWatchAuthor(Y)
 t('a failed persist refuses an add', failedAdd.ok === false)
@@ -101,9 +108,20 @@ const failedRemove = removeWatchAuthor(existing)
 t('a failed persist refuses a removal', failedRemove.ok === false)
 t('  a failed removal does NOT alter the live watched set', PUB.authors.includes(existing))
 t('  a failed removal does NOT refresh relay filters', fired === beforeFailedRemove)
-chmodSync(tmp, 0o700)
+chmodSync(stateDir, 0o700)
 
-// --- 7. signed staging-console commands -------------------------------------------------------
+// --- 7. an interrupted inode update is recovered before config parsing ------------------------
+const beforeRecovery = readFileSync(CFG, 'utf8')
+const recovered = JSON.parse(beforeRecovery)
+recovered.public.watchlist_command_at = 424242
+const recoveryPayload = JSON.stringify(recovered, null, 2) + '\n'
+writeFileSync(join(stateDir, 'config-write-journal.json'), recoveryPayload, { mode: 0o600 })
+writeFileSync(CFG, '{"interrupted":')
+recoverConfigJournal()
+t('an interrupted config write replays the complete journal', readFileSync(CFG, 'utf8') === recoveryPayload)
+t('  successful recovery clears the journal durably', !existsSync(join(stateDir, 'config-write-journal.json')))
+
+// --- 8. signed staging-console commands -------------------------------------------------------
 // `watch` already means reply-follow, so whole-feed administration is explicitly namespaced:
 // `waggle mirror` / `waggle unmirror`. Only a configured approver may operate it.
 const Z = getPublicKey(generateSecretKey())

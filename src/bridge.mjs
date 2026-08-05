@@ -61,6 +61,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
 
 const CONFIG_PATH = process.env.CONFIG_PATH || resolve(ROOT, 'config.json')
+// Owner-control commands must survive a crash without giving the network-facing bridge write
+// access to its source directory.  systemd therefore exposes the existing config inode as
+// writable, but keeps its parent directory read-only.  The transaction journal lives beside the
+// other mutable runtime state; startup replays it before config.json is parsed.
+const CONFIG_JOURNAL_PATH = process.env.CONFIG_JOURNAL_PATH || resolve(dirname(process.env.SEEN_PATH || resolve(ROOT, 'data', 'seen-ids.log')), 'config-write-journal.json')
 const SEEN_PATH = process.env.SEEN_PATH || resolve(ROOT, 'data', 'seen-ids.log')
 const SEEN_CAP = Number(process.env.SEEN_CAP || 100000)
 // Return-lane dedup store — same append-only, capped lifecycle as seen-ids, but a SEPARATE file:
@@ -100,6 +105,31 @@ if (!existsSync(CONFIG_PATH)) {
   err(`FATAL: no config at ${CONFIG_PATH}. Copy config.example.json → config.json and fill inbox UUIDs.`)
   process.exit(1)
 }
+function fsyncDir(path) {
+  const fd = openSync(path, 'r')
+  try { fsyncSync(fd) } finally { closeSync(fd) }
+}
+function overwriteExistingConfig(payload) {
+  // Opening the existing file with O_TRUNC changes its inode contents, not the parent directory.
+  // That is the narrow operation allowed by waggle-read.service's ReadWritePaths policy.
+  const fd = openSync(CONFIG_PATH, 'w', 0o600)
+  try { writeFileSync(fd, payload); fsyncSync(fd) } finally { closeSync(fd) }
+}
+function recoverConfigJournal() {
+  if (!existsSync(CONFIG_JOURNAL_PATH)) return
+  try {
+    const payload = readFileSync(CONFIG_JOURNAL_PATH, 'utf8')
+    JSON.parse(payload) // never replace a live config with a partial/corrupt journal
+    overwriteExistingConfig(payload)
+    unlinkSync(CONFIG_JOURNAL_PATH)
+    fsyncDir(dirname(CONFIG_JOURNAL_PATH))
+    log('commands: recovered an interrupted config transaction')
+  } catch (e) {
+    err(`FATAL: config transaction recovery failed: ${e.message}`)
+    process.exit(1)
+  }
+}
+recoverConfigJournal()
 const cfg = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'))
 const RELAYS = cfg.relays || []
 const RECIPIENTS = {} // hex -> { name, inbox, npub_hex }
@@ -1410,18 +1440,24 @@ function mutateConfig(fn) {
   try {
     const fresh = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'))
     fn(fresh)
-    // Never truncate the live config in place.  A successful command must leave either the
-    // complete old document or the complete new document, including its replay watermark.
-    // fsync both the replacement and parent directory so a power loss cannot report a command
-    // accepted while silently losing the state that makes it non-replayable.
-    temporary = `${CONFIG_PATH}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
-    writeFileSync(temporary, JSON.stringify(fresh, null, 2) + '\n', { mode: 0o600 })
+    const payload = JSON.stringify(fresh, null, 2) + '\n'
+    JSON.parse(payload)
+    // The source-tree parent is deliberately read-only.  First durably record the complete
+    // intended replacement under data/, then update the existing config inode and fsync it.
+    // A crash before journal removal is recovered at the next boot; a crash after removal sees
+    // the already-fsynced config.  This preserves the old atomicity guarantee without widening
+    // the bridge's write authority to code, package metadata, or its service directory.
+    mkdirSync(dirname(CONFIG_JOURNAL_PATH), { recursive: true })
+    temporary = `${CONFIG_JOURNAL_PATH}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
+    writeFileSync(temporary, payload, { mode: 0o600 })
     const fileFd = openSync(temporary, 'r')
     try { fsyncSync(fileFd) } finally { closeSync(fileFd) }
-    renameSync(temporary, CONFIG_PATH)
+    renameSync(temporary, CONFIG_JOURNAL_PATH)
     temporary = null
-    const dirFd = openSync(dirname(CONFIG_PATH), 'r')
-    try { fsyncSync(dirFd) } finally { closeSync(dirFd) }
+    fsyncDir(dirname(CONFIG_JOURNAL_PATH))
+    overwriteExistingConfig(payload)
+    unlinkSync(CONFIG_JOURNAL_PATH)
+    fsyncDir(dirname(CONFIG_JOURNAL_PATH))
     return true
   } catch (e) {
     if (temporary) { try { unlinkSync(temporary) } catch { /* best-effort cleanup */ } }
@@ -2624,7 +2660,7 @@ function connectPublic(url) {
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTaskRouteControlCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests }
 
 // --- boot -------------------------------------------------------------------
