@@ -78,6 +78,10 @@ try {
   let mutation = ''
   try { await buildTripwireAlarmWrap('drill', recipient, mutating, { now: () => 100, backdated: () => 90 }) } catch (error) { mutation = error.message }
   ok('tripwire refuses a signer that changes policy-owned seal bytes', /changed the sealed alarm event/.test(mutation))
+  const widening = { ...alarmSigner, async signEvent(event) { return { ...finalizeEvent(event, alarmKey), delegated_by: 'attacker-controlled' } } }
+  let widened = ''
+  try { await buildTripwireAlarmWrap('drill', recipient, widening, { now: () => 100, backdated: () => 90 }) } catch (error) { widened = error.message }
+  ok('tripwire refuses signer-supplied fields outside the closed event schema', /changed the sealed alarm event/.test(widened))
 } finally { rmSync(dir, { recursive: true, force: true }) }
 
 console.log(`\n${pass}/${pass + fail} passed`)

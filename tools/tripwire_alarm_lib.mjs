@@ -5,10 +5,13 @@ import * as nip44 from 'nostr-tools/nip44'
 
 const HEX64 = /^[0-9a-f]{64}$/
 const exact = value => JSON.parse(JSON.stringify(value))
+const SIGNED_EVENT_KEYS = ['content', 'created_at', 'id', 'kind', 'pubkey', 'sig', 'tags']
 
 function verifyExactSeal(signed, draft, signerPubkey) {
   const event = exact(signed)
-  if (!verifyEvent(event) || event.pubkey !== signerPubkey || event.kind !== draft.kind ||
+  const keys = Object.keys(event).sort()
+  if (JSON.stringify(keys) !== JSON.stringify(SIGNED_EVENT_KEYS) ||
+      !verifyEvent(event) || event.pubkey !== signerPubkey || event.kind !== draft.kind ||
       event.created_at !== draft.created_at || event.content !== draft.content ||
       JSON.stringify(event.tags) !== JSON.stringify(draft.tags)) {
     throw new Error('tripwire-alarm: signer changed the sealed alarm event')
