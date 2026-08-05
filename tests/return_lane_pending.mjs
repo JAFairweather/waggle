@@ -11,7 +11,7 @@
 //
 // Holding the cursor was the rejected alternative: one permanently-unreachable recipient would pin
 // it forever and stall the lane for everyone. Hence the bound and the dead letter, asserted here.
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -106,6 +106,14 @@ try {
   ok('a restart reloads exactly what is still owed, and nothing already settled',
     reloaded.size() === 1 && reloaded.entries()[0].key.startsWith('9'.repeat(64)),
     `reloaded ${reloaded.size()}: ${reloaded.entries().map(e => e.key.slice(0, 8)).join(',')}`)
+
+  // A queue entry is not "durable" merely because it reached memory. Force appendFileSync to
+  // fail against a directory and prove enqueue rolls the hot claim back and reports failure.
+  const unwritablePath = join(dir, 'queue-is-a-directory')
+  mkdirSync(unwritablePath)
+  const failing = (await import('../src/stores.mjs')).durableQueue({ path: unwritablePath, cap: 10, label: 'forced-failure' })
+  ok('a failed durable enqueue returns false and leaves no memory-only phantom debt',
+    failing.enqueue('owed', { source: 'x' }) === false && failing.size() === 0)
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }

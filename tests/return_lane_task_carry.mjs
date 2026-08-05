@@ -2,7 +2,7 @@
 // own carrier attestation. Nvoy can therefore authorize the original signer without treating the
 // bridge as the instructor.
 
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure'
@@ -24,18 +24,45 @@ process.env.SEEN_PATH = resolve(dir, 'seen.log')
 process.env.POSTED_MAP_PATH = resolve(dir, 'posted.log')
 process.env.RLSEEN_PATH = resolve(dir, 'rlseen.log')
 process.env.RLPENDING_PATH = resolve(dir, 'pending.log')
+process.env.RLREACTION_PATH = resolve(dir, 'reactions.log')
+process.env.RLREACTIONSEEN_PATH = resolve(dir, 'reactions-seen.log')
 process.env.BUZZ_PRIVATE_KEY = Buffer.from(bridgeSk).toString('hex')
 process.env.FORWARD_MODE = 'buzz'; process.env.WB_NO_BOOT = '1'
 
-const { scanReturnLane, sourceWireRejectReason, PUB, grantSet } = await import('../src/bridge.mjs')
+const { scanReturnLane, sourceWireRejectReason, PUB, grantSet, rlPending, retryPendingCarries, rlReactionPending, rlReactionSeen, retryPendingReactions, rlKey, dropRlSeen } = await import('../src/bridge.mjs')
+const { submitRelayActionReaction } = await import('../src/nostr_egress.mjs')
 grantSet.set(participant, { grantId: '1'.repeat(64), grantor: author })
 let pass = 0, fail = 0
 const ok = (name, value) => { console.log(`${value ? 'ok  ' : 'FAIL'} — ${name}`); value ? pass++ : fail++ }
 const source = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 1785870000,
   tags: [['h', 'private-signed-channel-address'], ['p', participant]], content: 'Codex, please inspect this.' }, authorSk)))
 const wraps = []
-await scanReturnLane([source], { authors: PUB.scanAuthors, channel, publish: async wrap => { wraps.push(wrap); return 2 } })
+const reactions = []
+let journalWasReadyAtSubmit = false
+const reactionOk = event => {
+  reactions.push(event)
+  journalWasReadyAtSubmit = readFileSync(process.env.SEND_JOURNAL_PATH, 'utf8').includes(event.id)
+  return event.id
+}
+await scanReturnLane([source], { authors: PUB.scanAuthors, channel, publish: async wrap => { wraps.push(wrap); return 2 }, react: reactionOk })
 ok('the opt-in recipient receives one sealed typed carry', wraps.length === 1 && wraps[0].kind === 1059)
+ok('a landed relay action reacts once to the exact originating Buzz event', reactions.length === 1 && reactions[0].kind === 7 && reactions[0].content === '👍' && reactions[0].tags.some(t => t[0] === 'e' && t[1] === source.id))
+ok('the exact reaction id is durably tripwire-journaled before submission starts', journalWasReadyAtSubmit)
+ok('the bridge-authored kind:7 is recorded in the tripwire send journal',
+  readFileSync(process.env.SEND_JOURNAL_PATH, 'utf8').split('\n').some(line => { try { const row = JSON.parse(line); return row.kind === 7 && row.lane === 'return-reaction' && row.source === source.id } catch { return false } }))
+let submittedBody = '', submittedAuth = ''
+const exactSubmitted = await submitRelayActionReaction(reactions[0], async (_url, request) => {
+  submittedBody = request.body
+  submittedAuth = request.headers.authorization
+  return { ok: true, status: 200, text: async () => JSON.stringify({ event_id: reactions[0].id, accepted: true, message: 'stored' }) }
+})
+ok('the writer submits the byte-identical prepared event with exact-body NIP-98 authorization',
+  exactSubmitted === reactions[0].id && submittedBody === JSON.stringify(reactions[0]) && submittedAuth.startsWith('Nostr '))
+let alteredPreparedRejected = false
+try { await submitRelayActionReaction({ ...reactions[0], content: '❤️' }, async () => { throw new Error('must not submit') }) } catch { alteredPreparedRejected = true }
+ok('the exact-event submitter refuses altered prepared bytes before network access', alteredPreparedRejected)
+await scanReturnLane([source], { authors: PUB.scanAuthors, channel, publish: async wrap => { wraps.push(wrap); return 2 }, react: reactionOk })
+ok('durable carry dedup also prevents a duplicate confirmation reaction', reactions.length === 1)
 const seal = JSON.parse(nip44.decrypt(wraps[0].content, nip44.getConversationKey(participantSk, wraps[0].pubkey)))
 const rumor = JSON.parse(nip44.decrypt(seal.content, nip44.getConversationKey(participantSk, seal.pubkey)))
 const carry = JSON.parse(rumor.content)
@@ -69,11 +96,62 @@ const wrongChannel = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_
   tags: [['p', participant]], content: 'right sender, wrong channel' }, authorSk)))
 await scanReturnLane([wrongChannel], { authors: [author], channel: '99999999-9999-4999-8999-999999999999', publish: async wrap => { wraps.push(wrap); return 2 } })
 ok('a managed route binds its source channel instead of inheriting the global channel union', wraps.length === 1)
+const reactionRetry = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 1785870006,
+  tags: [['p', participant]], content: 'reaction retry' }, authorSk)))
+let failedPrepared
+await scanReturnLane([reactionRetry], { authors: [author], channel, publish: async wrap => { wraps.push(wrap); return 2 }, react: async event => { failedPrepared = JSON.stringify(event); throw new Error('temporary Buzz outage') } })
+ok('a failed confirmation does not undo or repeat the landed sealed carry', wraps.length === 2 && rlReactionPending.has(reactionRetry.id))
+const retried = []
+const realFetch = globalThis.fetch
+globalThis.fetch = async (_url, request) => {
+  const event = JSON.parse(request.body)
+  retried.push(event)
+  return { ok: true, status: 200, text: async () => JSON.stringify({ event_id: event.id, accepted: true, message: 'stored' }) }
+}
+try { await retryPendingReactions() } finally { globalThis.fetch = realFetch }
+ok('a failed confirmation retries independently and clears only after success', retried.length === 1 && retried[0].tags.some(t => t[0] === 'e' && t[1] === reactionRetry.id) && !rlReactionPending.has(reactionRetry.id))
+ok('the production retry path submits the byte-identical prepared event instead of re-signing', JSON.stringify(retried[0]) === failedPrepared)
+
+// Review regression: simulate process death at the only dangerous boundary. The reaction debt
+// must already be durable while the source×recipient carry completion is still absent.
+const crashSource = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 1785870007,
+  tags: [['p', participant]], content: 'crash ordering' }, authorSk)))
+const crashKey = rlKey(crashSource.id, participant)
+let crashed = false
+try {
+  await scanReturnLane([crashSource], { authors: [author], channel, publish: async wrap => { wraps.push(wrap); return 2 },
+    react: async () => {}, afterReactionOwed: () => { throw new Error('simulated process exit') } })
+} catch (e) { crashed = e.message === 'simulated process exit' }
+ok('a crash after accepted carry cannot lose its reaction obligation', crashed && rlReactionPending.has(crashSource.id))
+ok('reaction debt commits before carry completion, so restart may safely recover',
+  !rlReactionSeen.has(crashSource.id) && !readFileSync(process.env.RLSEEN_PATH, 'utf8').includes(crashKey) &&
+  readFileSync(process.env.RLREACTION_PATH, 'utf8').includes(crashSource.id))
+dropRlSeen(crashKey) // simulated restart discards the pre-commit in-memory claim
+await retryPendingReactions(async event => event.id)
+
+// Review regression: recipient A lands now, recipient B is queued and lands later. Completion is
+// source-level, so B's carry retry must not create a second reaction for the same channel message.
+const participant2Sk = generateSecretKey(), participant2 = getPublicKey(participant2Sk)
+PUB.returnLane.push({ ...PUB.returnLane[0], npub_hex: participant2 })
+grantSet.set(participant2, { grantId: '2'.repeat(64), grantor: author })
+const partial = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 1785870008,
+  tags: [['p', participant], ['p', participant2]], content: 'partial fanout' }, authorSk)))
+let fanoutAttempt = 0
+const partialReactions = []
+await scanReturnLane([partial], { authors: [author], channel,
+  publish: async wrap => { wraps.push(wrap); return fanoutAttempt++ === 0 ? 2 : 0 },
+  react: async event => { partialReactions.push(event); return event.id } })
+ok('partial fanout reacts once when its first recipient lands', partialReactions.length === 1 && rlReactionSeen.has(partial.id) && rlPending.size() === 1)
+await retryPendingCarries({ publish: async wrap => { wraps.push(wrap); return 2 }, react: async event => { partialReactions.push(event); return event.id } })
+ok('a later recipient retry cannot react to an already-confirmed source again', partialReactions.length === 1 && rlPending.size() === 0)
+grantSet.delete(participant2)
+PUB.returnLane.pop()
 grantSet.delete(participant)
+const wrapsBeforeRevoked = wraps.length
 const revoked = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 1785870006,
   tags: [['p', participant]], content: 'admission revoked' }, authorSk)))
 await scanReturnLane([revoked], { authors: [author], channel, publish: async wrap => { wraps.push(wrap); return 2 } })
-ok('revoking participant admission removes a saved managed route from active fan-out', wraps.length === 1)
+ok('revoking participant admission removes a saved managed route from active fan-out', wraps.length === wrapsBeforeRevoked)
 
 console.log(`\n${pass}/${pass + fail} passed`)
 process.exit(fail ? 1 : 0)

@@ -38,7 +38,7 @@ import WebSocket from 'ws'
 import { getEventHash, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import { emit, query, checkConfigRenderable, runPolicyShadowSsh } from './egress.mjs'
-import { bridgePubkey, bridgeSignerMode, hasBridgeKey, openSeal, openRumor, sealAndWrap, consentTosBlock, signControlState } from './nostr_egress.mjs'
+import { bridgePubkey, bridgeSignerMode, hasBridgeKey, openSeal, openRumor, sealAndWrap, consentTosBlock, signControlState, prepareRelayActionReaction, submitRelayActionReaction } from './nostr_egress.mjs'
 import { verifyConsent } from './consent.mjs'   // in-door consent (#131/#132, docs/CONSENT.md §8)
 import { createHash, randomBytes } from 'node:crypto'
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, unlinkSync, openSync, closeSync, fsyncSync } from 'node:fs'
@@ -74,10 +74,13 @@ const SEEN_CAP = Number(process.env.SEEN_CAP || 100000)
 const RLSEEN_PATH = process.env.RLSEEN_PATH || resolve(ROOT, 'data', 'return-lane-seen.log')
 const MIRRORASKED_PATH = process.env.MIRRORASKED_PATH || resolve(ROOT, 'data', 'mirror-asked.log')
 const RLPENDING_PATH = process.env.RLPENDING_PATH || resolve(ROOT, 'data', 'return-lane-pending.log')
+const RLREACTION_PATH = process.env.RLREACTION_PATH || resolve(ROOT, 'data', 'return-lane-reactions.log')
+const RLREACTIONSEEN_PATH = process.env.RLREACTIONSEEN_PATH || resolve(ROOT, 'data', 'return-lane-reactions-seen.log')
 // Bounded, or one permanently-unreachable recipient retries forever. On the ~4-minute scan poll
 // this is roughly two hours of outage before a carry is dead-lettered — long enough to ride out a
 // relay flap, short enough that a dead key is surfaced the same day.
 const RLPENDING_MAX_ATTEMPTS = Number(process.env.RLPENDING_MAX_ATTEMPTS || 30)
+const RLREACTION_MAX_ATTEMPTS = Number(process.env.RLREACTION_MAX_ATTEMPTS || 30)
 const RLSEEN_CAP = Number(process.env.RLSEEN_CAP || 100000)
 // Relay-lane dedup store (DESIGN_RELAY_INGRESS §6): wraps addressed to waggle's OWN key that it
 // unwraps and relays into a channel. Its own append-only capped file — checked BEFORE decryption
@@ -1645,10 +1648,40 @@ const rlKey = (srcId, recipHex) => String(srcId) + '\x1f' + String(recipHex)
 // durable storage instead of from the window, so the cursor keeps advancing (no lane-wide stall
 // from one dead recipient) and the carry survives anyway.
 const rlPending = durableQueue({ path: RLPENDING_PATH, cap: 5000, label: 'return lane pending' })
+// A landed carry and its visible Buzz acknowledgement have different failure domains. Never
+// re-carry a sealed instruction merely because the reaction write failed; remember the reaction
+// as separately owed work and retry it independently.
+const rlReactionPending = durableQueue({ path: RLREACTION_PATH, cap: 5000, label: 'return lane reaction' })
+// Source-level completion is separate from source×recipient carry completion. A message that
+// reaches recipient A now and recipient B on a later retry still earns exactly one visible 👍.
+const rlReactionSeenStore = durableSet({ path: RLREACTIONSEEN_PATH, cap: RLSEEN_CAP, label: 'return lane reaction', noun: 'confirmed source ids' })
+const rlReactionSeen = rlReactionSeenStore.mem
+const rlReactionInFlight = new Set()
 const loadRlSeen = () => rlSeenStore.load()
 const addRlSeen = (key) => rlSeenStore.claim(key)
 const dropRlSeen = (key) => rlSeenStore.rollback(key)
 const markRlSeen = (key) => rlSeenStore.commit(key)
+
+function oweRelayAction(sourceId) {
+  const id = String(sourceId || '').toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(id) || rlReactionSeen.has(id) || rlReactionPending.has(id)) return false
+  if (!rlReactionPending.enqueue(id, { source: id }, true)) throw new Error(`return-lane reaction debt could not be durably persisted for ${id}`)
+  return true
+}
+
+// The reaction debt MUST become durable before the accepted carry does. If the process exits
+// between these two commits, restart may conservatively re-carry once, but it cannot lose the
+// user-visible acknowledgement forever. The optional hook exists only for the hermetic crash
+// regression; production callers cannot inject it.
+function commitLandedCarry(key, sourceId, afterReactionOwed = null) {
+  oweRelayAction(sourceId)
+  if (afterReactionOwed) {
+    if (process.env.WB_NO_BOOT !== '1') throw new Error('return-lane crash hook is test-only')
+    afterReactionOwed()
+  }
+  markRlSeen(key)
+  rlPending.remove(key)
+}
 
 // Drop-log dedup (finding #2). The signer-gate err() in scanReturnLane fires before the
 // per-recipient rlSeen check, so without this a STATIC backlog of non-admitted signers re-logs
@@ -2141,6 +2174,49 @@ function carryDescriptor(recipient, message, why, channel) {
   return { template: 'return_task_carry', slots: { channel: ch, why, source } }
 }
 
+async function confirmRelayAction(sourceId, send = submitRelayActionReaction) {
+  const id = String(sourceId || '').toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(id) || rlReactionSeen.has(id) || rlReactionInFlight.has(id)) return false
+  oweRelayAction(id)
+  if (rlReactionPending.entries().find(x => x.key === id)?.attempts >= RLREACTION_MAX_ATTEMPTS) return false
+  rlReactionInFlight.add(id)
+  const attempt = rlReactionPending.attempt(id)
+  try {
+    let item = rlReactionPending.mem.get(id)?.item
+    if (!item?.event) {
+      const event = await prepareRelayActionReaction(id)
+      item = { source: id, event }
+      if (!rlReactionPending.update(id, item, true)) throw new Error('exact signed reaction could not be durably prepared')
+    }
+    const reactionId = String(item.event.id || '').toLowerCase()
+    // Journal the exact prepared id durably BEFORE submitting those same signed bytes. An extra
+    // journal row after a definite refusal is harmless; an accepted unjournaled signer event is
+    // not. On crash/restart the queue retains item.event and resubmits it byte-identically.
+    if (!journalSend(reactionId, { kind: 7, lane: 'return-reaction', source: id }, true)) throw new Error('prepared reaction tripwire row could not be persisted')
+    const submittedId = await send(item.event)
+    if (submittedId !== reactionId) throw new Error('Buzz reaction submitter did not bind the exact prepared event id')
+    if (!rlReactionSeenStore.commit(id, true)) throw new Error('reaction acceptance could not be durably completed')
+    rlReactionPending.remove(id, true)
+    log(`RETURN confirm[👍]: ${id.slice(0, 12)}… reacted after relay acceptance`)
+    return true
+  } catch (e) {
+    err(`RETURN confirm[pending]: ${id.slice(0, 12)}… reaction attempt ${attempt} failed: ${String(e?.message || e).slice(0, 160)}`)
+    return false
+  } finally { rlReactionInFlight.delete(id) }
+}
+
+async function retryPendingReactions(send = submitRelayActionReaction) {
+  for (const { key, item, attempts } of rlReactionPending.entries()) {
+    if (rlReactionSeen.has(key)) { rlReactionPending.remove(key); continue }
+    if (!item?.source || attempts >= RLREACTION_MAX_ATTEMPTS) {
+      if (attempts >= RLREACTION_MAX_ATTEMPTS) err(`RETURN confirm[dead-letter]: ${String(item?.source || key).slice(0, 12)}… reaction failed ${attempts} times`)
+      rlReactionPending.remove(key)
+      continue
+    }
+    await confirmRelayAction(item.source, send)
+  }
+}
+
 // Scan a batch of channel messages for return-lane triggers and carry each out — exactly once.
 // Two trigger types:
 //   • @mention — a resolved p-tag EXACTLY equal to the recipient's delivery key (Buzz resolves an
@@ -2166,6 +2242,9 @@ function carryDescriptor(recipient, message, why, channel) {
 // only ever moves bytes to an address. The one place a body could reach a prompt is the action
 // layer, where the wake is content-free and the body is read-plane data (design §5).
 async function scanReturnLane(msgs, opts = {}) {
+  // WB_NO_BOOT is the established hermetic test seam. Production uses the closed Buzz egress;
+  // a harness must inject `react` explicitly when it wants to drive acknowledgement behavior.
+  const react = opts.react || (process.env.WB_NO_BOOT || FORWARD_MODE !== 'buzz' ? async event => event.id : submitRelayActionReaction)
   const recipients = activeReturnLane()
   if (!recipients.length || !hasBridgeKey()) return
   const gateActive = opts.authors !== undefined            // an explicit (even empty) gate is default-closed
@@ -2190,6 +2269,7 @@ async function scanReturnLane(msgs, opts = {}) {
     // Direct parent(s) only — the `reply`-marked e-tag. NOT the `root` tag: matching root would
     // deliver every message in a thread the agent started, not the replies actually to it.
     const parents = tags.filter(t => t[0] === 'e' && t[1] && t[3] === 'reply').map(t => String(t[1]).toLowerCase())
+    let carried = false
     // No break: one message fans out to EVERY matching recipient, each deduped on its own
     // (source × recipient) key. "@a @b" reaching only one of them was finding #4.
     for (const r of recipients) {
@@ -2220,8 +2300,8 @@ async function scanReturnLane(msgs, opts = {}) {
       // Persist-on-landed: durable dedup only once the seal reached a relay. A silent 0/N is rolled
       // back so the overlap re-read (and a restart) re-carry it — a rare re-carry beats a lost mention.
       if (accepted >= 1) {
-        markRlSeen(key)
-        rlPending.remove(key)                              // landed: no longer owed
+        commitLandedCarry(key, m.id, opts.afterReactionOwed)
+        carried = true
       } else {
         dropRlSeen(key)
         // Owed, durably. The overlap re-read may still catch it first; enqueue is idempotent and
@@ -2230,6 +2310,7 @@ async function scanReturnLane(msgs, opts = {}) {
           protocol: r.protocol || null, channel: opts.channel || null, source: r.protocol === 'nvoy-task-carry-v1' ? sourceWireEvent(m) : null })
       }
     }
+    if (carried) await confirmRelayAction(m.id, react)
   }
 }
 
@@ -2242,6 +2323,7 @@ async function scanReturnLane(msgs, opts = {}) {
 // stops. The bound converts it into a loud, dated, per-recipient report — and a dead-letter that
 // is logged and dropped, never a queue that grows forever.
 async function retryPendingCarries(opts = {}) {
+  const react = opts.react || (process.env.WB_NO_BOOT || FORWARD_MODE !== 'buzz' ? async event => event.id : submitRelayActionReaction)
   if (!PUB || !activeReturnLane().length || !hasBridgeKey()) return
   const owed = rlPending.entries()
   if (!owed.length) return
@@ -2267,8 +2349,8 @@ async function retryPendingCarries(opts = {}) {
     const accepted = await returnLaneSend(item.to, descriptor,
       { src: item.src, why: item.why, protocol: item.protocol || 'return-carry-v1', channel: item.channel || null, retry: n }, opts.publish)
     if (accepted >= 1) {
-      markRlSeen(key)
-      rlPending.remove(key)
+      commitLandedCarry(key, item.src, opts.afterReactionOwed)
+      await confirmRelayAction(item.src, react)
       landed++
       log(`RETURN retry ok: carried ${String(item.src).slice(0, 12)}… to ${String(item.to).slice(0, 12)}… on attempt ${n}`)
     }
@@ -2298,6 +2380,7 @@ async function pollCommands(now = Date.now()) {
     for (const m of msgs) { if ((m.created_at || 0) >= cmdCursor - 300) handleCommand(m).catch(er => err(`commands: ${er.message}`)) }
     scanReturnLane(msgs)
       .then(() => retryPendingCarries())                  // #117: owed carries, independent of the cursor
+      .then(() => retryPendingReactions())
       .catch(er => err(`return lane: staging carry failed: ${er.message}`))
     cmdCursor = Math.floor(Date.now() / 1000)
     commandPollFailures = 0
@@ -2411,6 +2494,8 @@ async function pollScanChannels() {
   for (const ch of PUB.scanChannels) {
     try { await scanChannel(ch) } catch (e) { err(`scan: poll failed for ${String(ch).slice(0, 8)}…: ${e.message}`) }
   }
+  await retryPendingCarries()
+  await retryPendingReactions()
 }
 
 let scanPollingTimer = null
@@ -2670,6 +2755,9 @@ function connectPublic(url) {
   open()
 }
 
+// Reaction helpers are exported separately to keep the existing broad test-hook line stable.
+export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, confirmRelayAction, retryPendingReactions, RLREACTION_MAX_ATTEMPTS }
+
 // --- test hook --------------------------------------------------------------
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
@@ -2684,6 +2772,8 @@ if (!process.env.WB_NO_BOOT) {
   loadRlSeen()
   mirrorAskedStore.load()   // §6: who we've already sent a consent-request DM (once per target)
   rlPending.load()
+  rlReactionPending.load()
+  rlReactionSeenStore.load()
   loadRelaySeen()
   // #171 — say it on every boot. A record of lost messages that nobody reads is the same silence
   // it exists to end, one level further out. Non-fatal: these are past losses, not a reason to

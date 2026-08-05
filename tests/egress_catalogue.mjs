@@ -178,6 +178,11 @@ console.log('\n-- emit(): the type has no field for a sentence (INV-A3-3) --')
   const content = argv[argv.indexOf('--content') + 1]
   ok('emit sends exactly the template text', content === '🚫 rejected — no action taken; the author remains quarantined.')
 
+  await emit({ template: 'relay_action_reaction', targetId: 'd'.repeat(64), slots: {} })
+  const reaction = calls[1] || []
+  ok('relay confirmation is a fixed thumbs-up reaction on the exact source event',
+    JSON.stringify(reaction) === JSON.stringify(['reactions', 'add', '--event', 'd'.repeat(64), '--emoji', '👍']))
+
   let rejected = false
   try { await emit('just send this sentence') } catch { rejected = true }
   ok('NEGATIVE CONTROL — emit refuses a bare string descriptor', rejected)

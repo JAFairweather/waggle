@@ -42,6 +42,7 @@ const scope = () => {
 const grant = wire(finalizeEvent({ kind: 440, created_at: Math.floor(Date.now() / 1000), tags: [['p', burnerPk], ['da-scope', ...scope()], ['da-cap', 'admit']], content: '' }, grantorSk))
 const journal = () => existsSync(process.env.SEND_JOURNAL_PATH)
   ? readFileSync(process.env.SEND_JOURNAL_PATH, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : []
+const returnRows = () => journal().filter(row => row.lane === 'return')
 let failed = 0
 const ok = (label, cond) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${label}`); if (!cond) failed++ }
 
@@ -50,16 +51,16 @@ processGrantEvent(grant)
 ok('a valid grant auto-registers the burner as a return recipient', activeReturnLane().some(r => r.npub_hex === burnerPk && r.dynamic))
 
 await scanReturnLane([{ id: 'a'.repeat(64), pubkey: authorPk, tags: [['p', burnerPk]], content: 'a structured reply for the burner' }])
-ok('a p-tagged post reaches the admitted burner', journal().length === 1 && journal()[0].to === burnerPk.slice(0, 12))
+ok('a p-tagged post reaches the admitted burner', returnRows().length === 1 && returnRows()[0].to === burnerPk.slice(0, 12))
 
 await scanReturnLane([{ id: 'b'.repeat(64), pubkey: authorPk, tags: [], content: 'hello @someone else' }])
-ok('a bare grant does not create a catch-all textual mention', journal().length === 1)
+ok('a bare grant does not create a catch-all textual mention', returnRows().length === 1)
 
 const rev = wire(finalizeEvent({ kind: 441, created_at: Math.floor(Date.now() / 1000) + 1, tags: [['e', grant.id]], content: '' }, grantorSk))
 processGrantEvent(rev)
 ok('a valid revocation removes the dynamic return address', !activeReturnLane().some(r => r.npub_hex === burnerPk))
 await scanReturnLane([{ id: 'c'.repeat(64), pubkey: authorPk, tags: [['p', burnerPk]], content: 'must not leave after revocation' }])
-ok('a revoked burner receives no later p-tagged carry', journal().length === 1)
+ok('a revoked burner receives no later p-tagged carry', returnRows().length === 1)
 
 console.log(failed ? `\nADMISSION RETURN FAIL — ${failed}` : '\nADMISSION RETURN PASS — grant and reachability share one lifecycle')
 process.exit(failed ? 1 : 0)

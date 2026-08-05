@@ -71,7 +71,7 @@ const journal = () => existsSync(process.env.SEND_JOURNAL_PATH)
   ? readFileSync(process.env.SEND_JOURNAL_PATH, 'utf8').split('\n').filter(Boolean).map(JSON.parse) : []
 // Run a scan and return only the journal entries it produced.
 async function scanDelta(msgs, opts) {
-  const before = journal().length
+  const before = journal().filter(row => row.lane === 'return').length
   // A working-channel message is a real wire-form signed kind:9. The JSON round-trip strips
   // nostr-tools' finalize symbol, forcing production signature verification in the bridge.
   const wire = msgs.map((m, i) => {
@@ -82,7 +82,7 @@ async function scanDelta(msgs, opts) {
   })
   if (opts === undefined) await scanReturnLane(wire)
   else await scanReturnLane(wire, opts)
-  const j = journal()
+  const j = journal().filter(row => row.lane === 'return')
   return j.slice(before)
 }
 const toOf = e => e.to
