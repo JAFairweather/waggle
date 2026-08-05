@@ -2,13 +2,17 @@ import { mkdtempSync, chmodSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { PolicyJournal } from '../src/policy_journal.mjs'
+import { finalizeEvent } from 'nostr-tools/pure'
 
 let fails = 0
 const t = (name, ok) => { console.log(`${ok ? 'ok  ' : 'FAIL'} — ${name}`); if (!ok) fails++ }
 const rejects = (name, fn, pattern) => { try { fn(); t(name, false) } catch (e) { t(name, pattern.test(e.message)) } }
 const dir = mkdtempSync(resolve(tmpdir(), 'waggle-policy-journal-'))
 chmodSync(dir, 0o700)
-const key = 'a'.repeat(64), request = 'b'.repeat(64), receipt = '{"signed":"receipt-one"}', event = 'd'.repeat(64)
+const key = 'a'.repeat(64), request = 'b'.repeat(64), receipt = '{"signed":"receipt-one"}'
+const signedEvent = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 105, content: 'fixed signed event', tags: [['h', 'a8186b53-537d-46ad-a7e7-b6486c58970e']] }, new Uint8Array(32).fill(7))))
+const preparedBytes = JSON.stringify(signedEvent, Object.keys(signedEvent).sort())
+const event = signedEvent.id
 const first = new PolicyJournal(dir)
 
 const claim = first.claim(key, request, 100)
@@ -21,14 +25,30 @@ rejects('a duplicate process cannot complete the first process claim', () => sec
 rejects('the same key cannot be reused for different request bytes', () => second.claim(key, 'e'.repeat(64)), /another request digest/)
 rejects('an unclaimed key cannot be committed', () => first.commit('f'.repeat(64), request, { receipt, result: 'refused' }), /unclaimed/)
 
-const done = first.commit(key, request, { receipt, buzzEventId: event, result: 'accepted', completedAt: 110 })
-t('completion atomically replaces the in-flight claim', done.status === 'terminal' && done.buzz_event_id === event)
+const prepared = first.prepare(key, request, { buzzEvent: preparedBytes, preparedAt: 105 })
+t('the exact signed event is durable before submission', prepared.status === 'prepared' && prepared.buzz_event === preparedBytes)
+t('the Buzz id is derived from the verified signed event', prepared.buzz_event_id === event)
+const recovering = new PolicyJournal(dir).claim(key, request, 106)
+t('a restarted process recovers the same prepared event without re-signing', !recovering.claimed && recovering.record.buzz_event === preparedBytes)
+rejects('a prepared event cannot commit a substituted Buzz id', () => second.commit(key, request, { receipt, buzzEventId: '9'.repeat(64), result: 'accepted' }), /does not match/)
+const done = second.commit(key, request, { receipt, buzzEventId: event, result: 'accepted', completedAt: 110 })
+t('completion atomically publishes first-winner terminal state', done.status === 'terminal' && done.buzz_event_id === event)
 const afterRestart = new PolicyJournal(dir).claim(key, request, 120)
 t('a restarted process receives the terminal result and never reclaims', !afterRestart.claimed && afterRestart.record.status === 'terminal')
-t('a duplicate commit returns the exact prior receipt bytes', second.commit(key, request, { receipt: '{"different":true}', result: 'refused' }).receipt === receipt)
+t('a competing terminal commit returns the exact first-winner receipt', first.commit(key, request, { receipt: '{"different":true}', result: 'refused' }).receipt === receipt)
 rejects('an accepted result requires the policy-derived Buzz id', () => {
   const k = '1'.repeat(64); first.claim(k, '2'.repeat(64)); first.commit(k, '2'.repeat(64), { receipt, result: 'accepted' })
 }, /requires buzz_event_id/)
+rejects('even a named Buzz id cannot be accepted before durable preparation', () => {
+  const k = '3'.repeat(64); first.claim(k, '2'.repeat(64)); first.commit(k, '2'.repeat(64), { receipt, buzzEventId: event, result: 'accepted' })
+}, /durably prepared/)
+rejects('arbitrary bytes cannot become a prepared event', () => {
+  const k = '0'.repeat(64); first.claim(k, '2'.repeat(64)); first.prepare(k, '2'.repeat(64), { buzzEvent: '{"not":"an event"}' })
+}, /exact wire event/)
+rejects('a caller cannot smuggle an id independent of the signed bytes', () => {
+  const k = 'c'.repeat(64); first.claim(k, '2'.repeat(64)); first.prepare(k, '2'.repeat(64), { buzzEvent: preparedBytes, buzzEventId: '9'.repeat(64) })
+  first.commit(k, '2'.repeat(64), { receipt, buzzEventId: '9'.repeat(64), result: 'accepted' })
+}, /does not match/)
 rejects('an empty receipt cannot become terminal state', () => {
   const k = '6'.repeat(64); first.claim(k, '7'.repeat(64)); first.commit(k, '7'.repeat(64), { receipt: '', result: 'refused' })
 }, /receipt must/)
@@ -40,7 +60,7 @@ const linkKey = '5'.repeat(64)
 symlinkSync(resolve(dir, `${key}.json`), resolve(dir, `${linkKey}.json`))
 rejects('a symlinked record is refused', () => first.get(linkKey), /private regular file/)
 const hugeKey = '8'.repeat(64)
-writeFileSync(resolve(dir, `${hugeKey}.json`), 'x'.repeat(96 * 1024 + 1), { mode: 0o600 })
+writeFileSync(resolve(dir, `${hugeKey}.json`), 'x'.repeat(160 * 1024 + 1), { mode: 0o600 })
 rejects('an oversized record is refused before parsing', () => first.get(hugeKey), /record size/)
 
 const orphanKey = '9'.repeat(64), orphanRequest = '3'.repeat(64), recoverySecret = 'recovery_secret_0123456789abcdef'
@@ -50,6 +70,7 @@ rejects('a bridge process cannot resolve an orphan without the policy-host secre
 rejects('an operator cannot resolve a stale observation of the claim', () => recovery.resolveOrphan(orphanKey, orphanRequest, 499, { recoverySecret, receipt }), /changed since operator inspection/)
 const resolved = recovery.resolveOrphan(orphanKey, orphanRequest, 500, { recoverySecret, receipt, completedAt: 510 })
 t('an operator can terminalize a proven-dead orphan without claiming the post failed', resolved.status === 'terminal' && resolved.result === 'ambiguous' && resolved.buzz_event_id === null)
+t('the signing-to-prepare crash window therefore fails closed as ambiguous', resolved.result === 'ambiguous')
 t('restart converges on the signed ambiguous receipt', new PolicyJournal(dir).claim(orphanKey, orphanRequest, 520).record.receipt === receipt)
 
 console.log(fails ? `\npolicy_journal: ${fails} FAILED` : '\npolicy_journal: all checks passed')
