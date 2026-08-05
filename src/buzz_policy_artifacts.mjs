@@ -36,7 +36,7 @@ const exactWireEvent = (event, label) => {
 const same = (left, right) => canonicalJson(left) === canonicalJson(right)
 const ARTIFACT_POLICIES = new WeakSet()
 
-export function createArtifactPolicy({ posterPubkey, authTag, endpoint } = {}) {
+export function createArtifactPolicy({ posterPubkey, authTag, endpoint, timeoutMs = 15_000, maxResponseBytes = 64 * 1024, nip98MaxAgeSec = 60 } = {}) {
   const poster = hex(posterPubkey, 'posterPubkey')
   if (!Array.isArray(authTag) || authTag.length !== 4 || authTag[0] !== 'auth' || !authTag.every(value => typeof value === 'string')) fail('authTag must be the fixed four-field NIP-OA tag')
   const owner = hex(authTag[1], 'authTag owner'), signature = hex(authTag[3], 'authTag signature', HEX128)
@@ -44,7 +44,11 @@ export function createArtifactPolicy({ posterPubkey, authTag, endpoint } = {}) {
   if (!schnorr.verify(hexToBytes(signature), attestation, hexToBytes(owner))) fail('authTag owner signature is invalid for this poster')
   let url; try { url = new URL(String(endpoint || '')) } catch { fail('endpoint is invalid') }
   if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search || url.pathname !== '/events') fail('endpoint must be the fixed HTTPS origin /events URL')
-  const policy = Object.freeze({ posterPubkey: poster, authTag: Object.freeze([...authTag]), endpoint: url.toString(), endpointAuthority: url.host })
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 30_000) fail('timeoutMs is outside the policy bounds')
+  if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1_024 || maxResponseBytes > 256 * 1024) fail('maxResponseBytes is outside the policy bounds')
+  if (!Number.isSafeInteger(nip98MaxAgeSec) || nip98MaxAgeSec < 5 || nip98MaxAgeSec > 300) fail('nip98MaxAgeSec is outside the policy bounds')
+  const policy = Object.freeze({ posterPubkey: poster, authTag: Object.freeze([...authTag]), endpoint: url.toString(), endpointAuthority: url.host,
+    timeoutMs, maxResponseBytes, nip98MaxAgeSec })
   ARTIFACT_POLICIES.add(policy)
   return policy
 }
@@ -86,12 +90,77 @@ export function buildNip98Authorization(signedBuzzEvent, policy, { nonce, now = 
 
 export const signExactNip98 = (unsigned, signer) => signExact(unsigned, signer, 'signed NIP-98 event')
 
+const tagValue = (event, name) => {
+  const matches = event.tags.filter(tag => tag[0] === name)
+  if (matches.length !== 1 || matches[0].length !== 2) fail(`signed NIP-98 event has invalid ${name} binding`)
+  return matches[0][1]
+}
+
+async function boundedResponseBody(response, maxBytes) {
+  const declared = Number(response.headers?.get?.('content-length'))
+  if (Number.isFinite(declared) && declared > maxBytes) fail('Buzz response exceeds the policy limit')
+  if (!response.body?.getReader) {
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    if (bytes.byteLength > maxBytes) fail('Buzz response exceeds the policy limit')
+    return bytes
+  }
+  const reader = response.body.getReader(), chunks = []; let size = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      if (size > maxBytes) { await reader.cancel(); fail('Buzz response exceeds the policy limit') }
+      chunks.push(value)
+    }
+  } finally { reader.releaseLock() }
+  const bytes = new Uint8Array(size); let offset = 0
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+  return bytes
+}
+
+// The reusable credentials never cross this call boundary. The policy service verifies
+// their exact bindings, submits them itself, and returns only a bounded outcome digest.
+export async function submitBuzzEvent(signedBuzzEvent, signedNip98, policy, {
+  fetchImpl = globalThis.fetch, now = Math.floor(Date.now() / 1000),
+} = {}) {
+  exactWireEvent(signedBuzzEvent, 'signed Buzz event'); exactWireEvent(signedNip98, 'signed NIP-98 event'); artifactPolicy(policy)
+  if (signedBuzzEvent.pubkey !== policy.posterPubkey || signedNip98.pubkey !== policy.posterPubkey || signedNip98.kind !== 27235 || signedNip98.content !== '') fail('signed submission identity is invalid')
+  timestamp(now)
+  if (Math.abs(now - signedNip98.created_at) > policy.nip98MaxAgeSec) fail('signed NIP-98 event is outside the freshness window')
+  const eventAuth = signedBuzzEvent.tags.filter(tag => tag[0] === 'auth')
+  if (eventAuth.length !== 1 || !same(eventAuth[0], policy.authTag)) fail('signed Buzz event does not carry the configured owner attestation')
+  const body = canonicalJson(signedBuzzEvent), payload = createHash('sha256').update(body).digest('hex')
+  if (signedNip98.tags.length !== 4 || tagValue(signedNip98, 'u') !== policy.endpoint ||
+      tagValue(signedNip98, 'method') !== 'POST' || tagValue(signedNip98, 'payload') !== payload ||
+      !/^[A-Za-z0-9_-]{16,128}$/.test(tagValue(signedNip98, 'nonce'))) fail('signed NIP-98 event does not authorize this exact submission')
+  if (typeof fetchImpl !== 'function') fail('HTTPS submitter is unavailable')
+  let response
+  try {
+    response = await fetchImpl(policy.endpoint, { method: 'POST', redirect: 'manual', signal: globalThis.AbortSignal.timeout(policy.timeoutMs),
+      headers: { authorization: `Nostr ${Buffer.from(JSON.stringify(signedNip98)).toString('base64')}`,
+        'content-type': 'application/json', 'x-auth-tag': JSON.stringify(policy.authTag) }, body })
+  } catch (error) { fail(`Buzz submission did not reach an authoritative response: ${error?.name || 'network error'}`) }
+  const bytes = await boundedResponseBody(response, policy.maxResponseBytes)
+  const responseDigest = createHash('sha256').update(bytes).digest('hex')
+  if (response.status === 429 || response.status >= 500 || response.status < 200 || (response.status >= 300 && response.status < 400)) fail(`Buzz submission is retryable (HTTP ${response.status})`)
+  if (response.status >= 400) fail(`Buzz response is not an authoritative exact-event outcome (HTTP ${response.status})`)
+  let parsed
+  try { parsed = JSON.parse(new TextDecoder().decode(bytes)) } catch { fail('Buzz success response is not JSON') }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
+      Object.keys(parsed).some(key => !['event_id', 'accepted', 'message'].includes(key)) ||
+      parsed.event_id !== signedBuzzEvent.id || typeof parsed.accepted !== 'boolean' || typeof parsed.message !== 'string') fail('Buzz success response has an invalid shape or event binding')
+  return Object.freeze({ result: parsed.accepted ? 'accepted' : 'rejected', reasonCode: parsed.accepted ? 'accepted' : 'relay_refused', responseDigest, status: response.status })
+}
+
 export async function buildSignedReceipt(fields, signer, policy, { now = Math.floor(Date.now() / 1000) } = {}) {
   artifactPolicy(policy)
   const required = ['version', 'policy_instance', 'operation', 'catalogue_version', 'request_digest', 'idempotency_key',
     'source_ids', 'buzz_channel', 'endpoint_authority', 'buzz_event_id', 'result', 'reason_code', 'response_digest', 'completed_at']
   if (!fields || Object.keys(fields).sort().join(',') !== [...required].sort().join(',')) fail('receipt has an invalid shape')
-  if (fields.version !== 1 || fields.operation !== 'quarantine_header' || fields.result !== 'accepted' || fields.reason_code !== 'accepted') fail('receipt outcome is invalid')
+  if (fields.version !== 1 || fields.operation !== 'quarantine_header' || !['accepted', 'rejected'].includes(fields.result) ||
+      !['accepted', 'relay_refused'].includes(fields.reason_code) ||
+      (fields.result === 'accepted') !== (fields.reason_code === 'accepted')) fail('receipt outcome is invalid')
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(String(fields.policy_instance || ''))) fail('policy_instance is invalid')
   for (const name of ['catalogue_version', 'request_digest', 'idempotency_key', 'buzz_event_id', 'response_digest']) hex(fields[name], name)
   if (!Array.isArray(fields.source_ids) || !fields.source_ids.length || !fields.source_ids.every(id => HEX64.test(String(id)))) fail('source_ids are invalid')
