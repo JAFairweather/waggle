@@ -3,13 +3,14 @@
 // The console must never read config.json. This drives the real bridge-derived payload through
 // the bridge-key signer, checks its wire signature, and proves the consent lifecycle is rendered
 // as owner-observable state without creating a free-form public publishing capability.
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, rmdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
 
 const tmp = mkdtempSync(join(tmpdir(), 'wb-control-state-'))
 const CFG = join(tmp, 'config.json')
+const SEND_JOURNAL = join(tmp, 'send-journal.log')
 const HIVE = 'a'.repeat(64)
 const CHANNEL = '77777777-7777-7777-7777-777777777777'
 const bridgeSk = generateSecretKey()
@@ -22,6 +23,7 @@ process.env.SEEN_PATH = join(tmp, 'seen.log')
 process.env.PUB_WATERMARK_PATH = join(tmp, 'watermark')
 process.env.POSTED_MAP_PATH = join(tmp, 'posted.log')
 process.env.MIRRORASKED_PATH = join(tmp, 'asked.log')
+process.env.SEND_JOURNAL_PATH = SEND_JOURNAL
 writeFileSync(CFG, JSON.stringify({
   relays: [], recipients: [],
   public: {
@@ -32,7 +34,7 @@ writeFileSync(CFG, JSON.stringify({
   },
 }))
 
-const { buildControlState, processConsentEvent, mirrorAsked, mirrorRevoked, PUB, handleControlStateCommand, handleWatchlistControlCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D } = await import('../src/bridge.mjs')
+const { buildControlState, publishControlState, processConsentEvent, mirrorAsked, mirrorRevoked, PUB, handleControlStateCommand, handleWatchlistControlCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D } = await import('../src/bridge.mjs')
 const { signControlState, CONTROL_STATE_KIND } = await import('../src/nostr_egress.mjs')
 const { scopeHash } = await import('../src/consent.mjs')
 
@@ -69,6 +71,36 @@ t('state contains only the declared owner-visible fields',
   Object.keys(body.follows[0]).sort().join(',') === 'consent,pubkey' &&
   Object.keys(body.operations).sort().join(',') === 'drops,gates,lanes,trust' &&
   Object.keys(body.operations.drops).sort().join(',') === 'relay_not_relay,relay_preauth')
+
+let publishedControlId = ''
+const acceptedControl = await publishControlState(async (event) => { publishedControlId = event.id; return 1 }, true)
+const controlJournal = readFileSync(SEND_JOURNAL, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+t('an accepted control-state publication is recorded for the out-of-process tripwire',
+  acceptedControl === 1 && controlJournal.some(row => row.id === publishedControlId && row.kind === CONTROL_STATE_KIND && row.operation === 'control_state'))
+
+let unacknowledgedControlId = ''
+const unacknowledged = await publishControlState(async (event) => { unacknowledgedControlId = event.id; return 0 }, true)
+const afterUnacknowledged = readFileSync(SEND_JOURNAL, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+t('an attempted control-state publication is journaled even when every relay acknowledgement is lost',
+  unacknowledged === 0 && afterUnacknowledged.some(row => row.id === unacknowledgedControlId && row.operation === 'control_state'))
+
+const beforeSignFailure = afterUnacknowledged.length
+let publishAfterSignFailure = 0
+const refusedControl = await publishControlState(async () => { publishAfterSignFailure++; return 1 }, true,
+  async () => { throw new Error('fixture signing refusal') })
+const afterSignFailure = readFileSync(SEND_JOURNAL, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+t('a signing refusal creates no journal row and performs no network write',
+  refusedControl === 0 && publishAfterSignFailure === 0 && afterSignFailure.length === beforeSignFailure)
+
+// Replace the expected journal file with a directory: open-for-append must fail on every platform.
+// The publication boundary must fail closed rather than create an on-relay event with no durable row.
+unlinkSync(SEND_JOURNAL)
+mkdirSync(SEND_JOURNAL)
+let publishAfterJournalFailure = 0
+const unjournaled = await publishControlState(async () => { publishAfterJournalFailure++; return 1 }, true)
+t('a journal open/write/fsync failure suppresses the network write', unjournaled === 0 && publishAfterJournalFailure === 0)
+rmdirSync(SEND_JOURNAL)
+writeFileSync(SEND_JOURNAL, afterSignFailure.map(row => JSON.stringify(row)).join('\n') + '\n')
 
 const currentState = buildControlState()
 const { v: legacyV, observed_at: legacyObservedAt, hive: legacyHive, bridge: legacyBridge, publishing: legacyPublishing, follows: legacyFollows } = currentState

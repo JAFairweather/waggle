@@ -210,10 +210,40 @@ const UNDELIVERED_PATH = process.env.UNDELIVERED_PATH || resolve(ROOT, 'data', '
 // the key signed something we did not (theft / a second signer). Process rate-limits cannot
 // catch that; this can. (Q1, waggle's finding, 2026-07-30.)
 const SEND_JOURNAL_PATH = process.env.SEND_JOURNAL_PATH || resolve(ROOT, 'data', 'send-journal.log')
-function journalSend(id, meta) {
-  if (!id) return
-  try { mkdirSync(dirname(SEND_JOURNAL_PATH), { recursive: true }); appendFileSync(SEND_JOURNAL_PATH, JSON.stringify({ id, ...meta, ts: Math.floor(Date.now() / 1000) }) + '\n') }
-  catch (e) { err(`tripwire: journal append failed for ${String(id).slice(0, 12)}…: ${e.message}`) }
+function journalSend(id, meta, durable = false) {
+  if (!id) return false
+  const row = JSON.stringify({ id, ...meta, ts: Math.floor(Date.now() / 1000) }) + '\n'
+  // Existing data-plane senders retain the append-only boundary they already use. The periodic
+  // control snapshot opts into the stronger crash-consistent pre-send commit below; forcing two
+  // fsyncs onto every public/relay/return message would turn the tripwire fix into lane latency.
+  if (!durable) {
+    try { mkdirSync(dirname(SEND_JOURNAL_PATH), { recursive: true }); appendFileSync(SEND_JOURNAL_PATH, row); return true }
+    catch (e) { err(`tripwire: journal append failed for ${String(id).slice(0, 12)}…: ${e.message}`); return false }
+  }
+  let fileFd = null
+  let dirFd = null
+  try {
+    const directory = dirname(SEND_JOURNAL_PATH)
+    mkdirSync(directory, { recursive: true })
+    fileFd = openSync(SEND_JOURNAL_PATH, 'a', 0o600)
+    writeFileSync(fileFd, row)
+    fsyncSync(fileFd)
+    closeSync(fileFd)
+    fileFd = null
+    // Syncing the parent unconditionally also closes the first-create crash window; doing it for
+    // an existing journal is cheap and avoids a pre-check race around file creation/replacement.
+    dirFd = openSync(directory, 'r')
+    fsyncSync(dirFd)
+    closeSync(dirFd)
+    dirFd = null
+    return true
+  } catch (e) {
+    err(`tripwire: journal append failed for ${String(id).slice(0, 12)}…: ${e.message}`)
+    return false
+  } finally {
+    if (fileFd !== null) { try { closeSync(fileFd) } catch { /* failure already means false */ } }
+    if (dirFd !== null) { try { closeSync(dirFd) } catch { /* failure already means false */ } }
+  }
 }
 // The bridge's own identity, used to SEAL outbound return-lane mail. A NIP-17 seal names its
 // real sender, so this has to be the bridge's key — the wrap around it is signed by a throwaway,
@@ -1611,14 +1641,21 @@ function publishControlStateToRelays(event, relays = PUB?.relays || [], mkSocket
   })
 }
 
-async function publishControlState(publish = publishControlStateToRelays, force = false) {
+async function publishControlState(publish = publishControlStateToRelays, force = false, sign = signControlState) {
   const state = buildControlState()
   if ((!PUB?.controlStatePublish && !force) || !state || !hasBridgeKey()) return 0
   let event
-  try { event = await signControlState(state) }
+  try { event = await sign(state) }
   catch (e) { err(`control state: refused to sign: ${e?.message || '?'}`); return 0 }
+  // Journal the exact immutable event before the first network write. A relay may persist EVENT
+  // and lose its positive OK frame; waiting for that acknowledgement would make this legitimate
+  // process-authored event indistinguishable from key theft. If durable intent cannot be recorded,
+  // fail closed and do not create an event the tripwire can later observe without its journal row.
+  if (!journalSend(event.id, { kind: event.kind, operation: 'control_state' }, true)) return 0
   const accepted = await publish(event).catch(() => 0)
-  if (accepted >= 1) log(`control state -> ${accepted}/${PUB.relays.length} relay(s): ${state.follows.length} followed author(s) (${event.id.slice(0, 12)}…)`)
+  if (accepted >= 1) {
+    log(`control state -> ${accepted}/${PUB.relays.length} relay(s): ${state.follows.length} followed author(s) (${event.id.slice(0, 12)}…)`)
+  }
   else err('control state: reached no relay — console will correctly show state unavailable')
   return accepted
 }
