@@ -21,14 +21,23 @@ rejects('a duplicate process cannot complete the first process claim', () => sec
 rejects('the same key cannot be reused for different request bytes', () => second.claim(key, 'e'.repeat(64)), /another request digest/)
 rejects('an unclaimed key cannot be committed', () => first.commit('f'.repeat(64), request, { receipt, result: 'refused' }), /unclaimed/)
 
-const done = first.commit(key, request, { receipt, buzzEventId: event, result: 'accepted', completedAt: 110 })
-t('completion atomically replaces the in-flight claim', done.status === 'terminal' && done.buzz_event_id === event)
+const preparedBytes = '{"content":"fixed signed event","id":"dddd"}'
+const prepared = first.prepare(key, request, { buzzEvent: preparedBytes, buzzEventId: event, preparedAt: 105 })
+t('the exact signed event is durable before submission', prepared.status === 'prepared' && prepared.buzz_event === preparedBytes)
+const recovering = new PolicyJournal(dir).claim(key, request, 106)
+t('a restarted process recovers the same prepared event without re-signing', !recovering.claimed && recovering.record.buzz_event === preparedBytes)
+rejects('a prepared event cannot commit a substituted Buzz id', () => second.commit(key, request, { receipt, buzzEventId: '9'.repeat(64), result: 'accepted' }), /does not match/)
+const done = second.commit(key, request, { receipt, buzzEventId: event, result: 'accepted', completedAt: 110 })
+t('completion atomically publishes first-winner terminal state', done.status === 'terminal' && done.buzz_event_id === event)
 const afterRestart = new PolicyJournal(dir).claim(key, request, 120)
 t('a restarted process receives the terminal result and never reclaims', !afterRestart.claimed && afterRestart.record.status === 'terminal')
-t('a duplicate commit returns the exact prior receipt bytes', second.commit(key, request, { receipt: '{"different":true}', result: 'refused' }).receipt === receipt)
+t('a competing terminal commit returns the exact first-winner receipt', first.commit(key, request, { receipt: '{"different":true}', result: 'refused' }).receipt === receipt)
 rejects('an accepted result requires the policy-derived Buzz id', () => {
   const k = '1'.repeat(64); first.claim(k, '2'.repeat(64)); first.commit(k, '2'.repeat(64), { receipt, result: 'accepted' })
 }, /requires buzz_event_id/)
+rejects('even a named Buzz id cannot be accepted before durable preparation', () => {
+  const k = '3'.repeat(64); first.claim(k, '2'.repeat(64)); first.commit(k, '2'.repeat(64), { receipt, buzzEventId: event, result: 'accepted' })
+}, /durably prepared/)
 rejects('an empty receipt cannot become terminal state', () => {
   const k = '6'.repeat(64); first.claim(k, '7'.repeat(64)); first.commit(k, '7'.repeat(64), { receipt: '', result: 'refused' })
 }, /receipt must/)
@@ -40,7 +49,7 @@ const linkKey = '5'.repeat(64)
 symlinkSync(resolve(dir, `${key}.json`), resolve(dir, `${linkKey}.json`))
 rejects('a symlinked record is refused', () => first.get(linkKey), /private regular file/)
 const hugeKey = '8'.repeat(64)
-writeFileSync(resolve(dir, `${hugeKey}.json`), 'x'.repeat(96 * 1024 + 1), { mode: 0o600 })
+writeFileSync(resolve(dir, `${hugeKey}.json`), 'x'.repeat(160 * 1024 + 1), { mode: 0o600 })
 rejects('an oversized record is refused before parsing', () => first.get(hugeKey), /record size/)
 
 console.log(fails ? `\npolicy_journal: ${fails} FAILED` : '\npolicy_journal: all checks passed')
