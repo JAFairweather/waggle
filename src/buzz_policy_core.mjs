@@ -2,16 +2,16 @@
 // Buzz writer (#54).  The bridge supplies evidence; this module independently decides
 // whether the evidence can name one closed catalogue operation.  It never signs, submits,
 // accepts rendered prose, or accepts a caller-selected destination.
+import { createHash } from 'node:crypto'
 import { verifyEvent } from 'nostr-tools/pure'
 import { npubEncode } from 'nostr-tools/nip19'
-import { PROTOCOL_VERSION, canonicalJson, deriveIdempotencyKey, parseCanonicalPacket } from './policy_protocol.mjs'
 
-export { canonicalJson }
-export const BUZZ_POLICY_VERSION = PROTOCOL_VERSION
+export const BUZZ_POLICY_VERSION = 1
 export const BUZZ_POLICY_OPERATIONS = Object.freeze(['quarantine_header'])
 const HEX64 = /^[0-9a-f]{64}$/
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const EVENT_KEYS = new Set(['id', 'pubkey', 'created_at', 'kind', 'tags', 'content', 'sig'])
+const REQUEST_KEYS = new Set(['version', 'policy_instance', 'operation', 'catalogue_version', 'observed_at', 'evidence'])
 const EVIDENCE_KEYS = Object.freeze({ quarantine_header: new Set(['source_event']) })
 
 const fail = message => { throw new Error(`buzz-policy: ${message}`) }
@@ -21,6 +21,24 @@ const exactKeys = (value, allowed, label) => {
   if (unknown.length) fail(`${label} contains unknown field ${JSON.stringify(unknown[0])}`)
   const missing = [...allowed].filter(key => !(key in value))
   if (missing.length) fail(`${label} is missing ${JSON.stringify(missing[0])}`)
+}
+
+// Canonical bytes are the request and idempotency boundary. Re-encoding also rejects duplicate
+// JSON keys: JSON.parse keeps one duplicate, so the source bytes cannot match this representation.
+export function canonicalJson(value, seen = new Set()) {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value)
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) fail('canonical JSON requires safe integers')
+    return String(value)
+  }
+  if (!value || typeof value !== 'object') fail('canonical JSON refuses non-JSON value')
+  if (seen.has(value)) fail('canonical JSON refuses cycles')
+  seen.add(value)
+  const result = Array.isArray(value)
+    ? `[${value.map(item => canonicalJson(item, seen)).join(',')}]`
+    : `{${Object.keys(value).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))).map(key => `${JSON.stringify(key)}:${canonicalJson(value[key], seen)}`).join(',')}}`
+  seen.delete(value)
+  return result
 }
 
 function verifyWireEvent(event) {
@@ -40,11 +58,17 @@ export function decodePolicyRequest(raw, {
   policyInstance, catalogueVersion, maxBytes = 128 * 1024,
   now = Math.floor(Date.now() / 1000), maxObservationAge = 300, maxFutureSkew = 30,
 } = {}) {
-  let request
   if (!ID.test(String(policyInstance || ''))) fail('policy_instance is invalid')
   if (!HEX64.test(String(catalogueVersion || ''))) fail('catalogue_version is invalid')
-  try { request = parseCanonicalPacket(raw, { policyInstance, catalogueVersion }, maxBytes) }
-  catch (e) { fail(e.message) }
+  if (typeof raw !== 'string') fail('request must be canonical JSON text')
+  if (!raw || Buffer.byteLength(raw) > maxBytes) fail(`request exceeds ${maxBytes} bytes`)
+  let request
+  try { request = JSON.parse(raw) } catch { fail('request is not JSON') }
+  if (canonicalJson(request) !== raw) fail('request is not canonical JSON')
+  exactKeys(request, REQUEST_KEYS, 'request')
+  if (request.version !== BUZZ_POLICY_VERSION) fail('unsupported protocol version')
+  if (request.policy_instance !== policyInstance) fail('policy_instance does not match this service')
+  if (request.catalogue_version !== catalogueVersion) fail('catalogue_version does not match this service')
   if (!BUZZ_POLICY_OPERATIONS.includes(request.operation)) fail('unsupported operation')
   if (!Number.isSafeInteger(request.observed_at) || request.observed_at < now - maxObservationAge || request.observed_at > now + maxFutureSkew) fail('observed_at is outside the freshness window')
   exactKeys(request.evidence, EVIDENCE_KEYS[request.operation], 'evidence')
@@ -86,5 +110,8 @@ export function decideQuarantineHeader(request, { stagingChannel, watchedEventId
 export function policyIdempotencyKey(request, decision) {
   if (!request || !decision) fail('request and decision are required')
   const sourceIds = [request.evidence.source_event.id]
-  return deriveIdempotencyKey({ packet: request, sourceIds, destination: decision.dest })
+  return createHash('sha256').update(canonicalJson([
+    request.version, request.policy_instance, request.catalogue_version,
+    request.operation, sourceIds, decision.dest,
+  ])).digest('hex')
 }
