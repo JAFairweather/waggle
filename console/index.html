@@ -240,11 +240,13 @@
     in. <b>Hidden is the privacy working, not something failing to load.</b>
   </div>
   <div class="note">
-    <b>Read-only, and deliberately.</b> Issuing or revoking is a signing act and belongs where the
-    key lives — <code>tools/grant.mjs</code> and <code>tools/grant-setup.sh</code>. A console that
-    could revoke would need a key in the browser, which is a larger surface than the convenience is
-    worth. What is missing is never invented: if a relay refuses or fails, this says so rather than
-    quietly showing you a shorter list and letting you read it as “nobody is admitted.”
+    <b>No host access, ever.</b> Reading needs no key and no connection to your bridge: an approval
+    is a public, signed record. Acting needs your signer and nothing more — the page hands it an
+    unsigned event and receives a signature, so <b>your key never enters this page</b> and this
+    console is never a remote shell into the bridge. Authority moves as signed events, which is why
+    the same act works from here, from <code>tools/grant.mjs</code>, or from anywhere else holding
+    your key. What is missing is never invented: if a relay refuses or fails, this says so rather
+    than quietly showing you a shorter list and letting you read it as “nobody is admitted.”
   </div>
 </main>
 
