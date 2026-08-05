@@ -193,8 +193,20 @@ let undefinedSealRefused = false
 try {
   await sealedTaskRouteCommand({ ...ownerSigner, signEvent: async () => undefined },
     getPublicKey(bridgeSk), taskBody('upsert'), routeAt)
-} catch (error) { undefinedSealRefused = /invalid or altered route seal/.test(error.message) }
+} catch (error) { undefinedSealRefused = /did not return a Nostr event/.test(error.message) }
 t('an injected signer that returns no event fails with a bounded route error', undefinedSealRefused)
+let switchedIdentityRefused = false
+try {
+  await sealedTaskRouteCommand({ ...ownerSigner, signEvent: async event => wire(finalizeEvent(event, bridgeSk)) },
+    getPublicKey(bridgeSk), taskBody('upsert'), routeAt)
+} catch (error) { switchedIdentityRefused = /switched identities/.test(error.message) }
+t('the Console names a signer identity switch instead of publishing it', switchedIdentityRefused)
+let widenedSealRefused = false
+try {
+  await sealedTaskRouteCommand({ ...ownerSigner, signEvent: async event => ({ ...wire(finalizeEvent(event, watchedSk)), client: 'injected' }) },
+    getPublicKey(bridgeSk), taskBody('upsert'), routeAt)
+} catch (error) { widenedSealRefused = /unsupported fields/.test(error.message) }
+t('the Console refuses signer-added fields outside the closed seal schema', widenedSealRefused)
 let alteredSealRefused = false
 try {
   await sealedTaskRouteCommand({ ...ownerSigner, signEvent: async event => wire(finalizeEvent({ ...event, content: 'substituted' }, watchedSk)) },
