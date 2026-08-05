@@ -3,7 +3,7 @@
 // The console must never read config.json. This drives the real bridge-derived payload through
 // the bridge-key signer, checks its wire signature, and proves the consent lifecycle is rendered
 // as owner-observable state without creating a free-form public publishing capability.
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, rmdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
@@ -91,6 +91,16 @@ const refusedControl = await publishControlState(async () => { publishAfterSignF
 const afterSignFailure = readFileSync(SEND_JOURNAL, 'utf8').trim().split('\n').map(line => JSON.parse(line))
 t('a signing refusal creates no journal row and performs no network write',
   refusedControl === 0 && publishAfterSignFailure === 0 && afterSignFailure.length === beforeSignFailure)
+
+// Replace the expected journal file with a directory: open-for-append must fail on every platform.
+// The publication boundary must fail closed rather than create an on-relay event with no durable row.
+unlinkSync(SEND_JOURNAL)
+mkdirSync(SEND_JOURNAL)
+let publishAfterJournalFailure = 0
+const unjournaled = await publishControlState(async () => { publishAfterJournalFailure++; return 1 }, true)
+t('a journal open/write/fsync failure suppresses the network write', unjournaled === 0 && publishAfterJournalFailure === 0)
+rmdirSync(SEND_JOURNAL)
+writeFileSync(SEND_JOURNAL, afterSignFailure.map(row => JSON.stringify(row)).join('\n') + '\n')
 
 const currentState = buildControlState()
 const { v: legacyV, observed_at: legacyObservedAt, hive: legacyHive, bridge: legacyBridge, publishing: legacyPublishing, follows: legacyFollows } = currentState

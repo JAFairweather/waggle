@@ -212,13 +212,29 @@ const UNDELIVERED_PATH = process.env.UNDELIVERED_PATH || resolve(ROOT, 'data', '
 const SEND_JOURNAL_PATH = process.env.SEND_JOURNAL_PATH || resolve(ROOT, 'data', 'send-journal.log')
 function journalSend(id, meta) {
   if (!id) return false
+  let fileFd = null
+  let dirFd = null
   try {
-    mkdirSync(dirname(SEND_JOURNAL_PATH), { recursive: true })
-    appendFileSync(SEND_JOURNAL_PATH, JSON.stringify({ id, ...meta, ts: Math.floor(Date.now() / 1000) }) + '\n')
+    const directory = dirname(SEND_JOURNAL_PATH)
+    mkdirSync(directory, { recursive: true })
+    fileFd = openSync(SEND_JOURNAL_PATH, 'a', 0o600)
+    writeFileSync(fileFd, JSON.stringify({ id, ...meta, ts: Math.floor(Date.now() / 1000) }) + '\n')
+    fsyncSync(fileFd)
+    closeSync(fileFd)
+    fileFd = null
+    // Syncing the parent unconditionally also closes the first-create crash window; doing it for
+    // an existing journal is cheap and avoids a pre-check race around file creation/replacement.
+    dirFd = openSync(directory, 'r')
+    fsyncSync(dirFd)
+    closeSync(dirFd)
+    dirFd = null
     return true
   } catch (e) {
     err(`tripwire: journal append failed for ${String(id).slice(0, 12)}…: ${e.message}`)
     return false
+  } finally {
+    if (fileFd !== null) { try { closeSync(fileFd) } catch { /* failure already means false */ } }
+    if (dirFd !== null) { try { closeSync(dirFd) } catch { /* failure already means false */ } }
   }
 }
 // The bridge's own identity, used to SEAL outbound return-lane mail. A NIP-17 seal names its
