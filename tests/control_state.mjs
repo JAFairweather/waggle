@@ -193,14 +193,20 @@ let undefinedSealRefused = false
 try {
   await sealedTaskRouteCommand({ ...ownerSigner, signEvent: async () => undefined },
     getPublicKey(bridgeSk), taskBody('upsert'), routeAt)
-} catch (error) { undefinedSealRefused = /invalid or altered route seal/.test(error.message) }
-t('an injected signer that returns no event fails with a bounded route error', undefinedSealRefused)
+} catch (error) { undefinedSealRefused = /no signed route event/.test(error.message) }
+t('an injected signer that returns no event fails with a bounded specific route error', undefinedSealRefused)
 let alteredSealRefused = false
 try {
   await sealedTaskRouteCommand({ ...ownerSigner, signEvent: async event => wire(finalizeEvent({ ...event, content: 'substituted' }, watchedSk)) },
     getPublicKey(bridgeSk), taskBody('upsert'), routeAt)
 } catch { alteredSealRefused = true }
 t('the Console refuses a signer that alters the encrypted route seal', alteredSealRefused)
+let widenedSealRefused = false
+try {
+  await sealedTaskRouteCommand({ ...ownerSigner, signEvent: async event => ({ ...wire(finalizeEvent(event, watchedSk)), injected: 'accepted' }) },
+    getPublicKey(bridgeSk), taskBody('upsert'), routeAt)
+} catch (error) { widenedSealRefused = /changed the route seal schema/.test(error.message) }
+t('the Console refuses a signer that widens the signed route-seal schema', widenedSealRefused)
 const realWrap = await sealedTaskRouteCommand(ownerSigner, getPublicKey(bridgeSk), taskBody('upsert'), routeAt)
 const extraOuterField = await handleSealedTaskRouteControl({ ...realWrap, extra: 'not part of NIP-59' })
 t('the bridge refuses an extensible outer envelope even when its Nostr signature still verifies', !extraOuterField.ok && /invalid wrap/.test(extraOuterField.reason))
