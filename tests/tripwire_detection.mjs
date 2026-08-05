@@ -13,13 +13,14 @@
 // the alarm log and the exit codes are the same code a live run executes. A drill that exercised
 // a parallel path would prove nothing about the path that matters.
 
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, lstatSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { getPublicKey } from 'nostr-tools/pure'
+import { getPublicKey, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
+import { WebSocketServer } from 'ws'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '..')
@@ -43,6 +44,16 @@ function run(journal, eventsFile) {
   const r = spawnSync('node', [TOOL, '--since-min', '60', '--journal', journal, '--events-from', eventsFile],
     { env: { ...process.env, POSTER, ALARM_NSEC: '', ALARM_TO: '', ALARM_LOG_PATH: ALARMS }, encoding: 'utf8' })
   return { code: r.status, out: (r.stdout || '') + (r.stderr || '') }
+}
+
+function runAsync(args, env) {
+  return new Promise(resolve => {
+    const child = spawn('node', args, { env, stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = '', stderr = ''
+    child.stdout.on('data', chunk => { stdout += chunk })
+    child.stderr.on('data', chunk => { stderr += chunk })
+    child.on('exit', code => resolve({ code, out: stdout + stderr }))
+  })
 }
 
 const dir = mkdtempSync(resolve(tmpdir(), 'waggle-drill-'))
@@ -175,6 +186,58 @@ try {
   const publicHex = nip19.decode(POSTER).data
   const hexInit = spawnSync('node', [INIT, '--directory', resolve(dir, 'hex-recipient'), '--recipient', publicHex], { encoding: 'utf8' })
   check('a public 64-hex recipient is not mistaken for an nsec', hexInit.status === 0, hexInit.stderr)
+
+  let relayAccept = true, receivedWrap = null
+  const relay = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+  await new Promise((resolve, reject) => { relay.once('listening', resolve); relay.once('error', reject) })
+  relay.on('connection', socket => socket.on('message', bytes => {
+    let frame
+    try { frame = JSON.parse(bytes.toString()) } catch { return }
+    if (frame[0] !== 'EVENT') return
+    receivedWrap = frame[1]
+    socket.send(JSON.stringify(['OK', frame[1].id, relayAccept, relayAccept ? '' : 'drill refusal']))
+  }))
+  const relayUrl = `ws://127.0.0.1:${relay.address().port}`
+  const drillEnv = { ...process.env, POSTER, ALARM_NSEC: '', ALARM_TO: '', ALARM_NSEC_FILE: alarmNsecPath,
+    ALARM_TO_FILE: alarmToPath, BUZZ_RELAY_URL: relayUrl, ALARM_LOG_PATH: ALARMS }
+  const drill = await runAsync([TOOL, '--poster', POSTER, '--drill-alarm'], drillEnv)
+  check('live drill exits 0 only after relay acceptance', drill.code === 0 && /DRILL OK/.test(drill.out), `exit ${drill.code}`)
+  check('live drill sends one valid sealed kind:1059 to the configured recipient',
+    receivedWrap?.kind === 1059 && verifyEvent(receivedWrap) && receivedWrap.tags.length === 1 &&
+    receivedWrap.tags[0][0] === 'p' && receivedWrap.tags[0][1] === nip19.decode(POSTER).data)
+  check('live drill output never exposes its signing secret', !/nsec1/i.test(drill.out))
+  relayAccept = false; receivedWrap = null
+  const refusedDrill = await runAsync([TOOL, '--poster', POSTER, '--drill-alarm'], drillEnv)
+  check('live drill exits 4 when no relay accepts the alert', refusedDrill.code === 4 && /ALARM NOT DELIVERED/.test(refusedDrill.out), `exit ${refusedDrill.code}`)
+  receivedWrap = null
+  const noExplicitRelay = await runAsync([TOOL, '--poster', POSTER, '--drill-alarm'], {
+    ...drillEnv, BUZZ_RELAY_URL: '',
+  })
+  check('live drill refuses a missing explicit relay before any publication',
+    noExplicitRelay.code === 1 && /requires exactly one explicit BUZZ_RELAY_URL/.test(noExplicitRelay.out) && receivedWrap === null,
+    `exit ${noExplicitRelay.code}`)
+  const queryCredentialRelay = await runAsync([TOOL, '--poster', POSTER, '--drill-alarm'], {
+    ...drillEnv, BUZZ_RELAY_URL: `${relayUrl}/?token=secret`,
+  })
+  check('live drill refuses relay query credentials before any publication',
+    queryCredentialRelay.code === 1 && /credential-free/.test(queryCredentialRelay.out) && receivedWrap === null,
+    `exit ${queryCredentialRelay.code}`)
+  const fragmentCredentialRelay = await runAsync([TOOL, '--poster', POSTER, '--drill-alarm'], {
+    ...drillEnv, BUZZ_RELAY_URL: `${relayUrl}/#credential`,
+  })
+  check('live drill refuses relay fragment credentials before any publication',
+    fragmentCredentialRelay.code === 1 && /credential-free/.test(fragmentCredentialRelay.out) && receivedWrap === null,
+    `exit ${fragmentCredentialRelay.code}`)
+  const badRelayBeforeSecret = await runAsync([TOOL, '--poster', POSTER, '--drill-alarm'], {
+    ...drillEnv,
+    BUZZ_RELAY_URL: `${relayUrl}/?token=secret`,
+    ALARM_NSEC_FILE: resolve(dir, 'must-not-be-read.nsec'),
+  })
+  check('invalid drill relay is refused before any alarm credential is read',
+    badRelayBeforeSecret.code === 1 && /credential-free/.test(badRelayBeforeSecret.out) &&
+      !/ALARM_NSEC_FILE cannot be read/.test(badRelayBeforeSecret.out) && receivedWrap === null,
+    `exit ${badRelayBeforeSecret.code}`)
+  await new Promise(resolve => relay.close(resolve))
 
   const dropIn = readFileSync(DROP_IN, 'utf8')
   check('the live-safe drop-in loads both systemd credentials',
