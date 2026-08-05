@@ -19,6 +19,8 @@
 //    Where membership is unpublished, the lane says so instead of showing an empty list.
 
 import { verifyEvent, nip19 } from 'nostr-tools'
+import { consoleSigner } from './signer-session.mjs'
+import { newestFreshControlState, requireFreshControlState } from './control-state-freshness.mjs'
 
 const RELAYS = ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub', 'wss://jskitty.com/nostr']
 const $ = id => document.getElementById(id)
@@ -30,6 +32,17 @@ const hex = v => {
   if (/^[0-9a-f]{64}$/i.test(s)) return s.toLowerCase()
   throw Error('Enter one npub or a 64-character hex bridge key.')
 }
+const eventId = v => {
+  const s = String(v || '').trim()
+  if (/^note1/i.test(s)) {
+    const decoded = nip19.decode(s)
+    if (decoded.type === 'note' && /^[0-9a-f]{64}$/.test(decoded.data)) return decoded.data
+  }
+  if (/^[0-9a-f]{64}$/i.test(s)) return s.toLowerCase()
+  throw Error('Enter one note1… or 64-character Nostr event ID.')
+}
+let activeBridge = null, activeState = null
+const setModeration = enabled => { for (const button of document.querySelectorAll('.moderation')) button.disabled = !enabled }
 
 import { LANE_VIEW, DROP_VIEW, laneModel } from './routing-model.mjs'
 
@@ -142,12 +155,13 @@ function draw(state) {
   if (consentOn === null) limits.push('<b>The consent gate</b> state is not published by this bridge.')
   else if (!consentOn) limits.push('<b>The consent gate is off.</b> Mirrored feeds and stranger replies are not consent-checked. Turning it on changes which notes forward.')
   limits.push('<b>A silent drop leaves no record</b>, by design. The last lane can never carry a count — <code>—</code> there means unrecorded, not zero.')
-  limits.push('<b>Vouching is unsigned today.</b> Promoting someone to <i>standing follow</i> happens by an in-channel reply that publishes no signed event, so it cannot appear here or anywhere else verifiable (waggle#286).')
+  limits.push('<b>Individual moderation decisions are separate signed events.</b> This aggregate state publishes only their resulting counts, not a list of strangers or quarantined content.')
   $('limits').innerHTML = `<ul style="margin:0;padding-left:20px">${limits.map(l => `<li style="margin:0 0 6px">${l}</li>`).join('')}</ul>`
 }
 
 async function load() {
   const st = $('status'); st.className = 'status'
+  activeBridge = null; activeState = null; setModeration(false)
   try {
     const bridge = hex($('bridge').value)
     localStorage.setItem('waggle-following-bridge', bridge)   // shared with the other console pages
@@ -155,24 +169,66 @@ async function load() {
     const rs = await Promise.all(RELAYS.map(u => query(u, { kinds: [30078], authors: [bridge], '#d': ['waggle-control-state'], limit: 2 })))
     const answered = rs.filter(r => r.answered).length
     if (!answered) throw Error('No relay answered, so nothing could be verified. This is not the same as "nothing is routed."')
-    let winner = null
+    const states = []
     for (const r of rs) for (const e of r.out) {
       const s = validState(e, bridge)
-      if (s && (!winner || s.observed_at > winner.observed_at)) winner = s
+      if (s) states.push(s)
     }
-    if (!winner) throw Error('No valid signed state was found. The owner may have left control-state publishing off.')
-    const stale = Math.floor(Date.now() / 1000) - winner.observed_at > 900
+    const winner = newestFreshControlState(states)
+    if (!winner) throw Error('No fresh valid signed state was found. The owner may have left control-state publishing off.')
+    activeBridge = bridge; activeState = winner; setModeration(true)
     draw(winner)
-    st.className = 'status ' + (stale ? 'err' : 'ok')
-    st.textContent = stale
-      ? `State is stale (last bridge update ${new Date(winner.observed_at * 1000).toLocaleString()}). The bridge may be disconnected, so this may not reflect live routing.`
-      : `Verified signed state from ${new Date(winner.observed_at * 1000).toLocaleString()} · ${answered}/${RELAYS.length} relays answered.`
+    st.className = 'status ok'
+    st.textContent = `Verified signed state from ${new Date(winner.observed_at * 1000).toLocaleString()} · ${answered}/${RELAYS.length} relays answered.`
   } catch (e) {
     st.className = 'status err'; st.textContent = e.message
     $('lanes').innerHTML = '<div class="note">Disconnected — routing unavailable.</div>'
   }
 }
 
+function publish(event) {
+  return Promise.all(RELAYS.map(url => new Promise(resolve => {
+    let ws, done = false
+    const finish = accepted => { if (done) return; done = true; try { ws.close() } catch {}; resolve(accepted) }
+    try { ws = new WebSocket(url) } catch { return finish(false) }
+    const timer = setTimeout(() => finish(false), 10000)
+    ws.onopen = () => ws.send(JSON.stringify(['EVENT', event]))
+    ws.onmessage = message => { try {
+      const frame = JSON.parse(message.data)
+      if (frame[0] === 'OK' && frame[1] === event.id) { clearTimeout(timer); finish(!!frame[2]) }
+    } catch {} }
+    ws.onerror = () => { clearTimeout(timer); finish(false) }
+  }))).then(results => results.filter(Boolean).length)
+}
+
+async function moderate(action) {
+  const status = $('moderation-status')
+  try {
+    if (!activeBridge || !activeState) throw Error('Load fresh verified routing state first.')
+    try { requireFreshControlState(activeState) } catch (error) {
+      activeBridge = null; activeState = null; setModeration(false); throw error
+    }
+    const target = eventId($('moderation-target').value)
+    const signer = await consoleSigner()
+    const signerKey = await signer.getPublicKey()
+    status.className = 'status'
+    status.textContent = `Requesting ${action} signature from ${npub(signerKey)}…`
+    const signed = await signer.signEvent({
+      kind: 30078, created_at: Math.floor(Date.now() / 1000),
+      tags: [['d', 'waggle-moderation'], ['p', activeBridge]],
+      content: JSON.stringify({ v: 1, action, target }),
+    })
+    const accepted = await publish(signed)
+    if (!accepted) throw Error('No relay accepted the signed moderation command. Nothing changed.')
+    status.className = 'status ok'
+    status.textContent = `${accepted}/${RELAYS.length} relay(s) accepted the signed ${action} decision. Waiting for the bridge to refresh its state…`
+    setTimeout(load, 2500)
+  } catch (error) {
+    status.className = 'status err'; status.textContent = error.message
+  }
+}
+
 $('load').onclick = load
+for (const button of document.querySelectorAll('.moderation')) button.onclick = () => moderate(button.dataset.action)
 const saved = localStorage.getItem('waggle-following-bridge')
 if (saved) { $('bridge').value = saved; load() }

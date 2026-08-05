@@ -14,6 +14,7 @@
   label{display:block;font:11px var(--mono);color:var(--dim);letter-spacing:.09em;text-transform:uppercase;margin:0 0 6px}
   input{width:100%;background:transparent;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:10px 12px;font:13px var(--mono)}
   button{border:0;border-radius:6px;background:var(--accent);color:#160e03;padding:10px 15px;font-weight:700;cursor:pointer;margin-top:10px}
+  button:disabled{opacity:.45;cursor:not-allowed}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions button[data-action="mute"]{background:var(--critical);color:#fff}.actions button[data-action="approve"]{background:var(--good);color:#fff}
   .status{min-height:20px;margin-top:10px;color:var(--dim);font-size:13px}.status.err{color:var(--critical)}.status.ok{color:var(--good)}
   .note{font-size:13px;color:var(--dim)}
   .console-tabs{display:flex;gap:5px;border-bottom:1px solid var(--line);margin:0 0 22px}.console-tabs a{color:var(--dim);text-decoration:none;padding:9px 12px 10px;border-bottom:2px solid transparent;font-size:13px;font-weight:650}.console-tabs a:hover{color:var(--text)}.console-tabs a.active{color:var(--gold);border-bottom-color:var(--gold)}
@@ -72,10 +73,23 @@
     <h2>Moving someone up a lane</h2>
     <table class="moves"><tbody>
       <tr><td>quarantined → granted participant</td><td>Admit them on the <a href="/console/">Access</a> tab. You sign a 440.</td></tr>
-      <tr><td>quarantined → standing follow</td><td>Vouch for them. Today that is an in-channel <code>follow</code> reply, which leaves no signed record — see the note below.</td></tr>
+      <tr><td>quarantined → standing follow</td><td>Vouch for them below or with an in-channel <code>follow</code> reply. Both paths are signed and replay-bounded.</td></tr>
       <tr><td>stranger → mirrored feed</td><td>Add them on <a href="/console/following.html">Following</a>. You sign an owner command; consent is then invited.</td></tr>
       <tr><td>granted participant → quarantine</td><td>Revoke their admission on <a href="/console/">Access</a>. You sign a 441. A 441 does not remove a mirrored feed, vouch, or mute.</td></tr>
     </tbody></table>
+  </section>
+
+  <section class="panel">
+    <h2>Moderate a quarantined note</h2>
+    <p class="note">Paste the public Nostr event ID shown on the quarantined card. Your existing console signer records one narrow, bridge-addressed decision. <b>Approve</b> releases this note; <b>follow</b> releases it and vouches for future replies; <b>mute</b> blocks the author. A private rejection remains an in-channel action so no public denial names the stranger.</p>
+    <label for="moderation-target">Quarantined source event</label>
+    <input id="moderation-target" placeholder="note1… or 64-character event ID" spellcheck="false">
+    <div class="actions">
+      <button class="moderation" data-action="approve" disabled>Approve once</button>
+      <button class="moderation" data-action="follow" disabled>Follow author</button>
+      <button class="moderation" data-action="mute" disabled>Mute author</button>
+    </div>
+    <div class="status" id="moderation-status"></div>
   </section>
 
   <section class="panel">

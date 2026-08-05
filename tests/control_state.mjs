@@ -40,8 +40,9 @@ writeFileSync(CFG, JSON.stringify({
 
 const { buildControlState, publishControlState, processConsentEvent, mirrorAsked, mirrorRevoked, PUB,
   grantSet, activeReturnLane, handleControlStateCommand, handleWatchlistControlCommand,
+  handleModerationControlCommand, recordPosted,
   handleTaskRouteControlCommand, handleSealedTaskRouteControl, CONTROL_COMMAND_KIND,
-  CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TASK_ROUTE_PROTOCOL } = await import('../src/bridge.mjs')
+  CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_PROTOCOL } = await import('../src/bridge.mjs')
 const { signControlState, CONTROL_STATE_KIND } = await import('../src/nostr_egress.mjs')
 const { scopeHash } = await import('../src/consent.mjs')
 
@@ -158,6 +159,95 @@ const remove = watchCommand('unmirror', mirrorTarget, add.created_at + 1)
 const removed = handleWatchlistControlCommand(remove)
 t('a signed browser unmirror command persists and hot-removes a watched author', removed.ok && removed.removed && !PUB.authors.includes(mirrorTarget))
 
+const source = (sk, created_at = now) => wire(finalizeEvent({ kind: 1, created_at, content: 'quarantined source', tags: [] }, sk))
+const moderation = (action, target, created_at, sk = watchedSk,
+  tags = [['d', MODERATION_COMMAND_D], ['p', getPublicKey(bridgeSk)]], body = { v: 1, action, target }) => wire(finalizeEvent({
+  kind: CONTROL_COMMAND_KIND, created_at, content: JSON.stringify(body), tags,
+}, sk))
+const stage = (event, buzz = event.id.split('').reverse().join('')) => recordPosted({
+  id: event.id, author: event.pubkey, buzz, dest: CHANNEL, q: true, ts: now,
+})
+
+const followSource = source(generateSecretKey())
+stage(followSource)
+const followAt = now + 4
+let moderationPublished = 0, moderationScheduled = 0
+const followResult = await handleModerationControlCommand(moderation('follow', followSource.id, followAt), {
+  fetchOriginal: async id => id === followSource.id ? followSource : null,
+  publishRelease: async event => { if (event.id === followSource.id) moderationPublished++ },
+  schedule: () => { moderationScheduled++ }, rate: () => true,
+})
+t('a signed owner moderation command releases and vouches for one quarantined source',
+  followResult.ok && followResult.action === 'follow' && PUB.trustedRepliers.includes(followSource.pubkey) && moderationPublished === 1)
+t('the trust mutation and moderation replay watermark commit in the same config write', (() => {
+  const p = JSON.parse(readFileSync(CFG, 'utf8')).public
+  return p.trusted_repliers.includes(followSource.pubkey) && p.moderation_command_at === followAt
+})())
+t('follow refreshes the signed aggregate state immediately', moderationScheduled === 1)
+t('the same signed moderation command cannot replay',
+  !(await handleModerationControlCommand(moderation('follow', followSource.id, followAt), {
+    fetchOriginal: async () => followSource, publishRelease: async () => { moderationPublished++ },
+    schedule: () => { moderationScheduled++ }, rate: () => true,
+  })).ok && moderationPublished === 1 && moderationScheduled === 1)
+
+const invalidSource = source(generateSecretKey())
+stage(invalidSource)
+const tampered = { ...invalidSource, content: 'changed after signing' }
+const beforeInvalidAt = PUB.moderationCommandAt
+const invalidResult = await handleModerationControlCommand(moderation('approve', invalidSource.id, followAt + 1), {
+  fetchOriginal: async () => tampered, publishRelease: async () => { moderationPublished++ }, rate: () => true,
+})
+t('a forged or mismatched original cannot advance the moderation watermark or release',
+  !invalidResult.ok && PUB.moderationCommandAt === beforeInvalidAt && moderationPublished === 1)
+
+const cappedSource = source(generateSecretKey())
+stage(cappedSource)
+const beforeCapAt = PUB.moderationCommandAt
+const cappedResult = await handleModerationControlCommand(moderation('approve', cappedSource.id, followAt + 1), {
+  fetchOriginal: async () => cappedSource, publishRelease: async () => { moderationPublished++ }, rate: () => false,
+})
+t('a rate-capped release cannot advance policy or publish',
+  !cappedResult.ok && PUB.moderationCommandAt === beforeCapAt && moderationPublished === 1)
+
+const approvedSource = source(generateSecretKey())
+stage(approvedSource)
+let approveScheduled = 0
+const approveResult = await handleModerationControlCommand(moderation('approve', approvedSource.id, followAt + 1), {
+  fetchOriginal: async () => approvedSource,
+  publishRelease: async event => { if (event.id === approvedSource.id) moderationPublished++ },
+  schedule: () => { approveScheduled++ }, rate: () => true,
+})
+t('approve releases one source without creating standing trust', approveResult.ok &&
+  !PUB.trustedRepliers.includes(approvedSource.pubkey) && moderationPublished === 2 && approveScheduled === 0)
+
+const mutedSource = source(generateSecretKey())
+stage(mutedSource)
+let muteFetched = 0, muteScheduled = 0
+const muteResult = await handleModerationControlCommand(moderation('mute', mutedSource.id, followAt + 2), {
+  fetchOriginal: async () => { muteFetched++; return mutedSource },
+  publishRelease: async () => { moderationPublished++ }, schedule: () => { muteScheduled++ }, rate: () => true,
+})
+t('mute records standing policy without fetching or releasing the quarantined content',
+  muteResult.ok && PUB.muted.includes(mutedSource.pubkey) && muteFetched === 0 && moderationPublished === 2)
+t('mute refreshes the signed aggregate state immediately', muteScheduled === 1)
+
+const outsiderModeration = moderation('mute', mutedSource.id, followAt + 3, generateSecretKey())
+t('a non-approver cannot issue a moderation command', !(await handleModerationControlCommand(outsiderModeration)).ok)
+const widenedModeration = moderation('mute', mutedSource.id, followAt + 3, watchedSk,
+  [['d', MODERATION_COMMAND_D], ['p', getPublicKey(bridgeSk)], ['client', 'untrusted']])
+t('a moderation command cannot widen its exact address or schema', !(await handleModerationControlCommand(widenedModeration)).ok)
+const wrongBridgeModeration = moderation('mute', mutedSource.id, followAt + 3, watchedSk,
+  [['d', MODERATION_COMMAND_D], ['p', 'b'.repeat(64)]])
+t('a moderation command addressed to another bridge is inert', !(await handleModerationControlCommand(wrongBridgeModeration)).ok)
+const staleModeration = moderation('mute', mutedSource.id, now - 901)
+t('a stale moderation command is inert', !(await handleModerationControlCommand(staleModeration)).ok)
+const inventedModeration = moderation('ban', mutedSource.id, followAt + 3)
+t('an invented moderation verb cannot enter the command lane', !(await handleModerationControlCommand(inventedModeration)).ok)
+const publicAlready = source(generateSecretKey())
+recordPosted({ id: publicAlready.id, author: publicAlready.pubkey, buzz: '9'.repeat(64), dest: CHANNEL, q: false, ts: now })
+t('a source that was never quarantined is not a moderation target',
+  !(await handleModerationControlCommand(moderation('mute', publicAlready.id, followAt + 3))).ok)
+
 const participant = getPublicKey(generateSecretKey())
 const taskChannel = '88888888-8888-4888-8888-888888888888'
 const taskBody = (action, target = participant, channel = taskChannel) => ({ v: 1, type: 'waggle-task-route', action, channel,
@@ -249,8 +339,18 @@ const configPage = readFileSync(new URL('../console/config.html', import.meta.ur
 const taskRoutesPage = readFileSync(new URL('../console/task-routes.mjs', import.meta.url), 'utf8')
 const taskEnvelope = readFileSync(new URL('../console/task-route-envelope.mjs', import.meta.url), 'utf8')
 const operationsPage = readFileSync(new URL('../console/config-operations.mjs', import.meta.url), 'utf8')
+const routingPage = readFileSync(new URL('../console/routing.html', import.meta.url), 'utf8')
+const routingScript = readFileSync(new URL('../console/routing.mjs', import.meta.url), 'utf8')
 t('the Config console closes the entire signed state and renders only fresh verified public operations', /config-operations\.mjs/.test(configPage) && /verifyEvent/.test(operationsPage) && /exact\(state, \['v', 'observed_at', 'hive', 'bridge', 'publishing', 'follows', 'operations'\]\)/.test(operationsPage) && /exact\(state\.hive, \['id', 'name', 'handle'\]\)/.test(operationsPage) && /state\.follows\.every/.test(operationsPage) && /newest\.observed_at <= now \+ 60/.test(operationsPage) && /now - newest\.observed_at <= 900/.test(operationsPage) && /Verified signed state from/.test(operationsPage) && /Aggregate counts only/.test(operationsPage) && !/fetch\([^)]*config\.json/.test(operationsPage) && !/\/config\.json/.test(operationsPage))
 t('the Config route form emits only an encrypted gift wrap and never publishes its private tuple', /task-routes\.mjs/.test(configPage) && /waggle-task-route/.test(taskRoutesPage) && /nvoy-task-carry-v1/.test(taskRoutesPage) && /nip44\.encrypt/.test(taskEnvelope) && /kind:1059/.test(taskEnvelope) && /nip44Encrypt/.test(taskEnvelope) && /consoleSigner/.test(taskRoutesPage) && !/kind:30078/.test(taskRoutesPage + taskEnvelope) && !/fetch\([^)]*config\.json/.test(taskRoutesPage) && !/\/config\.json/.test(taskRoutesPage))
+t('the Routing console offers the three public moderation decisions and keeps reject private',
+  ['approve', 'follow', 'mute'].every(action => routingPage.includes(`data-action="${action}"`)) &&
+  !routingPage.includes('data-action="reject"') && /private rejection remains an in-channel action/.test(routingPage))
+t('the Routing console signs only an exact bridge-addressed moderation command',
+  /consoleSigner/.test(routingScript) && /requireFreshControlState\(activeState\).*consoleSigner/s.test(routingScript) &&
+  /\['d', 'waggle-moderation'\], \['p', activeBridge\]/.test(routingScript) &&
+  /JSON\.stringify\(\{ v: 1, action, target \}\)/.test(routingScript) &&
+  !/fetch\([^)]*config\.json/.test(routingScript) && !/\/config\.json/.test(routingScript))
 
 console.log(`\n${pass}/${n} passed`)
 process.exit(pass === n ? 0 : 1)
