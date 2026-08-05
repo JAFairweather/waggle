@@ -21,6 +21,13 @@ function replay(record) {
   return frozen({ status: record.status === 'prepared' ? 'recoverable' : 'held', result: null, receipt: null })
 }
 
+function derive(raw, { policyInstance, catalogueVersion, stagingChannel, watchedEventIds, approverMention = '', now }) {
+  const request = decodePolicyRequest(raw, { policyInstance, catalogueVersion, now })
+  const decision = decideQuarantineHeader(request, { stagingChannel, watchedEventIds, approverMention })
+  const requestDigest = createHash('sha256').update(raw).digest('hex')
+  return { request, decision, requestDigest, key: policyIdempotencyKey(request, decision) }
+}
+
 export async function processBuzzPolicyRequest(raw, {
   policyInstance, catalogueVersion, stagingChannel, watchedEventIds, approverMention = '',
   artifactPolicy, journal, signer, fetchImpl = fetch, now = Math.floor(Date.now() / 1000),
@@ -28,10 +35,7 @@ export async function processBuzzPolicyRequest(raw, {
 } = {}) {
   if (!journal || typeof journal.claim !== 'function' || typeof journal.prepare !== 'function' || typeof journal.commit !== 'function') fail('journal is unavailable')
   if (!signer || typeof signer.signEvent !== 'function') fail('signer is unavailable')
-  const request = decodePolicyRequest(raw, { policyInstance, catalogueVersion, now })
-  const decision = decideQuarantineHeader(request, { stagingChannel, watchedEventIds, approverMention })
-  const requestDigest = createHash('sha256').update(raw).digest('hex')
-  const key = policyIdempotencyKey(request, decision)
+  const { request, decision, requestDigest, key } = derive(raw, { policyInstance, catalogueVersion, stagingChannel, watchedEventIds, approverMention, now })
   const claim = journal.claim(key, requestDigest, now)
   if (!claim.claimed && claim.record.status !== 'prepared') return replay(claim.record)
 
@@ -41,7 +45,7 @@ export async function processBuzzPolicyRequest(raw, {
     const unsigned = buildBuzzEvent(decision, artifactPolicy, { now })
     event = await signExactBuzzEvent(unsigned, signer)
     const eventText = canonicalJson(event)
-    const durable = journal.prepare(key, requestDigest, { buzzEvent: eventText, buzzEventId: event.id, preparedAt: now })
+    const durable = journal.prepare(key, requestDigest, { buzzEvent: eventText, preparedAt: now })
     event = preparedEvent(durable, decision, artifactPolicy)
   }
 
@@ -49,7 +53,10 @@ export async function processBuzzPolicyRequest(raw, {
   const signedAuthorization = await signExactNip98(authorization.event, signer)
   let outcome
   try { outcome = await submitBuzzEvent(event, signedAuthorization, artifactPolicy, { fetchImpl, now }) }
-  catch (error) { return frozen({ status: error?.outcome === 'held' ? 'held' : 'ambiguous', result: null, receipt: null }) }
+  catch (error) {
+    if (error?.outcome === 'held' || error?.outcome === 'ambiguous') return frozen({ status: error.outcome, result: null, receipt: null })
+    throw error
+  }
 
   const accepted = outcome.result === 'accepted'
   const receiptFields = {
@@ -63,4 +70,32 @@ export async function processBuzzPolicyRequest(raw, {
   const terminal = journal.commit(key, requestDigest, { receipt: canonicalJson(receiptEvent),
     buzzEventId: event.id, result: accepted ? 'accepted' : 'refused', completedAt: now })
   return frozen({ status: 'terminal', result: terminal.result === 'refused' ? 'rejected' : terminal.result, receipt: terminal.receipt })
+}
+
+// Local policy-host operator path for the only unrecoverable interval: the signer
+// returned but the exact event was not yet durably prepared. The forced-command
+// request runner never calls this. Exact request bytes + claimed_at + the private
+// recovery secret are all required, and the receipt states only "ambiguous".
+export async function resolveBuzzPolicyOrphan(raw, expectedClaimedAt, {
+  policyInstance, catalogueVersion, stagingChannel, watchedEventIds, approverMention = '',
+  artifactPolicy, journal, signer, recoverySecret, now = Math.floor(Date.now() / 1000),
+} = {}) {
+  if (!journal || typeof journal.get !== 'function' || typeof journal.resolveOrphan !== 'function') fail('recovery journal is unavailable')
+  if (!signer || typeof signer.signEvent !== 'function') fail('signer is unavailable')
+  if (!Number.isSafeInteger(expectedClaimedAt) || expectedClaimedAt < 0) fail('expectedClaimedAt is invalid')
+  const { request, decision, requestDigest, key } = derive(raw, { policyInstance, catalogueVersion, stagingChannel, watchedEventIds, approverMention, now: expectedClaimedAt })
+  const record = journal.get(key)
+  if (!record || record.status !== 'in-flight' || record.claimed_at !== expectedClaimedAt) fail('the exact inspected in-flight claim is no longer present')
+  const fields = {
+    version: 1, policy_instance: policyInstance, operation: request.operation, catalogue_version: catalogueVersion,
+    request_digest: requestDigest, idempotency_key: key, source_ids: [request.evidence.source_event.id],
+    buzz_channel: decision.dest, endpoint_authority: artifactPolicy.endpointAuthority,
+    buzz_event_id: null, result: 'ambiguous', reason_code: 'signing_outcome_unknown',
+    response_digest: createHash('sha256').update('no-submission-evidence').digest('hex'), completed_at: now,
+  }
+  const receiptEvent = await buildSignedReceipt(fields, signer, artifactPolicy, { now })
+  const terminal = journal.resolveOrphan(key, requestDigest, expectedClaimedAt, {
+    recoverySecret, receipt: canonicalJson(receiptEvent), completedAt: now,
+  })
+  return frozen({ status: 'terminal', result: terminal.result, receipt: terminal.receipt })
 }

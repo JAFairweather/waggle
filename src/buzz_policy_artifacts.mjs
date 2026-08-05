@@ -157,17 +157,19 @@ export async function submitBuzzEvent(signedBuzzEvent, signedNip98, policy, {
     throw submitFailure(`Buzz submission did not reach an authoritative response: ${error?.name || 'network error'}`,
       'ambiguous', createHash('sha256').update(String(error?.name || 'network-error')).digest('hex'))
   }
-  const bytes = await boundedResponseBody(response, policy.maxResponseBytes)
+  let bytes
+  try { bytes = await boundedResponseBody(response, policy.maxResponseBytes) }
+  catch (error) { throw submitFailure(String(error?.message || 'Buzz response could not be bounded'), 'ambiguous') }
   const responseDigest = createHash('sha256').update(bytes).digest('hex')
   if (response.status === 429 || response.status >= 500 || response.status < 200 || (response.status >= 300 && response.status < 400)) {
     throw submitFailure(`Buzz submission is retryable (HTTP ${response.status})`, 'held', responseDigest)
   }
-  if (response.status >= 400) fail(`Buzz response is not an authoritative exact-event outcome (HTTP ${response.status})`)
+  if (response.status >= 400) throw submitFailure(`Buzz response is not an authoritative exact-event outcome (HTTP ${response.status})`, 'ambiguous', responseDigest)
   let parsed
-  try { parsed = JSON.parse(new TextDecoder().decode(bytes)) } catch { fail('Buzz success response is not JSON') }
+  try { parsed = JSON.parse(new TextDecoder().decode(bytes)) } catch { throw submitFailure('Buzz success response is not JSON', 'ambiguous', responseDigest) }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
       Object.keys(parsed).some(key => !['event_id', 'accepted', 'message'].includes(key)) ||
-      parsed.event_id !== signedBuzzEvent.id || typeof parsed.accepted !== 'boolean' || typeof parsed.message !== 'string') fail('Buzz success response has an invalid shape or event binding')
+      parsed.event_id !== signedBuzzEvent.id || typeof parsed.accepted !== 'boolean' || typeof parsed.message !== 'string') throw submitFailure('Buzz success response has an invalid shape or event binding', 'ambiguous', responseDigest)
   return Object.freeze({ result: parsed.accepted ? 'accepted' : 'rejected', reasonCode: parsed.accepted ? 'accepted' : 'relay_refused', responseDigest, status: response.status })
 }
 
@@ -176,11 +178,13 @@ export async function buildSignedReceipt(fields, signer, policy, { now = Math.fl
   const required = ['version', 'policy_instance', 'operation', 'catalogue_version', 'request_digest', 'idempotency_key',
     'source_ids', 'buzz_channel', 'endpoint_authority', 'buzz_event_id', 'result', 'reason_code', 'response_digest', 'completed_at']
   if (!fields || Object.keys(fields).sort().join(',') !== [...required].sort().join(',')) fail('receipt has an invalid shape')
-  if (fields.version !== 1 || fields.operation !== 'quarantine_header' || !['accepted', 'rejected'].includes(fields.result) ||
-      !['accepted', 'relay_refused'].includes(fields.reason_code) ||
-      (fields.result === 'accepted') !== (fields.reason_code === 'accepted')) fail('receipt outcome is invalid')
+  const outcomes = Object.freeze({ accepted: 'accepted', rejected: 'relay_refused', ambiguous: 'signing_outcome_unknown' })
+  if (fields.version !== 1 || fields.operation !== 'quarantine_header' || outcomes[fields.result] !== fields.reason_code) fail('receipt outcome is invalid')
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(String(fields.policy_instance || ''))) fail('policy_instance is invalid')
-  for (const name of ['catalogue_version', 'request_digest', 'idempotency_key', 'buzz_event_id', 'response_digest']) hex(fields[name], name)
+  for (const name of ['catalogue_version', 'request_digest', 'idempotency_key', 'response_digest']) hex(fields[name], name)
+  if (fields.result === 'ambiguous') {
+    if (fields.buzz_event_id !== null) fail('an ambiguous receipt cannot claim a Buzz event id')
+  } else hex(fields.buzz_event_id, 'buzz_event_id')
   if (!Array.isArray(fields.source_ids) || !fields.source_ids.length || !fields.source_ids.every(id => HEX64.test(String(id)))) fail('source_ids are invalid')
   if (!UUID.test(String(fields.buzz_channel || ''))) fail('buzz_channel is invalid')
   if (fields.endpoint_authority !== policy.endpointAuthority) fail('endpoint_authority is not policy-owned')
