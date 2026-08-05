@@ -34,14 +34,18 @@ function nsec(raw, label) {
   return decoded.data
 }
 
-export function makeBunkerSigner(uriText, clientNsec, { Pool = SimplePool } = {}) {
+export function makeBunkerSigner(uriText, clientNsec, {
+  Pool = SimplePool,
+  uriLabel = 'WAGGLE_BUNKER_URI_FILE',
+  clientLabel = 'WAGGLE_NIP46_CLIENT_NSEC_FILE',
+} = {}) {
   const raw = String(uriText || '').trim(), match = BUNKER.exec(raw)
-  if (!match) throw new Error('WAGGLE_BUNKER_URI_FILE does not contain a valid bunker URI')
+  if (!match) throw new Error(`${uriLabel} does not contain a valid bunker URI`)
   const uri = new URL(raw)
   const relays = [...new Set(uri.searchParams.getAll('relay').filter(v => /^wss:\/\//.test(v)))]
   if (!relays.length) throw new Error('Waggle bunker URI needs at least one wss relay')
   const pubkey = match[1].toLowerCase(), secret = uri.searchParams.get('secret') || ''
-  const clientKey = nsec(clientNsec, 'WAGGLE_NIP46_CLIENT_NSEC_FILE')
+  const clientKey = nsec(clientNsec, clientLabel)
   const clientPubkey = getPublicKey(clientKey)
   const conversation = nip44.v2.utils.getConversationKey(clientKey, pubkey)
   const pool = new Pool(), pending = new Map()
@@ -83,9 +87,20 @@ export function makeBunkerSigner(uriText, clientNsec, { Pool = SimplePool } = {}
   })
 }
 
-function localSigner(raw) {
-  const sk = raw.startsWith('nsec1') ? nsec(raw, 'BUZZ_PRIVATE_KEY') : Uint8Array.from(Buffer.from(raw, 'hex'))
-  if (sk.length !== 32) throw new Error('BUZZ_PRIVATE_KEY is not a valid nsec or 64-hex key')
+export function loadBunkerSignerFiles(uriFile, clientFile, deps = {}, {
+  uriLabel = 'WAGGLE_BUNKER_URI_FILE',
+  clientLabel = 'WAGGLE_NIP46_CLIENT_NSEC_FILE',
+} = {}) {
+  if (!!uriFile !== !!clientFile) throw new Error(`set both ${uriLabel} and ${clientLabel}`)
+  if (!uriFile) return null
+  return makeBunkerSigner(privateFile(uriFile, uriLabel), privateFile(clientFile, clientLabel), {
+    ...deps, uriLabel, clientLabel,
+  })
+}
+
+export function makeLocalSigner(raw, label = 'BUZZ_PRIVATE_KEY') {
+  const sk = raw.startsWith('nsec1') ? nsec(raw, label) : Uint8Array.from(Buffer.from(raw, 'hex'))
+  if (sk.length !== 32) throw new Error(`${label} is not a valid nsec or 64-hex key`)
   const pubkey = getPublicKey(sk), conversation = peer => nip44.getConversationKey(sk, peer)
   return Object.freeze({ pubkey, remote: false,
     signEvent: async event => finalizeEvent(event, sk),
@@ -98,8 +113,7 @@ function localSigner(raw) {
 export function loadNostrSigner(env = process.env, deps = {}) {
   const uriFile = String(env.WAGGLE_BUNKER_URI_FILE || '').trim()
   const clientFile = String(env.WAGGLE_NIP46_CLIENT_NSEC_FILE || '').trim()
-  if (!!uriFile !== !!clientFile) throw new Error('set both WAGGLE_BUNKER_URI_FILE and WAGGLE_NIP46_CLIENT_NSEC_FILE')
-  if (uriFile) return makeBunkerSigner(privateFile(uriFile, 'WAGGLE_BUNKER_URI_FILE'),
-    privateFile(clientFile, 'WAGGLE_NIP46_CLIENT_NSEC_FILE'), deps)
-  return env.BUZZ_PRIVATE_KEY ? localSigner(String(env.BUZZ_PRIVATE_KEY).trim()) : null
+  const remote = loadBunkerSignerFiles(uriFile, clientFile, deps)
+  if (remote) return remote
+  return env.BUZZ_PRIVATE_KEY ? makeLocalSigner(String(env.BUZZ_PRIVATE_KEY).trim()) : null
 }

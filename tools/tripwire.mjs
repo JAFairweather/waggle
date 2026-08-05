@@ -23,9 +23,10 @@ import WebSocket from 'ws'
 import { readFileSync, appendFileSync, mkdirSync, existsSync, lstatSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { getPublicKey, finalizeEvent, generateSecretKey } from 'nostr-tools/pure'
+import { getPublicKey } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
-import * as nip44 from 'nostr-tools/nip44'
+import { loadBunkerSignerFiles, makeLocalSigner } from '../src/nostr_signer.mjs'
+import { buildTripwireAlarmWrap } from './tripwire_alarm_lib.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const arg = (n, d) => { const i = process.argv.indexOf(n); return i === -1 ? d : process.argv[i + 1] }
@@ -60,12 +61,22 @@ if (!poster) die('set POSTER=<npub|hex> (or provide BUZZ_PRIVATE_KEY to derive i
 const posterHex = poster.startsWith('npub1') ? nip19.decode(poster).data : poster.toLowerCase()
 
 // Rule 1 as a property of the code, not just the docs: the alarm must be signed by a SEPARATE
-// key, never the poster. If ALARM_NSEC derives to the poster, a thief holding that nsec could
-// forge the all-clear too — so refuse to run rather than offer that false assurance.
+// key, never the poster. Prefer a Bunker pairing so the dedicated alarm nsec is absent even from
+// the watcher. ALARM_NSEC remains a disposable local-key fallback for simple/offline installs.
+const alarmBunker = loadBunkerSignerFiles(
+  String(process.env.ALARM_BUNKER_URI_FILE || '').trim(),
+  String(process.env.ALARM_NIP46_CLIENT_NSEC_FILE || '').trim(),
+  {},
+  { uriLabel: 'ALARM_BUNKER_URI_FILE', clientLabel: 'ALARM_NIP46_CLIENT_NSEC_FILE' },
+)
+let alarmLocal = null
 if (ALARM_NSEC) {
-  const alarmSk = ALARM_NSEC.startsWith('nsec1') ? nip19.decode(ALARM_NSEC).data : Uint8Array.from(Buffer.from(ALARM_NSEC, 'hex'))
-  if (getPublicKey(alarmSk) === posterHex) die('ALARM_NSEC derives to the POSTER key — the alarm must be signed by a SEPARATE, zero-authority key (rule 1). An alarm signed by the identity under suspicion proves nothing.')
+  if (alarmBunker) die('configure either the Bunker alarm signer or ALARM_NSEC, never both')
+  alarmLocal = makeLocalSigner(ALARM_NSEC, 'ALARM_NSEC')
 }
+const alarmSigner = alarmBunker || alarmLocal
+const alarmPubkey = alarmSigner?.pubkey || null
+if (alarmPubkey === posterHex) die('the alarm signer is the POSTER key — the alarm must use a SEPARATE, zero-authority identity (rule 1). An alarm signed by the identity under suspicion proves nothing.')
 
 const sinceMin = Number(arg('--since-min', 120))
 const since = Math.floor(Date.now() / 1000) - sinceMin * 60
@@ -138,22 +149,17 @@ function fetchPosterEvents() {
 // the absence of a delivery path is exactly the kind of thing discovered during an incident rather
 // than before one. Reported on every run, clean or not — a 30-minute timer saying so is cheap
 // compared to finding out when it matters.
-const alarmConfigured = () => !!(ALARM_NSEC && ALARM_TO)
+const alarmConfigured = () => !!(alarmPubkey && ALARM_TO)
 
 async function alarmDM(text) {
   if (!alarmConfigured()) {
-    console.error('tripwire: ⚠ ALARM NOT DELIVERED — ALARM_NSEC/ALARM_TO are unset, so this alarm exists only in this log and data/tripwire-alarms.log. Nobody has been told.')
+    console.error('tripwire: ⚠ ALARM NOT DELIVERED — no alarm signer/ALARM_TO is configured, so this alarm exists only in this log and data/tripwire-alarms.log. Nobody has been told.')
     return
   }
   try {
-    const ask = ALARM_NSEC.startsWith('nsec1') ? nip19.decode(ALARM_NSEC).data : Uint8Array.from(Buffer.from(ALARM_NSEC, 'hex'))
     const to = ALARM_TO.startsWith('npub1') ? nip19.decode(ALARM_TO).data : ALARM_TO.toLowerCase()
-    // NIP-17 seal+wrap (signer = the ALARM key, NOT the poster key).
-    const now = () => Math.floor(Date.now() / 1000 - Math.random() * 172800)
-    const rumor = { kind: 14, pubkey: getPublicKey(ask), created_at: Math.floor(Date.now() / 1000), tags: [['p', to]], content: text }
-    const seal = finalizeEvent({ kind: 13, created_at: now(), tags: [], content: nip44.encrypt(JSON.stringify(rumor), nip44.getConversationKey(ask, to)) }, ask)
-    const wsk = generateSecretKey()
-    const wrap = finalizeEvent({ kind: 1059, created_at: now(), tags: [['p', to]], content: nip44.encrypt(JSON.stringify(seal), nip44.getConversationKey(wsk, to)) }, wsk)
+    // NIP-17 seal+wrap (signer = the ALARM identity, NOT the poster identity).
+    const wrap = await buildTripwireAlarmWrap(text, to, alarmSigner)
     // Count what was ACCEPTED, not what was attempted. The previous version resolved on the first
     // frame of any kind — including an `["OK", id, false, "..."]` rejection — and on timeouts and
     // socket errors too, then printed "alarm DM sent" unconditionally. That is the same
@@ -205,7 +211,7 @@ console.error(`tripwire: poster ${posterHex.slice(0, 12)}… · window ${sinceMi
 // Said on EVERY run, not only when something fires. An operator who learns during an incident
 // that the alarm had nowhere to go has learned it too late, and a detector whose alarm is
 // undeliverable is a detector in name only.
-if (!alarmConfigured()) console.error('tripwire: ⚠ no alarm delivery path configured (ALARM_NSEC/ALARM_TO unset) — if this run had found something, nobody would have been told.')
+if (!alarmConfigured()) console.error('tripwire: ⚠ no alarm delivery path configured (Bunker or ALARM_NSEC plus ALARM_TO) — if this run had found something, nobody would have been told.')
 
 if (!anomalies.length) {
   // A half-synced union cannot produce an all-clear. With a lane's journal absent, "nothing
