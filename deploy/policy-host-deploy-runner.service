@@ -1,0 +1,16 @@
+[Unit]
+Description=waggle policy host — pull a CI-green immutable release
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/waggle-policy-hub
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/etc/waggle-policy/deploy-runner.env
+ExecStart=/bin/sh /opt/waggle-policy-hub/deploy/policy-host-deploy-runner.sh
+ProtectHome=yes
+PrivateTmp=yes
+UMask=0027
