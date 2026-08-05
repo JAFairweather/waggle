@@ -11,7 +11,15 @@ esac
 case "$SHADOW_PUB" in ssh-ed25519\ *|ecdsa-*\ *) : ;; *)
   echo "set WAGGLE_POLICY_SHADOW_CLIENT_PUB to a distinct derive-only SSH public key" >&2; exit 2 ;;
 esac
-test "$PUB" != "$SHADOW_PUB" || { echo "live and shadow ingress keys must be distinct" >&2; exit 2; }
+key_identity() {
+  # OpenSSH comments are labels, not key identity. Compare algorithm + key blob so the same
+  # private key cannot authenticate to both the write-capable and derive-only accounts.
+  printf '%s\n' "$1" | awk 'NF >= 2 { print $1 " " $2; exit }'
+}
+PUB_ID=$(key_identity "$PUB")
+SHADOW_PUB_ID=$(key_identity "$SHADOW_PUB")
+test -n "$PUB_ID" && test -n "$SHADOW_PUB_ID" || { echo "ingress SSH keys are malformed" >&2; exit 2; }
+test "$PUB_ID" != "$SHADOW_PUB_ID" || { echo "live and shadow ingress keys must be distinct" >&2; exit 2; }
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 test "$(id -u)" -eq 0 || { echo "run as root on the policy host" >&2; exit 2; }
 test -f "$ROOT/tools/buzz-policy-service.mjs" && test -f "$ROOT/tools/buzz-policy-forward.mjs" &&
