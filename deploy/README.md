@@ -366,6 +366,8 @@ credential drop-in, preserving the already-verified detector command:
 sudo install -d -m 0755 /etc/systemd/system/waggle-tripwire.service.d
 sudo install -m 0644 deploy/tripwire-alarm-bunker.conf \
   /etc/systemd/system/waggle-tripwire.service.d/alarm.conf
+sudo install -m 0644 deploy/waggle-tripwire-drill.service \
+  /etc/systemd/system/waggle-tripwire-drill.service
 sudo systemctl daemon-reload
 sudo systemctl restart waggle-tripwire.service
 ```
@@ -373,20 +375,27 @@ sudo systemctl restart waggle-tripwire.service
 The last command is the negative control and may report `QUIET` or `OK`; it must no longer report
 `no alarm delivery path configured`. The positive drill below must then produce a sealed DM.
 
-Run the live delivery drill with only public values and credential **paths** in the environment:
+Put only the two public drill inputs in `/etc/waggle-tripwire/drill.env` (root-owned mode 0600):
 
 ```
-sudo env \
-  ALARM_NSEC_FILE=/etc/waggle-tripwire/alarm.nsec \
-  ALARM_TO_FILE=/etc/waggle-tripwire/alarm.to \
-  BUZZ_RELAY_URL=wss://relay.nave.pub \
-  /usr/bin/node /opt/waggle-read/tools/tripwire.mjs \
-  --poster <bridge-poster-npub-or-hex> --drill-alarm
+POSTER=<bridge-poster-npub-or-hex>
+BUZZ_RELAY_URL=wss://relay.nave.pub
 ```
+
+Then run the repository-managed isolated unit:
+
+```
+sudo systemctl start waggle-tripwire-drill.service
+```
+
+The drill unit is not attached to a timer and has no install target. It never stops or modifies
+`waggle-tripwire.timer`, never writes systemd manager environment, and cannot turn an ordinary
+detector tick into a drill. Signer material enters only through `LoadCredential=`.
 
 Exit 0 means at least one relay accepted the sealed test alert; exit 4 means nobody accepted it.
 The recipient must still confirm the labelled `TRIPWIRE DRILL` DM arrived—relay acceptance alone
-is not recipient read-back.
+is not recipient read-back. Confirm afterward that `waggle-tripwire.timer` remained active
+throughout; the drill unit has no mechanism to alter it.
 
 The watcher **pulls** the journals (so the box needs no credentials to the watcher — a journal
 is only public event ids, nothing sensitive), on its own timer just ahead of the tripwire tick.

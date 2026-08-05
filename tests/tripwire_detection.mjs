@@ -27,6 +27,9 @@ const ROOT = resolve(HERE, '..')
 const TOOL = resolve(ROOT, 'tools', 'tripwire.mjs')
 const INIT = resolve(ROOT, 'tools', 'tripwire-alarm-init.mjs')
 const DROP_IN = resolve(ROOT, 'deploy', 'tripwire-alarm.conf')
+const BUNKER_DROP_IN = resolve(ROOT, 'deploy', 'tripwire-alarm-bunker.conf')
+const BASE_UNIT = resolve(ROOT, 'deploy', 'tripwire.service')
+const DRILL_UNIT = resolve(ROOT, 'deploy', 'waggle-tripwire-drill.service')
 const POSTER = 'npub1s36nypljc6h88tey0kshf688eyd8myu636ctfs4e3d2w54nhsmnqfhaent'
 // Written per-run into the temp dir. The real log at data/tripwire-alarms.log is evidence an
 // operator is meant to trust; a test must not leave fake alarms in it.
@@ -246,6 +249,36 @@ try {
   check('the drop-in maps systemd credential paths without replacing the detector command',
     dropIn.includes('Environment=ALARM_NSEC_FILE=%d/alarm.nsec') &&
     dropIn.includes('Environment=ALARM_TO_FILE=%d/alarm.to') && !dropIn.includes('ExecStart='))
+
+  const baseUnit = readFileSync(BASE_UNIT, 'utf8')
+  check('the base detector unit contains no signer credential mode',
+    !baseUnit.includes('LoadCredential=alarm.') &&
+    !baseUnit.includes('Environment=ALARM_NSEC_FILE=') &&
+    !baseUnit.includes('Environment=ALARM_BUNKER_URI_FILE='))
+
+  const bunkerDropIn = readFileSync(BUNKER_DROP_IN, 'utf8')
+  check('the preferred Bunker drop-in loads only pairing and recipient credential files',
+    bunkerDropIn.includes('LoadCredential=alarm.bunker-uri:/etc/waggle-tripwire/alarm.bunker-uri') &&
+    bunkerDropIn.includes('LoadCredential=alarm.client-nsec:/etc/waggle-tripwire/alarm.client-nsec') &&
+    bunkerDropIn.includes('LoadCredential=alarm.to:/etc/waggle-tripwire/alarm.to') &&
+    !bunkerDropIn.includes('LoadCredential=alarm.nsec:'))
+  check('the preferred drop-in passes only systemd credential paths and never replaces detection',
+    bunkerDropIn.includes('Environment=ALARM_BUNKER_URI_FILE=%d/alarm.bunker-uri') &&
+    bunkerDropIn.includes('Environment=ALARM_NIP46_CLIENT_NSEC_FILE=%d/alarm.client-nsec') &&
+    bunkerDropIn.includes('Environment=ALARM_TO_FILE=%d/alarm.to') &&
+    !bunkerDropIn.includes('ExecStart=') && !/bunker:\/\//.test(bunkerDropIn))
+
+  const drillUnit = readFileSync(DRILL_UNIT, 'utf8')
+  check('the production alarm drill is an isolated static unit with no persistent activation',
+    drillUnit.includes('ExecStart=/usr/bin/node /opt/waggle-read/tools/tripwire.mjs --drill-alarm') &&
+    !drillUnit.includes('[Install]') && !drillUnit.includes('WantedBy='))
+  check('process loss cannot disable detection or leave a manager-wide drill flag',
+    !/systemctl|waggle-tripwire\.timer|TRIPWIRE_DRILL|set-environment|unset-environment/.test(drillUnit))
+  check('the isolated drill receives only credential paths, never signer values',
+    drillUnit.includes('LoadCredential=alarm.bunker-uri:/etc/waggle-tripwire/alarm.bunker-uri') &&
+    drillUnit.includes('LoadCredential=alarm.client-nsec:/etc/waggle-tripwire/alarm.client-nsec') &&
+    drillUnit.includes('LoadCredential=alarm.to:/etc/waggle-tripwire/alarm.to') &&
+    !/bunker:\/\/|nsec1/.test(drillUnit))
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }
