@@ -182,7 +182,15 @@ const ownerSigner = {
   signEvent: async event => wire(finalizeEvent(event, watchedSk)),
   nip44Encrypt: async (recipient, plaintext) => nip44.encrypt(plaintext, nip44.getConversationKey(watchedSk, recipient)),
 }
+let alteredSealRefused = false
+try {
+  await sealedTaskRouteCommand({ ...ownerSigner, signEvent: async event => wire(finalizeEvent({ ...event, content: 'substituted' }, watchedSk)) },
+    getPublicKey(bridgeSk), taskBody('upsert'), routeAt)
+} catch { alteredSealRefused = true }
+t('the Console refuses a signer that alters the encrypted route seal', alteredSealRefused)
 const realWrap = await sealedTaskRouteCommand(ownerSigner, getPublicKey(bridgeSk), taskBody('upsert'), routeAt)
+const extraOuterField = await handleSealedTaskRouteControl({ ...realWrap, extra: 'not part of NIP-59' })
+t('the bridge refuses an extensible outer envelope even when its Nostr signature still verifies', !extraOuterField.ok && /invalid wrap/.test(extraOuterField.reason))
 const routed = await handleSealedTaskRouteControl(realWrap)
 t('an owner-signed task route persists and activates without a restart', routed.ok &&
   PUB.scanChannels.includes(taskChannel) && PUB.scanAuthors.includes(getPublicKey(watchedSk)) &&

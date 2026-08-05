@@ -7,11 +7,16 @@ export async function sealedTaskRouteCommand(signer, bridge, body, now = Math.fl
       typeof signer?.nip44Encrypt !== 'function') throw new Error('This signer cannot sign and encrypt NIP-44 messages.')
   if (!/^[0-9a-f]{64}$/.test(String(bridge || '').toLowerCase())) throw new Error('The bridge identity is invalid.')
   const owner = String(await signer.getPublicKey()).toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(owner)) throw new Error('The signing identity is invalid.')
   const fuzzed = () => now - Math.floor(Math.random() * 172800)
   const rumor = { kind:14, pubkey:owner, created_at:now, tags:[['p',bridge]], content:JSON.stringify(body) }
   rumor.id = getEventHash(rumor)
-  const seal = await signer.signEvent({ kind:13, created_at:fuzzed(), tags:[], content:await signer.nip44Encrypt(bridge, JSON.stringify(rumor)) })
-  if (!verifyEvent(seal) || seal.pubkey !== owner || seal.kind !== 13 || seal.content === rumor.content || seal.tags.length) throw new Error('The signer returned an invalid or altered route seal.')
+  const encrypted = await signer.nip44Encrypt(bridge, JSON.stringify(rumor))
+  const sealDraft = { kind:13, created_at:fuzzed(), tags:[], content:encrypted }
+  const seal = await signer.signEvent(sealDraft)
+  if (!verifyEvent(seal) || seal.pubkey !== owner || seal.kind !== sealDraft.kind ||
+      seal.created_at !== sealDraft.created_at || seal.content !== sealDraft.content ||
+      JSON.stringify(seal.tags) !== JSON.stringify(sealDraft.tags)) throw new Error('The signer returned an invalid or altered route seal.')
   const wrapKey = generateSecretKey()
   return finalizeEvent({ kind:1059, created_at:fuzzed(), tags:[['p',bridge]],
     content:nip44.encrypt(JSON.stringify(seal), nip44.getConversationKey(wrapKey, bridge)) }, wrapKey)

@@ -1794,6 +1794,9 @@ function handleTaskRouteControlCommand() {
 async function handleSealedTaskRouteControl(ev, { openSealFn = openSeal, openRumorFn = openRumor } = {}) {
   if (!ev || ev.kind !== 1059 || !PUB || !BRIDGE_PK || !hasBridgeKey()) return { handled: false }
   if (relaySeen.has(ev.id) || relayInFlight.has(ev.id)) return { handled: true, ok: true, duplicate: true }
+  let wrapValid = false
+  try { wrapValid = verifyEvent(ev) } catch { wrapValid = false }
+  if (!wrapValid || Object.keys(ev).sort().join(',') !== 'content,created_at,id,kind,pubkey,sig,tags') return { handled: true, ok: false, reason: 'invalid wrap' }
   const ps = (ev.tags || []).filter(tag => tag[0] === 'p')
   if (ps.length !== 1 || ps[0].length !== 2 || String(ps[0][1]).toLowerCase() !== BRIDGE_PK) return { handled: false }
   if (Buffer.byteLength(JSON.stringify(ev)) > PUB.relayMaxWrapBytes) return { handled: true, ok: false, reason: 'wrap over cap' }
@@ -1807,13 +1810,14 @@ async function handleSealedTaskRouteControl(ev, { openSealFn = openSeal, openRum
     try { seal = await openSealFn(ev) } catch { return { handled: true, ok: false, reason: 'cannot decrypt wrap' } }
     let valid = false
     try { valid = verifyEvent(seal) } catch { valid = false }
-    if (!valid || seal.kind !== 13) return { handled: true, ok: false, reason: 'invalid seal' }
+    if (!valid || seal.kind !== 13 || Object.keys(seal).sort().join(',') !== 'content,created_at,id,kind,pubkey,sig,tags' ||
+        !Array.isArray(seal.tags) || seal.tags.length) return { handled: true, ok: false, reason: 'invalid seal' }
     // A valid non-owner seal may belong to the separate admitted relay lane. Leave it for that
     // handler; only an authenticated approver can make us spend the second decryption here.
     if (!PUB.approvers.includes(String(seal.pubkey || '').toLowerCase())) return { handled: false, openedSeal: seal, budgetCharged: true }
     let rumor
     try { rumor = await openRumorFn(seal) } catch { return { handled: true, ok: false, reason: 'cannot decrypt rumor' } }
-    if (!rumor || rumor.kind !== 14 || String(rumor.pubkey || '').toLowerCase() !== String(seal.pubkey).toLowerCase() ||
+    if (!rumor || Object.keys(rumor).sort().join(',') !== 'content,created_at,id,kind,pubkey,tags' || rumor.kind !== 14 || String(rumor.pubkey || '').toLowerCase() !== String(seal.pubkey).toLowerCase() ||
         rumor.id !== getEventHash(rumor)) return { handled: true, ok: false, reason: 'invalid rumor' }
     const tags = rumor.tags || []
     if (tags.length !== 1 || tags[0]?.[0] !== 'p' || tags[0].length !== 2 || String(tags[0][1]).toLowerCase() !== BRIDGE_PK) return { handled: true, ok: false, reason: 'wrong recipient' }
