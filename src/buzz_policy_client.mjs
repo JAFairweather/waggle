@@ -1,0 +1,109 @@
+// Credential-free bridge edge for the off-box Buzz policy service (#54).
+// It constructs evidence-only requests and accepts completion only from a
+// signature-verified receipt bound to those exact request bytes.
+import { createHash } from 'node:crypto'
+import { verifyEvent } from 'nostr-tools/pure'
+import { canonicalJson } from './buzz_policy_core.mjs'
+
+const HEX64 = /^[0-9a-f]{64}$/
+const HEX128 = /^[0-9a-f]{128}$/
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+const EVENT_KEYS = new Set(['id', 'pubkey', 'created_at', 'kind', 'tags', 'content', 'sig'])
+const REQUEST_KEYS = new Set(['version', 'policy_instance', 'operation', 'catalogue_version', 'observed_at', 'evidence'])
+const EVIDENCE_KEYS = new Set(['source_event'])
+const RESPONSE_KEYS = new Set(['status', 'result', 'receipt'])
+const RECEIPT_KEYS = new Set(['version', 'policy_instance', 'operation', 'catalogue_version', 'request_digest',
+  'idempotency_key', 'source_ids', 'buzz_channel', 'endpoint_authority', 'buzz_event_id', 'result',
+  'reason_code', 'response_digest', 'completed_at'])
+const fail = message => { throw new Error(`buzz-policy-client: ${message}`) }
+const exactKeys = (value, allowed, label) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${label} must be an object`)
+  const unknown = Object.keys(value).find(key => !allowed.has(key))
+  if (unknown) fail(`${label} contains unknown field ${JSON.stringify(unknown)}`)
+  const missing = [...allowed].find(key => !(key in value))
+  if (missing) fail(`${label} is missing ${JSON.stringify(missing)}`)
+}
+const parseCanonical = (raw, label, maxBytes) => {
+  if (typeof raw !== 'string' || !raw || Buffer.byteLength(raw) > maxBytes) fail(`${label} is empty or oversized`)
+  let value
+  try { value = JSON.parse(raw) } catch { fail(`${label} is not JSON`) }
+  if (canonicalJson(value) !== raw) fail(`${label} is not canonical JSON`)
+  return value
+}
+const same = (left, right) => canonicalJson(left) === canonicalJson(right)
+const verifySourceEvent = event => {
+  exactKeys(event, EVENT_KEYS, 'source_event')
+  if (!HEX64.test(String(event.id || '')) || !HEX64.test(String(event.pubkey || '')) ||
+      !HEX128.test(String(event.sig || '')) || !Number.isSafeInteger(event.created_at) || event.created_at < 0 ||
+      event.kind !== 1 || !Array.isArray(event.tags) || typeof event.content !== 'string' ||
+      !event.tags.every(tag => Array.isArray(tag) && tag.every(value => typeof value === 'string'))) fail('source_event is not a complete kind:1 wire event')
+  let verified = false
+  try { verified = verifyEvent(JSON.parse(JSON.stringify(event))) } catch { verified = false }
+  if (!verified) fail('source_event signature or id is invalid')
+  return event
+}
+const verifyRequestShape = request => {
+  exactKeys(request, REQUEST_KEYS, 'request')
+  exactKeys(request.evidence, EVIDENCE_KEYS, 'evidence')
+  if (request.version !== 1 || request.operation !== 'quarantine_header' || !ID.test(String(request.policy_instance || '')) ||
+      !HEX64.test(String(request.catalogue_version || '')) || !Number.isSafeInteger(request.observed_at) || request.observed_at < 0) fail('request binding is invalid')
+  verifySourceEvent(request.evidence.source_event)
+  return request
+}
+
+export function buildQuarantinePolicyRequest(sourceEvent, {
+  policyInstance, catalogueVersion, observedAt = Math.floor(Date.now() / 1000),
+} = {}) {
+  if (!ID.test(String(policyInstance || '')) || !HEX64.test(String(catalogueVersion || ''))) fail('policy identity is invalid')
+  if (!Number.isSafeInteger(observedAt) || observedAt < 0) fail('observed_at is invalid')
+  verifySourceEvent(sourceEvent)
+  return canonicalJson({ version: 1, policy_instance: policyInstance, operation: 'quarantine_header',
+    catalogue_version: catalogueVersion, observed_at: observedAt,
+    evidence: { source_event: JSON.parse(JSON.stringify(sourceEvent)) } })
+}
+
+export function verifyPolicyResponse(raw, {
+  requestRaw, posterPubkey, expectedChannel, endpointAuthority, maxBytes = 256 * 1024,
+} = {}) {
+  if (!HEX64.test(String(posterPubkey || '')) || !UUID.test(String(expectedChannel || '')) ||
+      typeof endpointAuthority !== 'string' || !endpointAuthority || endpointAuthority.length > 255) fail('expected policy binding is invalid')
+  const request = parseCanonical(requestRaw, 'request', 128 * 1024)
+  verifyRequestShape(request)
+  const sourceId = request.evidence.source_event.id
+  const response = parseCanonical(raw, 'response', maxBytes)
+  exactKeys(response, RESPONSE_KEYS, 'response')
+  if (['held', 'ambiguous', 'recoverable'].includes(response.status)) {
+    if (response.result !== null || response.receipt !== null) fail('a non-terminal response cannot claim a result or receipt')
+    return Object.freeze({ terminal: false, status: response.status, result: null, buzzEventId: null, receipt: null })
+  }
+  if (response.status !== 'terminal' || !['accepted', 'rejected', 'ambiguous'].includes(response.result) || typeof response.receipt !== 'string') fail('terminal response shape is invalid')
+  const event = parseCanonical(response.receipt, 'signed receipt', maxBytes)
+  exactKeys(event, new Set(['id', 'pubkey', 'created_at', 'kind', 'tags', 'content', 'sig']), 'signed receipt')
+  if (!HEX64.test(String(event.id || '')) || event.pubkey !== posterPubkey || !HEX128.test(String(event.sig || '')) ||
+      event.kind !== 30078 || !Number.isSafeInteger(event.created_at) || !Array.isArray(event.tags) || typeof event.content !== 'string') fail('signed receipt envelope is invalid')
+  let verified = false
+  try { verified = verifyEvent(JSON.parse(JSON.stringify(event))) } catch { verified = false }
+  if (!verified) fail('signed receipt signature or id is invalid')
+  const fields = parseCanonical(event.content, 'receipt content', maxBytes)
+  exactKeys(fields, RECEIPT_KEYS, 'receipt content')
+  const requestDigest = createHash('sha256').update(requestRaw).digest('hex')
+  const expectedKey = createHash('sha256').update(canonicalJson([request.version, request.policy_instance,
+    request.catalogue_version, request.operation, [sourceId], expectedChannel])).digest('hex')
+  if (fields.version !== request.version || fields.policy_instance !== request.policy_instance ||
+      fields.operation !== request.operation || fields.catalogue_version !== request.catalogue_version ||
+      fields.request_digest !== requestDigest || fields.idempotency_key !== expectedKey ||
+      !same(fields.source_ids, [sourceId]) || fields.buzz_channel !== expectedChannel ||
+      fields.endpoint_authority !== endpointAuthority || fields.result !== response.result ||
+      !HEX64.test(String(fields.response_digest || '')) || !Number.isSafeInteger(fields.completed_at) ||
+      fields.completed_at !== event.created_at) fail('signed receipt is not bound to this request and policy')
+  const expectedReason = { accepted: 'accepted', rejected: 'relay_refused', ambiguous: 'signing_outcome_unknown' }[fields.result]
+  if (fields.reason_code !== expectedReason) fail('signed receipt outcome is invalid')
+  if (fields.result === 'ambiguous') {
+    if (fields.buzz_event_id !== null) fail('ambiguous receipt cannot claim a Buzz event id')
+  } else if (!HEX64.test(String(fields.buzz_event_id || ''))) fail('terminal receipt has no valid Buzz event id')
+  if (event.tags.length !== 1 || event.tags[0]?.length !== 2 || event.tags[0][0] !== 'd' ||
+      event.tags[0][1] !== `waggle-policy:${expectedKey}`) fail('signed receipt address is not bound to idempotency')
+  return Object.freeze({ terminal: true, status: 'terminal', result: fields.result,
+    buzzEventId: fields.buzz_event_id, receipt: Object.freeze(event) })
+}

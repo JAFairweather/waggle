@@ -162,7 +162,7 @@ in [deploy/README.md](../deploy/README.md).
 - **Publish the agent relay list:** `node tools/publish_relay_list.mjs` (so the identity
   is discoverable).
 - **Admit a participant**, if you want one: `sh tools/grant-setup.sh`.
-- **Run the safety gates before you ship:** `npm test` — 43 suites driving the real
+- **Run the safety gates before you ship:** `npm test` — 44 suites driving the real
   routing functions with synthetic events (no sockets, no production state), all green.
 
 `waggle-init.mjs --check` rolls the config half of this into one readiness verdict; the
