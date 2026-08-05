@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { generateSecretKey, finalizeEvent, getPublicKey } from 'nostr-tools/pure'
@@ -10,6 +10,9 @@ import { createHash } from 'node:crypto'
 import { canonicalJson } from '../src/buzz_policy_core.mjs'
 import { PolicyJournal } from '../src/policy_journal.mjs'
 import { loadBuzzPolicyConfig, readBoundedPolicyRequest, runBuzzPolicyOrphanResolution, runBuzzPolicyRequest } from '../src/buzz_policy_runner.mjs'
+import { loadBuzzPolicyShadowConfig, runBuzzPolicyShadow } from '../src/buzz_policy_shadow_runner.mjs'
+import { buildBuzzEvent } from '../src/buzz_policy_projection.mjs'
+import { decodePolicyRequest, decideQuarantineHeader } from '../src/buzz_policy_core.mjs'
 
 let fails = 0
 const t = (name, ok) => { console.log(`${ok ? 'ok  ' : 'FAIL'} — ${name}`); if (!ok) fails++ }
@@ -50,6 +53,43 @@ const result = JSON.parse(output)
 t('the forced-command adapter emits one canonical receipt result', output === `${canonicalJson(result)}\n` && result.status === 'terminal' && JSON.parse(result.receipt).kind === 30078)
 t('the forced-command result never exposes the recovery secret', !output.includes(config.recoverySecret))
 await rejects('the configured poster cannot differ from the Bunker identity', () => runBuzzPolicyRequest(raw, config, { ...signer, pubkey: 'f'.repeat(64) }), /does not match/)
+
+const shadowConfigPath = join(root, 'shadow-policy.json')
+const shadowConfigValue = { version: 1, policy_instance: configValue.policy_instance,
+  catalogue_version: configValue.catalogue_version, staging_channel: configValue.staging_channel,
+  watched_event_ids: configValue.watched_event_ids, approver_mention: configValue.approver_mention,
+  poster_pubkey: configValue.poster_pubkey, auth_tag: configValue.auth_tag }
+writeFileSync(shadowConfigPath, `${JSON.stringify(shadowConfigValue)}\n`, { mode: 0o600 })
+const shadowConfig = loadBuzzPolicyShadowConfig(shadowConfigPath)
+const shadowTime = now + 7, shadowOutput = runBuzzPolicyShadow(raw, shadowConfig, { now: shadowTime })
+const shadowResult = JSON.parse(shadowOutput)
+t('derive-only shadow returns one canonical comparison record', shadowOutput === `${canonicalJson(shadowResult)}\n` &&
+  shadowResult.decision === 'allow' && shadowResult.evaluation_time === shadowTime && /^[0-9a-f]{64}$/.test(shadowResult.unsigned_event_sha256))
+const localRequest = decodePolicyRequest(raw, { policyInstance: config.policy_instance, catalogueVersion: config.catalogue_version, now: shadowTime })
+const localDecision = decideQuarantineHeader(localRequest, { stagingChannel: config.staging_channel,
+  watchedEventIds: config.watched_event_ids, approverMention: config.approver_mention })
+const localUnsigned = buildBuzzEvent(localDecision, shadowConfig.projectionPolicy, { now: shadowResult.evaluation_time })
+const localDigest = createHash('sha256').update(canonicalJson([0, localUnsigned.pubkey, localUnsigned.created_at,
+  localUnsigned.kind, localUnsigned.tags, localUnsigned.content])).digest('hex')
+t('local projection at remote-owned time is byte-identical to the shadow digest', localDigest === shadowResult.unsigned_event_sha256)
+t('shadow output exposes only the closed comparison record',
+  Object.keys(shadowResult).sort().join(',') === ['v', 'request_digest', 'policy_instance', 'catalogue_version',
+    'decision', 'evaluation_time', 'unsigned_event_sha256'].sort().join(','))
+const deniedSource = JSON.parse(JSON.stringify(finalizeEvent({ kind: 1, created_at: now - 1,
+  tags: [['e', 'e'.repeat(64)]], content: 'not watched' }, generateSecretKey())))
+const deniedRaw = canonicalJson({ ...JSON.parse(raw), evidence: { source_event: deniedSource } })
+const deniedResult = JSON.parse(runBuzzPolicyShadow(deniedRaw, shadowConfig, { now }))
+t('a valid but ineligible source produces a deny comparison without authored bytes',
+  deniedResult.decision === 'deny' && deniedResult.unsigned_event_sha256 === null)
+await rejects('shadow config structurally refuses live endpoint and journal fields', () => {
+  const p = join(root, 'wide-shadow.json'); writeFileSync(p, JSON.stringify({ ...shadowConfigValue, endpoint: configValue.endpoint }), { mode: 0o600 })
+  return loadBuzzPolicyShadowConfig(p)
+}, /invalid shape/)
+const shadowTool = readFileSync(new URL('../tools/buzz-policy-shadow.mjs', import.meta.url), 'utf8')
+const shadowRunner = readFileSync(new URL('../src/buzz_policy_shadow_runner.mjs', import.meta.url), 'utf8')
+const shadowProjection = readFileSync(new URL('../src/buzz_policy_projection.mjs', import.meta.url), 'utf8')
+t('derive-only executable imports no signer, submission, or journal module',
+  !/nostr_signer|buzz_policy_artifacts|buzz_policy_service|policy_journal|egress\.mjs/.test(`${shadowTool}\n${shadowRunner}\n${shadowProjection}`))
 
 const orphanSource = JSON.parse(JSON.stringify(finalizeEvent({ kind: 1, created_at: now - 2, tags: [['e', 'd'.repeat(64)]], content: 'other wisdom' }, generateSecretKey())))
 const orphanRaw = canonicalJson({ version: 1, policy_instance: 'jaf-hive', operation: 'quarantine_header', catalogue_version: 'c'.repeat(64), observed_at: now, evidence: { source_event: orphanSource } })

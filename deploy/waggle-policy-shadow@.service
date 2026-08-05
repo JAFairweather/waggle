@@ -1,0 +1,38 @@
+[Unit]
+Description=waggle derive-only policy shadow transaction
+
+[Service]
+Slice=waggle-policy.slice
+User=waggle-policy-shadow
+Group=waggle-policy-shadow
+WorkingDirectory=/opt/waggle-policy
+ExecStart=/usr/bin/node /opt/waggle-policy/tools/buzz-policy-shadow.mjs
+LoadCredential=shadow-policy.json:/etc/waggle-policy/shadow-policy.json
+Environment=WAGGLE_POLICY_SHADOW_CONFIG_FILE=%d/shadow-policy.json
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+TimeoutStartSec=20
+RuntimeMaxSec=15
+UMask=0077
+MemoryMax=128M
+TasksMax=12
+CPUQuota=100%
+
+# This is a pure comparison service: immutable code + one fixed policy file, no writable path,
+# signer credential, recovery authority, Buzz endpoint access, or network socket family.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX
+ReadOnlyPaths=/opt/waggle-policy

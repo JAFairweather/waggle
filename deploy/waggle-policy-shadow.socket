@@ -1,0 +1,15 @@
+[Unit]
+Description=waggle derive-only policy shadow socket
+
+[Socket]
+ListenStream=/run/waggle-policy-shadow/request.sock
+SocketUser=waggle-policy-shadow
+SocketGroup=waggle-policy-shadow-ingress
+SocketMode=0660
+Accept=yes
+RemoveOnStop=yes
+MaxConnections=4
+MaxConnectionsPerSource=2
+
+[Install]
+WantedBy=sockets.target

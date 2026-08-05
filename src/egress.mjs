@@ -15,7 +15,8 @@
 // INV-A3-4  wrapJson is single-line by contract (§2.4), enforced at render time
 // INV-A3-5  every slot of every template declares one of the closed slot types
 import { execFile } from 'node:child_process'
-import { renderQuarantined, renderReleased, renderChannelPlain } from './render.mjs'
+import { renderReleased, renderChannelPlain } from './render.mjs'
+import { renderQuarantineHeader } from './quarantine_projection.mjs'
 
 // --- The closed slot-type set (§2.2, INV-A3-5) -----------------------------------------------
 //
@@ -180,18 +181,7 @@ const CATALOGUE = {
     },
     optional: ['approver', 'name', 'claimedTs'],
     enums: { why: ['mirrored feed', 'granted participant', 'standing follow', 'reply to our note', 'released from quarantine'] },
-    render: ({ body, approver, name, npub, ts, claimedTs, why, id }) => renderQuarantined({
-      body,
-      mention: approver ? `@${approver} ` : '',
-      name,
-      npub,
-      when: new Date(Number(ts) * 1000).toISOString(),
-      // The clamp notice is prose, so it belongs here and not in a caller's string. A5 clamps an
-      // attacker-controlled created_at; this is how the reader is told the claim was moved.
-      claim: claimedTs ? `  ·  ⚠︎ author-claimed \`${new Date(Number(claimedTs) * 1000).toISOString()}\` (clamped)` : '',
-      why,
-      id,
-    }),
+    render: (slots) => renderQuarantineHeader(slots),
   },
 
   // Sites 2b and 7 — forwardPublic() released, and postRelay(). A vouched identity's own words,

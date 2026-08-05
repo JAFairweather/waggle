@@ -248,6 +248,12 @@ that the Buzz poster key is off the bridge host:
 2. For each family in §5, add positive, hostile-evidence, replay, concurrent, restart, stale-policy,
    Bunker-mismatch, ambiguous-submit, and compromised-requester tests.
 3. Run local and remote paths in shadow mode; require identical derived event bytes and decisions.
+   Shadow uses a separate SSH key, forced command, socket, and networkless unit with no signer,
+   recovery, journal, endpoint, or writable path. It returns only a canonical comparison record.
+   Here “derived event bytes” means the canonical unsigned Nostr preimage
+   `[0,pubkey,created_at,kind,tags,content]`, never a signed event. The shadow host chooses
+   `evaluation_time`; the bridge reruns the local projection at that remote-owned time and compares
+   the decision plus SHA-256 preimage digest.
    For `quarantine_header`, both paths call the same source-only projection: the signed kind:1
    supplies body, author, source timestamp, reply target, and source id. Replaceable kind:0 data and
    local clock clamping are excluded from authored bytes; one captured `observed_at` will supply the

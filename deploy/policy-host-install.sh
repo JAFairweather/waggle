@@ -4,12 +4,26 @@
 set -eu
 
 PUB=${WAGGLE_POLICY_CLIENT_PUB:-}
+SHADOW_PUB=${WAGGLE_POLICY_SHADOW_CLIENT_PUB:-}
 case "$PUB" in ssh-ed25519\ *|ecdsa-*\ *) : ;; *)
   echo "set WAGGLE_POLICY_CLIENT_PUB to the Waggle host's dedicated SSH public key" >&2; exit 2 ;;
 esac
+case "$SHADOW_PUB" in ssh-ed25519\ *|ecdsa-*\ *) : ;; *)
+  echo "set WAGGLE_POLICY_SHADOW_CLIENT_PUB to a distinct derive-only SSH public key" >&2; exit 2 ;;
+esac
+key_identity() {
+  # OpenSSH comments are labels, not key identity. Compare algorithm + key blob so the same
+  # private key cannot authenticate to both the write-capable and derive-only accounts.
+  printf '%s\n' "$1" | awk 'NF >= 2 { print $1 " " $2; exit }'
+}
+PUB_ID=$(key_identity "$PUB")
+SHADOW_PUB_ID=$(key_identity "$SHADOW_PUB")
+test -n "$PUB_ID" && test -n "$SHADOW_PUB_ID" || { echo "ingress SSH keys are malformed" >&2; exit 2; }
+test "$PUB_ID" != "$SHADOW_PUB_ID" || { echo "live and shadow ingress keys must be distinct" >&2; exit 2; }
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 test "$(id -u)" -eq 0 || { echo "run as root on the policy host" >&2; exit 2; }
-test -f "$ROOT/tools/buzz-policy-service.mjs" && test -f "$ROOT/tools/buzz-policy-forward.mjs" || {
+test -f "$ROOT/tools/buzz-policy-service.mjs" && test -f "$ROOT/tools/buzz-policy-forward.mjs" &&
+  test -f "$ROOT/tools/buzz-policy-shadow.mjs" && test -f "$ROOT/tools/buzz-policy-shadow-forward.mjs" || {
   echo "run from a complete, reviewed Waggle release tree" >&2; exit 2; }
 test "$ROOT" = /opt/waggle-policy || { echo "the reviewed release must be installed at /opt/waggle-policy" >&2; exit 2; }
 test ! -e "$ROOT/.git" || { echo "deploy an exported release, not a mutable git worktree" >&2; exit 2; }
@@ -22,8 +36,12 @@ fi
 
 getent group waggle-policy >/dev/null 2>&1 || groupadd --system waggle-policy
 getent group waggle-policy-ingress >/dev/null 2>&1 || groupadd --system waggle-policy-ingress
+getent group waggle-policy-shadow >/dev/null 2>&1 || groupadd --system waggle-policy-shadow
+getent group waggle-policy-shadow-ingress >/dev/null 2>&1 || groupadd --system waggle-policy-shadow-ingress
 id waggle-policy >/dev/null 2>&1 || useradd --system --gid waggle-policy --home-dir /nonexistent --shell /usr/sbin/nologin waggle-policy
 id waggle-policy-ingress >/dev/null 2>&1 || useradd --system --gid waggle-policy-ingress --home-dir /nonexistent --shell /bin/sh waggle-policy-ingress
+id waggle-policy-shadow >/dev/null 2>&1 || useradd --system --gid waggle-policy-shadow --home-dir /nonexistent --shell /usr/sbin/nologin waggle-policy-shadow
+id waggle-policy-shadow-ingress >/dev/null 2>&1 || useradd --system --gid waggle-policy-shadow-ingress --home-dir /nonexistent --shell /bin/sh waggle-policy-shadow-ingress
 
 install -d -m 0755 -o root -g root /opt/waggle-policy
 install -d -m 0700 -o root -g root /etc/waggle-policy /etc/waggle-policy/credentials
@@ -35,6 +53,9 @@ chmod 0600 /etc/waggle-policy/release.sha256
 printf 'restrict %s\n' "$PUB" > /etc/ssh/authorized_keys/waggle-policy-ingress
 chown root:root /etc/ssh/authorized_keys/waggle-policy-ingress
 chmod 0600 /etc/ssh/authorized_keys/waggle-policy-ingress
+printf 'restrict %s\n' "$SHADOW_PUB" > /etc/ssh/authorized_keys/waggle-policy-shadow-ingress
+chown root:root /etc/ssh/authorized_keys/waggle-policy-shadow-ingress
+chmod 0600 /etc/ssh/authorized_keys/waggle-policy-shadow-ingress
 
 install -m 0644 -o root -g root "$ROOT/deploy/sshd-waggle-policy.conf" /etc/ssh/sshd_config.d/60-waggle-policy.conf
 SSHD=$(command -v sshd)
@@ -44,7 +65,9 @@ systemctl reload ssh.service 2>/dev/null || systemctl reload sshd.service
 install -m 0644 -o root -g root "$ROOT/deploy/waggle-policy.socket" /etc/systemd/system/waggle-policy.socket
 install -m 0644 -o root -g root "$ROOT/deploy/waggle-policy@.service" /etc/systemd/system/waggle-policy@.service
 install -m 0644 -o root -g root "$ROOT/deploy/waggle-policy.slice" /etc/systemd/system/waggle-policy.slice
+install -m 0644 -o root -g root "$ROOT/deploy/waggle-policy-shadow.socket" /etc/systemd/system/waggle-policy-shadow.socket
+install -m 0644 -o root -g root "$ROOT/deploy/waggle-policy-shadow@.service" /etc/systemd/system/waggle-policy-shadow@.service
 systemctl daemon-reload
 
 echo "policy-host identities, forced SSH capability, socket, and state tree installed"
-echo "NEXT: install a root-owned release at /opt/waggle-policy; create the four 0600 root:root files documented in deploy/POLICY_HOST.md; run the verifier; only then enable waggle-policy.socket"
+echo "NEXT: install the owner-controlled 0600 policy files documented in deploy/POLICY_HOST.md; run the verifier; only then enable either socket"
