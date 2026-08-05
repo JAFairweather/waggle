@@ -123,10 +123,11 @@ function draw(state) {
 
   // Lane 4 — count only, and it cannot say whether quarantine DELIVERS or merely HOLDS:
   // with no staging channel configured, routePublic logs and drops. Not published.
-  const gate4 = ['<span class="k unk">count only — membership not published</span>', ...gateChip()]
+  const gate4 = ['<span class="k unk">membership and traffic count not published</span>', ...gateChip()]
+  if (m.watchedNotes !== null) gate4.push(`<span class="k unk">${m.watchedNotes} watched note(s) make reply lanes reachable — not a reply count</span>`)
   if (m.lanes[3].muted) gate4.push(`<span class="k crit">${m.lanes[3].muted} muted author(s) dropped before this lane</span>`)
   gate4.push('<span class="k unk">delivers or holds: not published</span>')
-  out.push(laneHtml(LANE_VIEW[3], 4, { count: m.lanes[3].count, inert: m.lanes[3].inert ? inertText : null, chips: gate4 }))
+  out.push(laneHtml(LANE_VIEW[3], 4, { count: null, inert: m.lanes[3].inert ? inertText : null, chips: gate4 }))
 
   // Lane 5 — the residual. Always `—`, never `(0)`.
   out.push(laneHtml(DROP_VIEW, 5, { count: m.drop.count }))

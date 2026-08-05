@@ -50,17 +50,17 @@ export function laneModel(state) {
   return {
     consentOn,
     repliesReachable,
+    watchedNotes,
     follows,
     lanes: [
       { id: LANE_VIEW[0].id, count: follows.length, membership: 'listed' },
       { id: LANE_VIEW[1].id, count: null, membership: 'unpublished' },
       { id: LANE_VIEW[2].id, count: num(trust?.trusted_repliers), membership: 'unpublished',
         inert: repliesReachable === false },
-      { id: LANE_VIEW[3].id, count: watchedNotes, membership: 'unpublished',
+      { id: LANE_VIEW[3].id, count: null, membership: 'unpublished',
         inert: repliesReachable === false, muted: num(trust?.muted_authors),
         deliversOrHolds: 'unpublished' },
     ],
     drop: { id: DROP_VIEW.id, count: null },   // invariant: never a number
   }
 }
-

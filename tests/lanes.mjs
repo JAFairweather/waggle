@@ -56,10 +56,18 @@ ok('only the mirrored feed publishes its membership, which is why only it can be
 const bridgeSrc = readFileSync(new URL('../src/bridge.mjs', import.meta.url), 'utf8')
 const egressSrc = readFileSync(new URL('../src/egress.mjs', import.meta.url), 'utf8')
 const quarantineSrc = readFileSync(new URL('../src/quarantine_projection.mjs', import.meta.url), 'utf8')
+const routingHtml = readFileSync(new URL('../console/routing.html', import.meta.url), 'utf8')
 const codeOf = text => text.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
 const restated = id => [bridgeSrc, egressSrc, quarantineSrc].some(s => codeOf(s).includes(`'${id}'`))
 ok('no consumer restates a lane name as a literal outside lanes.mjs',
   !LANE_IDS.some(restated) && !restated(RELEASED))
+ok('the routing lede separates verification/gate refusals from classified destinations',
+  /clears signature verification and the configured gates/.test(routingHtml) &&
+  /separate refusal outcomes/.test(routingHtml) && !/Every public note that reaches this bridge lands/.test(routingHtml))
+ok('the 441 control is scoped only to granted-participant admission',
+  /granted participant → quarantine/.test(routingHtml) &&
+  /A 441 does not remove a mirrored feed, vouch, or mute/.test(routingHtml) &&
+  !/any lane → dropped/.test(routingHtml))
 
 // ── the view's honesty rules ───────────────────────────────────────────────────
 // `laneModel` is pure, so the two rules the routing page must never break are checked
@@ -80,7 +88,9 @@ ok('a count absent from the signed state is null, never zero',
   bare.lanes[2].count === null && bare.lanes[3].count === null && bare.consentOn === null)
 ok('the lane whose membership is unpublished never reports a count from thin air',
   full.lanes[1].count === null && full.lanes[1].membership === 'unpublished')
-ok('published counts are reported as given', full.lanes[2].count === 3 && full.lanes[3].count === 7)
+ok('published standing-follow counts are reported as given', full.lanes[2].count === 3)
+ok('watched notes are a reachability prerequisite, never mislabeled as quarantine traffic',
+  full.watchedNotes === 7 && full.lanes[3].count === null)
 ok('the mirrored-feed count comes from the follow list it can actually enumerate',
   full.lanes[0].count === 2 && full.lanes[0].membership === 'listed')
 ok('with no watched notes, both reply lanes are inert rather than merely empty',
