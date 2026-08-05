@@ -14,7 +14,7 @@ export async function sealedTaskRouteCommand(signer, bridge, body, now = Math.fl
   const encrypted = await signer.nip44Encrypt(bridge, JSON.stringify(rumor))
   const sealDraft = { kind:13, created_at:fuzzed(), tags:[], content:encrypted }
   const seal = await signer.signEvent(sealDraft)
-  if (!verifyEvent(seal) || seal.pubkey !== owner || seal.kind !== sealDraft.kind ||
+  if (!seal || typeof seal !== 'object' || Array.isArray(seal) || !verifyEvent(seal) || seal.pubkey !== owner || seal.kind !== sealDraft.kind ||
       seal.created_at !== sealDraft.created_at || seal.content !== sealDraft.content ||
       JSON.stringify(seal.tags) !== JSON.stringify(sealDraft.tags)) throw new Error('The signer returned an invalid or altered route seal.')
   const wrapKey = generateSecretKey()

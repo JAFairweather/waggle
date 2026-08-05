@@ -9,6 +9,7 @@ import { join } from 'node:path'
 import { generateSecretKey, getEventHash, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
 import * as nip44 from 'nostr-tools/nip44'
 import { sealedTaskRouteCommand } from '../console/task-route-envelope.mjs'
+import { consoleSigner, CONSOLE_SESSION_KEY } from '../console/signer-session.mjs'
 
 const tmp = mkdtempSync(join(tmpdir(), 'wb-control-state-'))
 const CFG = join(tmp, 'config.json')
@@ -182,6 +183,18 @@ const ownerSigner = {
   signEvent: async event => wire(finalizeEvent(event, watchedSk)),
   nip44Encrypt: async (recipient, plaintext) => nip44.encrypt(plaintext, nip44.getConversationKey(watchedSk, recipient)),
 }
+const restoredSigner = { marker: 'saved-bunker' }
+const fakeStorage = { value: 'nip46:saved', getItem(key) { return key === CONSOLE_SESSION_KEY ? this.value : null }, removeItem() { this.value = null } }
+const selectedSigner = await consoleSigner({ storage: fakeStorage, parse: value => ({ kind: value.slice(0, 5) }),
+  restore: session => session.kind === 'nip46' ? restoredSigner : null,
+  browserSigner: () => ({ marker: 'ambient-window-nostr' }) })
+t('the route Console reuses the Access tab Bunker session instead of ambient window.nostr', selectedSigner === restoredSigner)
+let undefinedSealRefused = false
+try {
+  await sealedTaskRouteCommand({ ...ownerSigner, signEvent: async () => undefined },
+    getPublicKey(bridgeSk), taskBody('upsert'), routeAt)
+} catch (error) { undefinedSealRefused = /invalid or altered route seal/.test(error.message) }
+t('an injected signer that returns no event fails with a bounded route error', undefinedSealRefused)
 let alteredSealRefused = false
 try {
   await sealedTaskRouteCommand({ ...ownerSigner, signEvent: async event => wire(finalizeEvent({ ...event, content: 'substituted' }, watchedSk)) },
@@ -225,7 +238,7 @@ const taskRoutesPage = readFileSync(new URL('../console/task-routes.mjs', import
 const taskEnvelope = readFileSync(new URL('../console/task-route-envelope.mjs', import.meta.url), 'utf8')
 const operationsPage = readFileSync(new URL('../console/config-operations.mjs', import.meta.url), 'utf8')
 t('the Config console closes the entire signed state and renders only fresh verified public operations', /config-operations\.mjs/.test(configPage) && /verifyEvent/.test(operationsPage) && /exact\(state, \['v', 'observed_at', 'hive', 'bridge', 'publishing', 'follows', 'operations'\]\)/.test(operationsPage) && /exact\(state\.hive, \['id', 'name', 'handle'\]\)/.test(operationsPage) && /state\.follows\.every/.test(operationsPage) && /newest\.observed_at <= now \+ 60/.test(operationsPage) && /now - newest\.observed_at <= 900/.test(operationsPage) && /Verified signed state from/.test(operationsPage) && /Aggregate counts only/.test(operationsPage) && !/fetch\([^)]*config\.json/.test(operationsPage) && !/\/config\.json/.test(operationsPage))
-t('the Config route form emits only an encrypted gift wrap and never publishes its private tuple', /task-routes\.mjs/.test(configPage) && /waggle-task-route/.test(taskRoutesPage) && /nvoy-task-carry-v1/.test(taskRoutesPage) && /nip44\.encrypt/.test(taskEnvelope) && /kind:1059/.test(taskEnvelope) && /nip44Encrypt/.test(taskEnvelope) && !/kind:30078/.test(taskRoutesPage + taskEnvelope) && !/fetch\([^)]*config\.json/.test(taskRoutesPage) && !/\/config\.json/.test(taskRoutesPage))
+t('the Config route form emits only an encrypted gift wrap and never publishes its private tuple', /task-routes\.mjs/.test(configPage) && /waggle-task-route/.test(taskRoutesPage) && /nvoy-task-carry-v1/.test(taskRoutesPage) && /nip44\.encrypt/.test(taskEnvelope) && /kind:1059/.test(taskEnvelope) && /nip44Encrypt/.test(taskEnvelope) && /consoleSigner/.test(taskRoutesPage) && !/kind:30078/.test(taskRoutesPage + taskEnvelope) && !/fetch\([^)]*config\.json/.test(taskRoutesPage) && !/\/config\.json/.test(taskRoutesPage))
 
 console.log(`\n${pass}/${n} passed`)
 process.exit(pass === n ? 0 : 1)
