@@ -29,7 +29,7 @@ const INIT = resolve(ROOT, 'tools', 'tripwire-alarm-init.mjs')
 const DROP_IN = resolve(ROOT, 'deploy', 'tripwire-alarm.conf')
 const BUNKER_DROP_IN = resolve(ROOT, 'deploy', 'tripwire-alarm-bunker.conf')
 const BASE_UNIT = resolve(ROOT, 'deploy', 'tripwire.service')
-const DRILL_HELPER = resolve(ROOT, 'deploy', 'tripwire-drill.sh')
+const DRILL_UNIT = resolve(ROOT, 'deploy', 'waggle-tripwire-drill.service')
 const POSTER = 'npub1s36nypljc6h88tey0kshf688eyd8myu636ctfs4e3d2w54nhsmnqfhaent'
 // Written per-run into the temp dir. The real log at data/tripwire-alarms.log is evidence an
 // operator is meant to trust; a test must not leave fake alarms in it.
@@ -219,19 +219,6 @@ try {
   check('live drill refuses a missing explicit relay before any publication',
     noExplicitRelay.code === 1 && /requires exactly one explicit BUZZ_RELAY_URL/.test(noExplicitRelay.out) && receivedWrap === null,
     `exit ${noExplicitRelay.code}`)
-  const badDrillEnv = await runAsync([TOOL, '--poster', POSTER], {
-    ...drillEnv, TRIPWIRE_DRILL: 'true',
-  })
-  check('the service drill flag is closed to the single documented value',
-    badDrillEnv.code === 1 && /must be exactly 1/.test(badDrillEnv.out), `exit ${badDrillEnv.code}`)
-  relayAccept = true; receivedWrap = null
-  const serviceDrill = await runAsync([TOOL, '--poster', POSTER], {
-    ...drillEnv, TRIPWIRE_DRILL: '1',
-  })
-  check('the systemd-compatible service flag runs the same accepted sealed-DM drill',
-    serviceDrill.code === 0 && /DRILL OK/.test(serviceDrill.out) && receivedWrap?.kind === 1059,
-    `exit ${serviceDrill.code}`)
-  receivedWrap = null
   const queryCredentialRelay = await runAsync([TOOL, '--poster', POSTER, '--drill-alarm'], {
     ...drillEnv, BUZZ_RELAY_URL: `${relayUrl}/?token=secret`,
   })
@@ -281,48 +268,17 @@ try {
     bunkerDropIn.includes('Environment=ALARM_TO_FILE=%d/alarm.to') &&
     !bunkerDropIn.includes('ExecStart=') && !/bunker:\/\//.test(bunkerDropIn))
 
-  const drillHelper = readFileSync(DRILL_HELPER, 'utf8')
-  check('the bounded systemd drill always clears its flag and restores an active timer',
-    drillHelper.includes('trap cleanup EXIT HUP INT TERM') &&
-    drillHelper.includes('unset-environment TRIPWIRE_DRILL BUZZ_RELAY_URL') &&
-    drillHelper.includes('TIMER_WAS_ACTIVE') && !drillHelper.includes('systemctl revert'))
-  check('the bounded drill passes no signer material through its process environment',
-    !/ALARM_(?:NSEC|BUNKER|NIP46|TO)=/.test(drillHelper) &&
-    drillHelper.includes('TRIPWIRE_DRILL=1') && drillHelper.includes('BUZZ_RELAY_URL='))
-
-  const fakeSystemctl = resolve(dir, 'systemctl-fixture.sh')
-  const systemctlLog = resolve(dir, 'systemctl.log')
-  writeFileSync(fakeSystemctl, `#!/bin/sh
-printf '%s\\n' "$*" >> "$TRIPWIRE_TEST_LOG"
-if [ "$1" = is-active ]; then exit 0; fi
-if [ "$1" = start ] && [ "$2" = waggle-tripwire.service ]; then exit "\${TRIPWIRE_TEST_START_CODE:-0}"; fi
-exit 0
-`)
-  chmodSync(fakeSystemctl, 0o700)
-  const failedBoundedDrill = spawnSync('sh', [DRILL_HELPER, 'wss://relay.example'], {
-    env: { ...process.env, TRIPWIRE_SYSTEMCTL: fakeSystemctl, TRIPWIRE_TEST_LOG: systemctlLog,
-      TRIPWIRE_TEST_START_CODE: '4' }, encoding: 'utf8',
-  })
-  const failedCalls = readFileSync(systemctlLog, 'utf8').trim().split('\n')
-  check('a failed production drill preserves its failure and still performs both cleanup actions',
-    failedBoundedDrill.status === 4 &&
-    failedCalls.includes('unset-environment TRIPWIRE_DRILL BUZZ_RELAY_URL') &&
-    failedCalls.at(-1) === 'start waggle-tripwire.timer', `exit ${failedBoundedDrill.status}`)
-  writeFileSync(systemctlLog, '')
-  const acceptedBoundedDrill = spawnSync('sh', [DRILL_HELPER, 'wss://relay.example'], {
-    env: { ...process.env, TRIPWIRE_SYSTEMCTL: fakeSystemctl, TRIPWIRE_TEST_LOG: systemctlLog,
-      TRIPWIRE_TEST_START_CODE: '0' }, encoding: 'utf8',
-  })
-  const acceptedCalls = readFileSync(systemctlLog, 'utf8').trim().split('\n')
-  check('an accepted bounded drill stops, drills, clears, and restores in order',
-    acceptedBoundedDrill.status === 0 && acceptedCalls.join('|') === [
-      'is-active --quiet waggle-tripwire.timer',
-      'stop waggle-tripwire.timer',
-      'set-environment TRIPWIRE_DRILL=1 BUZZ_RELAY_URL=wss://relay.example',
-      'start waggle-tripwire.service',
-      'unset-environment TRIPWIRE_DRILL BUZZ_RELAY_URL',
-      'start waggle-tripwire.timer',
-    ].join('|'))
+  const drillUnit = readFileSync(DRILL_UNIT, 'utf8')
+  check('the production alarm drill is an isolated static unit with no persistent activation',
+    drillUnit.includes('ExecStart=/usr/bin/node /opt/waggle-read/tools/tripwire.mjs --drill-alarm') &&
+    !drillUnit.includes('[Install]') && !drillUnit.includes('WantedBy='))
+  check('process loss cannot disable detection or leave a manager-wide drill flag',
+    !/systemctl|waggle-tripwire\.timer|TRIPWIRE_DRILL|set-environment|unset-environment/.test(drillUnit))
+  check('the isolated drill receives only credential paths, never signer values',
+    drillUnit.includes('LoadCredential=alarm.bunker-uri:/etc/waggle-tripwire/alarm.bunker-uri') &&
+    drillUnit.includes('LoadCredential=alarm.client-nsec:/etc/waggle-tripwire/alarm.client-nsec') &&
+    drillUnit.includes('LoadCredential=alarm.to:/etc/waggle-tripwire/alarm.to') &&
+    !/bunker:\/\/|nsec1/.test(drillUnit))
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }

@@ -1,0 +1,35 @@
+# Isolated positive delivery drill for the Bunker-backed tripwire alarm path.
+# This is deliberately a separate unit: it neither stops the production timer nor places a
+# drill flag in systemd's manager environment, so helper loss, SIGKILL, or reboot cannot leave
+# detection disabled or turn a later scheduled tick into another drill.
+[Unit]
+Description=waggle tripwire — one-shot sealed alarm delivery drill
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=bridge
+Group=bridge
+WorkingDirectory=/opt/waggle-read
+EnvironmentFile=/etc/waggle-tripwire/drill.env
+LoadCredential=alarm.bunker-uri:/etc/waggle-tripwire/alarm.bunker-uri
+LoadCredential=alarm.client-nsec:/etc/waggle-tripwire/alarm.client-nsec
+LoadCredential=alarm.to:/etc/waggle-tripwire/alarm.to
+Environment=ALARM_BUNKER_URI_FILE=%d/alarm.bunker-uri
+Environment=ALARM_NIP46_CLIENT_NSEC_FILE=%d/alarm.client-nsec
+Environment=ALARM_TO_FILE=%d/alarm.to
+ExecStart=/usr/bin/node /opt/waggle-read/tools/tripwire.mjs --drill-alarm
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+

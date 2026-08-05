@@ -34,9 +34,7 @@ const die = (m) => { console.error(`tripwire: ${m}`); process.exit(1) }
 
 // Validate the public, credential-free drill target before reading any secret file or constructing
 // either signer. A malformed target must not be able to trigger secret access or Bunker traffic.
-const drillEnv = String(process.env.TRIPWIRE_DRILL || '').trim()
-if (drillEnv && drillEnv !== '1') die('TRIPWIRE_DRILL must be exactly 1 when set')
-const DRILL_ALARM = process.argv.includes('--drill-alarm') || drillEnv === '1'
+const DRILL_ALARM = process.argv.includes('--drill-alarm')
 let DRILL_RELAY = null
 if (DRILL_ALARM) {
   const raw = String(process.env.BUZZ_RELAY_URL || '').trim()
