@@ -234,6 +234,55 @@ t('mute records standing policy without fetching or releasing the quarantined co
   muteResult.ok && PUB.muted.includes(mutedSource.pubkey) && muteFetched === 0 && moderationPublished === 2)
 t('mute refreshes the signed aggregate state immediately', muteScheduled === 1)
 
+const duplicateSource = source(generateSecretKey())
+stage(duplicateSource)
+const duplicateAt = followAt + 3
+let openDuplicateFetch
+const duplicateFetchGate = new Promise(resolve => { openDuplicateFetch = resolve })
+let duplicateReleases = 0
+const duplicateCommand = moderation('approve', duplicateSource.id, duplicateAt)
+const duplicateOptions = {
+  fetchOriginal: async () => { await duplicateFetchGate; return duplicateSource },
+  publishRelease: async event => {
+    duplicateReleases++
+    recordPosted({ id: event.id, author: event.pubkey, buzz: '7'.repeat(64), dest: CHANNEL, q: false, ts: now })
+  },
+  rate: () => true,
+}
+const duplicateRuns = [
+  handleModerationControlCommand(duplicateCommand, duplicateOptions),
+  handleModerationControlCommand(duplicateCommand, duplicateOptions),
+]
+openDuplicateFetch()
+const duplicateResults = await Promise.all(duplicateRuns)
+t('concurrent relay copies execute one moderation release and one durable decision',
+  duplicateResults.filter(result => result.ok).length === 1 && duplicateReleases === 1 &&
+  PUB.moderationCommandAt === duplicateAt)
+
+const interleavedSource = source(generateSecretKey())
+stage(interleavedSource)
+const oldAt = duplicateAt + 1, newAt = duplicateAt + 2
+let openSlowFetch
+const slowFetchGate = new Promise(resolve => { openSlowFetch = resolve })
+let interleavedReleases = 0
+const interleavedPublish = async event => {
+  interleavedReleases++
+  recordPosted({ id: event.id, author: event.pubkey, buzz: '8'.repeat(64), dest: CHANNEL, q: false, ts: now })
+}
+const slowOld = handleModerationControlCommand(moderation('approve', interleavedSource.id, oldAt), {
+  fetchOriginal: async () => { await slowFetchGate; return interleavedSource },
+  publishRelease: interleavedPublish, rate: () => true,
+})
+const fastNew = handleModerationControlCommand(moderation('approve', interleavedSource.id, newAt), {
+  fetchOriginal: async () => interleavedSource,
+  publishRelease: interleavedPublish, rate: () => true,
+})
+openSlowFetch()
+const [oldResult, newResult] = await Promise.all([slowOld, fastNew])
+t('a slow old and fast new command release once and leave the maximum watermark',
+  oldResult.ok && newResult.ok && interleavedReleases === 1 &&
+  PUB.moderationCommandAt === newAt && JSON.parse(readFileSync(CFG, 'utf8')).public.moderation_command_at === newAt)
+
 const outsiderModeration = moderation('mute', mutedSource.id, followAt + 3, generateSecretKey())
 t('a non-approver cannot issue a moderation command', !(await handleModerationControlCommand(outsiderModeration)).ok)
 const widenedModeration = moderation('mute', mutedSource.id, followAt + 3, watchedSk,

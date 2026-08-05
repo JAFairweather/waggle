@@ -1607,7 +1607,19 @@ function stagingByOriginal(id) {
 // SAME config transaction as the trust mutation.  This removes the old split where a public
 // command had ordering semantics but the in-channel spelling did not, and where follow/mute could
 // change trust without immediately refreshing the bridge-signed aggregate state.
-async function applyModerationCommand(st, action, commandAt, {
+let moderationTail = Promise.resolve()
+function applyModerationCommand(st, action, commandAt, options = {}) {
+  // One bridge process receives the same command from several relays. Serialize the COMPLETE
+  // verify → durable compare/write → release transaction, not just its config write: otherwise
+  // duplicate copies can both pass the watermark while one awaits its source fetch, and a slow
+  // older command can overwrite a newer watermark. A rejected/throwing command must not poison
+  // the lane, so the tail always settles before the next item runs.
+  const result = moderationTail.then(() => applyModerationCommandSerial(st, action, commandAt, options))
+  moderationTail = result.then(() => undefined, () => undefined)
+  return result
+}
+
+async function applyModerationCommandSerial(st, action, commandAt, {
   fetchOriginal = fetchEventById,
   publishRelease = forwardPublic,
   schedule = scheduleControlState,
