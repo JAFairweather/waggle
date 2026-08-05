@@ -431,6 +431,7 @@ const PUB = cfg.public ? {
   controlStateRefreshSecs: Number(cfg.public.control_state_refresh_secs != null ? cfg.public.control_state_refresh_secs : 300),
   controlStateCommandAt: Number(cfg.public.control_state_command_at || 0),
   watchlistCommandAt: Number(cfg.public.watchlist_command_at || 0),
+  trustCommandAt: Number(cfg.public.trust_command_at || 0),
   policyShadow,
 } : null
 
@@ -1511,6 +1512,42 @@ function changeWatchAuthor(pk, action, commandAt = null) {
   log(`watchlist: ${wantAdd ? '+' : '-'}${hex.slice(0, 12)}… — now ${PUB.authors.length} watched, subscription updated (no restart)`)
   return { ok: true, ...(wantAdd ? (exists ? { already: true } : { added: true }) : (exists ? { removed: true } : { already: true })) }
 }
+// Move an identity between trust tiers under a signed command.
+//
+// The in-channel verbs `follow` and `mute` mutate these same two lists, and they publish no
+// signed event: the largest trust jump the bridge makes — quarantined stranger to standing
+// follow, which skips review from then on — rested on an unsigned channel message. Not an
+// outsider path (the handler gates on the approver roster) but an AUDITABILITY gap: nothing
+// outside the box could see that it happened.
+//
+// This lane closes it the way the watchlist lane already did, and adds what the verbs never
+// had: REMOVAL. There is no in-channel way to un-follow or un-mute anyone, so a vouch was
+// effectively permanent unless someone edited config.json by hand.
+function changeTrustTier(pk, action, commandAt = null) {
+  const hex = String(pk || '').trim().toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(hex)) return { ok: false, reason: 'not a 64-hex pubkey' }
+  const ACTIONS = { follow: ['trustedRepliers', 'trusted_repliers', true], unfollow: ['trustedRepliers', 'trusted_repliers', false],
+    mute: ['muted', 'muted_authors', true], unmute: ['muted', 'muted_authors', false] }
+  const spec = ACTIONS[action]
+  if (!spec) return { ok: false, reason: 'invalid trust action' }
+  const [field, key, wantAdd] = spec
+  const exists = PUB[field].includes(hex)
+  // The list and the replay watermark advance together or not at all, so an accepted command
+  // can never mutate a tier without also becoming non-replayable.
+  if (!mutateConfig(c => {
+    const current = (c.public[key] || []).map(v => String(v).toLowerCase())
+    c.public[key] = wantAdd ? Array.from(new Set([...current, hex])) : current.filter(a => a !== hex)
+    if (commandAt != null) c.public.trust_command_at = commandAt
+  })) {
+    return { ok: false, reason: 'could not persist trust tier' }
+  }
+  if (commandAt != null) PUB.trustCommandAt = commandAt
+  if (wantAdd && !exists) PUB[field].push(hex)
+  if (!wantAdd && exists) PUB[field].splice(PUB[field].indexOf(hex), 1)
+  scheduleControlState()
+  log(`trust: ${action} ${hex.slice(0, 12)}… — now ${PUB.trustedRepliers.length} standing follow(s), ${PUB.muted.length} muted`)
+  return { ok: true, ...(wantAdd ? (exists ? { already: true } : { added: true }) : (exists ? { removed: true } : { already: true })) }
+}
 function addWatchAuthor(pk) { return changeWatchAuthor(pk, 'mirror') }
 function removeWatchAuthor(pk) {
   return changeWatchAuthor(pk, 'unmirror')
@@ -1592,6 +1629,11 @@ async function handleCommand(m) {
   if (word === 'mute') {
     if (!PUB.muted.includes(st.author)) PUB.muted.push(st.author)
     mutateConfig(c => { c.public.muted_authors = Array.from(new Set([...(c.public.muted_authors || []), st.author])) })
+    // Refresh the signed state. Without this the published muted_authors counter stayed at
+    // its old value until some unrelated event happened to trigger a publish — so the one
+    // signal an outside observer could use to notice a trust change was suppressed by
+    // omission. The verb itself still leaves no signed record; see the note at handleCommand.
+    scheduleControlState()
     return replyInStaging(m.id, 'console_ack', { verb: 'muted', author: st.author })
   }
 
@@ -1611,6 +1653,11 @@ async function handleCommand(m) {
   if (word === 'follow') {
     if (!PUB.trustedRepliers.includes(st.author)) PUB.trustedRepliers.push(st.author)
     mutateConfig(c => { c.public.trusted_repliers = Array.from(new Set([...(c.public.trusted_repliers || []), st.author])) })
+    // This is the largest single trust jump the bridge makes — quarantined stranger to
+    // standing follow, which skips review from here on. Refreshing the signed state is the
+    // minimum: it makes the published trusted_repliers counter true, so an observer can at
+    // least SEE that the tier changed size even though the decision itself is unsigned.
+    scheduleControlState()
     granted = true
   }
   replyInStaging(m.id, alreadyReleased ? 'console_ack_already' : 'console_ack',
@@ -1749,6 +1796,7 @@ const CONTROL_STATE_DELAY_MS = 250
 const CONTROL_COMMAND_KIND = 30078
 const CONTROL_COMMAND_D = 'waggle-control'
 const WATCHLIST_COMMAND_D = 'waggle-watchlist'
+const TRUST_COMMAND_D = 'waggle-trust'
 const CONTROL_COMMAND_MAX_AGE_SECS = 15 * 60
 let controlStateTimer = null
 
@@ -1851,6 +1899,29 @@ function handleControlStateCommand(ev, publish = publishControlState) {
   Promise.resolve(publish(undefined, true)).catch(() => {})
   log(`control state: ${body.enabled ? 'ENABLED' : 'DISABLED'} by approver ${author.slice(0, 12)}… (${ev.id.slice(0, 12)}…)`)
   return { ok: true, enabled: body.enabled }
+}
+
+// The signed equivalent of the in-channel `follow` / `mute` verbs, plus the removals they
+// never offered. Same discipline as the watchlist lane: approver roster, verified signature,
+// exact two-tag addressing, freshness bounds, monotonic watermark.
+function handleTrustControlCommand(ev) {
+  if (!ev || ev.kind !== CONTROL_COMMAND_KIND || !PUB || !BRIDGE_PK) return { ok: false, reason: 'not a trust command' }
+  const author = String(ev.pubkey || '').toLowerCase()
+  if (!PUB.approvers.includes(author)) return { ok: false, reason: 'author is not an approver' }
+  let sigOk; try { sigOk = verifyEvent(ev) } catch { sigOk = false }
+  if (!sigOk) return { ok: false, reason: 'invalid signature' }
+  const tags = ev.tags || []
+  if (tags.length !== 2 || tags[0]?.[0] !== 'd' || tags[0]?.[1] !== TRUST_COMMAND_D || tags[0].length !== 2 || tags[1]?.[0] !== 'p' || String(tags[1]?.[1]).toLowerCase() !== BRIDGE_PK || tags[1].length !== 2) return { ok: false, reason: 'not addressed to this bridge' }
+  const now = Math.floor(Date.now() / 1000)
+  if (!Number.isInteger(ev.created_at) || ev.created_at > now + 300 || now - ev.created_at > CONTROL_COMMAND_MAX_AGE_SECS) return { ok: false, reason: 'stale command' }
+  let body
+  try { body = JSON.parse(ev.content) } catch { return { ok: false, reason: 'invalid body' } }
+  if (!body || body.v !== 1 || !['follow', 'unfollow', 'mute', 'unmute'].includes(body.action) || !/^[0-9a-f]{64}$/i.test(String(body.target || '')) || Object.keys(body).sort().join(',') !== 'action,target,v') return { ok: false, reason: 'invalid command body' }
+  if (ev.created_at <= PUB.trustCommandAt) return { ok: false, reason: 'superseded command' }
+  const result = changeTrustTier(String(body.target).toLowerCase(), body.action, ev.created_at)
+  if (!result.ok) return result
+  log(`trust: ${body.action} accepted from approver ${author.slice(0, 12)}… (${ev.id.slice(0, 12)}…)`)
+  return result
 }
 
 // A browser never writes config.json or reaches the private staging plane. It may sign this
@@ -2721,6 +2792,7 @@ function connectPublic(url) {
         if (ev && ev.kind === CONTROL_COMMAND_KIND) {
           if (handleControlStateCommand(ev).ok) return
           if (handleWatchlistControlCommand(ev).ok) return
+          if (handleTrustControlCommand(ev).ok) return
           return
         }
         if (ev && (ev.kind === NIPDA.grant || ev.kind === NIPDA.revocation)) {
@@ -2775,7 +2847,7 @@ export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, c
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests }
 
 // --- boot -------------------------------------------------------------------
