@@ -32,6 +32,23 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const arg = (n, d) => { const i = process.argv.indexOf(n); return i === -1 ? d : process.argv[i + 1] }
 const die = (m) => { console.error(`tripwire: ${m}`); process.exit(1) }
 
+// Validate the public, credential-free drill target before reading any secret file or constructing
+// either signer. A malformed target must not be able to trigger secret access or Bunker traffic.
+const DRILL_ALARM = process.argv.includes('--drill-alarm')
+let DRILL_RELAY = null
+if (DRILL_ALARM) {
+  const raw = String(process.env.BUZZ_RELAY_URL || '').trim()
+  if (!raw) die('--drill-alarm requires exactly one explicit BUZZ_RELAY_URL')
+  try {
+    const parsed = new URL(raw)
+    if (!['ws:', 'wss:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash)
+      throw new Error('not a credential-free WebSocket URL')
+    DRILL_RELAY = parsed.toString()
+  } catch {
+    die('--drill-alarm requires exactly one explicit credential-free ws:// or wss:// BUZZ_RELAY_URL')
+  }
+}
+
 // systemd credentials keep the alarm nsec out of EnvironmentFile, process listings, the repo,
 // and logs. Direct env remains for local drills/backward compatibility, but a unit that supplies
 // BOTH is a migration error: silently preferring one could leave an old secret live indefinitely.
@@ -103,6 +120,9 @@ const JOURNALS = journalPaths()
 const ALARMS = process.env.ALARM_LOG_PATH || resolve(ROOT, 'data', 'tripwire-alarms.log')
 
 function loadRelays() {
+  // A delivery drill proves one named path. Falling through to the normal fan-out would let a
+  // different relay accept the wrap and mask failure of the path the operator intended to test.
+  if (DRILL_ALARM) return [DRILL_RELAY]
   const out = new Set()
   if (process.env.BUZZ_RELAY_URL) out.add(process.env.BUZZ_RELAY_URL)
   try { const c = JSON.parse(readFileSync(resolve(ROOT, 'config.json'), 'utf8')); for (const r of c.public?.relays || []) out.add(r) } catch { /* fall through */ }
@@ -154,7 +174,7 @@ const alarmConfigured = () => !!(alarmPubkey && ALARM_TO)
 async function alarmDM(text) {
   if (!alarmConfigured()) {
     console.error('tripwire: ⚠ ALARM NOT DELIVERED — no alarm signer/ALARM_TO is configured, so this alarm exists only in this log and data/tripwire-alarms.log. Nobody has been told.')
-    return
+    return 0
   }
   try {
     const to = ALARM_TO.startsWith('npub1') ? nip19.decode(ALARM_TO).data : ALARM_TO.toLowerCase()
@@ -183,7 +203,19 @@ async function alarmDM(text) {
     const accepted = results.filter(Boolean).length
     if (accepted > 0) console.error(`tripwire: alarm DM delivered ${accepted}/${relays.length} relay(s)`)
     else console.error(`tripwire: ⚠ ALARM NOT DELIVERED — 0/${relays.length} relay(s) accepted the alarm DM. The alarm exists only in this log and data/tripwire-alarms.log.`)
-  } catch (e) { console.error(`tripwire: ⚠ ALARM NOT DELIVERED — alarm DM failed: ${e.message}`) }
+    return accepted
+  } catch (e) { console.error(`tripwire: ⚠ ALARM NOT DELIVERED — alarm DM failed: ${e.message}`); return 0 }
+}
+
+// Exercise the exact production seal/publish path without manufacturing an unauthorized poster
+// event. This is delivery evidence, not a detector all-clear: the ordinary positive/negative diff
+// drill proves detection, while this proves that a firing detector can actually reach its owner.
+if (DRILL_ALARM) {
+  console.error('tripwire: DRILL — sending a labelled test alarm through the production sealed-DM path')
+  const delivered = await alarmDM(`🚨 TRIPWIRE DRILL — test alert from ${posterHex.slice(0, 12)}… at ${new Date().toISOString()}. This is a delivery test, not a signing incident.`)
+  if (delivered < 1) process.exit(4)
+  console.log(`DRILL OK — sealed test alarm accepted by ${delivered} relay(s). Confirm arrival at the configured operator identity.`)
+  process.exit(0)
 }
 
 // --- run ---

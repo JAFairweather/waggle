@@ -373,6 +373,21 @@ sudo systemctl restart waggle-tripwire.service
 The last command is the negative control and may report `QUIET` or `OK`; it must no longer report
 `no alarm delivery path configured`. The positive drill below must then produce a sealed DM.
 
+Run the live delivery drill with only public values and credential **paths** in the environment:
+
+```
+sudo env \
+  ALARM_NSEC_FILE=/etc/waggle-tripwire/alarm.nsec \
+  ALARM_TO_FILE=/etc/waggle-tripwire/alarm.to \
+  BUZZ_RELAY_URL=wss://relay.nave.pub \
+  /usr/bin/node /opt/waggle-read/tools/tripwire.mjs \
+  --poster <bridge-poster-npub-or-hex> --drill-alarm
+```
+
+Exit 0 means at least one relay accepted the sealed test alert; exit 4 means nobody accepted it.
+The recipient must still confirm the labelled `TRIPWIRE DRILL` DM arrived—relay acceptance alone
+is not recipient read-back.
+
 The watcher **pulls** the journals (so the box needs no credentials to the watcher — a journal
 is only public event ids, nothing sensitive), on its own timer just ahead of the tripwire tick.
 
