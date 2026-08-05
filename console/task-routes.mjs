@@ -4,6 +4,7 @@
 import { nip19, verifyEvent } from 'nostr-tools'
 import { sealedTaskRouteCommand } from './task-route-envelope.mjs'
 import { consoleSigner } from './signer-session.mjs'
+import { controlStateFresh } from './control-state-freshness.mjs'
 
 const RELAYS = ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub', 'wss://jskitty.com/nostr']
 const $ = id => document.getElementById(id)
@@ -43,8 +44,7 @@ async function freshBridge() {
       if (state.v === 1 && state.bridge === bridge && Number.isInteger(state.observed_at) && (!newest || state.observed_at > newest.observed_at)) newest = state
     } catch {}
   }
-  const now = Math.floor(Date.now() / 1000)
-  if (!newest || newest.observed_at > now + 60 || now - newest.observed_at > 900) throw new Error('Load a fresh verified bridge state before changing a route.')
+  if (!newest || !controlStateFresh(newest.observed_at)) throw new Error('Load a fresh verified bridge state before changing a route.')
   return bridge
 }
 function publish(event) {

@@ -240,11 +240,11 @@
     in. <b>Hidden is the privacy working, not something failing to load.</b>
   </div>
   <div class="note">
-    <b>Read-only, and deliberately.</b> Issuing or revoking is a signing act and belongs where the
-    key lives — <code>tools/grant.mjs</code> and <code>tools/grant-setup.sh</code>. A console that
-    could revoke would need a key in the browser, which is a larger surface than the convenience is
-    worth. What is missing is never invented: if a relay refuses or fails, this says so rather than
-    quietly showing you a shorter list and letting you read it as “nobody is admitted.”
+    <b>Keys stay with your signer.</b> Reading needs no key and no bridge access. When you issue or
+    revoke, your selected browser or Bunker signer signs the exact event; this page never receives
+    the private key or host access. Authority moves as signed events. What is missing is never
+    invented: if a relay refuses or fails, this says so rather than quietly showing a shorter list
+    and letting you read it as “nobody is admitted.”
   </div>
 </main>
 
