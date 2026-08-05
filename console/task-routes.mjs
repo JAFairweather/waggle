@@ -2,8 +2,8 @@
 // public state, asks the owner's signer for an encrypted NIP-17 seal, then publishes an ephemeral
 // NIP-59 wrap. Relays never learn the channel, participant, sender, or mention inside the command.
 import { nip19, verifyEvent } from 'nostr-tools'
-import { nip07Signer } from './vendor/nave-connect.mjs'
 import { sealedTaskRouteCommand } from './task-route-envelope.mjs'
+import { consoleSigner } from './signer-session.mjs'
 
 const RELAYS = ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub', 'wss://jskitty.com/nostr']
 const $ = id => document.getElementById(id)
@@ -79,7 +79,7 @@ async function manage(action) {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(channel)) throw new Error('Use the Buzz channel UUID, not its display name.')
     const mention = String($('route-mention').value || '').trim().replace(/^@/, '').toLowerCase()
     if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(mention)) throw new Error('Mention must be 1–32 letters, numbers, underscores, or hyphens.')
-    const signer = nip07Signer(), signingIdentity = (await signer.getPublicKey()).toLowerCase()
+    const signer = await consoleSigner(), signingIdentity = (await signer.getPublicKey()).toLowerCase()
     const sender = $('route-sender').value.trim() ? hex($('route-sender').value) : signingIdentity
     const verb = action === 'upsert' ? 'activate' : 'remove'
     if (!confirm(`${verb[0].toUpperCase() + verb.slice(1)} @${mention} for ${npub(participant)} in channel ${channel}?\n\nOnly messages signed by ${npub(sender)} can use this route.`)) return
