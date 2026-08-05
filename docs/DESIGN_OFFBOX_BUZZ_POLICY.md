@@ -191,6 +191,12 @@ The durable policy journal claims this key before signing. Concurrent and restar
 either receive the same terminal receipt or the current in-flight status; they never author a
 second Buzz event.
 
+The signer-returned/preparation-not-yet-durable crash interval is operator-resolved, never
+automatically reclaimed. The policy host binds the exact original canonical request and
+`claimed_at` under a separate private recovery secret, then signs an `ambiguous` receipt with no
+Buzz event id. The bridge cannot invoke this transition. See
+[OFFBOX_POLICY_RUNBOOK.md](OFFBOX_POLICY_RUNBOOK.md#resolving-a-pre-prepare-orphan).
+
 A terminal receipt is a signed, canonical record binding:
 
 - request digest and idempotency key;

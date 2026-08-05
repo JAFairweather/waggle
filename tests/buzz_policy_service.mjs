@@ -9,7 +9,7 @@ import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils'
 import { canonicalJson } from '../src/buzz_policy_core.mjs'
 import { createArtifactPolicy } from '../src/buzz_policy_artifacts.mjs'
 import { PolicyJournal } from '../src/policy_journal.mjs'
-import { processBuzzPolicyRequest } from '../src/buzz_policy_service.mjs'
+import { processBuzzPolicyRequest, resolveBuzzPolicyOrphan } from '../src/buzz_policy_service.mjs'
 
 let fails = 0
 const t = (name, ok) => { console.log(`${ok ? 'ok  ' : 'FAIL'} — ${name}`); if (!ok) fails++ }
@@ -37,6 +37,19 @@ const makeSigner = () => {
 const options = (journal, signer, extra = {}) => ({ policyInstance, catalogueVersion, stagingChannel: channel,
   watchedEventIds: [watchedId], artifactPolicy, journal, signer, now, nonce: () => 'nonce_0123456789', ...extra })
 
+{
+  const path = directory(), recoverySecret = 'recovery_secret_0123456789abcdef'
+  const journal = new PolicyJournal(path, { recoverySecret }), { signer } = makeSigner()
+  const key = createHash('sha256').update(canonicalJson([1, policyInstance, catalogueVersion, 'quarantine_header', [source.id], channel])).digest('hex')
+  const requestDigest = createHash('sha256').update(raw).digest('hex')
+  journal.claim(key, requestDigest, now)
+  await rejects('orphan resolution is bound to the exact inspected claimed_at', () => resolveBuzzPolicyOrphan(raw, now - 1,
+    { ...options(journal, signer), recoverySecret }), /no longer present/)
+  const resolved = await resolveBuzzPolicyOrphan(raw, now, { ...options(journal, signer), recoverySecret, now: now + 3600 })
+  const fields = JSON.parse(JSON.parse(resolved.receipt).content)
+  t('a pre-prepare orphan becomes only a signed ambiguous terminal receipt', resolved.result === 'ambiguous' && fields.result === 'ambiguous' && fields.buzz_event_id === null && fields.reason_code === 'signing_outcome_unknown')
+  t('operator recovery remains possible after the request freshness window', fields.completed_at === now + 3600)
+}
 {
   const journal = new PolicyJournal(directory()), { signer, signed } = makeSigner(); let calls = 0
   const first = await processBuzzPolicyRequest(raw, options(journal, signer, { fetchImpl: async (_url, request) => {
@@ -85,6 +98,13 @@ const options = (journal, signer, extra = {}) => ({ policyInstance, catalogueVer
 {
   const journal = new PolicyJournal(directory()), badSigner = { signEvent: event => finalizeEvent(event, generateSecretKey()) }
   await rejects('a substituted signing identity cannot create a durable prepared event', () => processBuzzPolicyRequest(raw, options(journal, badSigner, { fetchImpl: async () => response(500, {}) })), /changed policy-owned/)
+}
+
+{
+  const journal = new PolicyJournal(directory()), { signer } = makeSigner()
+  const invalidFetch = async () => { throw new Error('must not fetch') }
+  await rejects('an internal submit-validation failure is not disguised as network ambiguity', () => processBuzzPolicyRequest(raw,
+    { ...options(journal, signer, { fetchImpl: invalidFetch }), artifactPolicy: { ...artifactPolicy } }), /internally configured artifact policy/)
 }
 
 for (const path of dirs) rmSync(path, { recursive: true, force: true })
