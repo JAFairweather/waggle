@@ -15,7 +15,8 @@ before removing the bridge's existing local poster path.
 Create the policy and three credential source files as `root:root` mode `0600`, outside
 the checkout. They must be real regular files; their parent directory and journal must
 not be writable by the bridge or SSH-ingress account. The socket-activated transaction
-receives private mode-0400 copies through systemd credentials.
+receives private mode-0400 copies of only `policy.json`, `poster.bunker-uri`, and
+`poster.client-nsec` through systemd credentials. It never receives `recovery.secret`.
 
 `policy.json` has exactly this shape:
 
@@ -36,12 +37,13 @@ receives private mode-0400 copies through systemd credentials.
 
 `recovery.secret` contains one 32–128 character URL-safe random value. It is never an
 argument, environment value, receipt field, log field, bridge credential, or Bunker
-credential. The ordinary request path loads it only so the same journal can enforce the
-operator-only orphan transition; untrusted requests cannot select that transition.
+credential. The ordinary request path neither receives nor loads it. Only the explicit
+local operator command in “Resolving a pre-prepare orphan” names and loads that file.
 
-The installed unit fixes all four systemd credential paths. Configure the Bunker URI and
-revocable NIP-46 client credential there, and verify the signer's reported pubkey equals
-`poster_pubkey`. See [the packaged host procedure](../deploy/POLICY_HOST.md).
+The installed socket unit fixes exactly three systemd credential paths: policy plus the
+two Bunker pairing files. Configure the Bunker URI and revocable NIP-46 client credential
+there, and verify the signer's reported pubkey equals `poster_pubkey`. Recovery remains
+root-only outside that unit. See [the packaged host procedure](../deploy/POLICY_HOST.md).
 
 ## Forced command
 
