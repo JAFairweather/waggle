@@ -18,7 +18,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync
 import { tmpdir } from 'node:os'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { getPublicKey, verifyEvent } from 'nostr-tools/pure'
+import { generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import { WebSocketServer } from 'ws'
 
@@ -26,6 +26,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '..')
 const TOOL = resolve(ROOT, 'tools', 'tripwire.mjs')
 const INIT = resolve(ROOT, 'tools', 'tripwire-alarm-init.mjs')
+const BUNKER_INIT = resolve(ROOT, 'tools', 'tripwire-alarm-bunker-init.mjs')
 const DROP_IN = resolve(ROOT, 'deploy', 'tripwire-alarm.conf')
 const BUNKER_DROP_IN = resolve(ROOT, 'deploy', 'tripwire-alarm-bunker.conf')
 const BASE_UNIT = resolve(ROOT, 'deploy', 'tripwire.service')
@@ -161,6 +162,31 @@ try {
   check('initializer mints a separate identity', getPublicKey(alarmSecret) !== nip19.decode(POSTER).data)
   check('initializer refuses to overwrite a live credential directory',
     spawnSync('node', [INIT, '--directory', credentials, '--recipient', POSTER], { encoding: 'utf8' }).status === 1)
+
+  const bunkerDirectory = resolve(dir, 'bunker-credentials')
+  const bunkerPub = getPublicKey(generateSecretKey())
+  const bunkerUri = `bunker://${bunkerPub}?relay=wss%3A%2F%2Frelay.nave.pub&secret=pairing-secret`
+  const bunkerInit = spawnSync('node', [BUNKER_INIT, '--directory', bunkerDirectory,
+    '--recipient', POSTER, '--poster', nip19.decode(POSTER).data], { encoding: 'utf8', input: bunkerUri + '\n' })
+  const bunkerUriPath = resolve(bunkerDirectory, 'alarm.bunker-uri')
+  const bunkerClientPath = resolve(bunkerDirectory, 'alarm.client-nsec')
+  const bunkerToPath = resolve(bunkerDirectory, 'alarm.to')
+  check('keyless initializer stages a Bunker pairing from stdin', bunkerInit.status === 0, bunkerInit.stderr)
+  check('keyless initializer output exposes neither URI nor client nsec',
+    !bunkerInit.stdout.includes(bunkerUri) && !/pairing-secret|nsec1/i.test((bunkerInit.stdout || '') + (bunkerInit.stderr || '')))
+  check('all keyless pairing files are mode 0600', [bunkerUriPath, bunkerClientPath, bunkerToPath]
+    .every(path => (lstatSync(path).mode & 0o777) === 0o600))
+  check('keyless initializer preserves the exact URI without ever minting the alarm identity locally',
+    readFileSync(bunkerUriPath, 'utf8').trim() === bunkerUri && nip19.decode(readFileSync(bunkerClientPath, 'utf8').trim()).type === 'nsec')
+  check('keyless initializer refuses the bridge poster as the alarm identity',
+    spawnSync('node', [BUNKER_INIT, '--directory', resolve(dir, 'same-poster'), '--recipient', POSTER, '--poster', POSTER],
+      { encoding: 'utf8', input: `bunker://${nip19.decode(POSTER).data}?relay=wss%3A%2F%2Frelay.nave.pub\n` }).status === 1)
+  check('keyless initializer refuses a Bunker URI on argv',
+    spawnSync('node', [BUNKER_INIT, '--directory', resolve(dir, 'argv-uri'), '--recipient', POSTER, bunkerUri],
+      { encoding: 'utf8' }).status === 1)
+  check('keyless initializer refuses to overwrite a live pairing directory',
+    spawnSync('node', [BUNKER_INIT, '--directory', bunkerDirectory, '--recipient', POSTER],
+      { encoding: 'utf8', input: bunkerUri + '\n' }).status === 1)
 
   const credentialRun = spawnSync('node', [TOOL, '--since-min', '60', '--journal', full, '--events-from', eventsFile], {
     env: { ...process.env, POSTER, ALARM_NSEC: '', ALARM_TO: '', ALARM_NSEC_FILE: alarmNsecPath, ALARM_TO_FILE: alarmToPath, ALARM_LOG_PATH: ALARMS },
