@@ -210,15 +210,23 @@ const UNDELIVERED_PATH = process.env.UNDELIVERED_PATH || resolve(ROOT, 'data', '
 // the key signed something we did not (theft / a second signer). Process rate-limits cannot
 // catch that; this can. (Q1, waggle's finding, 2026-07-30.)
 const SEND_JOURNAL_PATH = process.env.SEND_JOURNAL_PATH || resolve(ROOT, 'data', 'send-journal.log')
-function journalSend(id, meta) {
+function journalSend(id, meta, durable = false) {
   if (!id) return false
+  const row = JSON.stringify({ id, ...meta, ts: Math.floor(Date.now() / 1000) }) + '\n'
+  // Existing data-plane senders retain the append-only boundary they already use. The periodic
+  // control snapshot opts into the stronger crash-consistent pre-send commit below; forcing two
+  // fsyncs onto every public/relay/return message would turn the tripwire fix into lane latency.
+  if (!durable) {
+    try { mkdirSync(dirname(SEND_JOURNAL_PATH), { recursive: true }); appendFileSync(SEND_JOURNAL_PATH, row); return true }
+    catch (e) { err(`tripwire: journal append failed for ${String(id).slice(0, 12)}…: ${e.message}`); return false }
+  }
   let fileFd = null
   let dirFd = null
   try {
     const directory = dirname(SEND_JOURNAL_PATH)
     mkdirSync(directory, { recursive: true })
     fileFd = openSync(SEND_JOURNAL_PATH, 'a', 0o600)
-    writeFileSync(fileFd, JSON.stringify({ id, ...meta, ts: Math.floor(Date.now() / 1000) }) + '\n')
+    writeFileSync(fileFd, row)
     fsyncSync(fileFd)
     closeSync(fileFd)
     fileFd = null
@@ -1643,7 +1651,7 @@ async function publishControlState(publish = publishControlStateToRelays, force 
   // and lose its positive OK frame; waiting for that acknowledgement would make this legitimate
   // process-authored event indistinguishable from key theft. If durable intent cannot be recorded,
   // fail closed and do not create an event the tripwire can later observe without its journal row.
-  if (!journalSend(event.id, { kind: event.kind, operation: 'control_state' })) return 0
+  if (!journalSend(event.id, { kind: event.kind, operation: 'control_state' }, true)) return 0
   const accepted = await publish(event).catch(() => 0)
   if (accepted >= 1) {
     log(`control state -> ${accepted}/${PUB.relays.length} relay(s): ${state.follows.length} followed author(s) (${event.id.slice(0, 12)}…)`)
