@@ -18,6 +18,7 @@ import { execFile } from 'node:child_process'
 import { lstatSync } from 'node:fs'
 import { renderReleased, renderChannelPlain } from './render.mjs'
 import { renderQuarantineHeader } from './quarantine_projection.mjs'
+import { WHY_VALUES } from './lanes.mjs'   // the trust gradient's one source (#282)
 
 // --- The closed slot-type set (§2.2, INV-A3-5) -----------------------------------------------
 //
@@ -181,7 +182,7 @@ const CATALOGUE = {
       ts: 'ts', claimedTs: 'ts', why: 'enum', id: 'id',
     },
     optional: ['approver', 'name', 'claimedTs'],
-    enums: { why: ['mirrored feed', 'granted participant', 'standing follow', 'reply to our note', 'released from quarantine'] },
+    enums: { why: WHY_VALUES },
     render: (slots) => renderQuarantineHeader(slots),
   },
 
