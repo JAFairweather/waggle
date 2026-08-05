@@ -72,6 +72,18 @@ async function signExact(unsigned, signer, label) {
 
 export const signExactBuzzEvent = (unsigned, signer) => signExact(unsigned, signer, 'signed Buzz event')
 
+// Recovery must prove that durable bytes are the exact event this policy would
+// have authored.  Signature validity alone is insufficient: a valid signer may
+// have produced another destination, template, or authorization tag.
+export function verifySignedBuzzEvent(event, decision, policy) {
+  assertPolicyDecision(decision); artifactPolicy(policy)
+  const signed = exactWireEvent(wire(event), 'signed Buzz event')
+  const expected = buildBuzzEvent(decision, policy, { now: signed.created_at })
+  const projected = { kind: signed.kind, created_at: signed.created_at, content: signed.content, tags: signed.tags, pubkey: signed.pubkey }
+  if (!same(projected, expected)) fail('prepared Buzz event does not match policy-owned bytes')
+  return Object.freeze(signed)
+}
+
 export function buildNip98Authorization(signedBuzzEvent, policy, { nonce, now = Math.floor(Date.now() / 1000) } = {}) {
   exactWireEvent(signedBuzzEvent, 'signed Buzz event')
   artifactPolicy(policy)
@@ -91,9 +103,12 @@ export async function buildSignedReceipt(fields, signer, policy, { now = Math.fl
   const required = ['version', 'policy_instance', 'operation', 'catalogue_version', 'request_digest', 'idempotency_key',
     'source_ids', 'buzz_channel', 'endpoint_authority', 'buzz_event_id', 'result', 'reason_code', 'response_digest', 'completed_at']
   if (!fields || Object.keys(fields).sort().join(',') !== [...required].sort().join(',')) fail('receipt has an invalid shape')
-  if (fields.version !== 1 || fields.operation !== 'quarantine_header' || fields.result !== 'accepted' || fields.reason_code !== 'accepted') fail('receipt outcome is invalid')
+  const outcomes = Object.freeze({ accepted: 'accepted', refused: 'buzz-refused' })
+  if (fields.version !== 1 || fields.operation !== 'quarantine_header' || outcomes[fields.result] !== fields.reason_code) fail('receipt outcome is invalid')
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(String(fields.policy_instance || ''))) fail('policy_instance is invalid')
-  for (const name of ['catalogue_version', 'request_digest', 'idempotency_key', 'buzz_event_id', 'response_digest']) hex(fields[name], name)
+  for (const name of ['catalogue_version', 'request_digest', 'idempotency_key', 'response_digest']) hex(fields[name], name)
+  if (fields.result === 'accepted') hex(fields.buzz_event_id, 'buzz_event_id')
+  else if (fields.buzz_event_id !== null) fail('a refused receipt cannot claim a Buzz event id')
   if (!Array.isArray(fields.source_ids) || !fields.source_ids.length || !fields.source_ids.every(id => HEX64.test(String(id)))) fail('source_ids are invalid')
   if (!UUID.test(String(fields.buzz_channel || ''))) fail('buzz_channel is invalid')
   if (fields.endpoint_authority !== policy.endpointAuthority) fail('endpoint_authority is not policy-owned')
