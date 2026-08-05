@@ -10,6 +10,7 @@ const sshd = read('deploy/sshd-waggle-policy.conf'), install = read('deploy/poli
 const verify = read('deploy/verify-policy-host.sh'), forward = read('tools/buzz-policy-forward.mjs')
 const shadowSocket = read('deploy/waggle-policy-shadow.socket'), shadowService = read('deploy/waggle-policy-shadow@.service')
 const shadowForward = read('tools/buzz-policy-shadow-forward.mjs'), shadowTool = read('tools/buzz-policy-shadow.mjs')
+const shadowClient = read('deploy/waggle-policy-shadow-client.conf')
 const relativeImports = text => [...text.matchAll(/(?:from\s+|import\s*\()\s*['"](\.[^'"]+)['"]/g)].map(match => match[1])
 const importClosure = (entry, seen = new Set()) => {
   const path = entry.endsWith('.mjs') ? entry : `${entry}.mjs`
@@ -52,6 +53,11 @@ ok('shadow worker receives one policy credential and no signing or recovery auth
 ok('shadow worker is structurally networkless and has no writable filesystem path',
   has(shadowService, /^RestrictAddressFamilies=AF_UNIX$/m) && !/^ReadWritePaths=/m.test(shadowService) &&
   !/nostr_signer|buzz_policy_artifacts|buzz_policy_service|policy_journal/.test(shadowTool))
+ok('bridge-side shadow SSH capability enters only as two read-only systemd credentials',
+  (shadowClient.match(/^LoadCredential=/gm) || []).length === 2 &&
+  shadowClient.includes('policy-shadow-ssh:/etc/waggle/policy-client/shadow_ed25519') &&
+  shadowClient.includes('policy-shadow-known-hosts:/etc/waggle/policy-client/known_hosts') &&
+  (shadowClient.match(/^Environment=.*=%d\//gm) || []).length === 2 && !shadowClient.includes('EnvironmentFile='))
 ok(`shadow worker transitive closure (${shadowClosure.size} modules) has no signer, submitter, journal, or child-process capability`,
   shadowClosure.size >= 6 && ![...shadowClosure].some(forbiddenShadowCapability))
 ok('NEGATIVE CONTROL — the transitive scanner catches the writer-capable egress module',

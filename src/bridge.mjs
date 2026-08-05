@@ -37,7 +37,7 @@ import WebSocket from 'ws'
 // (A3 §2.5). Verification is a public-key operation and belongs wherever input is judged.
 import { getEventHash, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
-import { emit, query, checkConfigRenderable } from './egress.mjs'
+import { emit, query, checkConfigRenderable, runPolicyShadowSsh } from './egress.mjs'
 import { bridgePubkey, bridgeSignerMode, hasBridgeKey, openSeal, openRumor, sealAndWrap, consentTosBlock, signControlState } from './nostr_egress.mjs'
 import { verifyConsent } from './consent.mjs'   // in-door consent (#131/#132, docs/CONSENT.md §8)
 import { createHash, randomBytes } from 'node:crypto'
@@ -52,6 +52,8 @@ import { durableSet, durableQueue } from './stores.mjs'
 import { fanout } from './fanout.mjs'
 import { recipientDmRelays } from './dm_relays.mjs'
 import { quarantineSlotsFromSource } from './buzz_policy_core.mjs'
+import { buildQuarantinePolicyRequest } from './buzz_policy_client.mjs'
+import { compareQuarantineShadow, validateShadowClientConfig } from './buzz_policy_shadow_client.mjs'
 import { defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased } from './render.mjs'
 import { hex as concordHex, publicChannel, openChannelWrap } from './concord_lib.mjs'
 
@@ -269,6 +271,20 @@ function normalizedTaskRoute(value) {
   return Object.freeze({ participant, sender, channel, mention, protocol: TASK_ROUTE_PROTOCOL })
 }
 const configuredTaskRoutes = Object.freeze((cfg.public?.task_routes || []).map(normalizedTaskRoute).filter(Boolean))
+const policyShadowRaw = cfg.public?.policy_shadow || {}
+const policyShadowMode = String(policyShadowRaw.mode || 'off').toLowerCase()
+if (!['off', 'observe', 'enforce-shadow'].includes(policyShadowMode)) throw new Error('public.policy_shadow.mode must be off, observe, or enforce-shadow')
+const policyShadow = policyShadowMode === 'off' ? Object.freeze({ mode: 'off' }) : Object.freeze({
+  mode: policyShadowMode,
+  policyInstance: String(policyShadowRaw.policy_instance || ''),
+  catalogueVersion: String(policyShadowRaw.catalogue_version || '').toLowerCase(),
+  posterPubkey: String(policyShadowRaw.poster_pubkey || '').toLowerCase(),
+  authTag: policyShadowRaw.auth_tag,
+  host: String(policyShadowRaw.ssh_host || ''),
+  user: String(policyShadowRaw.ssh_user || 'waggle-policy-shadow-ingress'),
+  identityFile: String(process.env.POLICY_SHADOW_IDENTITY_FILE || policyShadowRaw.ssh_identity_file || ''),
+  knownHostsFile: String(process.env.POLICY_SHADOW_KNOWN_HOSTS_FILE || policyShadowRaw.ssh_known_hosts_file || ''),
+})
 function bumpPubWatermark(ts) {
   if (!Number.isFinite(ts) || ts <= 0 || (pubWatermark && ts <= pubWatermark)) return
   pubWatermark = ts
@@ -381,6 +397,7 @@ const PUB = cfg.public ? {
   controlStateRefreshSecs: Number(cfg.public.control_state_refresh_secs != null ? cfg.public.control_state_refresh_secs : 300),
   controlStateCommandAt: Number(cfg.public.control_state_command_at || 0),
   watchlistCommandAt: Number(cfg.public.watchlist_command_at || 0),
+  policyShadow,
 } : null
 
 // §7 version-binding, from ONE producer (crew review of #199 → #200). The gate's expected hash, the
@@ -388,6 +405,7 @@ const PUB = cfg.public ? {
 // so they cannot drift. `mirror_expected_tos_hash` remains an explicit override; otherwise it is
 // derived from the hive id + display identity + terms URL when all are present. Null → presence-only.
 if (PUB) {
+  if (PUB.policyShadow.mode !== 'off') validateShadowClientConfig(PUB.policyShadow)
   PUB.mirrorExpectedTosHash = (() => {
     if (cfg.public.mirror_expected_tos_hash) return String(cfg.public.mirror_expected_tos_hash).toLowerCase()
     if (PUB.mirrorConsentTermsUrl && PUB.mirrorConsentHiveId && PUB.mirrorConsentHiveName && PUB.mirrorConsentHiveHandle) {
@@ -1104,6 +1122,56 @@ function fetchRecipientDmRelays(pubkey, mkSocket) {
   })
 }
 
+const shadowInFlight = new Set()
+let shadowRunner = runPolicyShadowSsh
+function __setShadowRunnerForTests(fn) {
+  if (process.env.WB_NO_BOOT !== '1' || typeof fn !== 'function') throw new Error('shadow runner test seam is unavailable')
+  shadowRunner = fn
+}
+async function comparePublicShadow(ev) {
+  const s = PUB.policyShadow
+  const requestRaw = buildQuarantinePolicyRequest(ev, {
+    policyInstance: s.policyInstance, catalogueVersion: s.catalogueVersion,
+  })
+  const rawResponse = await shadowRunner(requestRaw, s)
+  return compareQuarantineShadow(requestRaw, rawResponse, {
+    policyInstance: s.policyInstance, catalogueVersion: s.catalogueVersion,
+    stagingChannel: PUB.staging, watchedEventIds: PUB.events,
+    approverMention: PUB.approverMention || '', posterPubkey: s.posterPubkey, authTag: s.authTag,
+  })
+}
+
+function dispatchPublic(ev, why, dest, quarantine) {
+  const nowMs = Date.now()
+  if (!rateOk(ev, dest, nowMs)) { markSeen(ev.id); return }
+  // A2/A3: commit-before-dispatch. In enforce-shadow mode this point is reachable only after an
+  // exact remote/local match. A held mismatch remains unseen and therefore owed across reconnect.
+  if (FORWARD_MODE === 'buzz') {
+    markSeen(ev.id)
+    bumpPubWatermark(clampCreated(ev.created_at, Math.floor(nowMs / 1000)).clamped)
+  }
+  forwardPublic(ev, why, dest, quarantine)
+}
+
+function shadowGatePublic(ev, why, dest, quarantine) {
+  if (shadowInFlight.has(ev.id)) return
+  shadowInFlight.add(ev.id)
+  comparePublicShadow(ev).then(result => {
+    if (result.match) {
+      log(`PUBLIC shadow[match]: ${ev.id.slice(0, 12)}… at ${result.evaluationTime} (${String(result.remoteDigest || 'deny').slice(0, 12)}…)`)
+      dispatchPublic(ev, why, dest, quarantine)
+      return
+    }
+    err(`PUBLIC shadow[mismatch]: ${ev.id.slice(0, 12)}… ${result.reason} local=${String(result.localDigest || result.decision).slice(0, 12)} remote=${String(result.remoteDigest || result.decision).slice(0, 12)}`)
+    if (PUB.policyShadow.mode === 'observe') dispatchPublic(ev, why, dest, quarantine)
+    else recordUndelivered({ lane: 'public-shadow', dest, recipient: null, id: ev.id, author: ev.pubkey, reason: result.reason })
+  }).catch(error => {
+    err(`PUBLIC shadow[unavailable]: ${ev.id.slice(0, 12)}… ${String(error?.message || 'unavailable').slice(0, 160)}`)
+    if (PUB.policyShadow.mode === 'observe') dispatchPublic(ev, why, dest, quarantine)
+    else recordUndelivered({ lane: 'public-shadow', dest, recipient: null, id: ev.id, author: ev.pubkey, reason: 'shadow-unavailable' })
+  }).finally(() => shadowInFlight.delete(ev.id))
+}
+
 // No unwrap label, no key — already-public content.
 async function forwardPublic(ev, why, dest, quarantine) {
   const author = ev.pubkey ? ev.pubkey.slice(0, 16) : '?'
@@ -1243,17 +1311,11 @@ function routePublic(ev) {
   // same id from another relay isn't reprocessed.
   const bytes = Buffer.byteLength(String(ev.content || ''), 'utf8')
   if (bytes > PUB.maxContentBytes) { err(`PUBLIC drop[size]: content ${bytes}B > cap ${PUB.maxContentBytes}B — ${ev.id.slice(0, 12)}…`); markSeen(ev.id); return }
-  const nowMs = Date.now()
-  if (!rateOk(ev, dest, nowMs)) { markSeen(ev.id); return }
-
-  // A2/A3: commit-before-dispatch. markSeen persists the id synchronously BEFORE the async
-  // send, so a kill -9 mid-send can never re-post it — we favor "never double-post" (the §8
-  // firehose line) over "never drop". A3: advance the watermark on the CLAMPED created_at.
-  if (FORWARD_MODE === 'buzz') {
-    markSeen(ev.id)
-    bumpPubWatermark(clampCreated(ev.created_at, Math.floor(nowMs / 1000)).clamped)
+  if (quarantine && PUB.policyShadow.mode !== 'off') {
+    shadowGatePublic(ev, why, dest, quarantine)
+    return
   }
-  forwardPublic(ev, why, dest, quarantine)
+  dispatchPublic(ev, why, dest, quarantine)
 }
 
 // --- A7: NIP-09 deletion propagation ----------------------------------------
@@ -2563,6 +2625,7 @@ function connectPublic(url) {
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
 export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTaskRouteControlCommand, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
+export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
@@ -2616,6 +2679,7 @@ if (!process.env.WB_NO_BOOT) {
     resolveChannels(() => {
     log(`public read lane -> inbox ${PUB.inbox}: ${PUB.relays.length} relay(s), ${PUB.authors.length} watched author(s), ${PUB.events.length} watched note(s), pub-since=${PUB.since} (${PUB_SINCE_SECS}s), watermark=${pubWatermark || 'none'}`)
     log(`  gates: staging=${PUB.staging || 'HOLD (none)'} · backfill<=${PUB.backfillLimit} · maxContent=${PUB.maxContentBytes}B · rate ${PUB.replierPerMin}/replier/min ${PUB.channelPerMin}/chan/min ${PUB.lanePerHour}/lane/h · deletes ${PUB.deletesPerHour}/h (A7)`)
+    log(`  policy shadow: ${PUB.policyShadow.mode.toUpperCase()}${PUB.policyShadow.mode === 'off' ? ' — local quarantine path unchanged' : ' — remote derive-only comparison before quarantine commit'}`)
     if (PUB.grantors.length) log(`  admission: ${PUB.grantors.length} grantor key(s); NIP-DA kinds ${NIPDA.grant}/${NIPDA.revocation}/${NIPDA.index}`)
     if (PUB.mirrorRequireConsent) {
       log(`  in-door consent: ENFORCING (§8) — mirror/reply gated on consent; ${PUB.mirrorGrandfathered.length} grandfathered; version-binding ${PUB.mirrorExpectedTosHash ? 'ON (tos ' + PUB.mirrorExpectedTosHash.slice(0, 8) + '…)' : 'OFF'}`)

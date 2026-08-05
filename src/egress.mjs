@@ -15,6 +15,7 @@
 // INV-A3-4  wrapJson is single-line by contract (§2.4), enforced at render time
 // INV-A3-5  every slot of every template declares one of the closed slot types
 import { execFile } from 'node:child_process'
+import { lstatSync } from 'node:fs'
 import { renderReleased, renderChannelPlain } from './render.mjs'
 import { renderQuarantineHeader } from './quarantine_projection.mjs'
 
@@ -363,6 +364,35 @@ let runBuzz = (args, options = undefined) => new Promise((resolve, rejectP) => {
 // Test seam ONLY — lets the catalogue test assert on argv without a `buzz` binary present. Not a
 // bypass: it replaces the transport, never the catalogue or the escapers above.
 export function __setTransportForTests(fn) { const prev = runBuzz; runBuzz = fn; return () => { runBuzz = prev } }
+
+// The derive-only policy shadow is the bridge process's second external transport, but it stays
+// inside this same process-execution capability boundary. The executable, forced account, host-key
+// policy, no-forwarding policy, environment and argv are closed here; the caller supplies only the
+// canonical evidence bytes and already-validated fixed deployment coordinates.
+export function runPolicyShadowSsh(requestRaw, {
+  host, user = 'waggle-policy-shadow-ingress', identityFile, knownHostsFile, timeoutMs = 15_000,
+} = {}, exec = execFile, inspect = lstatSync) {
+  const hostOk = /^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-Fa-f:]+\])$/.test(String(host || ''))
+  const userOk = /^[a-z_][a-z0-9_-]{0,31}$/.test(String(user || ''))
+  if (!hostOk || !userOk || !String(identityFile || '').startsWith('/') || !String(knownHostsFile || '').startsWith('/')) reject('shadow ssh', 'fixed boundary configuration is invalid')
+  let identity, knownHosts
+  try { identity = inspect(identityFile); knownHosts = inspect(knownHostsFile) } catch { reject('shadow ssh', 'credential files are unavailable') }
+  if (!identity.isFile() || identity.isSymbolicLink() || (identity.mode & 0o077)) reject('shadow ssh', 'identity must be a private regular non-symlink file')
+  if (!knownHosts.isFile() || knownHosts.isSymbolicLink() || (knownHosts.mode & 0o022)) reject('shadow ssh', 'known-hosts must be a non-writable regular non-symlink file')
+  const args = ['-F', '/dev/null', '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes',
+    '-o', `UserKnownHostsFile=${knownHostsFile}`, '-o', 'GlobalKnownHostsFile=/dev/null',
+    '-o', 'ClearAllForwardings=yes', '-o', 'ConnectTimeout=10',
+    '-i', identityFile, `${user}@${host}`]
+  return new Promise((resolve, rejectP) => {
+    const child = exec('/usr/bin/ssh', args, { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024,
+      env: { PATH: '/usr/bin:/bin', LANG: 'C' } }, (error, stdout) => {
+      if (error) return rejectP(new Error('shadow service unavailable'))
+      resolve(String(stdout || ''))
+    })
+    child.stdin.on('error', () => {})
+    child.stdin.end(requestRaw)
+  })
+}
 
 // --- Reads --------------------------------------------------------------------------------
 //
