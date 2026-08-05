@@ -32,4 +32,3 @@ ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-
