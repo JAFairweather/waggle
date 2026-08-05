@@ -132,5 +132,6 @@ Whichever you pick, the tripwire and a rehearsed rotation matter more than the c
 ## Related
 
 - **[SECURITY.md](../SECURITY.md)** — reporting, and what is not a vulnerability
+- **[DESIGN_OFFBOX_BUZZ_POLICY.md](DESIGN_OFFBOX_BUZZ_POLICY.md)** — the remaining policy-enforcing Buzz signer boundary
 - **[DM_TRUST_ALLOWLIST.md](DM_TRUST_ALLOWLIST.md)** — why listening is not obeying
 - **[deploy/README.md](../deploy/README.md)** — the units, the firewall, and `verify-firewall.sh`
