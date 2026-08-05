@@ -78,6 +78,20 @@ const controlJournal = readFileSync(SEND_JOURNAL, 'utf8').trim().split('\n').map
 t('an accepted control-state publication is recorded for the out-of-process tripwire',
   acceptedControl === 1 && controlJournal.some(row => row.id === publishedControlId && row.kind === CONTROL_STATE_KIND && row.operation === 'control_state'))
 
+let unacknowledgedControlId = ''
+const unacknowledged = await publishControlState(async (event) => { unacknowledgedControlId = event.id; return 0 }, true)
+const afterUnacknowledged = readFileSync(SEND_JOURNAL, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+t('an attempted control-state publication is journaled even when every relay acknowledgement is lost',
+  unacknowledged === 0 && afterUnacknowledged.some(row => row.id === unacknowledgedControlId && row.operation === 'control_state'))
+
+const beforeSignFailure = afterUnacknowledged.length
+let publishAfterSignFailure = 0
+const refusedControl = await publishControlState(async () => { publishAfterSignFailure++; return 1 }, true,
+  async () => { throw new Error('fixture signing refusal') })
+const afterSignFailure = readFileSync(SEND_JOURNAL, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+t('a signing refusal creates no journal row and performs no network write',
+  refusedControl === 0 && publishAfterSignFailure === 0 && afterSignFailure.length === beforeSignFailure)
+
 const currentState = buildControlState()
 const { v: legacyV, observed_at: legacyObservedAt, hive: legacyHive, bridge: legacyBridge, publishing: legacyPublishing, follows: legacyFollows } = currentState
 const legacy = await signControlState({ v: legacyV, observed_at: legacyObservedAt, hive: legacyHive, bridge: legacyBridge, publishing: legacyPublishing, follows: legacyFollows })
