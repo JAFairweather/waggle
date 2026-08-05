@@ -51,14 +51,15 @@
     color:var(--dim);margin:0 0 12px;font-weight:600}
   label{display:block;font-family:var(--mono);font-size:11px;color:var(--dim);
     margin:10px 0 5px;text-transform:uppercase;letter-spacing:.1em}
-  input{width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);
+  input,select{width:100%;background:var(--field);color:var(--text);border:1px solid var(--line);
     border-radius:var(--r-sm);padding:10px 12px;font-family:var(--mono);font-size:13px}
+  select:disabled,select option:disabled{color:var(--faint)}
   .row{display:flex;gap:12px;flex-wrap:wrap;align-items:stretch}
   /* Columns line up on their INPUTS, not on the tops of their labels. A two-line label beside a
      one-line one otherwise staggers the fields, which reads as a broken layout rather than as the
      different label lengths it actually is. */
   .row > div{flex:1;min-width:260px;display:flex;flex-direction:column}
-  .row > div > input{margin-top:auto}
+  .row > div > input,.row > div > select{margin-top:auto}
   .btn{background:var(--accent);color:var(--accent-ink);border:none;border-radius:var(--r-sm);
     padding:10px 18px;font-weight:700;font-size:15px;font-family:inherit;cursor:pointer;margin-top:14px}
   .btn:hover{background:var(--accent-bright)}
@@ -194,6 +195,13 @@
         <input id="g-subject" placeholder="channel UUID, or agent npub" spellcheck="false">
       </div>
     </div>
+    <div class="row">
+      <div>
+        <label for="g-cap">What may they do with it? <span class="hint">chosen, not guessed</span></label>
+        <select id="g-cap"></select>
+      </div>
+      <div><div class="hint" id="g-cap-note" style="margin-top:22px"></div></div>
+    </div>
     <button class="btn" id="g-preview">Review before signing</button>
     <div class="status" id="issuest"></div>
   </div>
@@ -318,10 +326,48 @@ function query(url, filter, ms = 9000) {
 // inside NIP-DA and meaningless to an administrator deciding whether to click Remove.
 const CAP_LABEL = {
   'admit': 'Post into the channel',
+  'admit+read': 'Post into the channel, and read it',
   'task': 'Take tasks from you',
   'task+act': 'Take tasks, and act on them',
+  'task-relay': 'Carry signed instructions',
+  'mirror': 'Mirror their public posts',
 }
 const capLabel = (c) => CAP_LABEL[c] || c
+
+// WHO ENFORCES WHAT. The operator signs every one of these here, but this bridge only
+// consumes two of them (see processGrantEvent: `cap !== 'admit' && cap !== 'admit+read'`).
+// The task family is enforced on the AGENT side, by the runtime's own invocation policy.
+// A surface that let you sign a grant without saying who checks it would be recording
+// intent and implying enforcement — the same defect as a routing board rendering a lane
+// nothing delivers to.
+const CAP_ENFORCER = {
+  'admit': 'this bridge',
+  'admit+read': 'this bridge',
+  'task': "the agent's runtime",
+  'task+act': "the agent's runtime",
+  'task-relay': "the agent's runtime",
+  'mirror': 'this bridge (authored by the participant, not by you)',
+}
+
+// The caps this console may ISSUE, per subject shape. Two deliberate exclusions:
+//   admit+read — conveying the read cap means putting Concord channel key material in a
+//     30440, which makes this page key-touching and makes REVOKE a Concord rotation
+//     client rather than an event signer (SPEC_EXTERNAL §4.1.1). Offered, disabled, with
+//     the reason: a greyed option with a reason teaches; a missing one confuses.
+//   mirror — authored by the participant about themselves, never by the operator. It is
+//     not the operator's to grant, so it is not in this list at all.
+const ISSUABLE = {
+  channel: [
+    { cap: 'admit', ok: true },
+    { cap: 'admit+read', ok: false,
+      reason: 'not issuable here — it conveys channel key material, which would make this page hold a key and make revoke a Concord rotation, not just a 441' },
+  ],
+  agent: [
+    { cap: 'task', ok: true },
+    { cap: 'task+act', ok: true },
+    { cap: 'task-relay', ok: true },
+  ],
+}
 
 let lastGrants = null, lastSubjectNote = '', lastGrantor = null
 // Profiles are a presentation layer, never access policy. Kind:0 metadata is signed, but its
@@ -590,17 +636,66 @@ $('g-preview').addEventListener('click', async () => {
     if (!subjRaw) throw new Error('a subject is required — a grant with no scope grants nothing')
     const isAgent = subjRaw.startsWith('npub1') || /^[0-9a-f]{64}$/i.test(subjRaw)
     const subject = isAgent ? toHex(subjRaw) : subjRaw.toLowerCase()
-    const cap = isAgent ? 'task' : 'admit'
+    // The capability is CHOSEN, not inferred from the shape of the subject field. Inferring
+    // it meant `task+act` had a label it could never produce and `task-relay` had no path at
+    // all — three of the estate's documented capabilities were unreachable from the one
+    // surface an operator actually uses.
+    const cap = $('g-cap').value
+    const allowed = (ISSUABLE[isAgent ? 'agent' : 'channel'] || []).filter(o => o.ok).map(o => o.cap)
+    if (!allowed.includes(cap)) {
+      throw new Error(`${capLabel(cap)} cannot be granted over ${isAgent ? 'an agent' : 'a channel'} — choose one of: ${allowed.map(capLabel).join(', ')}`)
+    }
     const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)))
     const hash = await scopeHash(subject, salt)
     proposeSigning({
       kind: 440, created_at: Math.floor(Date.now() / 1000),
       tags: [['p', grantee], ['da-scope', hash, salt], ['da-cap', cap]], content: '',
-    }, isAgent
-      ? `This authorises ${short(grantee)} to TASK the agent ${short(subject)} — to give it instructions it will act on. The subject is stored as a salted hash, so nobody watching can tell which agent this is for.`
-      : `This admits ${short(grantee)} to the channel ${subjRaw}. The channel id never rides publicly — it is stored as a salted hash that only someone who already knows the channel can match.`)
+    }, capWhy(cap, grantee, subject, subjRaw, isAgent))
   } catch (e) { st.className = 'status err'; st.textContent = e.message }
 })
+
+// The confirm panel's sentence, per capability. Each says what the grant DOES, who checks
+// it, and what it does not convey — the last part being where a reader is most likely to
+// assume more than was signed.
+function capWhy(cap, grantee, subject, subjRaw, isAgent) {
+  const who = short(grantee), enforcer = CAP_ENFORCER[cap] || 'an unknown consumer'
+  const hidden = 'The subject is stored as a salted hash, so nobody watching can tell which one it is.'
+  if (cap === 'admit') {
+    return `This admits ${who} to the channel ${subjRaw}. It conveys NO ability to read the channel — only to post into it. Checked by ${enforcer}. The channel id never rides publicly — it is stored as a salted hash that only someone who already knows the channel can match.`
+  }
+  if (cap === 'task') {
+    return `This authorises ${who} to TASK the agent ${short(subject)} — to wake it and be answered. It does NOT authorise the agent to take action on their word. Checked by ${enforcer}, not by this bridge. ${hidden}`
+  }
+  if (cap === 'task+act') {
+    return `This authorises ${who} to task the agent ${short(subject)} AND to have it act on those instructions. Every action still passes the agent's own approval path. Checked by ${enforcer}, not by this bridge. ${hidden}`
+  }
+  if (cap === 'task-relay') {
+    return `This authorises ${who} to CARRY signed instructions to the agent ${short(subject)} — as transport, never as the author. It grants no authority to instruct: a carried message is only actionable if its original signer separately holds a task grant. Checked by ${enforcer}, not by this bridge. ${hidden}`
+  }
+  return `This grants ${capLabel(cap)} to ${who} over ${short(subject)}. Checked by ${enforcer}. ${hidden}`
+}
+
+// Offer only the capabilities that are valid for the subject in the box, and disable the
+// ones this console must not issue — with the reason on screen.
+function refreshCaps() {
+  const subjRaw = $('g-subject').value.trim()
+  const isAgent = subjRaw.startsWith('npub1') || /^[0-9a-f]{64}$/i.test(subjRaw)
+  const opts = ISSUABLE[isAgent ? 'agent' : 'channel']
+  const sel = $('g-cap'), previous = sel.value
+  sel.innerHTML = opts.map(o =>
+    `<option value="${o.cap}"${o.ok ? '' : ' disabled'}>${capLabel(o.cap)}${o.ok ? '' : ' — unavailable here'}</option>`).join('')
+  const keep = opts.find(o => o.cap === previous && o.ok)
+  sel.value = keep ? previous : opts.find(o => o.ok).cap
+  const chosen = opts.find(o => o.cap === sel.value)
+  const blocked = opts.filter(o => !o.ok)
+  $('g-cap-note').innerHTML = [
+    chosen ? `Checked by <b>${CAP_ENFORCER[chosen.cap]}</b>.` : '',
+    ...blocked.map(o => `<b>${capLabel(o.cap)}</b> is ${o.reason}.`),
+  ].filter(Boolean).join('<br>')
+}
+$('g-subject').addEventListener('input', refreshCaps)
+$('g-cap').addEventListener('change', refreshCaps)
+refreshCaps()
 
 // ── Pending requests (#186) ─────────────────────────────────────────────────────────────────
 // A session that wants in gift-wraps a request to the maintainer's key. Reading them here is what
