@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>waggle — routing</title>
+<meta name="description" content="How a Waggle hive treats what arrives: the trust lanes, read from the bridge's own signed state.">
+<script type="importmap">{ "imports": { "nostr-tools": "./vendor/nostr-tools.mjs" } }</script>
+<style>
+  :root{--ground:#0b0906;--panel:#14100a;--line:#2a2317;--text:#f4efe4;--dim:#9c927f;--faint:#6f6555;--gold:#e2c079;--accent:#cf8a2e;--good:#8fae6a;--warn:#d9a648;--critical:#c0705a;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,monospace;--display:"Iowan Old Style",Palatino,Georgia,serif}
+  @media (prefers-color-scheme:light){:root{--ground:#f5f0e4;--panel:#fffdf7;--line:#ddd2ba;--text:#241d12;--dim:#6f6553;--faint:#8a7f66;--gold:#8a5a14;--accent:#8a5a14;--good:#4f7a34;--warn:#9a6a12;--critical:#a2482f}}
+  *{box-sizing:border-box} body{margin:0;background:var(--ground);color:var(--text);font:15px/1.5 var(--sans)} main{max-width:900px;margin:auto;padding:34px 20px 64px} a{color:var(--gold)} h1{font:600 30px var(--display);margin:0 0 5px}.sub{color:var(--dim);max-width:70ch;margin:0 0 26px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:17px 18px;margin:15px 0}.panel h2{font:600 11px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:0 0 11px}
+  label{display:block;font:11px var(--mono);color:var(--dim);letter-spacing:.09em;text-transform:uppercase;margin:0 0 6px}
+  input{width:100%;background:transparent;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:10px 12px;font:13px var(--mono)}
+  button{border:0;border-radius:6px;background:var(--accent);color:#160e03;padding:10px 15px;font-weight:700;cursor:pointer;margin-top:10px}
+  .status{min-height:20px;margin-top:10px;color:var(--dim);font-size:13px}.status.err{color:var(--critical)}.status.ok{color:var(--good)}
+  .note{font-size:13px;color:var(--dim)}
+  .console-tabs{display:flex;gap:5px;border-bottom:1px solid var(--line);margin:0 0 22px}.console-tabs a{color:var(--dim);text-decoration:none;padding:9px 12px 10px;border-bottom:2px solid transparent;font-size:13px;font-weight:650}.console-tabs a:hover{color:var(--text)}.console-tabs a.active{color:var(--gold);border-bottom-color:var(--gold)}
+  /* The ladder. Ordered by trust, highest first — the shape carries the meaning, so fill
+     weight and a left rule do the work rather than colour alone (greyscale, light theme). */
+  .lane{border:1px solid var(--line);border-left-width:3px;border-radius:8px;padding:12px 14px;margin:0 0 8px;background:var(--panel)}
+  .lane .top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .lane .fill{font:12px var(--mono);letter-spacing:-1px;flex:none;color:var(--faint)}
+  .lane .name{font-weight:650;font-size:14px}
+  .lane .dest{color:var(--dim);font-size:13px}
+  .lane .count{margin-left:auto;font:11px var(--mono);color:var(--dim);white-space:nowrap}
+  .lane .why{font-size:13px;color:var(--dim);margin:6px 0 0}
+  .lane .from{font:11px var(--mono);color:var(--faint);margin-top:6px;overflow-wrap:anywhere}
+  .lane.t1,.lane.t2{border-left-color:var(--good)}
+  .lane.t3{border-left-color:var(--warn)}
+  .lane.t4{border-left-color:var(--critical)}
+  .lane.t5{border-left-color:var(--line);opacity:.8}
+  .lane.off{opacity:.6}
+  .k{display:inline-block;font:10px var(--mono);letter-spacing:.06em;text-transform:uppercase;border:1px solid var(--line);border-radius:999px;padding:2px 8px;margin:4px 6px 0 0;color:var(--dim)}
+  .k.good{color:var(--good);border-color:var(--good)}.k.warn{color:var(--warn);border-color:var(--warn)}
+  .k.crit{color:var(--critical);border-color:var(--critical)}.k.unk{color:var(--faint);border-style:dashed}
+  .rows{margin-top:8px}
+  .row{display:flex;gap:9px;align-items:baseline;padding:5px 0;border-top:1px solid var(--line);font-size:13px}
+  .row:first-child{border-top:0}
+  .row .npub{font:11px var(--mono);color:var(--faint);overflow-wrap:anywhere}
+  table.moves{width:100%;border-collapse:collapse;font-size:13px}
+  table.moves td{padding:6px 10px 6px 0;border-top:1px solid var(--line);vertical-align:top}
+  table.moves tr:first-child td{border-top:0}
+  table.moves td:first-child{font:11px var(--mono);color:var(--dim);white-space:nowrap}
+</style>
+</head>
+<body><main>
+  <nav class="console-tabs" aria-label="Waggle console"><a href="/console/">Access</a><a href="/console/following.html">Following</a><a class="active" href="/console/routing.html">Routing</a><a href="/console/config.html">Config</a><a href="/console/setup.html">Setup</a></nav>
+  <h1>How this community treats what arrives</h1>
+  <p class="sub">Every public note that reaches this bridge lands in exactly one lane below. The lane is
+    decided by <b>trust</b>, not by content. Read top to bottom: the higher the lane, the less it is
+    questioned. This page verifies the bridge's own signed state in your browser and has no
+    bridge-host access.</p>
+
+  <section class="panel">
+    <h2>Find a hive</h2>
+    <label for="bridge">Bridge public key</label>
+    <input id="bridge" placeholder="npub1… or 64-character hex bridge key" spellcheck="false">
+    <button id="load">Show routing</button>
+    <div class="status" id="status"></div>
+  </section>
+
+  <section class="panel">
+    <h2>The lanes</h2>
+    <div id="lanes"><div class="note">Enter the bridge key to load its signed state.</div></div>
+  </section>
+
+  <section class="panel">
+    <h2>Moving someone up a lane</h2>
+    <table class="moves"><tbody>
+      <tr><td>quarantined → granted participant</td><td>Admit them on the <a href="/console/">Access</a> tab. You sign a 440.</td></tr>
+      <tr><td>quarantined → standing follow</td><td>Vouch for them. Today that is an in-channel <code>follow</code> reply, which leaves no signed record — see the note below.</td></tr>
+      <tr><td>stranger → mirrored feed</td><td>Add them on <a href="/console/following.html">Following</a>. You sign an owner command; consent is then invited.</td></tr>
+      <tr><td>any lane → dropped</td><td>Revoke on <a href="/console/">Access</a>. You sign a 441.</td></tr>
+    </tbody></table>
+  </section>
+
+  <section class="panel">
+    <h2>What this page cannot tell you</h2>
+    <div id="limits" class="note">Load a hive to see which facts its signed state does and does not carry.</div>
+  </section>
+
+  <section class="panel note">
+    <b>Why the counts and the names differ per lane.</b> The bridge publishes a deliberately
+    public-safe summary: no channel identifiers, no host paths, no relay targets, no message content.
+    So some lanes can be listed by name and others only counted, and this page says which is which
+    rather than implying it knows more than it does. A lane showing <code>—</code> instead of a number
+    is not empty; it is unrecorded.
+  </section>
+</main>
+<script type="module" src="./routing.mjs"></script>
+</body></html>
