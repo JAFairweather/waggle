@@ -302,10 +302,13 @@ detection a property of the **install**, not of anyone remembering to run a scri
 
 ### Two rules the unit exists to enforce
 
-1. **The alarm is signed by a SEPARATE key, never the poster key.** An alarm signed by the
+1. **The alarm is signed by a SEPARATE identity, never the poster key.** An alarm signed by the
    identity under suspicion is worthless — a thief holding the poster nsec could forge the
-   all-clear too. Mint a **dedicated** key with zero authority directly into systemd credential
-   files (its only power is sending a DM). The initializer never accepts or prints an nsec:
+   all-clear too. Prefer a dedicated **Bunker identity with zero authority** (its only power is
+   sending a DM), using mode-0600 URI and NIP-46 client files. The identity nsec then never
+   exists on the watcher. For a simple/offline install, the compatibility initializer can mint
+   a disposable local alarm key directly into systemd credential files without accepting or
+   printing an nsec:
 
    ```
    sudo node tools/tripwire-alarm-init.mjs \
@@ -315,7 +318,8 @@ detection a property of the **install**, not of anyone remembering to run a scri
    ```
 
    The resulting `alarm.nsec` and `alarm.to` are mode 0600. Never set it to
-   `BUZZ_PRIVATE_KEY`, and do not copy it into `tripwire.env`.
+   `BUZZ_PRIVATE_KEY`, and do not copy it into `tripwire.env`. Never use the poster identity
+   for either signer mode.
 2. **Off-host is stronger.** A compromised box can silence an on-box watcher before it
    fires. The recommended posture runs the tripwire on a **separate host** (your Mac, a
    second droplet) against a synced copy of the journal — a box compromise then cannot kill
@@ -342,9 +346,17 @@ SEND_JOURNAL_PATH=/opt/waggle/data/journal-sealed.log:/opt/waggle/data/journal-r
 BUZZ_RELAY_URL=<relay>                          # extra public relays come from config.json
 ```
 
-`deploy/tripwire.service` loads `/etc/waggle-tripwire/alarm.nsec` and `alarm.to` with
-systemd `LoadCredential=`. The secret therefore stays out of the unit environment, command
-line, repo, and logs.
+Install exactly one signer drop-in:
+
+- `deploy/tripwire-alarm-bunker.conf` loads `alarm.bunker-uri`, `alarm.client-nsec`, and
+  `alarm.to` through systemd `LoadCredential=`. This is the preferred keyless mode.
+- `deploy/tripwire-alarm.conf` loads the compatibility `alarm.nsec` and `alarm.to` files.
+
+Both keep credentials out of the unit environment, command line, repo, and logs. For Bunker
+mode, create `/etc/waggle-tripwire` as mode `0700`; install all three files as root-owned,
+regular non-symlink files with mode `0600`. The Bunker identity must have no grants or
+application authority. Its client pairing remains a credential even though it cannot reveal
+or export the identity nsec.
 
 For an existing watcher—especially the live on-box unit that first merges read- and sealed-lane
 journals—do **not** replace its `ExecStart` with the generic off-host template. Install only the
@@ -352,7 +364,7 @@ credential drop-in, preserving the already-verified detector command:
 
 ```
 sudo install -d -m 0755 /etc/systemd/system/waggle-tripwire.service.d
-sudo install -m 0644 deploy/tripwire-alarm.conf \
+sudo install -m 0644 deploy/tripwire-alarm-bunker.conf \
   /etc/systemd/system/waggle-tripwire.service.d/alarm.conf
 sudo systemctl daemon-reload
 sudo systemctl restart waggle-tripwire.service
@@ -417,8 +429,22 @@ mistakes and crude theft; only off-host catches an adversary who owns the host.
   process.`
 - **Positive control (must fire):** temporarily point `--journal` at an empty file (or sign
   one test event off-process) so a real on-relay post is unaccounted — the run must print
-  `🚨 TRIPWIRE`, append `data/tripwire-alarms.log`, exit 2, and (if alarm credentials are loaded) DM the
-  alarm. Restore the real journal path after.
+  `🚨 TRIPWIRE`, append `data/tripwire-alarms.log`, exit 2, and (with either alarm signer mode
+  plus `ALARM_TO`) DM the alarm. Restore the real journal path after.
+
+### Alarm rotation and relay outage
+
+To rotate, first create and approve a fresh zero-authority Bunker identity/pairing, atomically
+replace both mode-0600 pairing files, run the positive drill, and only then revoke the old Bunker
+pairing. If the watcher is lost, revoke that pairing immediately; there is no reason to preserve
+it because the alarm identity owns no grants. `ALARM_TO` is the operator recipient and rotates
+independently.
+
+A `0/N` relay result is never success: the tripwire retains the durable local alarm row, exits 2,
+and says `ALARM NOT DELIVERED`. Restore relay reachability and rerun the same drill; do not clear
+the failed unit or treat the local row as acknowledged until the intended recipient cold-reads the
+the sealed DM from at least one configured relay. The systemd failed state is the independent local
+  backstop while sealed delivery is unavailable.
 
 Alert on **exit 2 / unit failure** (`systemctl --failed`, or an `OnFailure=` handler) as the
 local backstop to the out-of-band alarm DM.

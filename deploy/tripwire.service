@@ -9,7 +9,8 @@
 # local backstop to the DM. See deploy/README.md "Tripwire" for the full contract.
 #
 # TWO RULES THIS UNIT EXISTS TO ENFORCE:
-#   1. ALARM_NSEC is a DEDICATED key, NEVER the poster (BUZZ_PRIVATE_KEY) key. An alarm
+#   1. The alarm signer is a DEDICATED identity, NEVER the poster key. A Bunker pairing is
+#      preferred; ALARM_NSEC is the legacy/disposable local-key fallback. An alarm
 #      signed by the identity under suspicion proves nothing. The alarm key has zero
 #      authority — its only power is sending a DM — so it is safe to hold on the watcher.
 #   2. OFF-HOST IS STRONGER. A compromised box can silence an on-box watcher before it

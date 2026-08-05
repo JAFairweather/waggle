@@ -6,7 +6,8 @@ import { join } from 'node:path'
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import * as nip44 from 'nostr-tools/nip44'
-import { loadNostrSigner, makeBunkerSigner } from '../src/nostr_signer.mjs'
+import { loadNostrSigner, makeBunkerSigner, makeLocalSigner } from '../src/nostr_signer.mjs'
+import { buildTripwireAlarmWrap } from '../tools/tripwire_alarm_lib.mjs'
 
 let pass = 0, fail = 0
 const ok = (name, value) => { console.log(value ? 'ok  ' : 'FAIL', '—', name); value ? pass++ : fail++ }
@@ -62,6 +63,21 @@ try {
   const remoteCiphertext = await rpcSigner.nip44Encrypt(peer, 'remote round trip')
   ok('Bunker mode encrypts through NIP-46 without the identity nsec', nip44.decrypt(remoteCiphertext, nip44.getConversationKey(peerKey, liveBunkerPub)) === 'remote round trip')
   rpcSigner.close()
+
+  const alarmKey = generateSecretKey(), recipientKey = generateSecretKey(), recipient = getPublicKey(recipientKey)
+  const alarmSigner = makeLocalSigner(Buffer.from(alarmKey).toString('hex'), 'TEST_ALARM_NSEC')
+  const wrap = await buildTripwireAlarmWrap('drill', recipient, alarmSigner, { now: () => 100, backdated: () => 90 })
+  ok('tripwire builds a valid gift wrap addressed only to the operator', verifyEvent(wrap) && wrap.kind === 1059 &&
+    JSON.stringify(wrap.tags) === JSON.stringify([['p', recipient]]))
+  const alarmSeal = JSON.parse(nip44.decrypt(wrap.content, nip44.getConversationKey(recipientKey, wrap.pubkey)))
+  ok('tripwire seal is signed by the dedicated alarm identity', verifyEvent(alarmSeal) && alarmSeal.pubkey === alarmSigner.pubkey && alarmSeal.kind === 13)
+  const alarmRumor = JSON.parse(nip44.decrypt(alarmSeal.content, nip44.getConversationKey(recipientKey, alarmSigner.pubkey)))
+  ok('tripwire rumor binds recipient, alarm identity, and content', alarmRumor.kind === 14 && alarmRumor.pubkey === alarmSigner.pubkey &&
+    alarmRumor.content === 'drill' && JSON.stringify(alarmRumor.tags) === JSON.stringify([['p', recipient]]))
+  const mutating = { ...alarmSigner, async signEvent(event) { return finalizeEvent({ ...event, tags: [['p', 'f'.repeat(64)]] }, alarmKey) } }
+  let mutation = ''
+  try { await buildTripwireAlarmWrap('drill', recipient, mutating, { now: () => 100, backdated: () => 90 }) } catch (error) { mutation = error.message }
+  ok('tripwire refuses a signer that changes policy-owned seal bytes', /changed the sealed alarm event/.test(mutation))
 } finally { rmSync(dir, { recursive: true, force: true }) }
 
 console.log(`\n${pass}/${pass + fail} passed`)
