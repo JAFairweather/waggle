@@ -11,23 +11,29 @@ The identities are deliberately split:
 - `waggle-policy` has no login shell. A sandboxed socket-activated process reads the fixed policy
   and NIP-46 pairing, writes only `/var/lib/waggle-policy/journal`, signs through Bunker, and submits
   directly to the fixed Buzz `/events` endpoint.
+- `waggle-policy-shadow-ingress` uses a different SSH key and is forced only into the derive-only
+  socket. `waggle-policy-shadow` receives one projection policy, has only `AF_UNIX`, no writable
+  path, signer, journal, recovery authority, or endpoint, and returns only a comparison digest.
 - `root` owns the release, policy, SSH key file, service environment, and credential files. Neither
   runtime identity can replace code or widen policy.
 
 This is a policy-host installation guide, not permission to cut production over. Shadow comparison,
 all operation families, and the migration gates in `docs/DESIGN_OFFBOX_BUZZ_POLICY.md` still apply.
 
-## 1. Dedicated ingress key
+## 1. Dedicated ingress keys
 
 On the Waggle host, mint a key used for this forced command only:
 
 ```sh
 install -d -m 0700 /etc/waggle/policy-client
 ssh-keygen -t ed25519 -N '' -f /etc/waggle/policy-client/id_ed25519 -C waggle-policy-ingress
+ssh-keygen -t ed25519 -N '' -f /etc/waggle/policy-client/shadow_ed25519 -C waggle-policy-shadow-ingress
 chmod 0600 /etc/waggle/policy-client/id_ed25519
+chmod 0600 /etc/waggle/policy-client/shadow_ed25519
 ```
 
-Copy only `id_ed25519.pub` to the policy-host operator. Do not reuse a management or deploy key.
+Copy only the two `.pub` files to the policy-host operator. The live and shadow keys must differ;
+do not reuse either as a management or deploy key.
 
 ## 2. Root-owned reviewed release
 
@@ -41,6 +47,7 @@ From that release tree, as root:
 
 ```sh
 WAGGLE_POLICY_CLIENT_PUB="$(cat /secure-transfer/id_ed25519.pub)" \
+WAGGLE_POLICY_SHADOW_CLIENT_PUB="$(cat /secure-transfer/shadow_ed25519.pub)" \
   sh deploy/policy-host-install.sh
 ```
 
@@ -68,6 +75,11 @@ Create `/etc/waggle-policy/policy.json` as `root:root` mode `0600`:
 }
 ```
 
+Create `/etc/waggle-policy/shadow-policy.json` as `root:root` mode `0600`. It repeats only the
+projection fields—`version`, `policy_instance`, `catalogue_version`, `staging_channel`,
+`watched_event_ids`, `approver_mention`, `poster_pubkey`, and `auth_tag`. It must not contain
+`endpoint`, `journal_path`, Bunker information, recovery state, or any credential path.
+
 Install the Bunker pairing as two separate `root:root` mode `0600` regular files—never
 symlinks:
 
@@ -93,13 +105,15 @@ Allow the policy identity/host only what the configured operation needs:
 - TCP 443 to the fixed Buzz host and the Bunker URI's relay hosts;
 - NTP for signature/freshness correctness.
 
-The Waggle host must not reach Bunker directly. It may SSH only as `waggle-policy-ingress` to the
-policy host. The policy host does not accept management through that identity.
+The Waggle host must not reach Bunker directly. Its live key may SSH only as
+`waggle-policy-ingress`; its separate comparison key may SSH only as
+`waggle-policy-shadow-ingress`. Neither identity is a management principal.
 
 ## 5. Arm and prove
 
 ```sh
 systemctl enable --now waggle-policy.socket
+systemctl enable --now waggle-policy-shadow.socket
 sh /opt/waggle-policy/deploy/verify-policy-host.sh
 ```
 
@@ -118,3 +132,5 @@ From the Waggle host, send a canonical fixture through the forced identity. Veri
 
 Do not enable a bridge remote-only route until shadow output matches the local path and its operation
 family has every positive, hostile, replay, restart, ambiguity, and withdrawal test required by §10.
+For shadow comparison, use the shadow response's `evaluation_time` for the local projection and
+compare its `decision` and `unsigned_event_sha256`; never compare or request signature bytes.

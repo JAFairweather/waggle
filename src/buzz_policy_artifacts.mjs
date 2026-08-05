@@ -3,11 +3,8 @@
 // here and every signer result is verified exactly.
 import { createHash } from 'node:crypto'
 import { verifyEvent } from 'nostr-tools/pure'
-import { schnorr } from '@noble/curves/secp256k1'
-import { sha256 } from '@noble/hashes/sha256'
-import { hexToBytes, utf8ToBytes } from '@noble/hashes/utils'
 import { assertPolicyDecision, canonicalJson } from './buzz_policy_core.mjs'
-import { renderTemplate } from './egress.mjs'
+import { buildBuzzEvent as projectBuzzEvent, createProjectionPolicy } from './buzz_policy_projection.mjs'
 
 const HEX64 = /^[0-9a-f]{64}$/, HEX128 = /^[0-9a-f]{128}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -38,18 +35,16 @@ const ARTIFACT_POLICIES = new WeakSet()
 const submitFailure = (message, outcome, responseDigest = '') => Object.assign(new Error(`buzz-policy-artifact: ${message}`), { outcome, responseDigest })
 
 export function createArtifactPolicy({ posterPubkey, authTag, endpoint, timeoutMs = 15_000, maxResponseBytes = 64 * 1024, nip98MaxAgeSec = 60 } = {}) {
-  const poster = hex(posterPubkey, 'posterPubkey')
-  if (!Array.isArray(authTag) || authTag.length !== 4 || authTag[0] !== 'auth' || !authTag.every(value => typeof value === 'string')) fail('authTag must be the fixed four-field NIP-OA tag')
-  const owner = hex(authTag[1], 'authTag owner'), signature = hex(authTag[3], 'authTag signature', HEX128)
-  const attestation = sha256(utf8ToBytes(`nostr:agent-auth:${poster}:${authTag[2]}`))
-  if (!schnorr.verify(hexToBytes(signature), attestation, hexToBytes(owner))) fail('authTag owner signature is invalid for this poster')
+  let projection
+  try { projection = createProjectionPolicy({ posterPubkey, authTag }) }
+  catch (error) { fail(String(error?.message || 'projection policy is invalid').replace(/^buzz-policy-projection: /, '')) }
   let url; try { url = new URL(String(endpoint || '')) } catch { fail('endpoint is invalid') }
   if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search || url.pathname !== '/events') fail('endpoint must be the fixed HTTPS origin /events URL')
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 30_000) fail('timeoutMs is outside the policy bounds')
   if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1_024 || maxResponseBytes > 256 * 1024) fail('maxResponseBytes is outside the policy bounds')
   if (!Number.isSafeInteger(nip98MaxAgeSec) || nip98MaxAgeSec < 5 || nip98MaxAgeSec > 300) fail('nip98MaxAgeSec is outside the policy bounds')
-  const policy = Object.freeze({ posterPubkey: poster, authTag: Object.freeze([...authTag]), endpoint: url.toString(), endpointAuthority: url.host,
-    timeoutMs, maxResponseBytes, nip98MaxAgeSec })
+  const policy = Object.freeze({ posterPubkey: projection.posterPubkey, authTag: projection.authTag, projection,
+    endpoint: url.toString(), endpointAuthority: url.host, timeoutMs, maxResponseBytes, nip98MaxAgeSec })
   ARTIFACT_POLICIES.add(policy)
   return policy
 }
@@ -60,10 +55,8 @@ const artifactPolicy = policy => {
 }
 
 export function buildBuzzEvent(decision, policy, { now = Math.floor(Date.now() / 1000) } = {}) {
-  assertPolicyDecision(decision); artifactPolicy(policy)
-  if (decision.template !== 'quarantine_header' || !UUID.test(String(decision.dest || ''))) fail('decision is not a closed quarantine destination')
-  return Object.freeze({ kind: 9, created_at: timestamp(now), content: renderTemplate(decision.template, decision.slots),
-    tags: Object.freeze([Object.freeze(['h', decision.dest]), policy.authTag]), pubkey: policy.posterPubkey })
+  artifactPolicy(policy)
+  return projectBuzzEvent(decision, policy.projection, { now })
 }
 
 async function signExact(unsigned, signer, label) {

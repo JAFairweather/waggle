@@ -7,6 +7,8 @@ const read = path => readFileSync(resolve(root, path), 'utf8')
 const socket = read('deploy/waggle-policy.socket'), service = read('deploy/waggle-policy@.service'), slice = read('deploy/waggle-policy.slice')
 const sshd = read('deploy/sshd-waggle-policy.conf'), install = read('deploy/policy-host-install.sh')
 const verify = read('deploy/verify-policy-host.sh'), forward = read('tools/buzz-policy-forward.mjs')
+const shadowSocket = read('deploy/waggle-policy-shadow.socket'), shadowService = read('deploy/waggle-policy-shadow@.service')
+const shadowForward = read('tools/buzz-policy-shadow-forward.mjs'), shadowTool = read('tools/buzz-policy-shadow.mjs')
 let fails = 0
 const ok = (name, value) => { console.log(`${value ? 'ok  ' : 'FAIL'} — ${name}`); if (!value) fails++ }
 const has = (text, pattern) => pattern.test(text)
@@ -28,11 +30,26 @@ ok('installer seals and manifests the complete runtime closure', ['! -user root'
 ok('installer validates sshd before reload', install.indexOf('"$SSHD" -t') > 0 && install.indexOf('"$SSHD" -t') < install.indexOf('systemctl reload ssh.service'))
 ok('installer does not arm the socket before policy and credentials exist', !/enable --now waggle-policy\.socket/.test(install))
 ok('verifier checks credentials, complete immutable release, and active/enabled state', ['poster.bunker-uri', 'poster.client-nsec', 'recovery.secret', 'root:root 600', 'release.sha256', 'sha256sum -c', '! -user root', '-type l', 'is-enabled', 'is-active'].every(x => verify.includes(x)))
+ok('shadow ingress is a distinct fixed SSH and Unix-socket capability',
+  sshd.includes('Match User waggle-policy-shadow-ingress') && sshd.includes('ForceCommand /usr/bin/node /opt/waggle-policy/tools/buzz-policy-shadow-forward.mjs') &&
+  shadowForward.includes("const SOCKET = '/run/waggle-policy-shadow/request.sock'") &&
+  has(shadowSocket, /^SocketGroup=waggle-policy-shadow-ingress$/m))
+ok('shadow worker receives one policy credential and no signing or recovery authority',
+  (shadowService.match(/^LoadCredential=/gm) || []).length === 1 && shadowService.includes('shadow-policy.json') &&
+  !/poster\.bunker-uri|poster\.client-nsec|recovery\.secret|ReadWritePaths=/i.test(shadowService))
+ok('shadow worker is structurally networkless and has no writable filesystem path',
+  has(shadowService, /^RestrictAddressFamilies=AF_UNIX$/m) && !/^ReadWritePaths=/m.test(shadowService) &&
+  !/nostr_signer|buzz_policy_artifacts|buzz_policy_service|policy_journal/.test(shadowTool))
+ok('installer requires distinct live and derive-only ingress keys',
+  install.includes('WAGGLE_POLICY_SHADOW_CLIENT_PUB') && install.includes('live and shadow ingress keys must be distinct') &&
+  install.includes('tools/buzz-policy-shadow.mjs') && install.includes('tools/buzz-policy-shadow-forward.mjs'))
+ok('verifier requires the shadow policy and active derive-only socket',
+  verify.includes('/etc/waggle-policy/shadow-policy.json') && verify.includes('waggle-policy-shadow.socket'))
 
 const weakened = service.replace('ReadWritePaths=/var/lib/waggle-policy/journal', 'ReadWritePaths=/opt/waggle-policy /etc/waggle-policy')
 ok('NEGATIVE CONTROL — writable code/config would be detected', !has(weakened, /^ReadWritePaths=\/var\/lib\/waggle-policy\/journal$/m))
-const shell = sshd.replace(/^    ForceCommand.*$/m, '')
-ok('NEGATIVE CONTROL — removing ForceCommand would be detected', !/^    ForceCommand /m.test(shell))
+const shell = sshd.replace(/^    ForceCommand \/usr\/bin\/node \/opt\/waggle-policy\/tools\/buzz-policy-forward\.mjs$/m, '')
+ok('NEGATIVE CONTROL — removing ForceCommand would be detected', !shell.includes('ForceCommand /usr/bin/node /opt/waggle-policy/tools/buzz-policy-forward.mjs'))
 const multiplied = service.replace('Slice=waggle-policy.slice', '')
 ok('NEGATIVE CONTROL — removing the aggregate slice is detected', !/^Slice=waggle-policy\.slice$/m.test(multiplied))
 
