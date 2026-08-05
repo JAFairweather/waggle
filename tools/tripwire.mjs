@@ -20,7 +20,7 @@
 // poster key (which may be the compromised one). Wire it to a systemd timer; alert on exit 2.
 
 import WebSocket from 'ws'
-import { readFileSync, appendFileSync, mkdirSync, existsSync } from 'node:fs'
+import { readFileSync, appendFileSync, mkdirSync, existsSync, lstatSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getPublicKey, finalizeEvent, generateSecretKey } from 'nostr-tools/pure'
@@ -30,6 +30,24 @@ import * as nip44 from 'nostr-tools/nip44'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const arg = (n, d) => { const i = process.argv.indexOf(n); return i === -1 ? d : process.argv[i + 1] }
 const die = (m) => { console.error(`tripwire: ${m}`); process.exit(1) }
+
+// systemd credentials keep the alarm nsec out of EnvironmentFile, process listings, the repo,
+// and logs. Direct env remains for local drills/backward compatibility, but a unit that supplies
+// BOTH is a migration error: silently preferring one could leave an old secret live indefinitely.
+function credential(name) {
+  const direct = String(process.env[name] || '').trim()
+  const path = String(process.env[`${name}_FILE`] || '').trim()
+  if (direct && path) die(`${name} and ${name}_FILE are both set — remove the legacy environment secret`)
+  if (!path) return direct
+  let st
+  try { st = lstatSync(path) } catch (e) { die(`${name}_FILE cannot be read: ${e.message}`) }
+  if (!st.isFile() || st.isSymbolicLink()) die(`${name}_FILE must be a regular non-symlink file`)
+  if ((st.mode & 0o077) !== 0) die(`${name}_FILE must not be group/world accessible`)
+  if (st.size < 1 || st.size > 512) die(`${name}_FILE has an invalid size`)
+  try { return readFileSync(path, 'utf8').trim() } catch (e) { die(`${name}_FILE cannot be read: ${e.message}`) }
+}
+const ALARM_NSEC = credential('ALARM_NSEC')
+const ALARM_TO = credential('ALARM_TO')
 
 // Poster identity — the key whose signing we are policing.
 let poster = arg('--poster', process.env.POSTER)
@@ -44,8 +62,8 @@ const posterHex = poster.startsWith('npub1') ? nip19.decode(poster).data : poste
 // Rule 1 as a property of the code, not just the docs: the alarm must be signed by a SEPARATE
 // key, never the poster. If ALARM_NSEC derives to the poster, a thief holding that nsec could
 // forge the all-clear too — so refuse to run rather than offer that false assurance.
-if (process.env.ALARM_NSEC) {
-  const alarmSk = process.env.ALARM_NSEC.startsWith('nsec1') ? nip19.decode(process.env.ALARM_NSEC).data : Uint8Array.from(Buffer.from(process.env.ALARM_NSEC, 'hex'))
+if (ALARM_NSEC) {
+  const alarmSk = ALARM_NSEC.startsWith('nsec1') ? nip19.decode(ALARM_NSEC).data : Uint8Array.from(Buffer.from(ALARM_NSEC, 'hex'))
   if (getPublicKey(alarmSk) === posterHex) die('ALARM_NSEC derives to the POSTER key — the alarm must be signed by a SEPARATE, zero-authority key (rule 1). An alarm signed by the identity under suspicion proves nothing.')
 }
 
@@ -120,7 +138,7 @@ function fetchPosterEvents() {
 // the absence of a delivery path is exactly the kind of thing discovered during an incident rather
 // than before one. Reported on every run, clean or not — a 30-minute timer saying so is cheap
 // compared to finding out when it matters.
-const alarmConfigured = () => !!(process.env.ALARM_NSEC && process.env.ALARM_TO)
+const alarmConfigured = () => !!(ALARM_NSEC && ALARM_TO)
 
 async function alarmDM(text) {
   if (!alarmConfigured()) {
@@ -128,8 +146,8 @@ async function alarmDM(text) {
     return
   }
   try {
-    const ask = process.env.ALARM_NSEC.startsWith('nsec1') ? nip19.decode(process.env.ALARM_NSEC).data : Uint8Array.from(Buffer.from(process.env.ALARM_NSEC, 'hex'))
-    const to = process.env.ALARM_TO.startsWith('npub1') ? nip19.decode(process.env.ALARM_TO).data : process.env.ALARM_TO.toLowerCase()
+    const ask = ALARM_NSEC.startsWith('nsec1') ? nip19.decode(ALARM_NSEC).data : Uint8Array.from(Buffer.from(ALARM_NSEC, 'hex'))
+    const to = ALARM_TO.startsWith('npub1') ? nip19.decode(ALARM_TO).data : ALARM_TO.toLowerCase()
     // NIP-17 seal+wrap (signer = the ALARM key, NOT the poster key).
     const now = () => Math.floor(Date.now() / 1000 - Math.random() * 172800)
     const rumor = { kind: 14, pubkey: getPublicKey(ask), created_at: Math.floor(Date.now() / 1000), tags: [['p', to]], content: text }
