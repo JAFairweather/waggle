@@ -13,7 +13,9 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const EVENT_KEYS = new Set(['id', 'pubkey', 'created_at', 'kind', 'tags', 'content', 'sig'])
 const REQUEST_KEYS = new Set(['version', 'policy_instance', 'operation', 'catalogue_version', 'observed_at', 'evidence'])
 const EVIDENCE_KEYS = Object.freeze({ quarantine_header: new Set(['source_event']) })
+const POLICY_REQUESTS = new WeakSet()
 const POLICY_DECISIONS = new WeakSet()
+const DECISION_REQUESTS = new WeakMap()
 
 const fail = message => { throw new Error(`buzz-policy: ${message}`) }
 const exactKeys = (value, allowed, label) => {
@@ -74,7 +76,9 @@ export function decodePolicyRequest(raw, {
   if (!Number.isSafeInteger(request.observed_at) || request.observed_at < now - maxObservationAge || request.observed_at > now + maxFutureSkew) fail('observed_at is outside the freshness window')
   exactKeys(request.evidence, EVIDENCE_KEYS[request.operation], 'evidence')
   verifyWireEvent(request.evidence.source_event)
-  return Object.freeze(request)
+  Object.freeze(request)
+  POLICY_REQUESTS.add(request)
+  return request
 }
 
 const channel = value => {
@@ -87,7 +91,8 @@ const channel = value => {
 // event ids.  The requester cannot pick the route, state, display name, body, or attribution;
 // all are derived from the complete signed source and policy-owned state.
 export function decideQuarantineHeader(request, { stagingChannel, watchedEventIds = [], approverMention = '' } = {}) {
-  if (request?.operation !== 'quarantine_header') fail('wrong operation for quarantine decision')
+  if (!request || !POLICY_REQUESTS.has(request)) fail('an internally verified policy request is required')
+  if (request.operation !== 'quarantine_header') fail('wrong operation for quarantine decision')
   const source = request.evidence.source_event
   const watched = new Set(watchedEventIds.map(value => String(value).toLowerCase()).filter(value => HEX64.test(value)))
   const replyTargets = source.tags.filter(tag => tag[0] === 'e' && HEX64.test(String(tag[1] || '').toLowerCase())).map(tag => tag[1].toLowerCase())
@@ -107,11 +112,20 @@ export function decideQuarantineHeader(request, { stagingChannel, watchedEventId
     }),
   })
   POLICY_DECISIONS.add(decision)
+  DECISION_REQUESTS.set(decision, request)
+  return decision
+}
+
+// Artifact construction is a separate trust boundary.  A shape-compatible object from
+// the bridge is not a decision: only an object minted by the policy evaluator is.
+export function assertPolicyDecision(decision) {
+  if (!decision || !POLICY_DECISIONS.has(decision)) fail('an internally derived policy decision is required')
   return decision
 }
 
 export function policyIdempotencyKey(request, decision) {
-  if (!request || !POLICY_DECISIONS.has(decision)) fail('an internally derived policy decision is required')
+  assertPolicyDecision(decision)
+  if (!request || !POLICY_REQUESTS.has(request) || DECISION_REQUESTS.get(decision) !== request) fail('the decision is not bound to this verified request')
   const sourceIds = [request.evidence.source_event.id]
   return createHash('sha256').update(canonicalJson([
     request.version, request.policy_instance, request.catalogue_version,
