@@ -74,7 +74,7 @@ function validate(record, expectedKey = '') {
     if (record.buzz_event_id !== null) record.buzz_event_id = hex(record.buzz_event_id, 'buzz_event_id')
     if (!['accepted', 'refused', 'ambiguous'].includes(record.result)) fail('terminal result is invalid')
     if (record.result === 'accepted' && !record.buzz_event_id) fail('an accepted record requires buzz_event_id')
-    if (record.result !== 'accepted' && record.buzz_event_id !== null) fail('a non-accepted record cannot name a Buzz event')
+    if (record.result === 'ambiguous' && record.buzz_event_id !== null) fail('an ambiguous orphan record cannot claim a Buzz event')
     integer(record.completed_at, 'completed_at')
   }
   return Object.freeze(record)
@@ -195,7 +195,7 @@ export class PolicyJournal {
       receipt_digest: createHash('sha256').update(receiptText).digest('hex'), buzz_event_id: buzzEventId === null ? null : hex(buzzEventId, 'buzz_event_id'),
       result, completed_at: integer(completedAt, 'completed_at') }, k)
     if (result === 'accepted' && existing.status !== 'prepared') fail('an accepted result requires a durably prepared event')
-    if (existing.status === 'prepared' && result === 'accepted' && terminal.buzz_event_id !== existing.buzz_event_id) fail('terminal Buzz id does not match the prepared event')
+    if (existing.status === 'prepared' && ['accepted', 'refused'].includes(result) && terminal.buzz_event_id !== existing.buzz_event_id) fail('terminal Buzz id does not match the prepared event')
     const tmp = resolve(this.directory, `.${k}.${randomBytes(8).toString('hex')}.tmp`)
     let fd
     try {

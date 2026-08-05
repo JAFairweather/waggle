@@ -35,6 +35,7 @@ const exactWireEvent = (event, label) => {
 }
 const same = (left, right) => canonicalJson(left) === canonicalJson(right)
 const ARTIFACT_POLICIES = new WeakSet()
+const submitFailure = (message, outcome, responseDigest = '') => Object.assign(new Error(`buzz-policy-artifact: ${message}`), { outcome, responseDigest })
 
 export function createArtifactPolicy({ posterPubkey, authTag, endpoint, timeoutMs = 15_000, maxResponseBytes = 64 * 1024, nip98MaxAgeSec = 60 } = {}) {
   const poster = hex(posterPubkey, 'posterPubkey')
@@ -75,6 +76,18 @@ async function signExact(unsigned, signer, label) {
 }
 
 export const signExactBuzzEvent = (unsigned, signer) => signExact(unsigned, signer, 'signed Buzz event')
+
+// Recovery must prove that durable bytes are the exact event this policy would
+// have authored.  Signature validity alone is insufficient: a valid signer may
+// have produced another destination, template, or authorization tag.
+export function verifySignedBuzzEvent(event, decision, policy) {
+  assertPolicyDecision(decision); artifactPolicy(policy)
+  const signed = exactWireEvent(wire(event), 'signed Buzz event')
+  const expected = buildBuzzEvent(decision, policy, { now: signed.created_at })
+  const projected = { kind: signed.kind, created_at: signed.created_at, content: signed.content, tags: signed.tags, pubkey: signed.pubkey }
+  if (!same(projected, expected)) fail('prepared Buzz event does not match policy-owned bytes')
+  return Object.freeze(signed)
+}
 
 export function buildNip98Authorization(signedBuzzEvent, policy, { nonce, now = Math.floor(Date.now() / 1000) } = {}) {
   exactWireEvent(signedBuzzEvent, 'signed Buzz event')
@@ -140,10 +153,15 @@ export async function submitBuzzEvent(signedBuzzEvent, signedNip98, policy, {
     response = await fetchImpl(policy.endpoint, { method: 'POST', redirect: 'manual', signal: globalThis.AbortSignal.timeout(policy.timeoutMs),
       headers: { authorization: `Nostr ${Buffer.from(JSON.stringify(signedNip98)).toString('base64')}`,
         'content-type': 'application/json', 'x-auth-tag': JSON.stringify(policy.authTag) }, body })
-  } catch (error) { fail(`Buzz submission did not reach an authoritative response: ${error?.name || 'network error'}`) }
+  } catch (error) {
+    throw submitFailure(`Buzz submission did not reach an authoritative response: ${error?.name || 'network error'}`,
+      'ambiguous', createHash('sha256').update(String(error?.name || 'network-error')).digest('hex'))
+  }
   const bytes = await boundedResponseBody(response, policy.maxResponseBytes)
   const responseDigest = createHash('sha256').update(bytes).digest('hex')
-  if (response.status === 429 || response.status >= 500 || response.status < 200 || (response.status >= 300 && response.status < 400)) fail(`Buzz submission is retryable (HTTP ${response.status})`)
+  if (response.status === 429 || response.status >= 500 || response.status < 200 || (response.status >= 300 && response.status < 400)) {
+    throw submitFailure(`Buzz submission is retryable (HTTP ${response.status})`, 'held', responseDigest)
+  }
   if (response.status >= 400) fail(`Buzz response is not an authoritative exact-event outcome (HTTP ${response.status})`)
   let parsed
   try { parsed = JSON.parse(new TextDecoder().decode(bytes)) } catch { fail('Buzz success response is not JSON') }
