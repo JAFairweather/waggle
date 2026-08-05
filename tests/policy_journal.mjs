@@ -39,6 +39,9 @@ rejects('corrupt state fails loudly rather than looking unclaimed', () => first.
 const linkKey = '5'.repeat(64)
 symlinkSync(resolve(dir, `${key}.json`), resolve(dir, `${linkKey}.json`))
 rejects('a symlinked record is refused', () => first.get(linkKey), /private regular file/)
+const hugeKey = '8'.repeat(64)
+writeFileSync(resolve(dir, `${hugeKey}.json`), 'x'.repeat(96 * 1024 + 1), { mode: 0o600 })
+rejects('an oversized record is refused before parsing', () => first.get(hugeKey), /record size/)
 
 console.log(fails ? `\npolicy_journal: ${fails} FAILED` : '\npolicy_journal: all checks passed')
 process.exit(fails ? 1 : 0)

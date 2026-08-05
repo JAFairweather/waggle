@@ -2,11 +2,12 @@
 // service (#54). One immutable file per policy-derived key is the claim. O_EXCL makes the
 // first claim atomic across forced-command processes; an atomic rename makes completion
 // terminal. Nothing here signs or interprets evidence.
-import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import { resolve } from 'node:path'
 
 const HEX64 = /^[0-9a-f]{64}$/
+const MAX_RECORD_BYTES = 96 * 1024
 const fail = message => { throw new Error(`policy-journal: ${message}`) }
 const hex = (value, label) => {
   const text = String(value || '').toLowerCase()
@@ -55,10 +56,20 @@ function validate(record, expectedKey = '') {
 }
 
 function readRecord(path, key) {
-  let st
-  try { st = lstatSync(path) } catch (e) { if (e.code === 'ENOENT') return null; throw e }
-  if (!st.isFile() || st.isSymbolicLink() || (st.mode & 0o077)) fail('record is not a private regular file')
-  const raw = readFileSync(path, 'utf8')
+  let fd
+  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW) }
+  catch (e) {
+    if (e.code === 'ENOENT') return null
+    if (e.code === 'ELOOP') fail('record is not a private regular file')
+    throw e
+  }
+  let raw
+  try {
+    const st = fstatSync(fd)
+    if (!st.isFile() || (st.mode & 0o077)) fail('record is not a private regular file')
+    if (st.size < 2 || st.size > MAX_RECORD_BYTES) fail('record size is outside the allowed range')
+    raw = readFileSync(fd, 'utf8')
+  } finally { closeSync(fd) }
   let record
   try { record = JSON.parse(raw) } catch { fail('record is not JSON') }
   if (`${canonical(record)}\n` !== raw) fail('record is not canonical')
