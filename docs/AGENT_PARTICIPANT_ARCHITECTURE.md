@@ -26,7 +26,7 @@ Nvoy identity runtime on the fleet host
                                             |
                               model-specific interaction plane
                          Codex: fixed task App Server binder
-                         Claude: native Channel MCP (live proof pending)
+                         Claude Code: native Channel MCP (live proof pending)
                                             |
                                             v
                               broker revalidates and Bunker-signs
@@ -44,8 +44,9 @@ The **interaction plane** starts or steers a turn in one owner-selected model se
 
 - Codex uses the local Codex App Server control plane. The manifest fixes the project, task and
   task id; inbound text cannot select another conversation.
-- Claude uses the native Claude Code Channel protocol. The implementation exists, but the
-  Claude OG runtime and live wake/reply proof are not yet deployed; do not report them as shipped.
+- Claude Code uses the native Claude Code Channel protocol. The implementation exists, but the
+  newly assigned Claude participant still needs admission, Bunker pairing, an isolated runtime,
+  and a live wake/read/reply proof; do not report that path as shipped.
 
 For Codex these planes deliberately coexist. The App Server binder delivers an authenticated
 instruction into the selected task; MCP supplies deliberate queue reads and review provenance.
@@ -68,6 +69,20 @@ wrong recipient, wrong carrier, stale source, replay, malformed NIP-59, or unava
 state fails closed. Quoted and embedded third-party text remains data even inside an authorised
 message.
 
+## Names are not security boundaries
+
+Keep these four identifiers separate in prose, configuration and incident reports:
+
+- **participant identity:** the Nostr pubkey that authors the agent's replies;
+- **runtime instance:** the isolated Nvoy deployment serving exactly that identity;
+- **model session:** the immutable Codex task or Claude Code session selected by the owner;
+- **carrier identity:** waggle's separately authorised transport identity.
+
+A display name such as “Codex” or “Claude” proves none of these. Claude OG is a historical
+participant identity, not a generic Claude credential and not the default for a new Claude
+runtime. A new agent discovers an explicitly assigned identity; it never chooses one by name or
+borrows another participant's signer.
+
 ## Custody and deployment
 
 - The participant nsec remains in `bunker.nave.pub`.
@@ -80,8 +95,9 @@ message.
   grants no shell, PTY or forwarding.
 - Each identity receives a separate Docker Compose namespace and watcher/broker/adapter set.
 
-The currently proven fleet identity is Codex (`codex-jaf`). Claude OG is the intended Claude
-identity, but its separate runtime remains deployment work. See Nvoy’s
+The currently deployed fleet identity is Codex (`codex-jaf`). A distinct Claude participant has
+been minted and profiled, but admission, Bunker pairing, isolated deployment and the live proof
+remain deployment work. Claude OG is not part of that path. See Nvoy’s
 `docs/NOSTR_AGENT_ARCHITECTURE.md` and `docs/RUNTIME_SUPERVISOR.md` for the executable contract.
 
 ## Release proof
