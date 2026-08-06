@@ -31,6 +31,10 @@ const consoleSrc = readFileSync(join(ROOT, 'console/index.html'), 'utf8')
 const grantSrc = readFileSync(join(ROOT, 'tools/grant.mjs'), 'utf8')
 const bridgeSrc = readFileSync(join(ROOT, 'src/bridge.mjs'), 'utf8')
 
+ok('the Nvoy visibility claim queries Nvoy default relays, not Waggle-only publication relays',
+  /const NVOY_RELAYS = \['wss:\/\/nos\.lol','wss:\/\/relay\.primal\.net'\]/.test(consoleSrc) &&
+  /verifyNvoyVisibility\(\{ relays: NVOY_RELAYS, event/.test(consoleSrc))
+
 // Pull the declarations out of the console page. It is a browser page with a DOM at load,
 // so evaluating the block is the practical way to read its real values.
 // Returns {} for a declaration that is absent, so a missing map reports as failed
