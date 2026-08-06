@@ -60,7 +60,7 @@ DRY_RUN="${DRY_RUN:-}"
 # Ship list — MUST mirror deploy.sh's rsync set and verify-deployed.sh's SHIP. config.json,
 # .env and data/ are absent by construction: not listed, and no --delete. That is the whole
 # no-clobber guarantee, stated in one place.
-SHIP='src tests tools package.json package-lock.json config.example.json'
+SHIP='src tests tools package.json package-lock.json config.example.json deploy/tripwire-alarm-bunker.conf deploy/waggle-tripwire-drill.service deploy/setup-tripwire-alarm.sh'
 
 log() { echo "deploy-runner[$LANE] $*"; }
 alarm() { echo "deploy-runner[$LANE] ALARM: $*" >&2; }
@@ -183,7 +183,7 @@ log "shipping code into $TREE"
 # config.json/.env/data on the tree are untouched). Source has no trailing slash, so each
 # dir lands as $TREE/<name>, matching what verify-deployed.sh resolves.
 # shellcheck disable=SC2086  # SHIP is an intentional word list
-( cd "$HUB" && rsync -a $SHIP "$TREE/" ) || { alarm "rsync into $TREE failed — tree may be half-shipped"; exit 1; }
+( cd "$HUB" && rsync -aR $SHIP "$TREE/" ) || { alarm "rsync into $TREE failed — tree may be half-shipped"; exit 1; }
 
 log "installing deps in $TREE"
 ( cd "$TREE" && sh -c "$NPM_CMD" ) || { alarm "dependency install failed in $TREE"; exit 1; }

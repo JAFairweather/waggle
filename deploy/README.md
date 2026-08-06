@@ -388,10 +388,33 @@ After the Bunker-backed drill and recipient cold read both pass, delete the work
 SSD is an operational cleanup, not proof of physical erasure; the security boundary is that the
 only live signing authority is now the independently revocable Bunker identity/pairing.
 
-To stage those three files without ever putting the Bunker URI or client credential on argv or
-in an environment variable, save the URI temporarily in a root-owned mode-0600 file, then feed
-it only on stdin. The initializer refuses an existing destination so a working pairing is never
-partially overwritten:
+For a fresh installation, the owner-facing path is one resumable enrollment command. It stages
+the credentials, writes the public drill inputs, installs the drop-in and isolated drill unit,
+and reloads systemd. The Bunker URI enters on stdin only; the command refuses to overwrite an
+existing pairing:
+
+```
+sudo /opt/waggle-read/deploy/setup-tripwire-alarm.sh enroll \
+  --recipient <operator-npub> \
+  --poster <bridge-poster-npub-or-hex> \
+  --relay wss://relay.nave.pub \
+  < /root/alarm.bunker-uri
+```
+
+Approve the new connection in Bunker, then run:
+
+```
+sudo /opt/waggle-read/deploy/setup-tripwire-alarm.sh drill
+```
+
+That command first validates the resumable state, then runs the isolated positive drill. A later
+operator can run `setup-tripwire-alarm.sh check` without changing anything. The only unavoidable
+human actions are importing the dedicated identity into Bunker, approving its NIP-46 connection,
+and confirming the labelled DM arrived.
+
+The lower-level initializer remains available for custom watcher hosts. To stage its three files
+without ever putting the Bunker URI or client credential on argv or in an environment variable,
+feed a root-owned mode-0600 URI file only on stdin:
 
 ```
 sudo node tools/tripwire-alarm-bunker-init.mjs \
@@ -408,6 +431,11 @@ NIP-46 client credential locally; the alarm identity nsec remains in the Bunker.
 For an existing watcher—especially the live on-box unit that first merges read- and sealed-lane
 journals—do **not** replace its `ExecStart` with the generic off-host template. Install only the
 credential drop-in, preserving the already-verified detector command:
+
+The read-lane deployment ships these two installation artifacts under
+`/opt/waggle-read/deploy/`; operators do not need a second repository checkout or a manual file
+transfer. If either file is absent, the deployed build is stale and must be updated before alarm
+enrollment continues.
 
 ```
 sudo install -d -m 0755 /etc/systemd/system/waggle-tripwire.service.d

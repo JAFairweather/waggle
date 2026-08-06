@@ -37,6 +37,11 @@ rsync -az \
   "$DIR/src" "$DIR/tests" "$DIR/tools" \
   "$DIR/package.json" "$DIR/package-lock.json" "$DIR/config.example.json" \
   "$DEST:$TREE/"
+ssh "$DEST" "mkdir -p $TREE/deploy"
+rsync -az \
+  "$DIR/deploy/tripwire-alarm-bunker.conf" "$DIR/deploy/waggle-tripwire-drill.service" \
+  "$DIR/deploy/setup-tripwire-alarm.sh" \
+  "$DEST:$TREE/deploy/"
 
 echo "-- deps --"
 ssh "$DEST" "cd $TREE && npm ci --omit=dev --no-audit --no-fund"
