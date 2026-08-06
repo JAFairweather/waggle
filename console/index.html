@@ -265,6 +265,10 @@ const { decode } = nip19
 
 const $ = (id) => document.getElementById(id)
 const RELAYS = ['wss://nos.lol','wss://relay.primal.net','wss://relay.ditto.pub','wss://jskitty.com/nostr']
+// "Visible in Nvoy" is a claim about Nvoy's shipped discovery plane, not merely about one of
+// Waggle's wider publication relays. Keep this explicit until Nvoy publishes a signed/configurable
+// relay contract that the console can discover at runtime.
+const NVOY_RELAYS = ['wss://nos.lol','wss://relay.primal.net']
 const KIND = { grant: 440, revocation: 441 }
 const TAG = { scope: 'da-scope', cap: 'da-cap' }
 
@@ -584,7 +588,7 @@ function publish(ev) {
 
 async function reportNvoyVisibility(st, event) {
   st.querySelector('.nvoy-retry')?.remove()
-  const result = await verifyNvoyVisibility({ relays: RELAYS, event, query, verify: verifyEvent })
+  const result = await verifyNvoyVisibility({ relays: NVOY_RELAYS, event, query, verify: verifyEvent })
   if (result.visible > 0) {
     st.className = 'status ok'
     st.append(` · visible in Nvoy (${result.visible}/${result.total} relays cold-read the exact signed record)`)
