@@ -20,6 +20,8 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
+import { finalizeEvent, generateSecretKey, verifyEvent } from 'nostr-tools'
+import { verifyNvoyVisibility } from '../console/nvoy-visibility.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 let pass = 0, fail = 0
@@ -113,6 +115,21 @@ for (const cap of ['task', 'task+act', 'task-relay']) {
   ok(`${cap} is NOT credited to this bridge — it is checked by the agent's runtime`,
     !bridgeHonours.includes(cap) && /runtime/.test(CAP_ENFORCER[cap]))
 }
+
+// ── Nvoy universal-plane visibility is a cold read, not a second fake data index ─────────────
+const visibilityEvent = JSON.parse(JSON.stringify(finalizeEvent({
+  kind: 440, created_at: 1, tags: [['p', 'a'.repeat(64)], ['da-cap', 'admit']], content: '',
+}, generateSecretKey())))
+const visibilityRelays = ['one', 'two', 'three']
+const visible = await verifyNvoyVisibility({ relays: visibilityRelays, event: visibilityEvent, verify: verifyEvent,
+  query: async url => ({ answered: true, out: url === 'two' ? [] : [visibilityEvent] }) })
+ok('an exact signed 440 cold-read from relays is honestly reported visible in Nvoy',
+  visible.visible === 2 && visible.answered === 3 && visible.total === 3)
+const forged = JSON.parse(JSON.stringify(visibilityEvent)); forged.content = 'changed'
+const absent = await verifyNvoyVisibility({ relays: visibilityRelays, event: visibilityEvent, verify: verifyEvent,
+  query: async url => ({ answered: url !== 'three', out: url === 'one' ? [forged] : [] }) })
+ok('absent, forged, and partial cold reads never claim Nvoy visibility',
+  absent.visible === 0 && absent.answered === 2 && absent.total === 3)
 
 console.log(`\n${pass}/${pass + fail} passed`)
 process.exit(fail ? 1 : 0)
