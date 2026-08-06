@@ -55,7 +55,7 @@ import { parseLifecycleCommand, lifecycleAdmissible, lifecycleReceipt, LIFECYCLE
 import { fanout } from './fanout.mjs'
 import { recipientDmRelays } from './dm_relays.mjs'
 import { quarantineSlotsFromSource } from './buzz_policy_core.mjs'
-import { buildQuarantinePolicyRequest, buildStandingTrustedReplyPolicyRequest, verifyPolicyResponse, validatePolicyWriterConfig } from './buzz_policy_client.mjs'
+import { buildQuarantinePolicyRequest, buildStandingTrustedReplyPolicyRequest, buildSealedDirectPolicyRequest, normalizePolicyOperations, verifyPolicyResponse, validatePolicyWriterConfig } from './buzz_policy_client.mjs'
 import { comparePolicyShadow, validateShadowClientConfig } from './buzz_policy_shadow_client.mjs'
 import { PolicyRequestQueue } from './policy_request_queue.mjs'
 import { defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased } from './render.mjs'
@@ -320,8 +320,9 @@ const configuredTaskRoutes = Object.freeze((cfg.public?.task_routes || []).map(n
 const policyShadowRaw = cfg.public?.policy_shadow || {}
 const policyShadowMode = String(policyShadowRaw.mode || 'off').toLowerCase()
 if (!['off', 'observe', 'enforce-shadow'].includes(policyShadowMode)) throw new Error('public.policy_shadow.mode must be off, observe, or enforce-shadow')
-const policyShadow = policyShadowMode === 'off' ? Object.freeze({ mode: 'off' }) : Object.freeze({
+const policyShadow = policyShadowMode === 'off' ? Object.freeze({ mode: 'off', operations: Object.freeze([]) }) : Object.freeze({
   mode: policyShadowMode,
+  operations: normalizePolicyOperations(policyShadowRaw.operations, 'public.policy_shadow'),
   policyInstance: String(policyShadowRaw.policy_instance || ''),
   catalogueVersion: String(policyShadowRaw.catalogue_version || '').toLowerCase(),
   posterPubkey: String(policyShadowRaw.poster_pubkey || '').toLowerCase(),
@@ -334,8 +335,9 @@ const policyShadow = policyShadowMode === 'off' ? Object.freeze({ mode: 'off' })
 const policyWriterRaw = cfg.public?.policy_writer || {}
 const policyWriterMode = String(policyWriterRaw.mode || 'off').toLowerCase()
 if (!['off', 'remote-only'].includes(policyWriterMode)) throw new Error('public.policy_writer.mode must be off or remote-only')
-const policyWriter = policyWriterMode === 'off' ? Object.freeze({ mode: 'off' }) : Object.freeze({
+const policyWriter = policyWriterMode === 'off' ? Object.freeze({ mode: 'off', operations: Object.freeze([]) }) : Object.freeze({
   mode: policyWriterMode,
+  operations: normalizePolicyOperations(policyWriterRaw.operations, 'public.policy_writer'),
   policyInstance: String(policyWriterRaw.policy_instance || ''),
   catalogueVersion: String(policyWriterRaw.catalogue_version || '').toLowerCase(),
   posterPubkey: String(policyWriterRaw.poster_pubkey || '').toLowerCase(),
@@ -1311,17 +1313,24 @@ function route(ev) {
   if (BRIDGE_PK && PUB && ps.includes(BRIDGE_PK) && (PUB.relayChannels.length || PUB.approvers.length)) return dispatchBridgeWrap(ev)
   const hits = ps.filter(p => TARGETS.includes(p))
   if (!hits.length) return // not for us; do NOT record — keep the dedup store to real deliveries
+  // A direct gift wrap has one signed recipient. It is the first sealed operation safe to move to
+  // the off-box writer: the policy host independently resolves that p-tag through its own roster.
+  // Channel-plane wraps never reach this branch (they route by author above), so a decoy p-tag
+  // cannot be mistaken for a direct recipient.
+  if (hits.length === 1 && PUB.policyWriter.mode === 'remote-only' && PUB.policyWriter.operations.includes('sealed_direct_envelope') && FORWARD_MODE === 'buzz') {
+    remotePolicyGateSealed(ev)
+    return
+  }
+  if (hits.length === 1 && PUB.policyShadow.mode !== 'off' && PUB.policyShadow.operations.includes('sealed_direct_envelope')) {
+    shadowGateSealedDirect(ev, hits)
+    return
+  }
   // Record dedup ONLY for a genuinely committed delivery: buzz mode into at least
   // one provisioned inbox. Otherwise (dryrun, or DMs that arrived while inboxes were
   // still placeholders) we must NOT mark seen, or the eventual go-live backfill would
   // silently skip DMs that were never actually delivered. Marked synchronously so a
   // second relay serving the same wrap can't double-send before the first records it.
-  const willDeliver = FORWARD_MODE === 'buzz' && hits.some(p => !RECIPIENTS[p].inbox.startsWith('INBOX_UUID_'))
-  if (willDeliver) markSeen(ev.id)
-  for (const [attempt, p] of hits.entries()) {
-    markLatency(ev.id, 'sealed.observed', Date.now(), attempt)
-    forward(RECIPIENTS[p], ev, { traceAttempt: attempt })
-  }
+  deliverDirectLocally(ev, hits)
 }
 
 // --- public kind:1 delivery & routing ---------------------------------------
@@ -1502,6 +1511,23 @@ async function comparePublicShadow(ev, operation = 'quarantine_header') {
   })
 }
 
+const policyRecipientRoutes = () => Object.fromEntries(Object.entries(RECIPIENTS).map(([pubkey, rec]) =>
+  [pubkey, { inbox: rec.inbox, name: rec.name }]))
+
+async function compareSealedDirectShadow(ev) {
+  const s = PUB.policyShadow
+  const requestRaw = buildSealedDirectPolicyRequest(ev, {
+    policyInstance: s.policyInstance, catalogueVersion: s.catalogueVersion,
+  })
+  const rawResponse = await shadowRunner(requestRaw, s)
+  return comparePolicyShadow(requestRaw, rawResponse, {
+    policyInstance: s.policyInstance, catalogueVersion: s.catalogueVersion,
+    stagingChannel: PUB.staging, inboxChannel: PUB.inbox, watchedEventIds: PUB.events,
+    trustedRepliers: PUB.trustedRepliers, recipientRoutes: policyRecipientRoutes(),
+    approverMention: PUB.approverMention || '', posterPubkey: s.posterPubkey, authTag: s.authTag,
+  })
+}
+
 const policyRequests = new PolicyRequestQueue(POLICY_REQUEST_QUEUE_PATH)
 const policyWriterInFlight = new Set()
 let policyWriterRunner = runPolicyWriterSsh
@@ -1526,7 +1552,13 @@ async function processRemotePolicyRequest(sourceId, requestRaw) {
     if (!queuedSource || queuedSource.id !== sourceId) throw new Error('queued request filename is not bound to its signed source event')
     const responseRaw = unframePolicyWriterResponse(await policyWriterRunner(requestRaw, PUB.policyWriter))
     const operation = JSON.parse(requestRaw).operation
-    const expectedChannel = operation === 'standing_trusted_reply' ? PUB.inbox : PUB.staging
+    const sealedDirect = operation === 'sealed_direct_envelope'
+    const sealedRecipient = sealedDirect
+      ? queuedSource.tags.filter(tag => tag[0] === 'p' && tag.length === 2).map(tag => tag[1]).find(pubkey => RECIPIENTS[pubkey])
+      : null
+    const expectedChannel = sealedDirect ? RECIPIENTS[sealedRecipient]?.inbox
+      : operation === 'standing_trusted_reply' ? PUB.inbox : PUB.staging
+    if (!expectedChannel) throw new Error('policy operation has no locally pinned destination')
     const quarantined = operation === 'quarantine_header'
     const result = verifyPolicyResponse(responseRaw, {
       requestRaw, posterPubkey: PUB.policyWriter.posterPubkey, expectedChannel,
@@ -1541,7 +1573,14 @@ async function processRemotePolicyRequest(sourceId, requestRaw) {
       // The off-box service has already submitted this event. Before retiring the debt, make the
       // independent tripwire and withdrawal records crash-durable, then commit source dedup. Any
       // local persistence failure leaves the exact request queued for byte-identical replay.
-      if (!journalSend(result.buzzEventId, { kind: 9, dest: expectedChannel, lane: 'public-policy' }, true)) return false
+      if (!journalSend(result.buzzEventId, { kind: 9, dest: expectedChannel, lane: sealedDirect ? 'sealed-policy' : 'public-policy' }, true)) return false
+      if (sealedDirect) {
+        if (!markSeen(source.id, true)) return false
+        policyRequests.remove(sourceId)
+        markLatency(source.id, 'sealed.forwarded', Date.now(), 0)
+        log(`SEALED policy[accepted] -> ${expectedChannel}: 1059 ${sourceId.slice(0, 12)}… (Buzz ${result.buzzEventId.slice(0, 12)}…)`)
+        return true
+      }
       if (!recordPosted({ id: source.id, author: source.pubkey, buzz: result.buzzEventId,
         dest: expectedChannel, q: quarantined, ts: Math.floor(Date.now() / 1000), agent: null }, true)) return false
       if (!markSeen(source.id, true)) return false
@@ -1582,6 +1621,24 @@ function remotePolicyGatePublic(ev, why, dest, operation = 'quarantine_header') 
   void processRemotePolicyRequest(ev.id, requestRaw)
 }
 
+function remotePolicyGateSealed(ev) {
+  if (policyWriterInFlight.has(ev.id)) return
+  let requestRaw = policyRequests.get(ev.id)
+  if (!requestRaw) {
+    requestRaw = buildSealedDirectPolicyRequest(ev, {
+      policyInstance: PUB.policyWriter.policyInstance,
+      catalogueVersion: PUB.policyWriter.catalogueVersion,
+    })
+    try { policyRequests.enqueue(ev.id, requestRaw) }
+    catch (error) {
+      err(`SEALED policy[queue-failed]: ${ev.id.slice(0, 12)}… ${error.message} — held before dispatch`)
+      return
+    }
+  }
+  log(`SEALED policy[dispatch]: ${ev.id.slice(0, 12)}… (direct DM)`)
+  void processRemotePolicyRequest(ev.id, requestRaw)
+}
+
 function retryRemotePolicyRequests() {
   if (!PUB || PUB.policyWriter.mode !== 'remote-only') return 0
   let dispatched = 0
@@ -1591,8 +1648,15 @@ function retryRemotePolicyRequests() {
     // a quarantine request still fails closed until its policy-owned staging destination exists.
     let operation = ''
     try { operation = JSON.parse(requestRaw).operation } catch { /* process below rejects it */ }
+    if (!PUB.policyWriter.operations.includes(operation)) continue
     if (operation === 'quarantine_header' && !PUB.staging) continue
     if (operation === 'standing_trusted_reply' && !PUB.inbox) continue
+    if (operation === 'sealed_direct_envelope') {
+      let source
+      try { source = JSON.parse(requestRaw).evidence.source_event } catch { source = null }
+      const recipient = source?.tags?.filter(tag => tag[0] === 'p' && tag.length === 2).map(tag => tag[1]).find(pubkey => RECIPIENTS[pubkey])
+      if (!recipient || RECIPIENTS[recipient].inbox.startsWith('INBOX_UUID_')) continue
+    }
     void processRemotePolicyRequest(key, requestRaw)
     dispatched++
   }
@@ -1627,6 +1691,34 @@ function shadowGatePublic(ev, why, dest, quarantine, operation = 'quarantine_hea
     err(`PUBLIC shadow[unavailable]: ${ev.id.slice(0, 12)}… ${String(error?.message || 'unavailable').slice(0, 160)}`)
     if (PUB.policyShadow.mode === 'observe') dispatchPublic(ev, why, dest, quarantine)
     else recordUndelivered({ lane: 'public-shadow', dest, recipient: null, id: ev.id, author: ev.pubkey, reason: 'shadow-unavailable' })
+  }).finally(() => shadowInFlight.delete(ev.id))
+}
+
+function deliverDirectLocally(ev, hits) {
+  const willDeliver = FORWARD_MODE === 'buzz' && hits.some(pubkey => !RECIPIENTS[pubkey].inbox.startsWith('INBOX_UUID_'))
+  if (willDeliver) markSeen(ev.id)
+  for (const [attempt, pubkey] of hits.entries()) {
+    markLatency(ev.id, 'sealed.observed', Date.now(), attempt)
+    forward(RECIPIENTS[pubkey], ev, { traceAttempt: attempt })
+  }
+}
+
+function shadowGateSealedDirect(ev, hits) {
+  if (shadowInFlight.has(ev.id)) return
+  shadowInFlight.add(ev.id)
+  compareSealedDirectShadow(ev).then(result => {
+    if (result.match) {
+      log(`SEALED shadow[match]: ${ev.id.slice(0, 12)}… at ${result.evaluationTime} (${String(result.remoteDigest || 'deny').slice(0, 12)}…)`)
+      deliverDirectLocally(ev, hits)
+      return
+    }
+    err(`SEALED shadow[mismatch]: ${ev.id.slice(0, 12)}… ${result.reason}`)
+    if (PUB.policyShadow.mode === 'observe') deliverDirectLocally(ev, hits)
+    else recordUndelivered({ lane: 'sealed-shadow', dest: RECIPIENTS[hits[0]]?.inbox, recipient: RECIPIENTS[hits[0]]?.name, id: ev.id, author: ev.pubkey, reason: result.reason })
+  }).catch(error => {
+    err(`SEALED shadow[unavailable]: ${ev.id.slice(0, 12)}… ${String(error?.message || 'unavailable').slice(0, 160)}`)
+    if (PUB.policyShadow.mode === 'observe') deliverDirectLocally(ev, hits)
+    else recordUndelivered({ lane: 'sealed-shadow', dest: RECIPIENTS[hits[0]]?.inbox, recipient: RECIPIENTS[hits[0]]?.name, id: ev.id, author: ev.pubkey, reason: 'shadow-unavailable' })
   }).finally(() => shadowInFlight.delete(ev.id))
 }
 
@@ -1781,11 +1873,11 @@ function routePublic(ev) {
   const bytes = Buffer.byteLength(String(ev.content || ''), 'utf8')
   if (bytes > PUB.maxContentBytes) { err(`PUBLIC drop[size]: content ${bytes}B > cap ${PUB.maxContentBytes}B — ${ev.id.slice(0, 12)}…`); markSeen(ev.id); return }
   const policyOperation = quarantine ? 'quarantine_header' : why === STANDING ? 'standing_trusted_reply' : null
-  if (policyOperation && PUB.policyWriter.mode === 'remote-only' && FORWARD_MODE === 'buzz') {
+  if (policyOperation && PUB.policyWriter.mode === 'remote-only' && PUB.policyWriter.operations.includes(policyOperation) && FORWARD_MODE === 'buzz') {
     remotePolicyGatePublic(ev, why, dest, policyOperation)
     return
   }
-  if (policyOperation && PUB.policyShadow.mode !== 'off') {
+  if (policyOperation && PUB.policyShadow.mode !== 'off' && PUB.policyShadow.operations.includes(policyOperation)) {
     shadowGatePublic(ev, why, dest, quarantine, policyOperation)
     return
   }
@@ -3820,7 +3912,7 @@ if (!process.env.WB_NO_BOOT) {
     log(`public read lane -> inbox ${PUB.inbox}: ${PUB.relays.length} relay(s), ${PUB.authors.length} watched author(s), ${PUB.events.length} watched note(s), pub-since=${PUB.since} (${PUB_SINCE_SECS}s), watermark=${pubWatermark || 'none'}`)
     log(`  gates: staging=${PUB.staging || 'HOLD (none)'} · backfill<=${PUB.backfillLimit} · maxContent=${PUB.maxContentBytes}B · rate ${PUB.replierPerMin}/replier/min ${PUB.channelPerMin}/chan/min ${PUB.lanePerHour}/lane/h · deletes ${PUB.deletesPerHour}/h (A7)`)
     log(`  policy shadow: ${PUB.policyShadow.mode.toUpperCase()}${PUB.policyShadow.mode === 'off' ? ' — local quarantine path unchanged' : ' — remote derive-only comparison before quarantine commit'}`)
-    log(`  policy writer: ${PUB.policyWriter.mode.toUpperCase()}${PUB.policyWriter.mode === 'off' ? ' — local public-lane writer remains enabled' : ` — quarantine + standing trusted-reply posts are remote-only; ${policyRequests.entries().length} request(s) owed; no local fallback`}`)
+    log(`  policy writer: ${PUB.policyWriter.mode.toUpperCase()}${PUB.policyWriter.mode === 'off' ? ' — local Buzz writer remains enabled' : ` — ${PUB.policyWriter.operations.join(' + ')} are remote-only; ${policyRequests.entries().length} request(s) owed; no local fallback`}`)
     if (PUB.policyWriter.mode === 'remote-only') {
       retryRemotePolicyRequests()
       setInterval(retryRemotePolicyRequests, 15_000)

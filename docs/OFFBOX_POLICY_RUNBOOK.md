@@ -29,6 +29,9 @@ receives private mode-0400 copies of only `policy.json`, `poster.bunker-uri`, an
   "inbox_channel": "<fixed Buzz hive inbox UUID>",
   "watched_event_ids": ["<64-hex Nostr event id>"],
   "trusted_repliers": ["<64-hex Nostr author allowed to reply directly>"],
+  "recipient_routes": {
+    "<64-hex direct-DM recipient>": { "name": "Codex - 231952cb", "inbox": "<fixed Buzz inbox UUID>" }
+  },
   "approver_mention": "James",
   "poster_pubkey": "<64-hex Buzz poster pubkey>",
   "auth_tag": ["auth", "<owner pubkey>", "<NIP-OA conditions>", "<owner signature>"],

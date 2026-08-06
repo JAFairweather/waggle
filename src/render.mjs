@@ -58,6 +58,12 @@ export function renderReleased({ body, name, npubShort, liveRefs = false }) {
   return `**${name || npubShort}**  ·  \`${npubShort}\`  ·  _via waggle_\n\n${liveRefs ? body : defuseRefs(body)}`
 }
 
+// Direct NIP-59 gift-wrap delivery. The recipient name is policy/config-owned and the wrap is a
+// canonical one-line wire event; neither is prose supplied by the requesting bridge.
+export function renderSealedDirect({ name, wrapJson }) {
+  return `@${name}\n\nNew Armada DM — sealed, unwrap with your key:\n\n\`\`\`json\n${wrapJson}\n\`\`\`\n`
+}
+
 // Inbound Concord channel post (#191, option 1), delivered DECRYPTED into a seat's inbox because
 // the box holds the community read-key. The seat reads plaintext and — if it chooses to answer —
 // runs the deterministic seal-back keyed on `reply-to`. The body was authored by whoever posted
