@@ -41,7 +41,13 @@ const projectionPolicy = policy => {
 
 export function buildBuzzEvent(decision, policy, { now = Math.floor(Date.now() / 1000) } = {}) {
   assertPolicyDecision(decision); projectionPolicy(policy)
-  if (!['quarantine_header', 'released_post', 'sealed_envelope'].includes(decision.template) || !UUID.test(String(decision.dest || ''))) fail('decision is not a closed policy destination')
+  if (!['quarantine_header', 'released_post', 'sealed_envelope', 'withdraw_repost'].includes(decision.template) || !UUID.test(String(decision.dest || ''))) fail('decision is not a closed policy destination')
+  if (decision.template === 'withdraw_repost') {
+    const target = hex(decision.targetId, 'withdrawal target')
+    return Object.freeze({ kind: 5, created_at: timestamp(now), content: '',
+      tags: Object.freeze([Object.freeze(['h', decision.dest]), Object.freeze(['e', target]), policy.authTag]),
+      pubkey: policy.posterPubkey })
+  }
   const content = decision.template === 'quarantine_header'
     ? renderQuarantineHeader(decision.slots)
     : decision.template === 'released_post'
@@ -55,7 +61,7 @@ export function unsignedEventSha256(unsigned, policy) {
   projectionPolicy(policy)
   const expected = ['content', 'created_at', 'kind', 'pubkey', 'tags']
   if (!unsigned || Object.keys(unsigned).sort().join(',') !== expected.sort().join(',') ||
-      unsigned.pubkey !== policy.posterPubkey || unsigned.kind !== 9 || !Array.isArray(unsigned.tags) ||
+      unsigned.pubkey !== policy.posterPubkey || ![5, 9].includes(unsigned.kind) || !Array.isArray(unsigned.tags) ||
       typeof unsigned.content !== 'string') fail('unsigned event is not an exact policy projection')
   const preimage = canonicalJson([0, unsigned.pubkey, timestamp(unsigned.created_at), unsigned.kind, unsigned.tags, unsigned.content])
   return createHash('sha256').update(preimage).digest('hex')

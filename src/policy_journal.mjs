@@ -42,7 +42,7 @@ function verifiedBuzzEvent(eventText) {
   if (!event || typeof event !== 'object' || Array.isArray(event) ||
       Object.keys(event).sort().join(',') !== 'content,created_at,id,kind,pubkey,sig,tags') fail('buzz_event is not an exact wire event')
   if (canonical(event) !== eventText) fail('buzz_event is not canonical')
-  if (event.kind !== 9) fail('buzz_event must be kind 9')
+  if (![5, 9].includes(event.kind)) fail('buzz_event must be kind 5 or 9')
   let valid = false
   try { valid = verifyEvent(JSON.parse(JSON.stringify(event))) } catch { valid = false }
   if (!valid) fail('buzz_event signature or id is invalid')
