@@ -1,9 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildInstallReceipt, createInstallState, INSTALL_STEPS, loadInstallState,
   saveInstallState, transitionInstallStep, validateInstallState } from '../src/install_state.mjs'
+import { publishInstallReceipt } from '../tools/install-receipt-publish.mjs'
 
 let fails = 0
 const ok = (name, pass) => { console.log(`${pass ? 'ok  ' : 'FAIL'} — ${name}`); if (!pass) fails++ }
@@ -46,6 +47,17 @@ ok('durable state is mode 0600 and round-trips through validation',
 ok('the state file contains no credential material', !/nsec|bunker:\/\/|private_key/i.test(readFileSync(path, 'utf8')))
 const receipt = buildInstallReceipt(passed)
 ok('receipt is explicitly incomplete until every proof passes', !receipt.complete && receipt.proofs.local_preflight.status === 'passed')
+const publicPath = join(root, 'console', 'install-receipt.json')
+const published = publishInstallReceipt(path, publicPath)
+ok('a separately hosted Console receives only the validated public projection',
+  published.installation_id === state.installation_id && (statSync(publicPath).mode & 0o777) === 0o644 &&
+  !/nsec|bunker:\/\/|private_key/i.test(readFileSync(publicPath, 'utf8')))
+const linkedOutput = join(root, 'linked-receipt.json'); symlinkSync(publicPath, linkedOutput)
+refuses('receipt publication never follows a pre-existing output symlink',
+  () => publishInstallReceipt(path, linkedOutput), /regular non-symlink/)
+const importOnly = spawnSync(process.execPath, ['--input-type=module', '-e', "import('./tools/install-receipt-publish.mjs').then(m => process.stdout.write(typeof m.publishInstallReceipt))"],
+  { cwd: process.cwd(), encoding: 'utf8' })
+ok('the receipt publisher has no import-time filesystem side effect', importOnly.status === 0 && importOnly.stdout === 'function')
 
 const wizardRoot = mkdtempSync(join(tmpdir(), 'waggle-init-state-'))
 const wizardConfig = join(wizardRoot, 'config.json'), wizardState = join(wizardRoot, 'install-state.json')
