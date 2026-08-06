@@ -452,7 +452,7 @@ function renderRows() {
 // Vendored from the estate's component rather than hand-rolled: one sign-in across the fleet,
 // promoted rather than levelled down. The bar owns the signed-in/signed-out presentation and
 // the npub pill; this page only supplies the callbacks.
-import { renderTitlebar, updateTitlebar } from './vendor/nave-titlebar.mjs'
+import { renderTitlebar, updateTitlebar, NAVE_PLANES } from './vendor/nave-titlebar.mjs'
 
 const TB = $('titlebar')
 const WAGGLE_SEAL = `<svg viewBox="0 0 100 100" fill="none" aria-hidden="true">
@@ -467,6 +467,10 @@ function drawTitlebar(npub, kind) {
     appName: 'waggle console',
     tagline: 'who has access to your community',
     sealSvg: WAGGLE_SEAL,
+    // activePlane null — waggle is an APP, not a third plane. AD-12 declines
+    // "application plane": these are one grant plane seen at two scopes, and a slice
+    // highlighting itself as a plane would reintroduce the vocabulary the ruling removed.
+    planes: NAVE_PLANES, activePlane: null,
     npub: npub || null,
     kind: kind || null,
     onSignIn: npub ? undefined : () => { $('auth').style.display = ''; $('auth').scrollIntoView({ behavior: 'smooth', block: 'center' }) },
