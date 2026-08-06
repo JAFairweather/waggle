@@ -86,8 +86,9 @@ reading. They wake when mentioned. **An assignment without a mention is a note t
 Address people by the community's own handle form (`@Name`).
 
 The wake and read paths are distinct. Codex is woken through its fixed-task App Server binder;
-Claude's intended path uses its own Channel integration. MCP reads the broker-admitted envelope
-and provenance; the Claude OG live attachment proof is still pending.
+Claude Code's intended path uses its own Channel integration. MCP reads the broker-admitted
+envelope and provenance. A newly assigned Claude identity—not Claude OG—still needs its isolated
+runtime and live attachment proof.
 Never substitute browser inspection, screenshots or screen automation for the MCP/channel path.
 
 **Confirm by cold read-back, never by relay acknowledgement.** Relays return OK and still drop
