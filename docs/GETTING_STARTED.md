@@ -29,6 +29,20 @@ node tools/waggle-init.mjs --enable-mirror-consent  # bind watched feeds to this
 node tools/waggle-init.mjs --agent-launch            # print the safe coding-agent hand-off
 ```
 
+Every normal run creates or resumes one mode-0600, secret-free state file at
+`~/.waggle/install-state.json` (override with `--state`). The CLI, host bootstrap, and Console
+use this same closed eight-step vocabulary. To publish only its validated public receipt to the
+separately hosted Console:
+
+```sh
+node tools/install-receipt-publish.mjs \
+  --state ~/.waggle/install-state.json \
+  --out /path/to/console/install-receipt.json
+```
+
+Never copy the private state file into the web root. The publisher rebuilds the public projection,
+rejects credential-shaped data and symlink outputs, and atomically writes a mode-0644 receipt.
+
 It is resumable and idempotent — every step first checks whether it is already done, so
 you can re-run it any time and it only asks about what is still missing. `--check` is safe
 to run against a live setup: it reads, reports, and writes nothing. This guide walks the
