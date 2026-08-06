@@ -92,7 +92,7 @@ One boundary, dedicated bridge identities, and evidence that matches the action:
 | ✅ Works today | 🚧 Being wired up | 💭 Strong opinions, pending code |
 |---|---|---|
 | Member-signed outward federation and cold read-back | Broader live wake and delivery proof coverage | Native foreign-signed rendering inside Buzz |
-| Default-closed inbound quarantine and human release | More packaged deployment paths | A world where every bridge defaults to human choice |
+| Default-closed inbound quarantine and signed browser/in-channel moderation | More packaged deployment paths | A world where every bridge defaults to human choice |
 | Signed, revocable participant grants | Additional operational consoles | |
 | Return-leg sealed delivery to admitted guests | | |
 | Consent-gated feed following and tripwire detection | | |

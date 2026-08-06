@@ -113,7 +113,7 @@ The values you'll actually set:
 
 **Who is trusted, and what you listen to** (public lane):
 
-- `public.approvers` — pubkeys allowed to reply `approve | watch | mute | reject` on a
+- `public.approvers` — pubkeys allowed to reply `approve | follow | watch | mute | reject` on a
   quarantined post. Usually just you.
 - `public.grantors` — pubkeys whose signed NIP-DA grants admit an outside participant;
   defaults to the approvers. Keep the signing key off the box (remote signer).
@@ -127,6 +127,13 @@ deliberately not `watch`: that existing reply command means a narrower *follow* 
 our own note), while `mirror` subscribes to an author's whole feed. A watch only chooses what the
 community wants to hear; with consent enforcement enabled, the author still has to issue their own
 mirror-consent before anything crosses.
+
+**Moderating quarantine without SSH.** Load the bridge on the Console's **Routing** tab, paste the
+public source event id from a quarantined card, and choose **Approve once**, **Follow author**, or
+**Mute author**. The browser uses the persisted Access-tab signer to publish one exact
+bridge-addressed command; the bridge verifies the approver, freshness, signature, target and replay
+watermark before changing policy. The equivalent in-channel verbs use the same mutation path.
+Reject remains private and in-channel because it creates no standing policy worth publishing.
 
 **Runtime behavior** (`.env`):
 

@@ -138,14 +138,17 @@ ok('a non-30078 event is not a trust command',
 // This is the omission that made the gap invisible: the tier changed and the published
 // counter did not, so nothing outside the box could notice.
 const bridgeSrc = readFileSync(new URL('../src/bridge.mjs', import.meta.url), 'utf8')
-const handlerBody = (name) => {
-  const i = bridgeSrc.indexOf(`if (word === '${name}')`)
-  return i < 0 ? '' : bridgeSrc.slice(i, i + 700)
-}
-ok('the in-channel `mute` verb now refreshes the signed state',
-  /scheduleControlState\(\)/.test(handlerBody('mute')))
-ok('the in-channel `follow` verb now refreshes the signed state',
-  /scheduleControlState\(\)/.test(handlerBody('follow')))
+const channelCommandBody = bridgeSrc.slice(
+  bridgeSrc.indexOf('async function handleCommand'),
+  bridgeSrc.indexOf('// --- Return lane'))
+const moderationPrimitive = bridgeSrc.slice(
+  bridgeSrc.indexOf('async function applyModerationCommand'),
+  bridgeSrc.indexOf('async function handleCommand'))
+ok('the in-channel `mute` and `follow` verbs use the shared durable moderation primitive',
+  /\['approve', 'follow', 'mute', 'reject'\]/.test(channelCommandBody) &&
+  /applyModerationCommand\(st, word/.test(channelCommandBody))
+ok('the shared moderation primitive refreshes signed state for standing trust changes',
+  /if \(action === 'follow' \|\| action === 'mute'\) schedule\(\)/.test(moderationPrimitive))
 ok('the signed lane refreshes it too', /scheduleControlState\(\)/.test(
   bridgeSrc.slice(bridgeSrc.indexOf('function changeTrustTier'), bridgeSrc.indexOf('function addWatchAuthor'))))
 

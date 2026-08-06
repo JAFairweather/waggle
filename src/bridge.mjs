@@ -447,6 +447,9 @@ const PUB = cfg.public ? {
   controlStateRefreshSecs: Number(cfg.public.control_state_refresh_secs != null ? cfg.public.control_state_refresh_secs : 300),
   controlStateCommandAt: Number(cfg.public.control_state_command_at || 0),
   watchlistCommandAt: Number(cfg.public.watchlist_command_at || 0),
+  moderationCommandAt: Number(cfg.public.moderation_command_at || 0),
+  moderationCommandIds: (cfg.public.moderation_command_ids || []).map(String)
+    .filter(id => /^[0-9a-f]{64}$/i.test(id)).map(id => id.toLowerCase()),
   trustCommandAt: Number(cfg.public.trust_command_at || 0),
   policyShadow,
   policyWriter,
@@ -1729,6 +1732,90 @@ function handleWatchlistCommand(m, words) {
   return true
 }
 
+function stagingByOriginal(id) {
+  const target = String(id || '').toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(target)) return null
+  for (const value of stagingByBuzzId.values()) if (value.orig === target && (value.q || value.dest !== PUB.inbox)) return value
+  return null
+}
+
+// One mutation primitive serves both consoles: an approver's signed Buzz reply and the public
+// NIP-78 owner-command lane.  For approve/follow/mute the replay watermark is persisted in the
+// SAME config transaction as the trust mutation.  This removes the old split where a public
+// command had ordering semantics but the in-channel spelling did not, and where follow/mute could
+// change trust without immediately refreshing the bridge-signed aggregate state.
+let moderationTail = Promise.resolve()
+function applyModerationCommand(st, action, commandAt, options = {}) {
+  // One bridge process receives the same command from several relays. Serialize the COMPLETE
+  // verify → durable compare/write → release transaction, not just its config write: otherwise
+  // duplicate copies can both pass the watermark while one awaits its source fetch, and a slow
+  // older command can overwrite a newer watermark. A rejected/throwing command must not poison
+  // the lane, so the tail always settles before the next item runs.
+  const result = moderationTail.then(() => applyModerationCommandSerial(st, action, commandAt, options))
+  moderationTail = result.then(() => undefined, () => undefined)
+  return result
+}
+
+async function applyModerationCommandSerial(st, action, commandAt, {
+  commandId,
+  fetchOriginal = fetchEventById,
+  publishRelease = forwardPublic,
+  schedule = scheduleControlState,
+  rate = rateOk,
+  nowMs = Date.now(),
+} = {}) {
+  if (!st || !['approve', 'follow', 'mute'].includes(action)) return { ok: false, reason: 'invalid moderation command' }
+  const normalizedCommandId = String(commandId || '').toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(normalizedCommandId)) return { ok: false, reason: 'invalid command id' }
+  if (!Number.isInteger(commandAt) || commandAt < PUB.moderationCommandAt) return { ok: false, reason: 'superseded command' }
+  // Nostr timestamps have one-second resolution. A timestamp-only watermark loses a second
+  // legitimate console action signed in the same second. Keep every accepted id at the newest
+  // second: duplicate relay copies remain inert, while distinct same-second decisions survive.
+  // A legacy timestamp with no id set stays closed at equality because its already-applied id is
+  // unknowable after upgrade.
+  if (commandAt === PUB.moderationCommandAt &&
+      (!PUB.moderationCommandIds.length || PUB.moderationCommandIds.includes(normalizedCommandId))) {
+    return { ok: false, reason: 'superseded command' }
+  }
+  const author = String(st.author || '').toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(author)) return { ok: false, reason: 'invalid quarantined author' }
+  const prior = postedMap.get(st.orig)
+  const alreadyReleased = prior && !prior.deleted && prior.dest === PUB.inbox && !prior.q
+  let releaseEvent = null
+  // Prove the release can be performed before advancing the durable watermark. Trust must never
+  // be granted because a relay supplied an unavailable or forged source event. The subsequent
+  // config write remains commit-before-dispatch: after it succeeds, a crash can never replay the
+  // same signed decision, and the operator may issue a newer command if delivery itself fails.
+  if (action !== 'mute' && !alreadyReleased) {
+    releaseEvent = await fetchOriginal(st.orig)
+    if (!releaseEvent) return { ok: false, reason: 'original unavailable' }
+    let valid = false
+    try { valid = verifyEvent(releaseEvent) } catch { valid = false }
+    if (!valid || releaseEvent.id !== st.orig || releaseEvent.pubkey !== author) return { ok: false, reason: 'invalid original signature' }
+    if (!rate(releaseEvent, PUB.inbox, nowMs)) return { ok: false, reason: 'rate capped' }
+  }
+
+  if (!mutateConfig(c => {
+    if (action === 'follow') c.public.trusted_repliers = Array.from(new Set([...(c.public.trusted_repliers || []).map(String), author]))
+    if (action === 'mute') c.public.muted_authors = Array.from(new Set([...(c.public.muted_authors || []).map(String), author]))
+    c.public.moderation_command_at = commandAt
+    c.public.moderation_command_ids = commandAt === PUB.moderationCommandAt
+      ? Array.from(new Set([...PUB.moderationCommandIds, normalizedCommandId]))
+      : [normalizedCommandId]
+  })) return { ok: false, reason: 'could not persist moderation command' }
+
+  PUB.moderationCommandIds = commandAt === PUB.moderationCommandAt
+    ? Array.from(new Set([...PUB.moderationCommandIds, normalizedCommandId]))
+    : [normalizedCommandId]
+  PUB.moderationCommandAt = commandAt
+  if (action === 'follow' && !PUB.trustedRepliers.includes(author)) PUB.trustedRepliers.push(author)
+  if (action === 'mute' && !PUB.muted.includes(author)) PUB.muted.push(author)
+  if (action === 'follow' || action === 'mute') schedule()
+  if (action === 'mute') return { ok: true, action, author }
+  if (releaseEvent) await publishRelease(releaseEvent, RELEASED, PUB.inbox, false)
+  return { ok: true, action, author, alreadyReleased }
+}
+
 async function handleCommand(m) {
   if (!m || !m.id || seen.has('cmd:' + m.id)) return
   if (!PUB.approvers.includes(String(m.pubkey || '').toLowerCase())) return // not an approver: not a command
@@ -1759,44 +1846,22 @@ async function handleCommand(m) {
   markSeen('cmd:' + m.id) // commit-before-dispatch: a crash can never double-execute a command
   log(`command '${word}' from approver ${m.pubkey.slice(0, 12)}… on ${st.orig.slice(0, 12)}…`)
 
+  // Reject deliberately remains a private, non-durable denial: recording it publicly would name
+  // the stranger.  It does not mutate standing trust and therefore does not move the moderation
+  // replay watermark.
   if (word === 'reject') return replyInStaging(m.id, 'console_ack', { verb: 'rejected' })
 
-  if (word === 'mute') {
-    if (!PUB.muted.includes(st.author)) PUB.muted.push(st.author)
-    mutateConfig(c => { c.public.muted_authors = Array.from(new Set([...(c.public.muted_authors || []), st.author])) })
-    // Refresh the signed state. Without this the published muted_authors counter stayed at
-    // its old value until some unrelated event happened to trigger a publish — so the one
-    // signal an outside observer could use to notice a trust change was suppressed by
-    // omission. The verb itself still leaves no signed record; see the note at handleCommand.
-    scheduleControlState()
-    return replyInStaging(m.id, 'console_ack', { verb: 'muted', author: st.author })
+  const result = await applyModerationCommand(st, word, Number(m.created_at || 0), { commandId: m.id })
+  if (!result.ok) {
+    const verb = result.reason === 'original unavailable' ? 'no_original'
+      : result.reason === 'invalid original signature' ? 'bad_signature'
+        : result.reason === 'rate capped' ? 'rate_capped' : 'persist_failed'
+    return replyInStaging(m.id, 'console_ack', { verb })
   }
-
-  // approve / watch — release the note (refusing duplicates), then grant trust if asked.
-  const prior = postedMap.get(st.orig)
-  const alreadyReleased = prior && !prior.deleted && prior.dest === PUB.inbox && !prior.q
-  if (!alreadyReleased) {
-    const ev = await fetchEventById(st.orig)
-    if (!ev) return replyInStaging(m.id, 'console_ack', { verb: 'no_original' })
-    let ok = false
-    try { ok = verifyEvent(ev) } catch { ok = false }
-    if (!ok) return replyInStaging(m.id, 'console_ack', { verb: 'bad_signature' })
-    if (!rateOk(ev, PUB.inbox, Date.now())) return replyInStaging(m.id, 'console_ack', { verb: 'rate_capped' })
-    forwardPublic(ev, RELEASED, PUB.inbox, false)
-  }
-  let granted = false
-  if (word === 'follow') {
-    if (!PUB.trustedRepliers.includes(st.author)) PUB.trustedRepliers.push(st.author)
-    mutateConfig(c => { c.public.trusted_repliers = Array.from(new Set([...(c.public.trusted_repliers || []), st.author])) })
-    // This is the largest single trust jump the bridge makes — quarantined stranger to
-    // standing follow, which skips review from here on. Refreshing the signed state is the
-    // minimum: it makes the published trusted_repliers counter true, so an observer can at
-    // least SEE that the tier changed size even though the decision itself is unsigned.
-    scheduleControlState()
-    granted = true
-  }
-  replyInStaging(m.id, alreadyReleased ? 'console_ack_already' : 'console_ack',
-    alreadyReleased ? { granted } : { verb: 'released', granted })
+  if (word === 'mute') return replyInStaging(m.id, 'console_ack', { verb: 'muted', author: st.author })
+  const granted = word === 'follow'
+  replyInStaging(m.id, result.alreadyReleased ? 'console_ack_already' : 'console_ack',
+    result.alreadyReleased ? { granted } : { verb: 'released', granted })
 }
 
 // --- Return lane (#40) ------------------------------------------------------------------------
@@ -1931,6 +1996,7 @@ const CONTROL_STATE_DELAY_MS = 250
 const CONTROL_COMMAND_KIND = 30078
 const CONTROL_COMMAND_D = 'waggle-control'
 const WATCHLIST_COMMAND_D = 'waggle-watchlist'
+const MODERATION_COMMAND_D = 'waggle-moderation'
 const TRUST_COMMAND_D = 'waggle-trust'
 const CONTROL_COMMAND_MAX_AGE_SECS = 15 * 60
 let controlStateTimer = null
@@ -2080,6 +2146,34 @@ function handleWatchlistControlCommand(ev) {
   if (!result.ok) return result
   log(`watchlist: ${body.action} accepted from approver ${author.slice(0, 12)}… (${ev.id.slice(0, 12)}…)`)
   return { ok: true, action: body.action, target, ...result }
+}
+
+// Public owner-command twin of the private staging verbs.  The event is itself the signed audit
+// artifact.  Its target is the already-public Nostr source id, never the private Buzz staging id;
+// reject is intentionally absent because a durable public denial would identify the stranger.
+async function handleModerationControlCommand(ev, applyOptions) {
+  if (!ev || ev.kind !== CONTROL_COMMAND_KIND || !PUB || !BRIDGE_PK) return { ok: false, reason: 'not a moderation command' }
+  const owner = String(ev.pubkey || '').toLowerCase()
+  if (!PUB.approvers.includes(owner)) return { ok: false, reason: 'author is not an approver' }
+  let sigOk = false
+  try { sigOk = verifyEvent(ev) } catch { sigOk = false }
+  if (!sigOk) return { ok: false, reason: 'invalid signature' }
+  const tags = ev.tags || []
+  if (tags.length !== 2 || tags[0]?.[0] !== 'd' || tags[0]?.[1] !== MODERATION_COMMAND_D || tags[0].length !== 2 ||
+      tags[1]?.[0] !== 'p' || String(tags[1]?.[1]).toLowerCase() !== BRIDGE_PK || tags[1].length !== 2) return { ok: false, reason: 'not addressed to this bridge' }
+  const now = Math.floor(Date.now() / 1000)
+  if (!Number.isInteger(ev.created_at) || ev.created_at > now + 300 || now - ev.created_at > CONTROL_COMMAND_MAX_AGE_SECS) return { ok: false, reason: 'stale command' }
+  let body
+  try { body = JSON.parse(ev.content) } catch { return { ok: false, reason: 'invalid body' } }
+  if (!body || body.v !== 1 || !['approve', 'follow', 'mute'].includes(body.action) ||
+      !/^[0-9a-f]{64}$/i.test(String(body.target || '')) || Object.keys(body).sort().join(',') !== 'action,target,v') return { ok: false, reason: 'invalid command body' }
+  const target = String(body.target).toLowerCase()
+  const staged = stagingByOriginal(target)
+  if (!staged) return { ok: false, reason: 'target is not quarantined' }
+  const result = await applyModerationCommand(staged, body.action, ev.created_at, { ...applyOptions, commandId: ev.id })
+  if (!result.ok) return result
+  log(`moderation: ${body.action} ${target.slice(0, 12)}…/${staged.author.slice(0, 12)}… by approver ${owner.slice(0, 12)}… (${ev.id.slice(0, 12)}…)`)
+  return { ok: true, action: body.action, target, author: staged.author, alreadyReleased: !!result.alreadyReleased }
 }
 
 function installTaskRoutes(routes) {
@@ -2895,7 +2989,7 @@ function connectPublic(url) {
       // #206: owner-console control events. NIP-78 is shared with the read-only state record,
       // but a distinct `d` tag, an approver author filter, and a bridge p-tag make this a narrow
       // command inbox rather than a general public-event subscription.
-      if (BRIDGE_PK && PUB.approvers.length) ws.send(JSON.stringify(['REQ', 'pctl', { kinds: [CONTROL_COMMAND_KIND], authors: PUB.approvers, '#d': [CONTROL_COMMAND_D, WATCHLIST_COMMAND_D], '#p': [BRIDGE_PK], since: Math.floor(Date.now() / 1000) - CONTROL_COMMAND_MAX_AGE_SECS, limit: 100 }]))
+      if (BRIDGE_PK && PUB.approvers.length) ws.send(JSON.stringify(['REQ', 'pctl', { kinds: [CONTROL_COMMAND_KIND], authors: PUB.approvers, '#d': [CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TRUST_COMMAND_D, MODERATION_COMMAND_D], '#p': [BRIDGE_PK], since: Math.floor(Date.now() / 1000) - CONTROL_COMMAND_MAX_AGE_SECS, limit: 100 }]))
       // Re-open the record-id subscriptions on reconnect. New 440s refresh this live after
       // verification; these existing ids cover a revocation that arrives without a bridge p-tag.
       subscribeConsentRevocations()
@@ -2925,6 +3019,11 @@ function connectPublic(url) {
       if (m[0] === 'EVENT') {
         const ev = m[2]
         if (ev && ev.kind === CONTROL_COMMAND_KIND) {
+          const d = (ev.tags || []).find(tag => tag[0] === 'd')?.[1]
+          if (d === MODERATION_COMMAND_D) {
+            handleModerationControlCommand(ev).catch(e => err(`moderation: command failed: ${e.message}`))
+            return
+          }
           if (handleControlStateCommand(ev).ok) return
           if (handleWatchlistControlCommand(ev).ok) return
           if (handleTrustControlCommand(ev).ok) return
@@ -2982,7 +3081,7 @@ export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, c
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests,
   policyRequests, policyWriterInFlight, remotePolicyGatePublic, processRemotePolicyRequest,
   retryRemotePolicyRequests, __setPolicyWriterRunnerForTests, unframePolicyWriterResponse,
