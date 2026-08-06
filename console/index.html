@@ -260,10 +260,15 @@
 // Local vendored bundle, resolved through the importmap — no CDN. A page that verifies
 // signatures must not fetch its verifier from a third party at load time.
 import { verifyEvent, nip19 } from 'nostr-tools'
+import { verifyNvoyVisibility } from './nvoy-visibility.mjs'
 const { decode } = nip19
 
 const $ = (id) => document.getElementById(id)
 const RELAYS = ['wss://nos.lol','wss://relay.primal.net','wss://relay.ditto.pub','wss://jskitty.com/nostr']
+// "Visible in Nvoy" is a claim about Nvoy's shipped discovery plane, not merely about one of
+// Waggle's wider publication relays. Keep this explicit until Nvoy publishes a signed/configurable
+// relay contract that the console can discover at runtime.
+const NVOY_RELAYS = ['wss://nos.lol','wss://relay.primal.net']
 const KIND = { grant: 440, revocation: 441 }
 const TAG = { scope: 'da-scope', cap: 'da-cap' }
 
@@ -581,6 +586,27 @@ function publish(ev) {
   })))
 }
 
+async function reportNvoyVisibility(st, event) {
+  st.querySelector('.nvoy-retry')?.remove()
+  const result = await verifyNvoyVisibility({ relays: NVOY_RELAYS, event, query, verify: verifyEvent })
+  if (result.visible > 0) {
+    st.className = 'status ok'
+    st.append(` · visible in Nvoy (${result.visible}/${result.total} relays cold-read the exact signed record)`)
+    return true
+  }
+  st.className = 'status err'
+  st.append(` · ⚠ not visible in Nvoy (${result.answered}/${result.total} relays answered; none returned the exact signed record) · `)
+  const retry = document.createElement('button')
+  retry.className = 'btn ghost nvoy-retry'
+  retry.textContent = 'Retry visibility check'
+  retry.onclick = async () => {
+    retry.disabled = true
+    try { await reportNvoyVisibility(st, event) } finally { retry.disabled = false }
+  }
+  st.append(retry)
+  return false
+}
+
 // Show the event, then sign it. Never the other way round: a page that pops a signer prompt
 // before displaying what it is asking for teaches approve-first-read-never, which is exactly
 // what an approval exists to prevent.
@@ -604,6 +630,8 @@ $('confirm-go').addEventListener('click', async () => {
     const okCount = results.filter(r => r.includes('accepted')).length
     st.className = 'status ' + (okCount ? 'ok' : 'err')
     st.textContent = `${okCount}/${results.length} relays accepted · ${results.join(' · ')}`
+    if (okCount && (signed.kind === KIND.grant || signed.kind === KIND.revocation))
+      await reportNvoyVisibility(st, signed)
     pendingTemplate = null
     // Re-read BOTH lists. Refreshing only the access list was the visible half of a bug: an
     // admitted request stayed on screen, so the operator could not tell the signature had taken.
@@ -845,6 +873,14 @@ async function loadRequests() {
     + (other.length ? ` · ${other.length} for Nvoy (no channel named)` : '')
     + (skipped ? ` · ${skipped} wrap(s) were not requests` : '')
     + (failed ? ` · ${failed} could not be read` : '')
+  if (other.length) {
+    st.append(' · ')
+    const exit = document.createElement('a')
+    exit.href = 'https://nvoy.nave.pub/console/#requests'
+    exit.target = '_blank'; exit.rel = 'noopener noreferrer'
+    exit.textContent = 'Open in Nvoy ↗'
+    st.append(exit)
+  }
 }
 
 $('go').addEventListener('click', async () => {
