@@ -1,7 +1,7 @@
 // Derive-only comparison boundary. It accepts the same canonical evidence packet as the live
 // policy service, chooses evaluation time locally, and returns no event or signing artifact.
 import { createHash } from 'node:crypto'
-import { canonicalJson, decodePolicyRequest, decideQuarantineHeader } from './buzz_policy_core.mjs'
+import { canonicalJson, decodePolicyRequest, decideQuarantineHeader, decideStandingTrustedReply } from './buzz_policy_core.mjs'
 import { buildBuzzEvent, unsignedEventSha256 } from './buzz_policy_projection.mjs'
 
 const fail = message => { throw new Error(`buzz-policy-shadow: ${message}`) }
@@ -11,14 +11,18 @@ const exactTime = value => {
 }
 
 export function deriveBuzzPolicyShadow(raw, {
-  policyInstance, catalogueVersion, stagingChannel, watchedEventIds, approverMention = '',
+  policyInstance, catalogueVersion, stagingChannel, inboxChannel, watchedEventIds, trustedRepliers = [], approverMention = '',
   projectionPolicy, now = Math.floor(Date.now() / 1000),
 } = {}) {
   const evaluationTime = exactTime(now)
   const request = decodePolicyRequest(raw, { policyInstance, catalogueVersion, now: evaluationTime })
   const requestDigest = createHash('sha256').update(raw).digest('hex')
   let decision
-  try { decision = decideQuarantineHeader(request, { stagingChannel, watchedEventIds, approverMention }) }
+  try {
+    decision = request.operation === 'quarantine_header'
+      ? decideQuarantineHeader(request, { stagingChannel, watchedEventIds, approverMention })
+      : decideStandingTrustedReply(request, { inboxChannel, watchedEventIds, trustedRepliers })
+  }
   catch {
     return Object.freeze({ v: 1, request_digest: requestDigest, policy_instance: policyInstance,
       catalogue_version: catalogueVersion, decision: 'deny', evaluation_time: evaluationTime,

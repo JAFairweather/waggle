@@ -12,8 +12,10 @@ const tmp = mkdtempSync(join(tmpdir(), 'waggle-policy-remote-'))
 const watched = 'd'.repeat(64), staging = 'a8186b53-537d-46ad-a7e7-b6486c58970e'
 const inbox = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', catalogue = 'c'.repeat(64)
 const signer = generateSecretKey(), poster = getPublicKey(signer), endpoint = 'buzz.example'
+const trustedSigner = generateSecretKey(), trusted = getPublicKey(trustedSigner)
 const config = { relays: [], recipients: [], public: {
   relays: [], inbox, staging_inbox: staging, watch_authors: [], watch_events: [watched], approvers: [],
+  trusted_repliers: [trusted],
   policy_writer: { mode: 'remote-only', policy_instance: 'jaf-hive', catalogue_version: catalogue,
     poster_pubkey: poster, endpoint_authority: endpoint, ssh_host: 'policy.example',
     ssh_user: 'waggle-policy-ingress', ssh_identity_file: '/etc/waggle/policy-client/writer_ed25519',
@@ -36,17 +38,19 @@ const { routePublic, seen, postedMap, policyRequests, policyWriterInFlight,
   retryRemotePolicyRequests, processRemotePolicyRequest, __setPolicyWriterRunnerForTests,
   unframePolicyWriterResponse } = B
 policyRequests.load()
-const note = content => wire(finalizeEvent({ kind: 1, created_at: Math.floor(Date.now() / 1000),
-  tags: [['e', watched]], content }, generateSecretKey()))
+const note = (content, key = generateSecretKey()) => wire(finalizeEvent({ kind: 1, created_at: Math.floor(Date.now() / 1000),
+  tags: [['e', watched]], content }, key))
 const response = (raw, result = 'accepted') => {
   const request = JSON.parse(raw), source = request.evidence.source_event
   const requestDigest = createHash('sha256').update(raw).digest('hex')
+  const operation = request.operation
+  const channel = operation === 'standing_trusted_reply' ? inbox : staging
   const key = createHash('sha256').update(canonicalJson([1, 'jaf-hive', catalogue,
-    'quarantine_header', [source.id], staging])).digest('hex')
+    operation, [source.id], channel])).digest('hex')
   const accepted = result === 'accepted', completed = Math.floor(Date.now() / 1000)
-  const fields = { version: 1, policy_instance: 'jaf-hive', operation: 'quarantine_header',
+  const fields = { version: 1, policy_instance: 'jaf-hive', operation,
     catalogue_version: catalogue, request_digest: requestDigest, idempotency_key: key,
-    source_ids: [source.id], buzz_channel: staging, endpoint_authority: endpoint,
+    source_ids: [source.id], buzz_channel: channel, endpoint_authority: endpoint,
     buzz_event_id: accepted ? 'b'.repeat(64) : 'e'.repeat(64), result,
     reason_code: accepted ? 'accepted' : 'relay_refused', response_digest: 'f'.repeat(64), completed_at: completed }
   const receipt = wire(finalizeEvent({ kind: 30078, created_at: completed,
@@ -74,6 +78,14 @@ retryRemotePolicyRequests(); await wait()
 ok('retry uses byte-identical request bytes after the hold', firstRaw === retryRaw)
 ok('a verified accepted receipt closes debt and records the off-box Buzz event', !policyRequests.has(held.id) && seen.has(held.id) && postedMap.get(held.id)?.buzz === 'b'.repeat(64))
 ok('the off-box event enters the durable tripwire journal', readFileSync(join(tmp, 'send.log'), 'utf8').includes('"lane":"public-policy"'))
+
+let standingRaw = ''
+__setPolicyWriterRunnerForTests(async raw => { standingRaw = raw; return response(raw) })
+const standing = note('standing trusted reply', trustedSigner)
+routePublic(standing); await wait()
+ok('standing trusted reply selects its distinct off-box operation', JSON.parse(standingRaw).operation === 'standing_trusted_reply')
+ok('standing trusted reply reaches the policy-owned inbox as released content',
+  postedMap.get(standing.id)?.dest === inbox && postedMap.get(standing.id)?.q === false)
 
 const forged = note('forged response')
 __setPolicyWriterRunnerForTests(async raw => {

@@ -48,7 +48,7 @@ const verifySourceEvent = event => {
 const verifyRequestShape = request => {
   exactKeys(request, REQUEST_KEYS, 'request')
   exactKeys(request.evidence, EVIDENCE_KEYS, 'evidence')
-  if (request.version !== 1 || request.operation !== 'quarantine_header' || !ID.test(String(request.policy_instance || '')) ||
+  if (request.version !== 1 || !['quarantine_header', 'standing_trusted_reply'].includes(request.operation) || !ID.test(String(request.policy_instance || '')) ||
       !HEX64.test(String(request.catalogue_version || '')) || !Number.isSafeInteger(request.observed_at) || request.observed_at < 0) fail('request binding is invalid')
   verifySourceEvent(request.evidence.source_event)
   return request
@@ -71,6 +71,17 @@ export function buildQuarantinePolicyRequest(sourceEvent, {
   if (!Number.isSafeInteger(observedAt) || observedAt < 0) fail('observed_at is invalid')
   verifySourceEvent(sourceEvent)
   return canonicalJson({ version: 1, policy_instance: policyInstance, operation: 'quarantine_header',
+    catalogue_version: catalogueVersion, observed_at: observedAt,
+    evidence: { source_event: JSON.parse(JSON.stringify(sourceEvent)) } })
+}
+
+export function buildStandingTrustedReplyPolicyRequest(sourceEvent, {
+  policyInstance, catalogueVersion, observedAt = Math.floor(Date.now() / 1000),
+} = {}) {
+  if (!ID.test(String(policyInstance || '')) || !HEX64.test(String(catalogueVersion || ''))) fail('policy identity is invalid')
+  if (!Number.isSafeInteger(observedAt) || observedAt < 0) fail('observed_at is invalid')
+  verifySourceEvent(sourceEvent)
+  return canonicalJson({ version: 1, policy_instance: policyInstance, operation: 'standing_trusted_reply',
     catalogue_version: catalogueVersion, observed_at: observedAt,
     evidence: { source_event: JSON.parse(JSON.stringify(sourceEvent)) } })
 }

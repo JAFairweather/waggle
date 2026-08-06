@@ -7,7 +7,7 @@ import { verifyEvent } from 'nostr-tools/pure'
 import { npubEncode } from 'nostr-tools/nip19'
 
 export const BUZZ_POLICY_VERSION = 1
-export const BUZZ_POLICY_OPERATIONS = Object.freeze(['quarantine_header'])
+export const BUZZ_POLICY_OPERATIONS = Object.freeze(['quarantine_header', 'standing_trusted_reply'])
 const HEX64 = /^[0-9a-f]{64}$/
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const EVENT_KEYS = new Set(['id', 'pubkey', 'created_at', 'kind', 'tags', 'content', 'sig'])
@@ -16,7 +16,10 @@ const EVENT_KEYS = new Set(['id', 'pubkey', 'created_at', 'kind', 'tags', 'conte
 // policy admission rather than letting catalogue rendering throw after a decision is minted.
 const MAX_RENDERABLE_UNIX_SECONDS = 8_640_000_000_000
 const REQUEST_KEYS = new Set(['version', 'policy_instance', 'operation', 'catalogue_version', 'observed_at', 'evidence'])
-const EVIDENCE_KEYS = Object.freeze({ quarantine_header: new Set(['source_event']) })
+const EVIDENCE_KEYS = Object.freeze({
+  quarantine_header: new Set(['source_event']),
+  standing_trusted_reply: new Set(['source_event']),
+})
 const POLICY_REQUESTS = new WeakSet()
 const POLICY_DECISIONS = new WeakSet()
 const DECISION_REQUESTS = new WeakMap()
@@ -109,6 +112,20 @@ export function quarantineSlotsFromSource(sourceEvent, { approverMention = '' } 
   })
 }
 
+// Standing reply-trust deliberately carries less authority than feed mirroring or admission.
+// Attribution is source-only: a mutable kind:0 profile selected by a relay cannot alter bytes
+// signed by the policy host, and the lane never earns live references.
+export function standingReplySlotsFromSource(sourceEvent) {
+  const source = verifyWireEvent(JSON.parse(JSON.stringify(sourceEvent)))
+  const npub = npubEncode(source.pubkey)
+  return Object.freeze({
+    body: source.content,
+    name: undefined,
+    npubShort: `${npub.slice(0, 10)}…${npub.slice(-5)}`,
+    liveRefs: false,
+  })
+}
+
 // First operation family: a signed public reply to one of the policy service's own watched
 // event ids.  The requester cannot pick the route, state, display name, body, or attribution;
 // all are derived from the complete signed source and policy-owned state.
@@ -123,6 +140,28 @@ export function decideQuarantineHeader(request, { stagingChannel, watchedEventId
     template: 'quarantine_header',
     dest: channel(stagingChannel),
     slots: quarantineSlotsFromSource(source, { approverMention }),
+  })
+  POLICY_DECISIONS.add(decision)
+  DECISION_REQUESTS.set(decision, request)
+  return decision
+}
+
+// A standing trusted replier may enter the hive only when this exact signed note replies to a
+// policy-owned live reference. The bridge cannot assert either fact: both sets live here and the
+// signed event supplies the author and e-tags. This is intentionally NOT the mirrored-feed lane.
+export function decideStandingTrustedReply(request, { inboxChannel, watchedEventIds = [], trustedRepliers = [] } = {}) {
+  if (!request || !POLICY_REQUESTS.has(request)) fail('an internally verified policy request is required')
+  if (request.operation !== 'standing_trusted_reply') fail('wrong operation for standing reply decision')
+  const source = request.evidence.source_event
+  const trusted = new Set(trustedRepliers.map(value => String(value).toLowerCase()).filter(value => HEX64.test(value)))
+  if (!trusted.has(source.pubkey)) fail('source author is not a policy-trusted replier')
+  const watched = new Set(watchedEventIds.map(value => String(value).toLowerCase()).filter(value => HEX64.test(value)))
+  const replyTargets = source.tags.filter(tag => tag[0] === 'e' && HEX64.test(String(tag[1] || '').toLowerCase())).map(tag => tag[1].toLowerCase())
+  if (!replyTargets.some(id => watched.has(id))) fail('source_event is not a reply to a policy-watched event')
+  const decision = Object.freeze({
+    template: 'released_post',
+    dest: channel(inboxChannel),
+    slots: standingReplySlotsFromSource(source),
   })
   POLICY_DECISIONS.add(decision)
   DECISION_REQUESTS.set(decision, request)
