@@ -15,7 +15,9 @@ function publish(statePath, out) {
   const receipt = summary(read(statePath))
   const tmp = `${out}.${process.pid}.tmp`
   mkdirSync(dirname(out), { recursive: true, mode: 0o755 })
-  writeFileSync(tmp, JSON.stringify(receipt, null, 2) + '\n', { mode: 0o644 })
+  // Do not follow a pre-existing attacker-controlled temp path. The rename is atomic,
+  // but only after the temporary file itself was created exclusively.
+  writeFileSync(tmp, JSON.stringify(receipt, null, 2) + '\n', { mode: 0o644, flag: 'wx' })
   chmodSync(tmp, 0o644)
   const fd = openSync(tmp, constants.O_RDONLY); try { fsyncSync(fd) } finally { closeSync(fd) }
   renameSync(tmp, out)

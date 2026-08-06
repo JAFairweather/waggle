@@ -40,7 +40,9 @@ function write(path, state) {
   safe(state, 'state')
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
   const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`
-  writeFileSync(tmp, JSON.stringify({ ...state, updated_at: new Date().toISOString() }, null, 2) + '\n', { mode: 0o600 })
+  // Do not follow a pre-existing attacker-controlled temp path. The rename is atomic,
+  // but only after the temporary file itself was created exclusively.
+  writeFileSync(tmp, JSON.stringify({ ...state, updated_at: new Date().toISOString() }, null, 2) + '\n', { mode: 0o600, flag: 'wx' })
   chmodSync(tmp, 0o600)
   const fd = openSync(tmp, constants.O_RDONLY); try { fsyncSync(fd) } finally { closeSync(fd) }
   renameSync(tmp, path)
