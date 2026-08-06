@@ -1,12 +1,15 @@
-# Drives tripwire.service on a fixed cadence, so detection is a property of the INSTALL,
+# Install this template as waggle-tripwire.timer. Its basename deliberately matches the
+# canonical waggle-tripwire.service target used by the alarm credential drop-ins and drill.
+# Drives waggle-tripwire.service on a fixed cadence, so detection is a property of the INSTALL,
 # not of operator diligence (the whole point of #34). The cadence (30 min) is shorter than
 # the service's poll window (--since-min 60) BY DESIGN: overlapping windows mean one missed
 # or delayed run never opens a gap a thief could slip a post through unseen.
 #
-#   sudo cp deploy/tripwire.{service,timer} /etc/systemd/system/
+#   sudo install -m 0644 deploy/tripwire.service /etc/systemd/system/waggle-tripwire.service
+#   sudo install -m 0644 deploy/tripwire.timer /etc/systemd/system/waggle-tripwire.timer
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now tripwire.timer
-#   systemctl list-timers tripwire.timer      # confirm it is scheduled
+#   sudo systemctl enable --now waggle-tripwire.timer
+#   systemctl list-timers waggle-tripwire.timer      # confirm it is scheduled
 [Unit]
 Description=waggle tripwire — periodic out-of-process signing check (every 30 min)
 

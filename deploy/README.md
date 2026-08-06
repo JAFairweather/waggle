@@ -298,8 +298,10 @@ the bridge's own send-journal (`data/send-journal.log`). Any post authored by ou
 the journal does not contain was signed by something other than our process: theft, a
 second signer, an impersonation. That is the alarm.
 
-`deploy/tripwire.service` (oneshot) + `deploy/tripwire.timer` (30-min cadence) make
-detection a property of the **install**, not of anyone remembering to run a script.
+`deploy/tripwire.service` (oneshot) + `deploy/tripwire.timer` (30-min cadence), installed
+under the canonical names `waggle-tripwire.service` and `waggle-tripwire.timer`, make detection
+a property of the **install**, not of anyone remembering to run a script. Those installed names
+are load-bearing: the alarm credential drop-ins target `waggle-tripwire.service`.
 
 ### Two rules the unit exists to enforce
 
@@ -438,10 +440,11 @@ Then install the units (edit `WorkingDirectory`/`User`/paths in the unit files t
 host first):
 
 ```
-sudo cp deploy/tripwire.{service,timer} /etc/systemd/system/
+sudo install -m 0644 deploy/tripwire.service /etc/systemd/system/waggle-tripwire.service
+sudo install -m 0644 deploy/tripwire.timer /etc/systemd/system/waggle-tripwire.timer
 sudo systemctl daemon-reload
-sudo systemctl enable --now tripwire.timer
-systemctl list-timers tripwire.timer
+sudo systemctl enable --now waggle-tripwire.timer
+systemctl list-timers waggle-tripwire.timer
 ```
 
 Run the positive drill and confirm the sealed DM arrives at the operator identity before
