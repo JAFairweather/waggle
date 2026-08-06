@@ -19,6 +19,14 @@ const RECEIPT_KEYS = new Set(['version', 'policy_instance', 'operation', 'catalo
   'idempotency_key', 'source_ids', 'buzz_channel', 'endpoint_authority', 'buzz_event_id', 'result',
   'reason_code', 'response_digest', 'completed_at'])
 const fail = message => { throw new Error(`buzz-policy-client: ${message}`) }
+export const LEGACY_POLICY_OPERATIONS = Object.freeze(['quarantine_header', 'standing_trusted_reply'])
+const POLICY_OPERATIONS = new Set([...LEGACY_POLICY_OPERATIONS, 'sealed_direct_envelope'])
+export function normalizePolicyOperations(value, label = 'policy') {
+  const operations = value == null ? [...LEGACY_POLICY_OPERATIONS] : value
+  if (!Array.isArray(operations) || !operations.length || operations.some(operation => !POLICY_OPERATIONS.has(operation)) ||
+      new Set(operations).size !== operations.length) fail(`${label}.operations must be a unique non-empty closed operation list`)
+  return Object.freeze([...operations])
+}
 const exactKeys = (value, allowed, label) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${label} must be an object`)
   const unknown = Object.keys(value).find(key => !allowed.has(key))
@@ -34,12 +42,12 @@ const parseCanonical = (raw, label, maxBytes) => {
   return value
 }
 const same = (left, right) => canonicalJson(left) === canonicalJson(right)
-const verifySourceEvent = event => {
+const verifySourceEvent = (event, expectedKind = 1) => {
   exactKeys(event, EVENT_KEYS, 'source_event')
   if (!HEX64.test(String(event.id || '')) || !HEX64.test(String(event.pubkey || '')) ||
       !HEX128.test(String(event.sig || '')) || !Number.isSafeInteger(event.created_at) || event.created_at < 0 ||
-      event.kind !== 1 || !Array.isArray(event.tags) || typeof event.content !== 'string' ||
-      !event.tags.every(tag => Array.isArray(tag) && tag.every(value => typeof value === 'string'))) fail('source_event is not a complete kind:1 wire event')
+      event.kind !== expectedKind || !Array.isArray(event.tags) || typeof event.content !== 'string' ||
+      !event.tags.every(tag => Array.isArray(tag) && tag.every(value => typeof value === 'string'))) fail(`source_event is not a complete kind:${expectedKind} wire event`)
   let verified = false
   try { verified = verifyEvent(JSON.parse(JSON.stringify(event))) } catch { verified = false }
   if (!verified) fail('source_event signature or id is invalid')
@@ -48,9 +56,9 @@ const verifySourceEvent = event => {
 const verifyRequestShape = request => {
   exactKeys(request, REQUEST_KEYS, 'request')
   exactKeys(request.evidence, EVIDENCE_KEYS, 'evidence')
-  if (request.version !== 1 || !['quarantine_header', 'standing_trusted_reply'].includes(request.operation) || !ID.test(String(request.policy_instance || '')) ||
+  if (request.version !== 1 || !['quarantine_header', 'standing_trusted_reply', 'sealed_direct_envelope'].includes(request.operation) || !ID.test(String(request.policy_instance || '')) ||
       !HEX64.test(String(request.catalogue_version || '')) || !Number.isSafeInteger(request.observed_at) || request.observed_at < 0) fail('request binding is invalid')
-  verifySourceEvent(request.evidence.source_event)
+  verifySourceEvent(request.evidence.source_event, request.operation === 'sealed_direct_envelope' ? 1059 : 1)
   return request
 }
 
@@ -82,6 +90,17 @@ export function buildStandingTrustedReplyPolicyRequest(sourceEvent, {
   if (!Number.isSafeInteger(observedAt) || observedAt < 0) fail('observed_at is invalid')
   verifySourceEvent(sourceEvent)
   return canonicalJson({ version: 1, policy_instance: policyInstance, operation: 'standing_trusted_reply',
+    catalogue_version: catalogueVersion, observed_at: observedAt,
+    evidence: { source_event: JSON.parse(JSON.stringify(sourceEvent)) } })
+}
+
+export function buildSealedDirectPolicyRequest(sourceEvent, {
+  policyInstance, catalogueVersion, observedAt = Math.floor(Date.now() / 1000),
+} = {}) {
+  if (!ID.test(String(policyInstance || '')) || !HEX64.test(String(catalogueVersion || ''))) fail('policy identity is invalid')
+  if (!Number.isSafeInteger(observedAt) || observedAt < 0) fail('observed_at is invalid')
+  verifySourceEvent(sourceEvent, 1059)
+  return canonicalJson({ version: 1, policy_instance: policyInstance, operation: 'sealed_direct_envelope',
     catalogue_version: catalogueVersion, observed_at: observedAt,
     evidence: { source_event: JSON.parse(JSON.stringify(sourceEvent)) } })
 }

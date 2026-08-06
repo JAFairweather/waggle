@@ -6,7 +6,7 @@ import { sha256 } from '@noble/hashes/sha256'
 import { hexToBytes, utf8ToBytes } from '@noble/hashes/utils'
 import { assertPolicyDecision, canonicalJson } from './buzz_policy_core.mjs'
 import { renderQuarantineHeader } from './quarantine_projection.mjs'
-import { renderReleased } from './render.mjs'
+import { renderReleased, renderSealedDirect } from './render.mjs'
 
 const HEX64 = /^[0-9a-f]{64}$/, HEX128 = /^[0-9a-f]{128}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -41,10 +41,12 @@ const projectionPolicy = policy => {
 
 export function buildBuzzEvent(decision, policy, { now = Math.floor(Date.now() / 1000) } = {}) {
   assertPolicyDecision(decision); projectionPolicy(policy)
-  if (!['quarantine_header', 'released_post'].includes(decision.template) || !UUID.test(String(decision.dest || ''))) fail('decision is not a closed policy destination')
+  if (!['quarantine_header', 'released_post', 'sealed_envelope'].includes(decision.template) || !UUID.test(String(decision.dest || ''))) fail('decision is not a closed policy destination')
   const content = decision.template === 'quarantine_header'
     ? renderQuarantineHeader(decision.slots)
-    : renderReleased(decision.slots)
+    : decision.template === 'released_post'
+      ? renderReleased(decision.slots)
+      : renderSealedDirect(decision.slots)
   return Object.freeze({ kind: 9, created_at: timestamp(now), content,
     tags: Object.freeze([Object.freeze(['h', decision.dest]), policy.authTag]), pubkey: policy.posterPubkey })
 }

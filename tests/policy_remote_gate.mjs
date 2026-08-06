@@ -13,10 +13,11 @@ const watched = 'd'.repeat(64), staging = 'a8186b53-537d-46ad-a7e7-b6486c58970e'
 const inbox = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', catalogue = 'c'.repeat(64)
 const signer = generateSecretKey(), poster = getPublicKey(signer), endpoint = 'buzz.example'
 const trustedSigner = generateSecretKey(), trusted = getPublicKey(trustedSigner)
-const config = { relays: [], recipients: [], public: {
+const directRecipient = getPublicKey(generateSecretKey()), directInbox = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+const config = { relays: [], recipients: [{ npub_hex: directRecipient, name: 'Codex Test', inbox: directInbox }], public: {
   relays: [], inbox, staging_inbox: staging, watch_authors: [], watch_events: [watched], approvers: [],
   trusted_repliers: [trusted],
-  policy_writer: { mode: 'remote-only', policy_instance: 'jaf-hive', catalogue_version: catalogue,
+  policy_writer: { mode: 'remote-only', operations: ['quarantine_header', 'standing_trusted_reply', 'sealed_direct_envelope'], policy_instance: 'jaf-hive', catalogue_version: catalogue,
     poster_pubkey: poster, endpoint_authority: endpoint, ssh_host: 'policy.example',
     ssh_user: 'waggle-policy-ingress', ssh_identity_file: '/etc/waggle/policy-client/writer_ed25519',
     ssh_known_hosts_file: '/etc/waggle/policy-client/known_hosts' },
@@ -34,7 +35,7 @@ process.env.POLICY_REQUEST_QUEUE_PATH = join(tmp, 'policy-requests')
 process.env.BUZZ_PRIVATE_KEY = Buffer.from(generateSecretKey()).toString('hex')
 
 const B = await import('../src/bridge.mjs')
-const { routePublic, seen, postedMap, policyRequests, policyWriterInFlight, PUB,
+const { route, routePublic, seen, postedMap, policyRequests, policyWriterInFlight, PUB,
   retryRemotePolicyRequests, processRemotePolicyRequest, __setPolicyWriterRunnerForTests,
   unframePolicyWriterResponse } = B
 policyRequests.load()
@@ -44,7 +45,7 @@ const response = (raw, result = 'accepted') => {
   const request = JSON.parse(raw), source = request.evidence.source_event
   const requestDigest = createHash('sha256').update(raw).digest('hex')
   const operation = request.operation
-  const channel = operation === 'standing_trusted_reply' ? inbox : staging
+  const channel = operation === 'sealed_direct_envelope' ? directInbox : operation === 'standing_trusted_reply' ? inbox : staging
   const key = createHash('sha256').update(canonicalJson([1, 'jaf-hive', catalogue,
     operation, [source.id], channel])).digest('hex')
   const accepted = result === 'accepted', completed = Math.floor(Date.now() / 1000)
@@ -102,6 +103,17 @@ const retriedWithoutStaging = retryRemotePolicyRequests(); await wait()
 ok('restart retries inbox-bound standing debt when staging is absent',
   retriedWithoutStaging === 1 && standingRetryRaw === standingHeldRaw && !policyRequests.has(standingHeld.id) && seen.has(standingHeld.id))
 PUB.staging = staging
+
+let sealedRaw = ''
+__setPolicyWriterRunnerForTests(async raw => { sealedRaw = raw; return response(raw) })
+const directWrap = wire(finalizeEvent({ kind: 1059, created_at: Math.floor(Date.now() / 1000),
+  tags: [['p', directRecipient]], content: 'opaque-ciphertext' }, generateSecretKey()))
+route(directWrap); await wait()
+ok('a direct signed gift wrap selects the off-box sealed operation',
+  JSON.parse(sealedRaw).operation === 'sealed_direct_envelope')
+ok('an accepted sealed receipt commits dedup and the sealed tripwire without creating a public posted-map row',
+  seen.has(directWrap.id) && !policyRequests.has(directWrap.id) && !postedMap.has(directWrap.id) &&
+  readFileSync(join(tmp, 'send.log'), 'utf8').includes('"lane":"sealed-policy"'))
 
 const forged = note('forged response')
 __setPolicyWriterRunnerForTests(async raw => {
