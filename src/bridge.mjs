@@ -1313,15 +1313,25 @@ function route(ev) {
   if (BRIDGE_PK && PUB && ps.includes(BRIDGE_PK) && (PUB.relayChannels.length || PUB.approvers.length)) return dispatchBridgeWrap(ev)
   const hits = ps.filter(p => TARGETS.includes(p))
   if (!hits.length) return // not for us; do NOT record — keep the dedup store to real deliveries
+  // A NIP-17 direct gift wrap names exactly one recipient. Refuse the complete signed wrap when
+  // it names any additional key — even if only one p-tag happens to match our roster. Letting the
+  // bridge count roster hits while the policy host counts all p-tags creates permanent remote
+  // debt: the bridge queues it, the host correctly refuses it, and every retry repeats forever.
+  // This is malformed terminal input, not transient delivery work, so commit the drop in live mode.
+  if (ps.length !== 1) {
+    err(`SEALED drop[recipient-count]: kind1059 ${ev.id.slice(0, 12)}… carries ${ps.length} p-tags (expected exactly one)`)
+    if (FORWARD_MODE === 'buzz') markSeen(ev.id)
+    return
+  }
   // A direct gift wrap has one signed recipient. It is the first sealed operation safe to move to
   // the off-box writer: the policy host independently resolves that p-tag through its own roster.
   // Channel-plane wraps never reach this branch (they route by author above), so a decoy p-tag
   // cannot be mistaken for a direct recipient.
-  if (hits.length === 1 && PUB.policyWriter.mode === 'remote-only' && PUB.policyWriter.operations.includes('sealed_direct_envelope') && FORWARD_MODE === 'buzz') {
+  if (hits.length === 1 && PUB && PUB.policyWriter.mode === 'remote-only' && PUB.policyWriter.operations.includes('sealed_direct_envelope') && FORWARD_MODE === 'buzz') {
     remotePolicyGateSealed(ev)
     return
   }
-  if (hits.length === 1 && PUB.policyShadow.mode !== 'off' && PUB.policyShadow.operations.includes('sealed_direct_envelope')) {
+  if (hits.length === 1 && PUB && PUB.policyShadow.mode !== 'off' && PUB.policyShadow.operations.includes('sealed_direct_envelope')) {
     shadowGateSealedDirect(ev, hits)
     return
   }

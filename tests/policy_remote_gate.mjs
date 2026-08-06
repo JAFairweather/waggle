@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
 import { canonicalJson } from '../src/buzz_policy_core.mjs'
 
@@ -33,6 +35,29 @@ process.env.SEND_JOURNAL_PATH = join(tmp, 'send.log')
 process.env.PUB_WATERMARK_PATH = join(tmp, 'watermark')
 process.env.POLICY_REQUEST_QUEUE_PATH = join(tmp, 'policy-requests')
 process.env.BUZZ_PRIVATE_KEY = Buffer.from(generateSecretKey()).toString('hex')
+
+// The sealed bridge supports recipients-only (DM-only) configurations. Policy migration is a
+// public-lane option, so merely shipping the new operation must remain inert for that legacy
+// shape. Exercise this in a child because bridge configuration is intentionally fixed at import.
+const legacyConfigPath = join(tmp, 'legacy-config.json')
+writeFileSync(legacyConfigPath, JSON.stringify({ relays: [], recipients: [
+  { npub_hex: directRecipient, name: 'Legacy DM Seat', inbox: directInbox },
+] }))
+const legacyWrap = wire(finalizeEvent({ kind: 1059, created_at: Math.floor(Date.now() / 1000),
+  tags: [['p', directRecipient]], content: 'legacy-opaque-ciphertext' }, generateSecretKey()))
+const bridgeUrl = pathToFileURL(join(process.cwd(), 'src', 'bridge.mjs')).href
+const legacyProbe = spawnSync(process.execPath, ['--input-type=module', '-e',
+  `const { route } = await import(${JSON.stringify(bridgeUrl)}); route(JSON.parse(process.env.TEST_WRAP)); console.log('legacy-route-ok')`], {
+  cwd: process.cwd(), encoding: 'utf8', env: { ...process.env,
+    CONFIG_PATH: legacyConfigPath, TEST_WRAP: JSON.stringify(legacyWrap),
+    SEEN_PATH: join(tmp, 'legacy-seen.log'), POSTED_MAP_PATH: join(tmp, 'legacy-posted.log'),
+    SEND_JOURNAL_PATH: join(tmp, 'legacy-send.log'), PUB_WATERMARK_PATH: join(tmp, 'legacy-watermark'),
+    POLICY_REQUEST_QUEUE_PATH: join(tmp, 'legacy-policy-requests'),
+  },
+})
+if (legacyProbe.status !== 0) console.error(legacyProbe.stderr || legacyProbe.stdout)
+ok('a recipients-only legacy config routes a direct wrap without touching public policy state',
+  legacyProbe.status === 0 && legacyProbe.stdout.includes('legacy-route-ok') && !legacyProbe.stderr.includes('TypeError'))
 
 const B = await import('../src/bridge.mjs')
 const { route, routePublic, seen, postedMap, policyRequests, policyWriterInFlight, PUB,
@@ -114,6 +139,13 @@ ok('a direct signed gift wrap selects the off-box sealed operation',
 ok('an accepted sealed receipt commits dedup and the sealed tripwire without creating a public posted-map row',
   seen.has(directWrap.id) && !policyRequests.has(directWrap.id) && !postedMap.has(directWrap.id) &&
   readFileSync(join(tmp, 'send.log'), 'utf8').includes('"lane":"sealed-policy"'))
+
+const callsBeforeDecoy = calls
+const decoyWrap = wire(finalizeEvent({ kind: 1059, created_at: Math.floor(Date.now() / 1000),
+  tags: [['p', directRecipient], ['p', getPublicKey(generateSecretKey())]], content: 'recipient-decoy' }, generateSecretKey()))
+route(decoyWrap); await wait()
+ok('a direct wrap with one roster recipient plus a decoy is terminally dropped before remote queueing',
+  calls === callsBeforeDecoy && seen.has(decoyWrap.id) && !policyRequests.has(decoyWrap.id))
 
 const forged = note('forged response')
 __setPolicyWriterRunnerForTests(async raw => {
