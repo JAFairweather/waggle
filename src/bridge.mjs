@@ -1311,9 +1311,20 @@ function remotePolicyGatePublic(ev, why, dest, operation = 'quarantine_header') 
 }
 
 function retryRemotePolicyRequests() {
-  if (!PUB || PUB.policyWriter.mode !== 'remote-only' || !PUB.staging) return 0
-  for (const { key, requestRaw } of policyRequests.entries()) void processRemotePolicyRequest(key, requestRaw)
-  return policyRequests.entries().length
+  if (!PUB || PUB.policyWriter.mode !== 'remote-only') return 0
+  let dispatched = 0
+  for (const { key, requestRaw } of policyRequests.entries()) {
+    // Recovery is operation-specific. A standing reply is inbox-bound and must not become
+    // permanently owed merely because this hive has no quarantine staging channel. Conversely,
+    // a quarantine request still fails closed until its policy-owned staging destination exists.
+    let operation = ''
+    try { operation = JSON.parse(requestRaw).operation } catch { /* process below rejects it */ }
+    if (operation === 'quarantine_header' && !PUB.staging) continue
+    if (operation === 'standing_trusted_reply' && !PUB.inbox) continue
+    void processRemotePolicyRequest(key, requestRaw)
+    dispatched++
+  }
+  return dispatched
 }
 
 function dispatchPublic(ev, why, dest, quarantine) {

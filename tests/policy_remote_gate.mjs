@@ -34,7 +34,7 @@ process.env.POLICY_REQUEST_QUEUE_PATH = join(tmp, 'policy-requests')
 process.env.BUZZ_PRIVATE_KEY = Buffer.from(generateSecretKey()).toString('hex')
 
 const B = await import('../src/bridge.mjs')
-const { routePublic, seen, postedMap, policyRequests, policyWriterInFlight,
+const { routePublic, seen, postedMap, policyRequests, policyWriterInFlight, PUB,
   retryRemotePolicyRequests, processRemotePolicyRequest, __setPolicyWriterRunnerForTests,
   unframePolicyWriterResponse } = B
 policyRequests.load()
@@ -86,6 +86,22 @@ routePublic(standing); await wait()
 ok('standing trusted reply selects its distinct off-box operation', JSON.parse(standingRaw).operation === 'standing_trusted_reply')
 ok('standing trusted reply reaches the policy-owned inbox as released content',
   postedMap.get(standing.id)?.dest === inbox && postedMap.get(standing.id)?.q === false)
+
+let standingRetryRaw = ''
+__setPolicyWriterRunnerForTests(async raw => {
+  standingRetryRaw = raw
+  return `${canonicalJson({ status: 'held', result: null, receipt: null })}\n`
+})
+const standingHeld = note('standing restart debt', trustedSigner)
+routePublic(standingHeld); await wait()
+const standingHeldRaw = standingRetryRaw
+ok('a held standing reply is durable before restart', policyRequests.has(standingHeld.id))
+PUB.staging = null
+__setPolicyWriterRunnerForTests(async raw => { standingRetryRaw = raw; return response(raw) })
+const retriedWithoutStaging = retryRemotePolicyRequests(); await wait()
+ok('restart retries inbox-bound standing debt when staging is absent',
+  retriedWithoutStaging === 1 && standingRetryRaw === standingHeldRaw && !policyRequests.has(standingHeld.id) && seen.has(standingHeld.id))
+PUB.staging = staging
 
 const forged = note('forged response')
 __setPolicyWriterRunnerForTests(async raw => {
