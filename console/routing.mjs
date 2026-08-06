@@ -20,6 +20,7 @@
 
 import { verifyEvent, nip19 } from 'nostr-tools'
 import { consoleSigner } from './signer-session.mjs'
+import { stableControlSigner } from './stable-control-signer.mjs'
 import { newestFreshControlState, requireFreshControlState } from './control-state-freshness.mjs'
 
 const RELAYS = ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub', 'wss://jskitty.com/nostr']
@@ -204,18 +205,19 @@ function publish(event) {
 async function moderate(action) {
   const status = $('moderation-status')
   try {
-    if (!activeBridge || !activeState) throw Error('Load fresh verified routing state first.')
-    try { requireFreshControlState(activeState) } catch (error) {
+    const bridge = activeBridge, state = activeState
+    if (!bridge || !state) throw Error('Load fresh verified routing state first.')
+    try { requireFreshControlState(state) } catch (error) {
       activeBridge = null; activeState = null; setModeration(false); throw error
     }
     const target = eventId($('moderation-target').value)
-    const signer = await consoleSigner()
-    const signerKey = await signer.getPublicKey()
+    const opened = await stableControlSigner(bridge, state, () => ({ bridge: activeBridge, state: activeState }), { signerFactory: consoleSigner })
+    const { signer, signerKey } = opened
     status.className = 'status'
     status.textContent = `Requesting ${action} signature from ${npub(signerKey)}…`
     const signed = await signer.signEvent({
       kind: 30078, created_at: Math.floor(Date.now() / 1000),
-      tags: [['d', 'waggle-moderation'], ['p', activeBridge]],
+      tags: [['d', 'waggle-moderation'], ['p', opened.bridge]],
       content: JSON.stringify({ v: 1, action, target }),
     })
     const accepted = await publish(signed)

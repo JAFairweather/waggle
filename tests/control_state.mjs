@@ -11,6 +11,7 @@ import * as nip44 from 'nostr-tools/nip44'
 import { sealedTaskRouteCommand } from '../console/task-route-envelope.mjs'
 import { consoleSigner, CONSOLE_SESSION_KEY } from '../console/signer-session.mjs'
 import { confirmedFreshSigner } from '../console/confirmed-fresh-signer.mjs'
+import { stableControlSigner } from '../console/stable-control-signer.mjs'
 import { controlStateFresh, newestFreshControlState, requireFreshControlState,
   CONTROL_STATE_MAX_AGE_SECS, CONTROL_STATE_MAX_FORWARD_SKEW_SECS } from '../console/control-state-freshness.mjs'
 
@@ -59,6 +60,21 @@ mirrorAsked.add(watched)
 t('a recorded disclosure ask is visible as asked', stateOf() === 'asked')
 
 const now = Math.floor(Date.now() / 1000)
+
+const signerRaceState = { observed_at: now }
+let signerRaceBridge = '4'.repeat(64), signerRaceCurrent = signerRaceState, signerRaceSigned = 0
+let signerRaceRejected = false
+try {
+  await stableControlSigner(signerRaceBridge, signerRaceState, () => ({ bridge: signerRaceBridge, state: signerRaceCurrent }), {
+    signerFactory: async () => ({
+      getPublicKey: async () => { signerRaceBridge = '5'.repeat(64); signerRaceCurrent = { observed_at: now }; return '6'.repeat(64) },
+      signEvent: async () => { signerRaceSigned++; return {} },
+    }),
+    now: () => now,
+  })
+} catch (error) { signerRaceRejected = /state changed/.test(error.message) }
+t('a concurrent reload during signer open cannot redirect a moderation command to another bridge',
+  signerRaceRejected && signerRaceSigned === 0)
 const consent = wire(finalizeEvent({
   kind: 440, created_at: now, content: '',
   tags: [['p', getPublicKey(bridgeSk)], ['da-scope', scopeHash(HIVE, '11'.repeat(16)), '11'.repeat(16)], ['da-cap', 'mirror'], ['tos', PUB.mirrorExpectedTosHash]],
@@ -464,8 +480,8 @@ t('the Routing console offers the three public moderation decisions and keeps re
   ['approve', 'follow', 'mute'].every(action => routingPage.includes(`data-action="${action}"`)) &&
   !routingPage.includes('data-action="reject"') && /private rejection remains an in-channel action/.test(routingPage))
 t('the Routing console signs only an exact bridge-addressed moderation command',
-  /consoleSigner/.test(routingScript) && /requireFreshControlState\(activeState\).*consoleSigner/s.test(routingScript) &&
-  /\['d', 'waggle-moderation'\], \['p', activeBridge\]/.test(routingScript) &&
+  /stableControlSigner\(bridge, state/.test(routingScript) &&
+  /\['d', 'waggle-moderation'\], \['p', opened\.bridge\]/.test(routingScript) &&
   /JSON\.stringify\(\{ v: 1, action, target \}\)/.test(routingScript) &&
   !/fetch\([^)]*config\.json/.test(routingScript) && !/\/config\.json/.test(routingScript))
 
