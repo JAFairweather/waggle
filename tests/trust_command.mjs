@@ -125,9 +125,12 @@ for (const [name, ev, expected] of reasons) {
   const r = handleTrustControlCommand(ev)
   ok(`${name} — for its own reason`, r.ok === false && r.reason === expected, `got '${r.reason}', wanted '${expected}'`)
 }
-ok('a tampered signature is refused', handleTrustControlCommand({
-  ...cmd('follow', stranger), sig: '0'.repeat(128),
-}).ok === false)
+// Cross the wire boundary before tampering. nostr-tools marks finalized in-memory events with
+// a private verification symbol; verifyEvent intentionally trusts that marker, so spreading the
+// object and changing `sig` is not a cryptographic negative unless serialization removes it.
+const tampered = JSON.parse(JSON.stringify(cmd('follow', stranger)))
+tampered.sig = '0'.repeat(128)
+ok('a tampered wire-form signature is refused', handleTrustControlCommand(tampered).ok === false)
 ok('a non-30078 event is not a trust command',
   handleTrustControlCommand({ ...cmd('follow', stranger), kind: 1 }).ok === false)
 
