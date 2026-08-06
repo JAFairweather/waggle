@@ -50,11 +50,13 @@ and consent signing page. Those fields—not a chat-channel UUID and not the own
 the scope an author consents to. Existing watched authors must be explicitly grandfathered or
 they will be held until they consent.
 
-Run `--agent-launch` to print the hand-off for a coding agent. It mints its own ephemeral key,
-publishes kind:0 + kind:10002 + kind:10050, asks for a scoped admission, verifies a sealed
-receipt, and burns its key on exit. Nvoy MCP is optional: use it for delegated private data or
-sealed conversations, with an agent-owned encrypted NIP-49 key file; it is not required for
-public mirror-and-consent.
+Run `--agent-launch` to print the burner hand-off for a short-lived coding agent. It mints its own
+ephemeral key, publishes kind:0 + kind:10002 + kind:10050, asks for scoped admission, verifies a
+sealed receipt, and burns its key on exit. That is different from a persistent first-class agent:
+Codex or Claude needs one isolated Nvoy identity runtime, an identity-specific MCP attachment, a
+model-specific session binder, and Bunker-backed reply signing. See
+[First-class agent architecture](AGENT_PARTICIPANT_ARCHITECTURE.md). Nvoy is optional only for
+the public mirror-and-consent burner path; it is part of the persistent agent channel design.
 
 ## Prerequisites
 

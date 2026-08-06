@@ -6,12 +6,13 @@
 // that publish. A session mints a key, gets admitted, and then wears a name the crew can read —
 // distinct per session, obviously the same family, and honestly marked as an agent.
 //
-//   NVOY_NSEC=$(cat <path>) node tools/session-profile.mjs --purpose "reviewing #140"
+//   NVOY_NSEC=$(cat <path>) node tools/session-profile.mjs --family Codex --purpose "reviewing #140"
 //   NVOY_NSEC=… node tools/session-profile.mjs --og          # the standing identity
 //   NVOY_NSEC=… node tools/session-profile.mjs --dry-run     # build + print, publish nothing
 //
-// NAMING. Every session is `Claude - <8 hex of its own pubkey>` — derived, not chosen, so two
-// sessions cannot collide and a name is checkable against the key it claims. The one standing
+// NAMING. Every session is `<family> - <8 hex of its own pubkey>` — derived, not chosen, so two
+// sessions cannot collide and a name is checkable against the key it claims. Family is restricted
+// to Claude or Codex; arbitrary display names remain an explicit operator override. The one standing
 // identity (78856ed6…, the key that holds the long-lived grant) is `Claude - OG` under --og:
 // it is the identity with continuity, so it gets the name with continuity.
 //
@@ -37,7 +38,7 @@ const RELAYS = (process.env.RELAY_RELAYS || 'wss://nos.lol,wss://relay.primal.ne
   .split(',').map(s => s.trim()).filter(Boolean)
 
 // The shared face. A URL, not embedded data: one asset, changed in one place for every session.
-const PICTURE = process.env.SESSION_PICTURE || 'https://nave.pub/assets/avatars/claude.svg'
+const PICTURE = process.env.SESSION_PICTURE || 'https://nave.pub/assets/avatars/claude.png'
 
 const raw = process.env.NVOY_NSEC || process.env.SESSION_NSEC
 if (!raw) die('set NVOY_NSEC (or SESSION_NSEC) — the key must arrive by env, never on the command line')
@@ -49,7 +50,10 @@ if (!sk || sk.length !== 32) die('NVOY_NSEC is not a valid 32-byte key')
 const pk = getPublicKey(sk)
 const npub = nip19.npubEncode(pk)
 const isOg = has('--og')
-const name = flag('--name') || (isOg ? 'Claude - OG' : `Claude - ${pk.slice(0, 8)}`)
+const family = flag('--family') || 'Claude'
+if (!['Claude', 'Codex'].includes(family)) die('--family must be Claude or Codex')
+if (isOg && family !== 'Claude') die('--og is reserved for the Claude OG identity')
+const name = flag('--name') || (isOg ? 'Claude - OG' : `${family} - ${pk.slice(0, 8)}`)
 const purpose = flag('--purpose')
 
 // about: what this session is FOR, when it said. A burner that names its own errand is far easier
@@ -59,8 +63,8 @@ const about = flag('--about') || (isOg
   ? 'Right and true. Head of development for waggle — the Nostr ↔ Buzz Bridge '
     + '(github.com/JAFairweather/waggle). The standing identity; session keys are Claude - <8 hex>. '
     + 'Agent identity; all coordination DMs are CC-d to my operator by standing convention.'
-  : `Ephemeral waggle session key${purpose ? ` — ${purpose}` : ''}. Minted for one session and `
-    + 'discarded after it; admitted by a scoped, revocable grant. The standing identity is Claude - OG.')
+  : `Ephemeral ${family} waggle session key${purpose ? ` — ${purpose}` : ''}. Minted for one session and `
+    + 'discarded after it; admitted by a scoped, revocable grant.')
 
 const profile = {
   name,
