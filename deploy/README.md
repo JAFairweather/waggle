@@ -307,9 +307,12 @@ are load-bearing: the alarm credential drop-ins target `waggle-tripwire.service`
 
 1. **The alarm is signed by a SEPARATE identity, never the poster key.** An alarm signed by the
    identity under suspicion is worthless — a thief holding the poster nsec could forge the
-   all-clear too. Prefer a dedicated **Bunker identity with zero authority** (its only power is
-   sending a DM), using mode-0600 URI and NIP-46 client files. The identity nsec then never
-   exists on the watcher. For a simple/offline install, the compatibility initializer can mint
+   all-clear too. Prefer a dedicated identity imported into **Bunker with zero authority** (its
+   only power is sending a DM), using mode-0600 URI and NIP-46 client files. Bunker is the
+   custody/signer service in this deployment, not the identity-minting interface: mint the key
+   locally, import it once, then remove the local plaintext after the Bunker pairing is proven.
+   The identity nsec then never exists on the watcher. For a simple/offline install, the
+   compatibility initializer can mint
    a disposable local alarm key directly into systemd credential files without accepting or
    printing an nsec:
 
@@ -360,6 +363,30 @@ mode, create `/etc/waggle-tripwire` as mode `0700`; install all three files as r
 regular non-symlink files with mode `0600`. The Bunker identity must have no grants or
 application authority. Its client pairing remains a credential even though it cannot reveal
 or export the identity nsec.
+
+Mint the dedicated alarm key on the operator's workstation without publishing a profile, relay
+list, grant, or channel request. `participant-init new` writes mode `0600` and prints only public
+identity data and the path:
+
+```
+cd ~/.buzz/REPOS/waggle
+ALARM_STAGE=$(mktemp -d "$HOME/.waggle-tripwire-alarm.XXXXXX")
+chmod 700 "$ALARM_STAGE"
+node tools/participant-init.mjs new \
+  --name 'waggle tripwire alarm' \
+  --out "$ALARM_STAGE/alarm.nsec"
+```
+
+Import `alarm.nsec` into `bunker.nave.pub` as a new identity. Do not publish it, add it to a
+channel, or grant it `admit`, `task`, `task+act`, `task-relay`, `mirror`, or any application
+scope. Create one revocable NIP-46 connection for the tripwire and save the resulting single-line
+`bunker://…` URI as `$ALARM_STAGE/alarm.bunker-uri` with mode `0600`. Do not paste either secret
+into chat, an issue, a shell argument, or an environment variable.
+
+After the Bunker-backed drill and recipient cold read both pass, delete the workstation copies of
+`alarm.nsec` and `alarm.bunker-uri` and clear any clipboard that held them. Removing a file from an
+SSD is an operational cleanup, not proof of physical erasure; the security boundary is that the
+only live signing authority is now the independently revocable Bunker identity/pairing.
 
 To stage those three files without ever putting the Bunker URI or client credential on argv or
 in an environment variable, save the URI temporarily in a root-owned mode-0600 file, then feed
@@ -479,7 +506,8 @@ mistakes and crude theft; only off-host catches an adversary who owns the host.
 
 ### Alarm rotation and relay outage
 
-To rotate, first create and approve a fresh zero-authority Bunker identity/pairing, atomically
+To rotate, first mint a fresh identity locally, import it into Bunker with zero authority, create
+and approve a fresh pairing, atomically
 replace both mode-0600 pairing files, run the positive drill, and only then revoke the old Bunker
 pairing. If the watcher is lost, revoke that pairing immediately; there is no reason to preserve
 it because the alarm identity owns no grants. `ALARM_TO` is the operator recipient and rotates
