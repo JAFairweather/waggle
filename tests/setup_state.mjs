@@ -1,4 +1,4 @@
-import { mkdtempSync, statSync, writeFileSync, chmodSync } from 'node:fs'
+import { mkdtempSync, statSync, writeFileSync, chmodSync, readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
@@ -20,7 +20,15 @@ const cli = spawnSync(process.execPath, ['tools/setup-state.mjs', 'report', '--p
 assert.equal(cli.status, 0); assert.equal(JSON.parse(cli.stdout).installation_id, first.installation_id)
 const checkPath = join(root, 'check-only.json')
 const check = spawnSync(process.execPath, ['tools/waggle-init.mjs', '--check'], { encoding: 'utf8', env: { ...process.env, CONFIG_PATH: join(root, 'missing-config.json'), WAGGLE_SETUP_STATE: checkPath } })
-assert.equal(check.status, 1); assert.equal(statSync(checkPath, { throwIfNoEntry: false }), undefined)
+assert.equal(check.status, 1); assert.equal(existsSync(checkPath), false)
+const publicPath = join(root, 'public', 'setup-state.json')
+const published = spawnSync(process.execPath, ['tools/setup-state-publish.mjs', '--state', path, '--out', publicPath], { encoding: 'utf8' })
+assert.equal(published.status, 0)
+assert.equal(statSync(publicPath).mode & 0o777, 0o644)
+const receipt = JSON.parse(readFileSync(publicPath, 'utf8'))
+assert.equal(receipt.installation_id, first.installation_id)
+assert.equal('public' in receipt, false)
+assert.equal(/nsec|bunker|secret|private/i.test(readFileSync(publicPath, 'utf8')), false)
 const bad = join(root, 'bad.json'); writeFileSync(bad, '{}'); chmodSync(bad, 0o644)
 assert.throws(() => read(bad), /mode 0600/)
 console.log('setup_state: all checks passed')

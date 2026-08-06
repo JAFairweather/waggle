@@ -35,11 +35,19 @@ an nsec, Bunker URI, provider key, or private credential. Inspect it without cha
 ```sh
 node tools/setup-state.mjs report
 node tools/setup-state.mjs check
+# explicitly publish only the public receipt to the separately hosted console
+node tools/setup-state-publish.mjs --state ~/.waggle/setup-state.json --out /path/to/console/setup-state.json
 ```
 
 The record is the shared state contract for the CLI and the browser Setup surface. A `deferred`
 step means an explicit owner action is still pending; it is not treated as success. Resume by
 running `waggle-init` again. `--check` never creates or updates the record.
+
+The browser Setup page reads `/console/setup-state.json` only when the owner publishes that
+projection. The publish command emits statuses and the stable installation id, strips the
+private `public` facts, refuses a symlinked output, and writes the receipt mode `0644`. The
+console may live on a different host; copy this one public file there over the site's normal
+deployment path. Never expose `~/.waggle/setup-state.json` itself.
 
 It is resumable and idempotent — every step first checks whether it is already done, so
 you can re-run it any time and it only asks about what is still missing. `--check` is safe

@@ -16,6 +16,7 @@
   "main": "src/bridge.mjs",
   "scripts": {
     "setup-test": "node tests/setup_state.mjs",
+    "setup-publish": "node tools/setup-state-publish.mjs",
     "start": "node src/bridge.mjs",
     "dryrun": "FORWARD_MODE=dryrun node src/bridge.mjs",
     "lint": "eslint src tools tests",
