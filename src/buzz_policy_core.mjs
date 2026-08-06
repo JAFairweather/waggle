@@ -7,7 +7,7 @@ import { verifyEvent } from 'nostr-tools/pure'
 import { npubEncode } from 'nostr-tools/nip19'
 
 export const BUZZ_POLICY_VERSION = 1
-export const BUZZ_POLICY_OPERATIONS = Object.freeze(['quarantine_header', 'standing_trusted_reply', 'sealed_direct_envelope'])
+export const BUZZ_POLICY_OPERATIONS = Object.freeze(['quarantine_header', 'standing_trusted_reply', 'sealed_direct_envelope', 'withdraw_repost'])
 const HEX64 = /^[0-9a-f]{64}$/
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const EVENT_KEYS = new Set(['id', 'pubkey', 'created_at', 'kind', 'tags', 'content', 'sig'])
@@ -20,6 +20,7 @@ const EVIDENCE_KEYS = Object.freeze({
   quarantine_header: new Set(['source_event']),
   standing_trusted_reply: new Set(['source_event']),
   sealed_direct_envelope: new Set(['source_event']),
+  withdraw_repost: new Set(['source_event', 'deletion_event', 'prior_receipt']),
 })
 const POLICY_REQUESTS = new WeakSet()
 const POLICY_DECISIONS = new WeakSet()
@@ -52,17 +53,17 @@ export function canonicalJson(value, seen = new Set()) {
   return result
 }
 
-function verifyWireEvent(event, expectedKind = 1) {
-  exactKeys(event, EVENT_KEYS, 'source_event')
+function verifyWireEvent(event, expectedKind = 1, label = 'source_event') {
+  exactKeys(event, EVENT_KEYS, label)
   if (!HEX64.test(String(event.id || '')) || !HEX64.test(String(event.pubkey || '')) ||
       !/^[0-9a-f]{128}$/.test(String(event.sig || '')) || !Number.isSafeInteger(event.created_at) ||
       event.created_at < 0 || event.created_at > MAX_RENDERABLE_UNIX_SECONDS ||
       event.kind !== expectedKind || !Array.isArray(event.tags) ||
-      typeof event.content !== 'string') fail(`source_event is not a complete kind:${expectedKind} wire event`)
-  if (!event.tags.every(tag => Array.isArray(tag) && tag.every(value => typeof value === 'string'))) fail('source_event has malformed tags')
+      typeof event.content !== 'string') fail(`${label} is not a complete kind:${expectedKind} wire event`)
+  if (!event.tags.every(tag => Array.isArray(tag) && tag.every(value => typeof value === 'string'))) fail(`${label} has malformed tags`)
   let valid = false
   try { valid = verifyEvent(JSON.parse(JSON.stringify(event))) } catch { valid = false }
-  if (!valid) fail('source_event signature or id is invalid')
+  if (!valid) fail(`${label} signature or id is invalid`)
   return event
 }
 
@@ -85,6 +86,10 @@ export function decodePolicyRequest(raw, {
   if (!Number.isSafeInteger(request.observed_at) || request.observed_at < now - maxObservationAge || request.observed_at > now + maxFutureSkew) fail('observed_at is outside the freshness window')
   exactKeys(request.evidence, EVIDENCE_KEYS[request.operation], 'evidence')
   verifyWireEvent(request.evidence.source_event, request.operation === 'sealed_direct_envelope' ? 1059 : 1)
+  if (request.operation === 'withdraw_repost') {
+    verifyWireEvent(request.evidence.deletion_event, 5, 'deletion_event')
+    verifyWireEvent(request.evidence.prior_receipt, 30078, 'prior_receipt')
+  }
   Object.freeze(request)
   POLICY_REQUESTS.add(request)
   return request
@@ -197,6 +202,56 @@ export function decideSealedDirectEnvelope(request, { recipientRoutes = {} } = {
   return decision
 }
 
+const RECEIPT_FIELDS = new Set(['version', 'policy_instance', 'operation', 'catalogue_version', 'request_digest',
+  'idempotency_key', 'source_ids', 'buzz_channel', 'endpoint_authority', 'buzz_event_id', 'result',
+  'reason_code', 'response_digest', 'completed_at'])
+
+function priorAcceptedReceipt(event, { posterPubkey, endpointAuthority, policyInstance, catalogueVersion, sourceId } = {}) {
+  const receipt = verifyWireEvent(JSON.parse(JSON.stringify(event)), 30078, 'prior_receipt')
+  if (receipt.pubkey !== String(posterPubkey || '').toLowerCase()) fail('prior receipt is not signed by the policy poster')
+  let fields
+  try { fields = JSON.parse(receipt.content) } catch { fail('prior receipt content is not JSON') }
+  if (canonicalJson(fields) !== receipt.content) fail('prior receipt content is not canonical')
+  exactKeys(fields, RECEIPT_FIELDS, 'prior receipt content')
+  if (fields.version !== BUZZ_POLICY_VERSION || fields.policy_instance !== policyInstance ||
+      fields.catalogue_version !== catalogueVersion || !['quarantine_header', 'standing_trusted_reply'].includes(fields.operation) ||
+      fields.result !== 'accepted' || fields.reason_code !== 'accepted' || fields.endpoint_authority !== endpointAuthority ||
+      !HEX64.test(String(fields.request_digest || '')) || !HEX64.test(String(fields.idempotency_key || '')) ||
+      !HEX64.test(String(fields.response_digest || '')) || !HEX64.test(String(fields.buzz_event_id || '')) ||
+      !Number.isSafeInteger(fields.completed_at) || fields.completed_at !== receipt.created_at ||
+      canonicalJson(fields.source_ids) !== canonicalJson([sourceId])) fail('prior receipt is not an accepted source mapping for this policy')
+  const dest = channel(fields.buzz_channel)
+  const expectedKey = createHash('sha256').update(canonicalJson([
+    fields.version, fields.policy_instance, fields.catalogue_version, fields.operation, [sourceId], dest,
+  ])).digest('hex')
+  if (fields.idempotency_key !== expectedKey || receipt.tags.length !== 1 || receipt.tags[0]?.length !== 2 ||
+      receipt.tags[0][0] !== 'd' || receipt.tags[0][1] !== `waggle-policy:${expectedKey}`) fail('prior receipt idempotency binding is invalid')
+  return Object.freeze({ dest, buzzEventId: fields.buzz_event_id })
+}
+
+// The requester contributes no Buzz target. The policy host accepts only its own prior signed
+// acceptance receipt, then proves the original Nostr author signed a kind:5 naming that source.
+// One multi-target NIP-09 event may therefore produce several independently durable one-target
+// Buzz kind:5 events without letting the bridge select any Buzz event id.
+export function decideWithdrawRepost(request, {
+  posterPubkey, endpointAuthority, policyInstance, catalogueVersion,
+} = {}) {
+  if (!request || !POLICY_REQUESTS.has(request)) fail('an internally verified policy request is required')
+  if (request.operation !== 'withdraw_repost') fail('wrong operation for withdrawal decision')
+  const source = request.evidence.source_event, deletion = request.evidence.deletion_event
+  if (source.pubkey !== deletion.pubkey) fail('deletion author does not own the source event')
+  const targets = deletion.tags.filter(tag => tag[0] === 'e' && tag.length >= 2 && HEX64.test(String(tag[1] || '').toLowerCase()))
+    .map(tag => tag[1].toLowerCase())
+  if (!targets.includes(source.id)) fail('deletion event does not target this source event')
+  const prior = priorAcceptedReceipt(request.evidence.prior_receipt, {
+    posterPubkey, endpointAuthority, policyInstance, catalogueVersion, sourceId: source.id,
+  })
+  const decision = Object.freeze({ template: 'withdraw_repost', dest: prior.dest, targetId: prior.buzzEventId, slots: Object.freeze({}) })
+  POLICY_DECISIONS.add(decision)
+  DECISION_REQUESTS.set(decision, request)
+  return decision
+}
+
 // Artifact construction is a separate trust boundary.  A shape-compatible object from
 // the bridge is not a decision: only an object minted by the policy evaluator is.
 export function assertPolicyDecision(decision) {
@@ -207,9 +262,16 @@ export function assertPolicyDecision(decision) {
 export function policyIdempotencyKey(request, decision) {
   assertPolicyDecision(decision)
   if (!request || !POLICY_REQUESTS.has(request) || DECISION_REQUESTS.get(decision) !== request) fail('the decision is not bound to this verified request')
-  const sourceIds = [request.evidence.source_event.id]
+  const sourceIds = policySourceIds(request)
   return createHash('sha256').update(canonicalJson([
     request.version, request.policy_instance, request.catalogue_version,
     request.operation, sourceIds, decision.dest,
   ])).digest('hex')
+}
+
+export function policySourceIds(request) {
+  if (!request || !POLICY_REQUESTS.has(request)) fail('an internally verified policy request is required')
+  return request.operation === 'withdraw_repost'
+    ? [request.evidence.source_event.id, request.evidence.deletion_event.id, request.evidence.prior_receipt.id]
+    : [request.evidence.source_event.id]
 }

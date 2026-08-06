@@ -166,7 +166,8 @@ and sends only the canonical evidence packet on stdin. Do not use a management k
 user `known_hosts` file for either path.
 
 After the enforced-shadow rehearsal is clean, configure `public.policy_writer.mode` as
-`"remote-only"` for `quarantine_header`, `standing_trusted_reply`, and `sealed_direct_envelope`, using the distinct `waggle-policy-ingress` key and forced
+`"remote-only"` for `quarantine_header`, `standing_trusted_reply`, `sealed_direct_envelope`, and
+`withdraw_repost`, using the distinct `waggle-policy-ingress` key and forced
 account. The bridge durably stores the exact canonical request under `data/policy-requests/` before
 opening SSH. Held, ambiguous, malformed, unavailable, or unverifiable responses stay there and are
 retried byte-for-byte every fifteen seconds and after restart. Only a poster-signed terminal receipt
@@ -178,7 +179,7 @@ The bridge's writer configuration is intentionally separate from `policy_shadow`
 ```json
 {
   "mode": "remote-only",
-  "operations": ["quarantine_header", "standing_trusted_reply", "sealed_direct_envelope"],
+  "operations": ["quarantine_header", "standing_trusted_reply", "sealed_direct_envelope", "withdraw_repost"],
   "policy_instance": "jaf-hive",
   "catalogue_version": "<64 hex>",
   "poster_pubkey": "<64 hex>",
@@ -191,12 +192,15 @@ The bridge's writer configuration is intentionally separate from `policy_shadow`
 ```
 
 `operations` is the migration switch. Existing configurations that omit it retain only the first
-two public families; direct sealed DMs remain on the local path until the policy-host
+two public families; direct sealed DMs and withdrawals remain on the local path until the policy-host
 `recipient_routes` roster is installed and `sealed_direct_envelope` is explicitly added to both
-the shadow and writer operation lists.
+the shadow and writer operation lists. Add `withdraw_repost` only after accepted off-box public
+posts persist the complete signed source and poster-signed receipt in `posted-map`; older rows
+hold closed because they lack evidence from which the policy host can derive a Buzz target.
 
 Do not remove the local poster credential yet: this cutover covers quarantine headers, standing
-trusted replies, and direct sealed DMs only. Channel-plane delivery, mirrored feeds, live-grant participants, and other operation families remain
+trusted replies, direct sealed DMs, and receipt-bound withdrawals only. Channel-plane delivery,
+mirrored feeds, live-grant participants, and other operation families remain
 separate policy decisions and must not be admitted through the standing-reply rule. The
 remaining operation families must move before the bridge host can lose all Buzz write authority.
 

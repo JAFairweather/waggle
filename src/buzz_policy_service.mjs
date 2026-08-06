@@ -2,7 +2,7 @@
 // only canonical signed evidence.  This service independently decides, signs,
 // durably prepares, submits, and returns only a signed receipt.
 import { createHash, randomBytes } from 'node:crypto'
-import { canonicalJson, decodePolicyRequest, decideQuarantineHeader, decideStandingTrustedReply, decideSealedDirectEnvelope, policyIdempotencyKey } from './buzz_policy_core.mjs'
+import { canonicalJson, decodePolicyRequest, decideQuarantineHeader, decideStandingTrustedReply, decideSealedDirectEnvelope, decideWithdrawRepost, policyIdempotencyKey, policySourceIds } from './buzz_policy_core.mjs'
 import { buildBuzzEvent, buildNip98Authorization, buildSignedReceipt, signExactBuzzEvent, signExactNip98, submitBuzzEvent, verifySignedBuzzEvent } from './buzz_policy_artifacts.mjs'
 
 const fail = message => { throw new Error(`buzz-policy-service: ${message}`) }
@@ -22,13 +22,15 @@ function replay(record) {
 }
 
 function derive(raw, { policyInstance, catalogueVersion, stagingChannel, inboxChannel, watchedEventIds,
-  trustedRepliers = [], recipientRoutes = {}, approverMention = '', now }) {
+  trustedRepliers = [], recipientRoutes = {}, approverMention = '', posterPubkey, endpointAuthority, now }) {
   const request = decodePolicyRequest(raw, { policyInstance, catalogueVersion, now })
   const decision = request.operation === 'quarantine_header'
     ? decideQuarantineHeader(request, { stagingChannel, watchedEventIds, approverMention })
     : request.operation === 'standing_trusted_reply'
       ? decideStandingTrustedReply(request, { inboxChannel, watchedEventIds, trustedRepliers })
-      : decideSealedDirectEnvelope(request, { recipientRoutes })
+      : request.operation === 'sealed_direct_envelope'
+        ? decideSealedDirectEnvelope(request, { recipientRoutes })
+        : decideWithdrawRepost(request, { posterPubkey, endpointAuthority, policyInstance, catalogueVersion })
   const requestDigest = createHash('sha256').update(raw).digest('hex')
   return { request, decision, requestDigest, key: policyIdempotencyKey(request, decision) }
 }
@@ -60,7 +62,8 @@ export async function processBuzzPolicyRequest(raw, {
   if (!journal || typeof journal.claim !== 'function' || typeof journal.prepare !== 'function' || typeof journal.commit !== 'function') fail('journal is unavailable')
   if (!signer || typeof signer.signEvent !== 'function') fail('signer is unavailable')
   const { request, decision, requestDigest, key } = deriveFreshOrPreviouslyClaimed(raw,
-    { policyInstance, catalogueVersion, stagingChannel, inboxChannel, watchedEventIds, trustedRepliers, recipientRoutes, approverMention, now }, journal)
+    { policyInstance, catalogueVersion, stagingChannel, inboxChannel, watchedEventIds, trustedRepliers, recipientRoutes, approverMention,
+      posterPubkey: artifactPolicy?.posterPubkey, endpointAuthority: artifactPolicy?.endpointAuthority, now }, journal)
   const claim = journal.claim(key, requestDigest, now)
   if (!claim.claimed && claim.record.status !== 'prepared') return replay(claim.record)
 
@@ -86,7 +89,7 @@ export async function processBuzzPolicyRequest(raw, {
   const accepted = outcome.result === 'accepted'
   const receiptFields = {
     version: 1, policy_instance: policyInstance, operation: request.operation, catalogue_version: catalogueVersion,
-    request_digest: requestDigest, idempotency_key: key, source_ids: [request.evidence.source_event.id],
+    request_digest: requestDigest, idempotency_key: key, source_ids: policySourceIds(request),
     buzz_channel: decision.dest, endpoint_authority: artifactPolicy.endpointAuthority,
     buzz_event_id: event.id, result: outcome.result, reason_code: outcome.reasonCode,
     response_digest: outcome.responseDigest, completed_at: now,
@@ -110,12 +113,13 @@ export async function resolveBuzzPolicyOrphan(raw, expectedClaimedAt, {
   if (!signer || typeof signer.signEvent !== 'function') fail('signer is unavailable')
   if (!Number.isSafeInteger(expectedClaimedAt) || expectedClaimedAt < 0) fail('expectedClaimedAt is invalid')
   const { request, decision, requestDigest, key } = derive(raw, { policyInstance, catalogueVersion, stagingChannel,
-    inboxChannel, watchedEventIds, trustedRepliers, recipientRoutes, approverMention, now: expectedClaimedAt })
+    inboxChannel, watchedEventIds, trustedRepliers, recipientRoutes, approverMention,
+    posterPubkey: artifactPolicy?.posterPubkey, endpointAuthority: artifactPolicy?.endpointAuthority, now: expectedClaimedAt })
   const record = journal.get(key)
   if (!record || record.status !== 'in-flight' || record.claimed_at !== expectedClaimedAt) fail('the exact inspected in-flight claim is no longer present')
   const fields = {
     version: 1, policy_instance: policyInstance, operation: request.operation, catalogue_version: catalogueVersion,
-    request_digest: requestDigest, idempotency_key: key, source_ids: [request.evidence.source_event.id],
+    request_digest: requestDigest, idempotency_key: key, source_ids: policySourceIds(request),
     buzz_channel: decision.dest, endpoint_authority: artifactPolicy.endpointAuthority,
     buzz_event_id: null, result: 'ambiguous', reason_code: 'signing_outcome_unknown',
     response_digest: createHash('sha256').update('no-submission-evidence').digest('hex'), completed_at: now,

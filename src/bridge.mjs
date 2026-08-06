@@ -53,7 +53,9 @@ import { durableSet, durableQueue } from './stores.mjs'
 import { fanout } from './fanout.mjs'
 import { recipientDmRelays } from './dm_relays.mjs'
 import { quarantineSlotsFromSource } from './buzz_policy_core.mjs'
-import { buildQuarantinePolicyRequest, buildStandingTrustedReplyPolicyRequest, buildSealedDirectPolicyRequest, normalizePolicyOperations, verifyPolicyResponse, validatePolicyWriterConfig } from './buzz_policy_client.mjs'
+import { buildQuarantinePolicyRequest, buildStandingTrustedReplyPolicyRequest, buildSealedDirectPolicyRequest,
+  buildWithdrawRepostPolicyRequest, policyRequestQueueKey, normalizePolicyOperations,
+  verifyPolicyResponse, validatePolicyWriterConfig } from './buzz_policy_client.mjs'
 import { comparePolicyShadow, validateShadowClientConfig } from './buzz_policy_shadow_client.mjs'
 import { PolicyRequestQueue } from './policy_request_queue.mjs'
 import { defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased } from './render.mjs'
@@ -631,7 +633,7 @@ const dropRelaySeen = (id) => relaySeenStore.rollback(id)
 // admitted agent's own public note (author === a return_lane npub_hex). Keying on WHO the bridge
 // posted for — never on the shared bridge signing key — is what keeps a second agent's cross
 // mentions from being swept up as echoes when the roster grows.
-const postedMap = new Map() // orig event id -> { author, buzz, dest, deleted, agent }
+const postedMap = new Map() // orig event id -> { author, buzz, dest, deleted, agent, source, policyReceipt }
 function loadPostedMap() {
   if (!existsSync(POSTED_MAP_PATH)) return
   const lines = readFileSync(POSTED_MAP_PATH, 'utf8').split('\n').filter(Boolean).slice(-POSTED_CAP)
@@ -640,7 +642,8 @@ function loadPostedMap() {
       const r = JSON.parse(line)
       if (!r || !r.id) continue
       if (r.deleted) { const e = postedMap.get(r.id); if (e) e.deleted = true; continue }
-      postedMap.set(r.id, { author: r.author, buzz: r.buzz || null, dest: r.dest, q: !!r.q, deleted: false, agent: r.agent || null })
+      postedMap.set(r.id, { author: r.author, buzz: r.buzz || null, dest: r.dest, q: !!r.q,
+        deleted: false, agent: r.agent || null, source: r.source || null, policyReceipt: r.policyReceipt || null })
       if (r.buzz) stagingByBuzzId.set(String(r.buzz).toLowerCase(), { orig: r.id, author: r.author, dest: r.dest, q: !!r.q, agent: r.agent || null })
     } catch { err(`A7: skipping corrupt posted-map line`) }
   }
@@ -649,7 +652,8 @@ function loadPostedMap() {
 function recordPosted(rec, durable = false) {
   const previous = postedMap.get(rec.id)
   const previousStaging = rec.buzz ? stagingByBuzzId.get(String(rec.buzz).toLowerCase()) : undefined
-  postedMap.set(rec.id, { author: rec.author, buzz: rec.buzz || null, dest: rec.dest, q: !!rec.q, deleted: false, agent: rec.agent || null })
+  postedMap.set(rec.id, { author: rec.author, buzz: rec.buzz || null, dest: rec.dest, q: !!rec.q,
+    deleted: false, agent: rec.agent || null, source: rec.source || null, policyReceipt: rec.policyReceipt || null })
   // Keyed lowercase to match agentAuthoredBy's read (:972). A raw write against a lowercasing read
   // fails closed silently on any uppercase id — return-lane reply/echo-attribution misses. (Finding 4.)
   if (rec.buzz) stagingByBuzzId.set(String(rec.buzz).toLowerCase(), { orig: rec.id, author: rec.author, dest: rec.dest, q: !!rec.q, agent: rec.agent || null })
@@ -677,11 +681,29 @@ function recordPosted(rec, durable = false) {
     if (dirFd !== null) { try { closeSync(dirFd) } catch {} }
   }
 }
-function recordWithdrawn(id) {
+function recordWithdrawn(id, durable = false) {
   const e = postedMap.get(id)
+  const previous = e?.deleted
   if (e) e.deleted = true
-  try { appendFileSync(POSTED_MAP_PATH, JSON.stringify({ id, deleted: true }) + '\n') }
-  catch (er) { err(`A7: posted-map append failed for ${id}: ${er.message}`) }
+  let fileFd = null, dirFd = null
+  try {
+    const directory = dirname(POSTED_MAP_PATH), row = JSON.stringify({ id, deleted: true }) + '\n'
+    mkdirSync(directory, { recursive: true })
+    if (!durable) appendFileSync(POSTED_MAP_PATH, row)
+    else {
+      fileFd = openSync(POSTED_MAP_PATH, 'a', 0o600); writeFileSync(fileFd, row); fsyncSync(fileFd)
+      closeSync(fileFd); fileFd = null
+      dirFd = openSync(directory, 'r'); fsyncSync(dirFd); closeSync(dirFd); dirFd = null
+    }
+    return true
+  } catch (er) {
+    if (e) e.deleted = previous
+    err(`A7: posted-map append failed for ${id}: ${er.message}`)
+    return false
+  } finally {
+    if (fileFd !== null) { try { closeSync(fileFd) } catch {} }
+    if (dirFd !== null) { try { closeSync(dirFd) } catch {} }
+  }
 }
 // The buzz CLI's stdout carries the created event id (JSON or plain text); without it a
 // later withdrawal falls back to the follow-up-tombstone tier, so a miss is safe.
@@ -1271,21 +1293,34 @@ function unframePolicyWriterResponse(raw) {
   return raw.slice(0, -1)
 }
 
-async function processRemotePolicyRequest(sourceId, requestRaw) {
-  if (!PUB || PUB.policyWriter.mode !== 'remote-only' || policyWriterInFlight.has(sourceId)) return false
-  policyWriterInFlight.add(sourceId)
+const queuedDeletionId = requestRaw => {
+  try { return JSON.parse(requestRaw)?.operation === 'withdraw_repost' ? JSON.parse(requestRaw).evidence.deletion_event.id : null }
+  catch { return null }
+}
+const finishRemoteDeletionIfSettled = deletionId => {
+  if (!deletionId) return true
+  if (policyRequests.entries().some(({ requestRaw }) => queuedDeletionId(requestRaw) === deletionId)) return true
+  return markSeen(deletionId, true)
+}
+
+async function processRemotePolicyRequest(queueKey, requestRaw) {
+  if (!PUB || PUB.policyWriter.mode !== 'remote-only' || policyWriterInFlight.has(queueKey)) return false
+  policyWriterInFlight.add(queueKey)
   try {
     let queuedSource
     try { queuedSource = JSON.parse(requestRaw)?.evidence?.source_event } catch { queuedSource = null }
-    if (!queuedSource || queuedSource.id !== sourceId) throw new Error('queued request filename is not bound to its signed source event')
+    if (!queuedSource || policyRequestQueueKey(requestRaw) !== queueKey) throw new Error('queued request filename is not bound to its signed evidence')
     const responseRaw = unframePolicyWriterResponse(await policyWriterRunner(requestRaw, PUB.policyWriter))
-    const operation = JSON.parse(requestRaw).operation
+    const parsedRequest = JSON.parse(requestRaw), operation = parsedRequest.operation
     const sealedDirect = operation === 'sealed_direct_envelope'
+    const withdrawal = operation === 'withdraw_repost'
     const sealedRecipient = sealedDirect
       ? queuedSource.tags.filter(tag => tag[0] === 'p' && tag.length === 2).map(tag => tag[1]).find(pubkey => RECIPIENTS[pubkey])
       : null
-    const expectedChannel = sealedDirect ? RECIPIENTS[sealedRecipient]?.inbox
-      : operation === 'standing_trusted_reply' ? PUB.inbox : PUB.staging
+    const withdrawalEntry = withdrawal ? postedMap.get(queuedSource.id) : null
+    const expectedChannel = withdrawal ? withdrawalEntry?.dest
+      : sealedDirect ? RECIPIENTS[sealedRecipient]?.inbox
+        : operation === 'standing_trusted_reply' ? PUB.inbox : PUB.staging
     if (!expectedChannel) throw new Error('policy operation has no locally pinned destination')
     const quarantined = operation === 'quarantine_header'
     const result = verifyPolicyResponse(responseRaw, {
@@ -1293,7 +1328,7 @@ async function processRemotePolicyRequest(sourceId, requestRaw) {
       endpointAuthority: PUB.policyWriter.endpointAuthority,
     })
     if (!result.terminal) {
-      err(`PUBLIC policy[${result.status}]: ${sourceId.slice(0, 12)}… remains owed`)
+      err(`PUBLIC policy[${result.status}]: ${queueKey.slice(0, 12)}… remains owed`)
       return false
     }
     if (result.result === 'accepted') {
@@ -1301,31 +1336,42 @@ async function processRemotePolicyRequest(sourceId, requestRaw) {
       // The off-box service has already submitted this event. Before retiring the debt, make the
       // independent tripwire and withdrawal records crash-durable, then commit source dedup. Any
       // local persistence failure leaves the exact request queued for byte-identical replay.
-      if (!journalSend(result.buzzEventId, { kind: 9, dest: expectedChannel, lane: sealedDirect ? 'sealed-policy' : 'public-policy' }, true)) return false
+      if (!journalSend(result.buzzEventId, { kind: withdrawal ? 5 : 9, dest: expectedChannel,
+        lane: withdrawal ? 'withdraw-policy' : sealedDirect ? 'sealed-policy' : 'public-policy' }, true)) return false
+      if (withdrawal) {
+        if (!recordWithdrawn(source.id, true)) return false
+        policyRequests.remove(queueKey)
+        if (!finishRemoteDeletionIfSettled(parsedRequest.evidence.deletion_event.id)) return false
+        log(`A7 policy[accepted] -> ${expectedChannel}: withdrew ${source.id.slice(0, 12)}… (Buzz kind5 ${result.buzzEventId.slice(0, 12)}…)`)
+        return true
+      }
       if (sealedDirect) {
         if (!markSeen(source.id, true)) return false
-        policyRequests.remove(sourceId)
+        policyRequests.remove(queueKey)
         markLatency(source.id, 'sealed.forwarded', Date.now(), 0)
-        log(`SEALED policy[accepted] -> ${expectedChannel}: 1059 ${sourceId.slice(0, 12)}… (Buzz ${result.buzzEventId.slice(0, 12)}…)`)
+        log(`SEALED policy[accepted] -> ${expectedChannel}: 1059 ${queueKey.slice(0, 12)}… (Buzz ${result.buzzEventId.slice(0, 12)}…)`)
         return true
       }
       if (!recordPosted({ id: source.id, author: source.pubkey, buzz: result.buzzEventId,
-        dest: expectedChannel, q: quarantined, ts: Math.floor(Date.now() / 1000), agent: null }, true)) return false
+        dest: expectedChannel, q: quarantined, ts: Math.floor(Date.now() / 1000), agent: null,
+        source, policyReceipt: result.receipt }, true)) return false
       if (!markSeen(source.id, true)) return false
       bumpPubWatermark(clampCreated(source.created_at, Math.floor(Date.now() / 1000)).clamped)
-      policyRequests.remove(sourceId)
-      log(`PUBLIC policy[accepted] -> ${quarantined ? 'STAGING' : 'inbox'} ${expectedChannel}: kind1 ${sourceId.slice(0, 12)}… (Buzz ${result.buzzEventId.slice(0, 12)}…)`)
+      policyRequests.remove(queueKey)
+      log(`PUBLIC policy[accepted] -> ${quarantined ? 'STAGING' : 'inbox'} ${expectedChannel}: kind1 ${queueKey.slice(0, 12)}… (Buzz ${result.buzzEventId.slice(0, 12)}…)`)
       return true
     }
-    if (!markSeen(sourceId, true)) return false
-    policyRequests.remove(sourceId)
-    err(`PUBLIC policy[${result.result}]: ${sourceId.slice(0, 12)}… ${result.result === 'ambiguous' ? 'signed terminal ambiguity requires operator inspection' : 'terminal refusal'}; no local fallback`)
+    policyRequests.remove(queueKey)
+    if (withdrawal) {
+      if (!finishRemoteDeletionIfSettled(parsedRequest.evidence.deletion_event.id)) return false
+    } else if (!markSeen(queuedSource.id, true)) return false
+    err(`PUBLIC policy[${result.result}]: ${queueKey.slice(0, 12)}… ${result.result === 'ambiguous' ? 'signed terminal ambiguity requires operator inspection' : 'terminal refusal'}; no local fallback`)
     return true
   } catch (error) {
-    err(`PUBLIC policy[unavailable]: ${sourceId.slice(0, 12)}… ${String(error?.message || 'unavailable').slice(0, 180)} — remains owed`)
+    err(`PUBLIC policy[unavailable]: ${queueKey.slice(0, 12)}… ${String(error?.message || 'unavailable').slice(0, 180)} — remains owed`)
     return false
   } finally {
-    policyWriterInFlight.delete(sourceId)
+    policyWriterInFlight.delete(queueKey)
   }
 }
 
@@ -1638,6 +1684,28 @@ function routeDelete(ev) {
   rlDeletes.push(nowMs)
   if (FORWARD_MODE !== 'buzz') {
     for (const a of acts) log(`A7[dryrun] would withdraw ${a.id.slice(0, 12)}… (buzz ${a.entry.buzz ? a.entry.buzz.slice(0, 12) + '…' : 'unknown'}) per kind5 ${ev.id.slice(0, 12)}…`)
+    return
+  }
+  if (PUB.policyWriter.mode === 'remote-only' && PUB.policyWriter.operations.includes('withdraw_repost')) {
+    const prepared = []
+    for (const { id, entry } of acts) {
+      if (!entry.source || !entry.policyReceipt) {
+        err(`A7 policy[hold]: ${id.slice(0, 12)}… predates signed source/receipt persistence — no local fallback`)
+        return
+      }
+      try {
+        const requestRaw = buildWithdrawRepostPolicyRequest(entry.source, ev, entry.policyReceipt, {
+          policyInstance: PUB.policyWriter.policyInstance, catalogueVersion: PUB.policyWriter.catalogueVersion,
+        })
+        prepared.push({ key: policyRequestQueueKey(requestRaw), requestRaw })
+      } catch (error) {
+        err(`A7 policy[hold]: ${id.slice(0, 12)}… ${error.message} — no local fallback`)
+        return
+      }
+    }
+    try { for (const item of prepared) policyRequests.enqueue(item.key, item.requestRaw) }
+    catch (error) { err(`A7 policy[queue-failed]: kind5 ${ev.id.slice(0, 12)}… ${error.message} — held before dispatch`); return }
+    for (const item of prepared) void processRemotePolicyRequest(item.key, item.requestRaw)
     return
   }
   markSeen(ev.id) // A2 discipline: commit before dispatch — a bounce can't re-run the withdrawal
