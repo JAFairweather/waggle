@@ -22,15 +22,19 @@ const posterSk = generateSecretKey(), poster = getPublicKey(posterSk), ownerSk =
 const signature = bytesToHex(schnorr.sign(sha256(utf8ToBytes(`nostr:agent-auth:${poster}:`)), ownerSk))
 const recoveryPath = join(root, 'recovery.secret')
 writeFileSync(recoveryPath, 'recovery_secret_0123456789abcdef\n', { mode: 0o600 })
+const directRecipient = getPublicKey(generateSecretKey())
 const configValue = { version: 1, policy_instance: 'jaf-hive', catalogue_version: 'c'.repeat(64),
   staging_channel: 'a8186b53-537d-46ad-a7e7-b6486c58970e', inbox_channel: 'a8186b53-537d-46ad-a7e7-b6486c58970e',
-  watched_event_ids: ['d'.repeat(64)], trusted_repliers: [], approver_mention: '',
+  watched_event_ids: ['d'.repeat(64)], trusted_repliers: [],
+  recipient_routes: { [directRecipient]: { name: 'Codex Test', inbox: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' } }, approver_mention: '',
   poster_pubkey: poster, auth_tag: ['auth', owner, '', signature], endpoint: 'https://hive.example/events',
   journal_path: join(root, 'journal'), recovery_secret_file: recoveryPath }
 const configPath = join(root, 'policy.json')
 writeFileSync(configPath, `${JSON.stringify(configValue)}\n`, { mode: 0o600 })
 const config = loadBuzzPolicyConfig(configPath)
 t('a mode-0600 fixed config creates an internal artifact policy', config.policy_instance === 'jaf-hive' && config.artifactPolicy.posterPubkey === poster)
+t('direct recipient routes are closed, validated, and frozen policy state',
+  config.recipient_routes[directRecipient].name === 'Codex Test' && Object.isFrozen(config.recipient_routes[directRecipient]))
 t('the policy-host recovery secret is loaded only from its private file', config.recoverySecret === 'recovery_secret_0123456789abcdef')
 const credentialConfigPath = join(root, 'credential-policy.json')
 const { recovery_secret_file: _omitted, ...credentialConfig } = configValue
@@ -42,11 +46,11 @@ const ordinaryConfig = loadBuzzPolicyConfig(configPath, { WAGGLE_POLICY_RECOVERY
 t('ordinary ingress neither loads nor retains operator recovery authority',
   !Object.hasOwn(ordinaryConfig, 'recoverySecret') && !Object.hasOwn(ordinaryConfig, 'recovery_secret_file'))
 const legacyConfigPath = join(root, 'legacy-policy.json')
-const { inbox_channel: _legacyInbox, trusted_repliers: _legacyTrust, ...legacyConfigValue } = configValue
+const { inbox_channel: _legacyInbox, trusted_repliers: _legacyTrust, recipient_routes: _legacyRoutes, ...legacyConfigValue } = configValue
 writeFileSync(legacyConfigPath, `${JSON.stringify(legacyConfigValue)}\n`, { mode: 0o600 })
 const legacyConfig = loadBuzzPolicyConfig(legacyConfigPath, {}, { requireRecovery: false })
 t('an installed quarantine-only policy remains compatible and fails closed for the new family',
-  legacyConfig.inbox_channel === null && legacyConfig.trusted_repliers.length === 0)
+  legacyConfig.inbox_channel === null && legacyConfig.trusted_repliers.length === 0 && Object.keys(legacyConfig.recipient_routes).length === 0)
 
 const source = JSON.parse(JSON.stringify(finalizeEvent({ kind: 1, created_at: now - 1, tags: [['e', 'd'.repeat(64)]], content: 'wisdom' }, generateSecretKey())))
 const raw = canonicalJson({ version: 1, policy_instance: 'jaf-hive', operation: 'quarantine_header', catalogue_version: 'c'.repeat(64), observed_at: now, evidence: { source_event: source } })
@@ -65,16 +69,16 @@ const shadowConfigPath = join(root, 'shadow-policy.json')
 const shadowConfigValue = { version: 1, policy_instance: configValue.policy_instance,
   catalogue_version: configValue.catalogue_version, staging_channel: configValue.staging_channel,
   inbox_channel: configValue.inbox_channel, watched_event_ids: configValue.watched_event_ids,
-  trusted_repliers: configValue.trusted_repliers, approver_mention: configValue.approver_mention,
+  trusted_repliers: configValue.trusted_repliers, recipient_routes: configValue.recipient_routes, approver_mention: configValue.approver_mention,
   poster_pubkey: configValue.poster_pubkey, auth_tag: configValue.auth_tag }
 writeFileSync(shadowConfigPath, `${JSON.stringify(shadowConfigValue)}\n`, { mode: 0o600 })
 const shadowConfig = loadBuzzPolicyShadowConfig(shadowConfigPath)
 const legacyShadowPath = join(root, 'legacy-shadow-policy.json')
-const { inbox_channel: _legacyShadowInbox, trusted_repliers: _legacyShadowTrust, ...legacyShadowValue } = shadowConfigValue
+const { inbox_channel: _legacyShadowInbox, trusted_repliers: _legacyShadowTrust, recipient_routes: _legacyShadowRoutes, ...legacyShadowValue } = shadowConfigValue
 writeFileSync(legacyShadowPath, `${JSON.stringify(legacyShadowValue)}\n`, { mode: 0o600 })
 const legacyShadow = loadBuzzPolicyShadowConfig(legacyShadowPath)
 t('an installed quarantine-only shadow policy remains compatible and closed to standing replies',
-  legacyShadow.inbox_channel === null && legacyShadow.trusted_repliers.length === 0)
+  legacyShadow.inbox_channel === null && legacyShadow.trusted_repliers.length === 0 && Object.keys(legacyShadow.recipient_routes).length === 0)
 const shadowTime = now + 7, shadowOutput = runBuzzPolicyShadow(raw, shadowConfig, { now: shadowTime })
 const shadowResult = JSON.parse(shadowOutput)
 t('derive-only shadow returns one canonical comparison record', shadowOutput === `${canonicalJson(shadowResult)}\n` &&

@@ -7,7 +7,7 @@ import { verifyEvent } from 'nostr-tools/pure'
 import { npubEncode } from 'nostr-tools/nip19'
 
 export const BUZZ_POLICY_VERSION = 1
-export const BUZZ_POLICY_OPERATIONS = Object.freeze(['quarantine_header', 'standing_trusted_reply'])
+export const BUZZ_POLICY_OPERATIONS = Object.freeze(['quarantine_header', 'standing_trusted_reply', 'sealed_direct_envelope'])
 const HEX64 = /^[0-9a-f]{64}$/
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const EVENT_KEYS = new Set(['id', 'pubkey', 'created_at', 'kind', 'tags', 'content', 'sig'])
@@ -19,6 +19,7 @@ const REQUEST_KEYS = new Set(['version', 'policy_instance', 'operation', 'catalo
 const EVIDENCE_KEYS = Object.freeze({
   quarantine_header: new Set(['source_event']),
   standing_trusted_reply: new Set(['source_event']),
+  sealed_direct_envelope: new Set(['source_event']),
 })
 const POLICY_REQUESTS = new WeakSet()
 const POLICY_DECISIONS = new WeakSet()
@@ -51,13 +52,13 @@ export function canonicalJson(value, seen = new Set()) {
   return result
 }
 
-function verifyWireEvent(event) {
+function verifyWireEvent(event, expectedKind = 1) {
   exactKeys(event, EVENT_KEYS, 'source_event')
   if (!HEX64.test(String(event.id || '')) || !HEX64.test(String(event.pubkey || '')) ||
       !/^[0-9a-f]{128}$/.test(String(event.sig || '')) || !Number.isSafeInteger(event.created_at) ||
       event.created_at < 0 || event.created_at > MAX_RENDERABLE_UNIX_SECONDS ||
-      event.kind !== 1 || !Array.isArray(event.tags) ||
-      typeof event.content !== 'string') fail('source_event is not a complete kind:1 wire event')
+      event.kind !== expectedKind || !Array.isArray(event.tags) ||
+      typeof event.content !== 'string') fail(`source_event is not a complete kind:${expectedKind} wire event`)
   if (!event.tags.every(tag => Array.isArray(tag) && tag.every(value => typeof value === 'string'))) fail('source_event has malformed tags')
   let valid = false
   try { valid = verifyEvent(JSON.parse(JSON.stringify(event))) } catch { valid = false }
@@ -83,7 +84,7 @@ export function decodePolicyRequest(raw, {
   if (!BUZZ_POLICY_OPERATIONS.includes(request.operation)) fail('unsupported operation')
   if (!Number.isSafeInteger(request.observed_at) || request.observed_at < now - maxObservationAge || request.observed_at > now + maxFutureSkew) fail('observed_at is outside the freshness window')
   exactKeys(request.evidence, EVIDENCE_KEYS[request.operation], 'evidence')
-  verifyWireEvent(request.evidence.source_event)
+  verifyWireEvent(request.evidence.source_event, request.operation === 'sealed_direct_envelope' ? 1059 : 1)
   Object.freeze(request)
   POLICY_REQUESTS.add(request)
   return request
@@ -126,6 +127,12 @@ export function standingReplySlotsFromSource(sourceEvent) {
   })
 }
 
+export function sealedDirectSlotsFromSource(sourceEvent, { recipientName } = {}) {
+  const source = verifyWireEvent(JSON.parse(JSON.stringify(sourceEvent)), 1059)
+  if (typeof recipientName !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9 _.\-]{0,63}$/.test(recipientName)) fail('recipient name is invalid')
+  return Object.freeze({ name: recipientName, channel: undefined, wrapJson: canonicalJson(source) })
+}
+
 // First operation family: a signed public reply to one of the policy service's own watched
 // event ids.  The requester cannot pick the route, state, display name, body, or attribution;
 // all are derived from the complete signed source and policy-owned state.
@@ -162,6 +169,28 @@ export function decideStandingTrustedReply(request, { inboxChannel, watchedEvent
     template: 'released_post',
     dest: channel(inboxChannel),
     slots: standingReplySlotsFromSource(source),
+  })
+  POLICY_DECISIONS.add(decision)
+  DECISION_REQUESTS.set(decision, request)
+  return decision
+}
+
+// A direct NIP-59 gift wrap names exactly one recipient in its signed outer p-tag. The policy
+// host, not the bridge, maps that identity to a fixed Buzz inbox and display handle. Channel-plane
+// wraps are deliberately outside this operation: their p-tag is a decoy and they route by author.
+export function decideSealedDirectEnvelope(request, { recipientRoutes = {} } = {}) {
+  if (!request || !POLICY_REQUESTS.has(request)) fail('an internally verified policy request is required')
+  if (request.operation !== 'sealed_direct_envelope') fail('wrong operation for sealed direct decision')
+  const source = request.evidence.source_event
+  const recipients = source.tags.filter(tag => tag[0] === 'p' && tag.length === 2 && HEX64.test(String(tag[1] || '').toLowerCase()))
+  if (recipients.length !== 1) fail('direct gift wrap must name exactly one recipient')
+  const recipient = recipients[0][1].toLowerCase()
+  const route = recipientRoutes && recipientRoutes[recipient]
+  if (!route || typeof route !== 'object' || Array.isArray(route)) fail('recipient is not in the policy roster')
+  const decision = Object.freeze({
+    template: 'sealed_envelope',
+    dest: channel(route.inbox),
+    slots: sealedDirectSlotsFromSource(source, { recipientName: route.name }),
   })
   POLICY_DECISIONS.add(decision)
   DECISION_REQUESTS.set(decision, request)

@@ -120,6 +120,11 @@ identifier, and the recipient identity that caused the bridge to observe it. The
 the wrap and resolves both Buzz destination and recipient from its own roster and channel policy.
 It renders the envelope bytes itself; host-rendered explanatory prose is never accepted.
 
+The first shipped sealed sub-family is `sealed_direct_envelope`: exactly one valid outer `p` tag
+must name a recipient in the policy host's fixed roster. It deliberately refuses channel-plane
+wraps, whose outer `p` tag is a decoy and whose route is author-bound. Those remain local until the
+policy host can independently validate the complete Concord plane chain described below.
+
 `channel_plaintext` additionally carries the outer channel wrap and the encrypted inner chain plus
 the channel epoch/derivation reference. Because a body/author pair is forgeable, the service must
 possess or obtain the same channel-plane capability and independently open and validate every
@@ -265,6 +270,9 @@ that the Buzz poster key is off the bridge host:
    local clock clamping are excluded from authored bytes; one captured `observed_at` will supply the
    unsigned kind:9 timestamp to both paths during the shadow transaction.
 4. Enable remote-only for one family. Failure must hold; it must never fall back to the local key.
+   The bridge configuration names an explicit closed `operations` list. Omitting that list remains
+   backwards-compatible with only `quarantine_header` and `standing_trusted_reply`; a newly shipped
+   family cannot silently enter remote-only mode before its policy state is installed.
 5. Prove a live post and withdrawal, verify the signed receipts, then repeat for every family.
 6. Remove `BUZZ_PRIVATE_KEY` and the Buzz CLI write capability from both waggle lanes.
 7. Prove the bridge host cannot reach Bunker, cannot invoke any signing method, and cannot submit a
