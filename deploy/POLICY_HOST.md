@@ -160,6 +160,33 @@ uses the forced account with no remote command, disables ambient identities, TTY
 and sends only the canonical evidence packet on stdin. Do not use a management key or a mutable
 user `known_hosts` file for either path.
 
+After the enforced-shadow rehearsal is clean, configure `public.policy_writer.mode` as
+`"remote-only"` for `quarantine_header`, using the distinct `waggle-policy-ingress` key and forced
+account. The bridge durably stores the exact canonical request under `data/policy-requests/` before
+opening SSH. Held, ambiguous, malformed, unavailable, or unverifiable responses stay there and are
+retried byte-for-byte every fifteen seconds and after restart. Only a poster-signed terminal receipt
+bound to the exact request, staging channel, and endpoint can retire that debt. There is no attempt
+limit and no local signer fallback.
+
+The bridge's writer configuration is intentionally separate from `policy_shadow`:
+
+```json
+{
+  "mode": "remote-only",
+  "policy_instance": "jaf-hive",
+  "catalogue_version": "<64 hex>",
+  "poster_pubkey": "<64 hex>",
+  "endpoint_authority": "nave.communities.buzz.xyz",
+  "ssh_host": "<policy host>",
+  "ssh_user": "waggle-policy-ingress",
+  "ssh_identity_file": "/etc/waggle/policy-client/writer_ed25519",
+  "ssh_known_hosts_file": "/etc/waggle/policy-client/known_hosts"
+}
+```
+
+Do not remove the local poster credential yet: this cutover covers quarantine headers only. The
+remaining operation families must move before the bridge host can lose all Buzz write authority.
+
 ## 6. Automatic releases after bootstrap
 
 The trust bootstrap above is the only manual deployment. Do **not** give GitHub Actions a root SSH

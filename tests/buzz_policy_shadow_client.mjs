@@ -7,7 +7,7 @@ import { canonicalJson } from '../src/buzz_policy_core.mjs'
 import { createProjectionPolicy } from '../src/buzz_policy_projection.mjs'
 import { deriveBuzzPolicyShadow } from '../src/buzz_policy_shadow.mjs'
 import { compareQuarantineShadow, parseShadowResponse } from '../src/buzz_policy_shadow_client.mjs'
-import { runPolicyShadowSsh } from '../src/egress.mjs'
+import { runPolicyShadowSsh, runPolicyWriterSsh } from '../src/egress.mjs'
 
 let fails = 0
 const ok = (name, pass) => { console.log(`${pass ? 'ok  ' : 'FAIL'} — ${name}`); if (!pass) fails++ }
@@ -71,6 +71,14 @@ await refuses('host strings cannot become SSH options', () => runPolicyShadowSsh
 await refuses('a group-readable forced-command key is refused before SSH', () => runPolicyShadowSsh(requestRaw,
   { host: 'policy.example', identityFile: '/shadow', knownHostsFile: '/known' }, exec,
   path => ({ mode: path === '/shadow' ? 0o100640 : 0o100444, isFile: () => true, isSymbolicLink: () => false })), /private regular/)
+
+stdin = ''; invocation = null
+const live = await runPolicyWriterSsh(requestRaw, { host: 'policy.example', identityFile: '/etc/waggle/policy-client/writer_ed25519',
+  knownHostsFile: '/etc/waggle/policy-client/known_hosts' }, exec, inspect)
+ok('live writer uses a distinct forced principal with the same closed SSH boundary',
+  invocation.args.at(-1) === 'waggle-policy-ingress@policy.example' && invocation.args.includes('IdentitiesOnly=yes') &&
+  invocation.args.includes('ClearAllForwardings=yes') && invocation.options.env.PATH === '/usr/bin:/bin')
+ok('live writer sends only the exact canonical request and returns only response bytes', stdin === requestRaw && live === remoteRaw)
 ok('request digest fixture is stable', remote.request_digest === createHash('sha256').update(requestRaw).digest('hex'))
 
 console.log(fails ? `\nbuzz_policy_shadow_client: ${fails} FAILED` : '\nbuzz_policy_shadow_client: all checks passed')

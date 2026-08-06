@@ -404,6 +404,35 @@ export function runPolicyShadowSsh(requestRaw, {
   })
 }
 
+// Live off-box policy writer transport. This is deliberately a separate capability from the
+// derive-only shadow: another forced account, another key, and another fixed default principal.
+// It returns only canonical policy-response bytes; the bridge independently verifies the signed
+// receipt before treating any result as terminal.
+export function runPolicyWriterSsh(requestRaw, {
+  host, user = 'waggle-policy-ingress', identityFile, knownHostsFile, timeoutMs = 20_000,
+} = {}, exec = execFile, inspect = lstatSync) {
+  const hostOk = /^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-Fa-f:]+\])$/.test(String(host || ''))
+  const userOk = /^[a-z_][a-z0-9_-]{0,31}$/.test(String(user || ''))
+  if (!hostOk || !userOk || !String(identityFile || '').startsWith('/') || !String(knownHostsFile || '').startsWith('/')) reject('policy writer ssh', 'fixed boundary configuration is invalid')
+  let identity, knownHosts
+  try { identity = inspect(identityFile); knownHosts = inspect(knownHostsFile) } catch { reject('policy writer ssh', 'credential files are unavailable') }
+  if (!identity.isFile() || identity.isSymbolicLink() || (identity.mode & 0o077)) reject('policy writer ssh', 'identity must be a private regular non-symlink file')
+  if (!knownHosts.isFile() || knownHosts.isSymbolicLink() || (knownHosts.mode & 0o022)) reject('policy writer ssh', 'known-hosts must be a non-writable regular non-symlink file')
+  const args = ['-F', '/dev/null', '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes',
+    '-o', `UserKnownHostsFile=${knownHostsFile}`, '-o', 'GlobalKnownHostsFile=/dev/null',
+    '-o', 'ClearAllForwardings=yes', '-o', 'ConnectTimeout=10',
+    '-i', identityFile, `${user}@${host}`]
+  return new Promise((resolve, rejectP) => {
+    const child = exec('/usr/bin/ssh', args, { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 256 * 1024,
+      env: { PATH: '/usr/bin:/bin', LANG: 'C' } }, (error, stdout) => {
+      if (error) return rejectP(new Error('policy writer unavailable'))
+      resolve(String(stdout || ''))
+    })
+    child.stdin.on('error', () => {})
+    child.stdin.end(requestRaw)
+  })
+}
+
 // --- Reads --------------------------------------------------------------------------------
 //
 // Read verbs author nothing and are out of A3's scope for what waggle can SAY — but they live

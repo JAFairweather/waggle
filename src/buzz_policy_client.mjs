@@ -9,6 +9,8 @@ const HEX64 = /^[0-9a-f]{64}$/
 const HEX128 = /^[0-9a-f]{128}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+const HOST = /^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-Fa-f:]+\])$/
+const USER = /^[a-z_][a-z0-9_-]{0,31}$/
 const EVENT_KEYS = new Set(['id', 'pubkey', 'created_at', 'kind', 'tags', 'content', 'sig'])
 const REQUEST_KEYS = new Set(['version', 'policy_instance', 'operation', 'catalogue_version', 'observed_at', 'evidence'])
 const EVIDENCE_KEYS = new Set(['source_event'])
@@ -50,6 +52,16 @@ const verifyRequestShape = request => {
       !HEX64.test(String(request.catalogue_version || '')) || !Number.isSafeInteger(request.observed_at) || request.observed_at < 0) fail('request binding is invalid')
   verifySourceEvent(request.evidence.source_event)
   return request
+}
+
+export function validatePolicyWriterConfig(config) {
+  if (!config || config.mode !== 'remote-only' || !ID.test(String(config.policyInstance || '')) ||
+      !HEX64.test(String(config.catalogueVersion || '')) || !HEX64.test(String(config.posterPubkey || '')) ||
+      typeof config.endpointAuthority !== 'string' || !config.endpointAuthority || config.endpointAuthority.length > 255 ||
+      /[\s/]/.test(config.endpointAuthority) || !HOST.test(String(config.host || '')) || !USER.test(String(config.user || '')) ||
+      typeof config.identityFile !== 'string' || !config.identityFile.startsWith('/') ||
+      typeof config.knownHostsFile !== 'string' || !config.knownHostsFile.startsWith('/')) fail('policy writer configuration is invalid')
+  return config
 }
 
 export function buildQuarantinePolicyRequest(sourceEvent, {

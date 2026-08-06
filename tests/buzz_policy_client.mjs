@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
 import { canonicalJson } from '../src/buzz_policy_core.mjs'
-import { buildQuarantinePolicyRequest, verifyPolicyResponse } from '../src/buzz_policy_client.mjs'
+import { buildQuarantinePolicyRequest, verifyPolicyResponse, validatePolicyWriterConfig } from '../src/buzz_policy_client.mjs'
 
 let fails = 0
 const ok = (name, cond) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${name}`); if (!cond) fails++ }
@@ -20,6 +20,12 @@ const fields = Object.freeze({ version: 1, policy_instance: policy, operation: '
 const receipt = wire(finalizeEvent({ kind: 30078, created_at: 1020, tags: [['d', `waggle-policy:${key}`]], content: canonicalJson(fields) }, signer))
 const response = canonicalJson({ status: 'terminal', result: 'accepted', receipt: canonicalJson(receipt) })
 const expected = { requestRaw, posterPubkey: poster, expectedChannel: channel, endpointAuthority: endpoint }
+const writerConfig = { mode: 'remote-only', policyInstance: policy, catalogueVersion: catalogue,
+  posterPubkey: poster, endpointAuthority: endpoint, host: 'policy.example', user: 'waggle-policy-ingress',
+  identityFile: '/etc/waggle/writer', knownHostsFile: '/etc/waggle/known_hosts' }
+ok('a closed remote-only writer configuration is accepted', validatePolicyWriterConfig(writerConfig) === writerConfig)
+refuses('a relative writer identity path is refused at startup', () => validatePolicyWriterConfig({ ...writerConfig, identityFile: 'writer' }))
+refuses('an SSH-option-shaped writer host is refused at startup', () => validatePolicyWriterConfig({ ...writerConfig, host: '-oProxyCommand=evil' }))
 
 const accepted = verifyPolicyResponse(response, expected)
 ok('an exact signed receipt closes the exact request', accepted.terminal && accepted.result === 'accepted' && accepted.buzzEventId === 'b'.repeat(64))
