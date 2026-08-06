@@ -82,7 +82,9 @@ Create `/etc/waggle-policy/policy.json` as `root:root` mode `0600`:
   "policy_instance": "jaf-hive",
   "catalogue_version": "<64-hex reviewed release/catalogue digest>",
   "staging_channel": "<Buzz channel UUID>",
+  "inbox_channel": "<Buzz hive inbox UUID>",
   "watched_event_ids": ["<64-hex signed Nostr event id>"],
+  "trusted_repliers": ["<64-hex Nostr author allowed to reply directly>"],
   "approver_mention": "",
   "poster_pubkey": "<64-hex Buzz poster pubkey controlled by Bunker>",
   "auth_tag": ["auth", "<owner pubkey>", "<conditions>", "<owner Schnorr signature>"],
@@ -93,7 +95,7 @@ Create `/etc/waggle-policy/policy.json` as `root:root` mode `0600`:
 
 Create `/etc/waggle-policy/shadow-policy.json` as `root:root` mode `0600`. It repeats only the
 projection fields—`version`, `policy_instance`, `catalogue_version`, `staging_channel`,
-`watched_event_ids`, `approver_mention`, `poster_pubkey`, and `auth_tag`. It must not contain
+`inbox_channel`, `watched_event_ids`, `trusted_repliers`, `approver_mention`, `poster_pubkey`, and `auth_tag`. It must not contain
 `endpoint`, `journal_path`, Bunker information, recovery state, or any credential path.
 
 Install the Bunker pairing as two separate `root:root` mode `0600` regular files—never
@@ -161,7 +163,7 @@ and sends only the canonical evidence packet on stdin. Do not use a management k
 user `known_hosts` file for either path.
 
 After the enforced-shadow rehearsal is clean, configure `public.policy_writer.mode` as
-`"remote-only"` for `quarantine_header`, using the distinct `waggle-policy-ingress` key and forced
+`"remote-only"` for `quarantine_header` and `standing_trusted_reply`, using the distinct `waggle-policy-ingress` key and forced
 account. The bridge durably stores the exact canonical request under `data/policy-requests/` before
 opening SSH. Held, ambiguous, malformed, unavailable, or unverifiable responses stay there and are
 retried byte-for-byte every fifteen seconds and after restart. Only a poster-signed terminal receipt
@@ -184,7 +186,9 @@ The bridge's writer configuration is intentionally separate from `policy_shadow`
 }
 ```
 
-Do not remove the local poster credential yet: this cutover covers quarantine headers only. The
+Do not remove the local poster credential yet: this cutover covers quarantine headers and standing
+trusted replies only. Mirrored feeds, live-grant participants, and other operation families remain
+separate policy decisions and must not be admitted through the standing-reply rule. The
 remaining operation families must move before the bridge host can lose all Buzz write authority.
 
 ## 6. Automatic releases after bootstrap

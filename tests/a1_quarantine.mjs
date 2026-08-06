@@ -17,7 +17,7 @@
 //
 // Run: node tests/a1_quarantine.mjs   (exit 0 = pass, 1 = fail)
 
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
@@ -28,12 +28,22 @@ process.env.FORWARD_MODE = 'dryrun'     // log routing decision, send nothing, m
 process.env.SEEN_PATH = join(tmp, 'seen.log')
 process.env.PUB_WATERMARK_PATH = join(tmp, 'watermark')
 
+// The regression owns its complete routing fixture. A clean checkout must not depend on an
+// operator's untracked config.json merely to run the canonical test command.
+const fixtureInbox = '11111111-1111-4111-8111-111111111111'
+const fixtureStaging = '22222222-2222-4222-8222-222222222222'
+const fixtureWatched = 'd'.repeat(64)
+process.env.CONFIG_PATH = join(tmp, 'config.json')
+writeFileSync(process.env.CONFIG_PATH, JSON.stringify({ relays: [], recipients: [], public: {
+  relays: [], inbox: fixtureInbox, staging_inbox: fixtureStaging,
+  watch_authors: ['a'.repeat(64)], watch_events: [fixtureWatched], approvers: [],
+} }))
+
 const { routePublic, PUB } = await import('../src/bridge.mjs')
 
-// Ground the test in the live config so a config drift (e.g. staging removed) fails it.
-const COMMUNITY = PUB.inbox                 // real community channel
-const STAGING = PUB.staging                 // real quarantine channel
-const WATCHED_NOTE = PUB.events[0]          // one of our own published notes
+const COMMUNITY = PUB.inbox
+const STAGING = PUB.staging
+const WATCHED_NOTE = PUB.events[0]
 
 if (!STAGING) { console.error('FAIL: no staging channel configured — A1 default-closes to HOLD, cannot demo quarantine'); process.exit(1) }
 if (!PUB.authors.length || !WATCHED_NOTE) { console.error('FAIL: config missing watch_authors/watch_events'); process.exit(1) }
@@ -64,7 +74,7 @@ routePublic(a)
 const b = note(strangerSk, { tags: [['e', WATCHED_NOTE]], content: 'stranger reply' })
 routePublic(b)
 // Case C — unknown key, no #e to a watched note, not a watched author. Dropped (no route).
-const c = note(strangerSk, { tags: [['e', 'd'.repeat(64)]], content: 'unrelated stranger' })
+const c = note(strangerSk, { tags: [['e', 'e'.repeat(64)]], content: 'unrelated stranger' })
 routePublic(c)
 // Case D — FORGERY. A note genuinely signed by the stranger, then re-labelled with the watched
 // author's key. JSON round-trip because that is how a relay delivers it — and because nostr-tools

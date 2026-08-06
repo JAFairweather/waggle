@@ -3,7 +3,7 @@
 // projection at the shadow-owned evaluation time; no signer, receipt, endpoint, or event crosses
 // this boundary.
 import { createHash } from 'node:crypto'
-import { canonicalJson, decodePolicyRequest, decideQuarantineHeader } from './buzz_policy_core.mjs'
+import { canonicalJson, decodePolicyRequest, decideQuarantineHeader, decideStandingTrustedReply } from './buzz_policy_core.mjs'
 import { buildBuzzEvent, createProjectionPolicy, unsignedEventSha256 } from './buzz_policy_projection.mjs'
 
 const HEX64 = /^[0-9a-f]{64}$/
@@ -55,8 +55,9 @@ export function parseShadowResponse(raw, { requestRaw, policyInstance, catalogue
   return Object.freeze(response)
 }
 
-export function compareQuarantineShadow(requestRaw, rawResponse, {
-  policyInstance, catalogueVersion, stagingChannel, watchedEventIds, approverMention = '',
+export function comparePolicyShadow(requestRaw, rawResponse, {
+  policyInstance, catalogueVersion, stagingChannel, inboxChannel, watchedEventIds,
+  trustedRepliers = [], approverMention = '',
   posterPubkey, authTag,
 } = {}) {
   const remote = parseShadowResponse(rawResponse, { requestRaw, policyInstance, catalogueVersion })
@@ -66,7 +67,9 @@ export function compareQuarantineShadow(requestRaw, rawResponse, {
   })
   let localDecision = 'deny', localDigest = null
   try {
-    const decision = decideQuarantineHeader(request, { stagingChannel, watchedEventIds, approverMention })
+    const decision = request.operation === 'quarantine_header'
+      ? decideQuarantineHeader(request, { stagingChannel, watchedEventIds, approverMention })
+      : decideStandingTrustedReply(request, { inboxChannel, watchedEventIds, trustedRepliers })
     const unsigned = buildBuzzEvent(decision, projectionPolicy, { now: remote.evaluation_time })
     localDecision = 'allow'
     localDigest = unsignedEventSha256(unsigned, projectionPolicy)
@@ -76,3 +79,7 @@ export function compareQuarantineShadow(requestRaw, rawResponse, {
     remoteDigest: remote.unsigned_event_sha256, localDigest,
     reason: match ? 'match' : (remote.decision !== localDecision ? 'decision-mismatch' : 'digest-mismatch') })
 }
+
+// Compatibility name for callers/tests from the first policy family. It now compares any closed
+// operation encoded in the bound request; no caller selects the evaluator independently.
+export const compareQuarantineShadow = comparePolicyShadow

@@ -26,14 +26,20 @@ export function loadBuzzPolicyConfig(path, env = process.env, { requireRecovery 
     if (String(error?.message || '').startsWith('buzz-policy-runner:')) throw error
     fail('config is not valid UTF-8 JSON')
   }
-  const configKeys = ['version', 'policy_instance', 'catalogue_version', 'staging_channel', 'watched_event_ids',
-    'approver_mention', 'poster_pubkey', 'auth_tag', 'endpoint', 'journal_path']
+  const legacyKeys = ['version', 'policy_instance', 'catalogue_version', 'staging_channel',
+    'watched_event_ids', 'approver_mention', 'poster_pubkey', 'auth_tag', 'endpoint', 'journal_path']
+  const configKeys = [...legacyKeys, 'inbox_channel', 'trusted_repliers']
   const actualKeys = Object.keys(config).sort().join(',')
-  const baseShape = [...configKeys].sort().join(','), recoveryShape = [...configKeys, 'recovery_secret_file'].sort().join(',')
-  if (actualKeys !== baseShape && actualKeys !== recoveryShape) fail('config has an invalid shape')
+  const shapes = [legacyKeys, configKeys].flatMap(keys => [keys, [...keys, 'recovery_secret_file']])
+    .map(keys => [...keys].sort().join(','))
+  if (!shapes.includes(actualKeys)) fail('config has an invalid shape')
   if (config.version !== 1 || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(config.policy_instance)) fail('config version or policy_instance is invalid')
-  if (!HEX64.test(config.catalogue_version) || !UUID.test(config.staging_channel)) fail('config catalogue or channel is invalid')
+  if (!HEX64.test(config.catalogue_version) || !UUID.test(config.staging_channel) ||
+      (config.inbox_channel != null && !UUID.test(config.inbox_channel))) fail('config catalogue or channel is invalid')
   if (!Array.isArray(config.watched_event_ids) || !config.watched_event_ids.every(id => HEX64.test(id)) || new Set(config.watched_event_ids).size !== config.watched_event_ids.length) fail('watched_event_ids are invalid')
+  if (config.trusted_repliers != null && (!Array.isArray(config.trusted_repliers) ||
+      !config.trusted_repliers.every(id => HEX64.test(id)) ||
+      new Set(config.trusted_repliers).size !== config.trusted_repliers.length)) fail('trusted_repliers are invalid')
   if (typeof config.approver_mention !== 'string' || Buffer.byteLength(config.approver_mention) > 128) fail('approver_mention is invalid')
   if (!isAbsolute(config.journal_path)) fail('journal path must be absolute')
   let recoverySecretFile = null, recoverySecret = null
@@ -44,7 +50,9 @@ export function loadBuzzPolicyConfig(path, env = process.env, { requireRecovery 
     if (!/^[A-Za-z0-9_-]{32,128}$/.test(recoverySecret)) fail('recovery secret is invalid')
   }
   const artifactPolicy = createArtifactPolicy({ posterPubkey: config.poster_pubkey, authTag: config.auth_tag, endpoint: config.endpoint })
-  const loaded = { ...config, watched_event_ids: Object.freeze([...config.watched_event_ids]), artifactPolicy }
+  const loaded = { ...config, inbox_channel: config.inbox_channel || null,
+    watched_event_ids: Object.freeze([...config.watched_event_ids]),
+    trusted_repliers: Object.freeze([...(config.trusted_repliers || [])]), artifactPolicy }
   if (requireRecovery) Object.assign(loaded, { recovery_secret_file: recoverySecretFile, recoverySecret })
   else { delete loaded.recovery_secret_file }
   return Object.freeze(loaded)
@@ -68,7 +76,8 @@ export async function runBuzzPolicyRequest(raw, config, signer, deps = {}) {
   const journal = deps.journal || new PolicyJournal(config.journal_path)
   const result = await processBuzzPolicyRequest(raw, { policyInstance: config.policy_instance,
     catalogueVersion: config.catalogue_version, stagingChannel: config.staging_channel,
-    watchedEventIds: config.watched_event_ids, approverMention: config.approver_mention,
+    inboxChannel: config.inbox_channel, watchedEventIds: config.watched_event_ids,
+    trustedRepliers: config.trusted_repliers, approverMention: config.approver_mention,
     artifactPolicy: config.artifactPolicy, journal, signer, fetchImpl: deps.fetchImpl,
     now: deps.now, nonce: deps.nonce })
   return `${canonicalJson(result)}\n`
@@ -80,7 +89,8 @@ export async function runBuzzPolicyOrphanResolution(raw, expectedClaimedAt, conf
   const journal = deps.journal || new PolicyJournal(config.journal_path, { recoverySecret: config.recoverySecret })
   const result = await resolveBuzzPolicyOrphan(raw, expectedClaimedAt, { policyInstance: config.policy_instance,
     catalogueVersion: config.catalogue_version, stagingChannel: config.staging_channel,
-    watchedEventIds: config.watched_event_ids, approverMention: config.approver_mention,
+    inboxChannel: config.inbox_channel, watchedEventIds: config.watched_event_ids,
+    trustedRepliers: config.trusted_repliers, approverMention: config.approver_mention,
     artifactPolicy: config.artifactPolicy, journal, signer, recoverySecret: config.recoverySecret, now: deps.now })
   return `${canonicalJson(result)}\n`
 }
