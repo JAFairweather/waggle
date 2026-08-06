@@ -57,8 +57,9 @@ const options = (journal, signer, extra = {}) => ({ policyInstance, catalogueVer
   } }))
   t('accepted work returns only a signed terminal receipt', first.status === 'terminal' && first.result === 'accepted' && JSON.parse(first.receipt).kind === 30078 && !('event' in first))
   t('the event, HTTP authorization, and receipt are each signed once', signed.map(x => x.kind).join(',') === '9,27235,30078')
-  const replay = await processBuzzPolicyRequest(raw, options(journal, signer, { fetchImpl: async () => { calls++; throw new Error('must not submit') } }))
-  t('a terminal replay returns byte-identical receipt without signing or network', replay.receipt === first.receipt && calls === 1 && signed.length === 3)
+  const replay = await processBuzzPolicyRequest(raw, options(journal, signer, { now: now + 3600,
+    fetchImpl: async () => { calls++; throw new Error('must not submit') } }))
+  t('a stale terminal replay returns byte-identical receipt without signing or network', replay.receipt === first.receipt && calls === 1 && signed.length === 3)
 }
 
 {
@@ -68,10 +69,24 @@ const options = (journal, signer, extra = {}) => ({ policyInstance, catalogueVer
   } }))
   t('an ambiguous submit leaves the exact event prepared', ambiguous.status === 'ambiguous' && firstJournal.get(createHash('sha256').update(canonicalJson([1, policyInstance, catalogueVersion, 'quarantine_header', [source.id], channel])).digest('hex')).status === 'prepared')
   const secondJournal = new PolicyJournal(path), secondSigner = makeSigner(); let recoveredBody = ''
-  const recovered = await processBuzzPolicyRequest(raw, options(secondJournal, secondSigner.signer, { fetchImpl: async (_url, request) => {
+  const recovered = await processBuzzPolicyRequest(raw, options(secondJournal, secondSigner.signer, { now: now + 3600, fetchImpl: async (_url, request) => {
     recoveredBody = request.body; return acceptedResponse(JSON.parse(request.body))
   } }))
-  t('restart recovery resubmits byte-identical event and never re-signs kind:9', recovered.status === 'terminal' && recoveredBody === preparedBody && secondSigner.signed.map(x => x.kind).join(',') === '27235,30078')
+  t('stale restart recovery resubmits byte-identical event and never re-signs kind:9', recovered.status === 'terminal' && recoveredBody === preparedBody && secondSigner.signed.map(x => x.kind).join(',') === '27235,30078')
+}
+
+{
+  const journal = new PolicyJournal(directory()), { signer } = makeSigner()
+  await rejects('an unseen stale request cannot create a policy claim', () => processBuzzPolicyRequest(raw,
+    options(journal, signer, { now: now + 3600, fetchImpl: async () => { throw new Error('must not fetch') } })), /freshness/)
+}
+
+{
+  const journal = new PolicyJournal(directory()), { signer } = makeSigner()
+  await processBuzzPolicyRequest(raw, options(journal, signer, { fetchImpl: async (_url, request) => acceptedResponse(JSON.parse(request.body)) }))
+  const changed = canonicalJson({ ...JSON.parse(raw), observed_at: now - 1 })
+  await rejects('a stale request cannot borrow an existing idempotency key with different bytes', () => processBuzzPolicyRequest(changed,
+    options(journal, signer, { now: now + 3600, fetchImpl: async () => { throw new Error('must not fetch') } })), /freshness/)
 }
 
 {
