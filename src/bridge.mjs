@@ -432,6 +432,8 @@ const PUB = cfg.public ? {
   controlStateCommandAt: Number(cfg.public.control_state_command_at || 0),
   watchlistCommandAt: Number(cfg.public.watchlist_command_at || 0),
   moderationCommandAt: Number(cfg.public.moderation_command_at || 0),
+  moderationCommandIds: (cfg.public.moderation_command_ids || []).map(String)
+    .filter(id => /^[0-9a-f]{64}$/i.test(id)).map(id => id.toLowerCase()),
   trustCommandAt: Number(cfg.public.trust_command_at || 0),
   policyShadow,
 } : null
@@ -1620,6 +1622,7 @@ function applyModerationCommand(st, action, commandAt, options = {}) {
 }
 
 async function applyModerationCommandSerial(st, action, commandAt, {
+  commandId,
   fetchOriginal = fetchEventById,
   publishRelease = forwardPublic,
   schedule = scheduleControlState,
@@ -1627,7 +1630,18 @@ async function applyModerationCommandSerial(st, action, commandAt, {
   nowMs = Date.now(),
 } = {}) {
   if (!st || !['approve', 'follow', 'mute'].includes(action)) return { ok: false, reason: 'invalid moderation command' }
-  if (!Number.isInteger(commandAt) || commandAt <= PUB.moderationCommandAt) return { ok: false, reason: 'superseded command' }
+  const normalizedCommandId = String(commandId || '').toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(normalizedCommandId)) return { ok: false, reason: 'invalid command id' }
+  if (!Number.isInteger(commandAt) || commandAt < PUB.moderationCommandAt) return { ok: false, reason: 'superseded command' }
+  // Nostr timestamps have one-second resolution. A timestamp-only watermark loses a second
+  // legitimate console action signed in the same second. Keep every accepted id at the newest
+  // second: duplicate relay copies remain inert, while distinct same-second decisions survive.
+  // A legacy timestamp with no id set stays closed at equality because its already-applied id is
+  // unknowable after upgrade.
+  if (commandAt === PUB.moderationCommandAt &&
+      (!PUB.moderationCommandIds.length || PUB.moderationCommandIds.includes(normalizedCommandId))) {
+    return { ok: false, reason: 'superseded command' }
+  }
   const author = String(st.author || '').toLowerCase()
   if (!/^[0-9a-f]{64}$/.test(author)) return { ok: false, reason: 'invalid quarantined author' }
   const prior = postedMap.get(st.orig)
@@ -1650,8 +1664,14 @@ async function applyModerationCommandSerial(st, action, commandAt, {
     if (action === 'follow') c.public.trusted_repliers = Array.from(new Set([...(c.public.trusted_repliers || []).map(String), author]))
     if (action === 'mute') c.public.muted_authors = Array.from(new Set([...(c.public.muted_authors || []).map(String), author]))
     c.public.moderation_command_at = commandAt
+    c.public.moderation_command_ids = commandAt === PUB.moderationCommandAt
+      ? Array.from(new Set([...PUB.moderationCommandIds, normalizedCommandId]))
+      : [normalizedCommandId]
   })) return { ok: false, reason: 'could not persist moderation command' }
 
+  PUB.moderationCommandIds = commandAt === PUB.moderationCommandAt
+    ? Array.from(new Set([...PUB.moderationCommandIds, normalizedCommandId]))
+    : [normalizedCommandId]
   PUB.moderationCommandAt = commandAt
   if (action === 'follow' && !PUB.trustedRepliers.includes(author)) PUB.trustedRepliers.push(author)
   if (action === 'mute' && !PUB.muted.includes(author)) PUB.muted.push(author)
@@ -1696,7 +1716,7 @@ async function handleCommand(m) {
   // replay watermark.
   if (word === 'reject') return replyInStaging(m.id, 'console_ack', { verb: 'rejected' })
 
-  const result = await applyModerationCommand(st, word, Number(m.created_at || 0))
+  const result = await applyModerationCommand(st, word, Number(m.created_at || 0), { commandId: m.id })
   if (!result.ok) {
     const verb = result.reason === 'original unavailable' ? 'no_original'
       : result.reason === 'invalid original signature' ? 'bad_signature'
@@ -2015,7 +2035,7 @@ async function handleModerationControlCommand(ev, applyOptions) {
   const target = String(body.target).toLowerCase()
   const staged = stagingByOriginal(target)
   if (!staged) return { ok: false, reason: 'target is not quarantined' }
-  const result = await applyModerationCommand(staged, body.action, ev.created_at, applyOptions)
+  const result = await applyModerationCommand(staged, body.action, ev.created_at, { ...applyOptions, commandId: ev.id })
   if (!result.ok) return result
   log(`moderation: ${body.action} ${target.slice(0, 12)}…/${staged.author.slice(0, 12)}… by approver ${owner.slice(0, 12)}… (${ev.id.slice(0, 12)}…)`)
   return { ok: true, action: body.action, target, author: staged.author, alreadyReleased: !!result.alreadyReleased }

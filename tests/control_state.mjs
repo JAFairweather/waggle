@@ -193,6 +193,27 @@ t('the same signed moderation command cannot replay',
     schedule: () => { moderationScheduled++ }, rate: () => true,
   })).ok && moderationPublished === 1 && moderationScheduled === 1)
 
+const sameSecondSource = source(generateSecretKey())
+stage(sameSecondSource)
+const sameSecondCommand = moderation('approve', sameSecondSource.id, followAt)
+const sameSecondResult = await handleModerationControlCommand(sameSecondCommand, {
+  fetchOriginal: async () => sameSecondSource,
+  publishRelease: async event => { if (event.id === sameSecondSource.id) moderationPublished++ },
+  rate: () => true,
+})
+t('distinct moderation decisions signed in the same second are both accepted',
+  sameSecondResult.ok && moderationPublished === 2 && PUB.moderationCommandAt === followAt)
+t('same-second command ids commit atomically with the timestamp watermark', (() => {
+  const p = JSON.parse(readFileSync(CFG, 'utf8')).public
+  return p.moderation_command_at === followAt && p.moderation_command_ids.length === 2 &&
+    p.moderation_command_ids.includes(sameSecondCommand.id)
+})())
+t('a relay replay of the second same-second decision remains inert',
+  !(await handleModerationControlCommand(sameSecondCommand, {
+    fetchOriginal: async () => sameSecondSource,
+    publishRelease: async () => { moderationPublished++ }, rate: () => true,
+  })).ok && moderationPublished === 2)
+
 const invalidSource = source(generateSecretKey())
 stage(invalidSource)
 const tampered = { ...invalidSource, content: 'changed after signing' }
@@ -201,7 +222,7 @@ const invalidResult = await handleModerationControlCommand(moderation('approve',
   fetchOriginal: async () => tampered, publishRelease: async () => { moderationPublished++ }, rate: () => true,
 })
 t('a forged or mismatched original cannot advance the moderation watermark or release',
-  !invalidResult.ok && PUB.moderationCommandAt === beforeInvalidAt && moderationPublished === 1)
+  !invalidResult.ok && PUB.moderationCommandAt === beforeInvalidAt && moderationPublished === 2)
 
 const cappedSource = source(generateSecretKey())
 stage(cappedSource)
@@ -210,7 +231,7 @@ const cappedResult = await handleModerationControlCommand(moderation('approve', 
   fetchOriginal: async () => cappedSource, publishRelease: async () => { moderationPublished++ }, rate: () => false,
 })
 t('a rate-capped release cannot advance policy or publish',
-  !cappedResult.ok && PUB.moderationCommandAt === beforeCapAt && moderationPublished === 1)
+  !cappedResult.ok && PUB.moderationCommandAt === beforeCapAt && moderationPublished === 2)
 
 const approvedSource = source(generateSecretKey())
 stage(approvedSource)
@@ -221,7 +242,7 @@ const approveResult = await handleModerationControlCommand(moderation('approve',
   schedule: () => { approveScheduled++ }, rate: () => true,
 })
 t('approve releases one source without creating standing trust', approveResult.ok &&
-  !PUB.trustedRepliers.includes(approvedSource.pubkey) && moderationPublished === 2 && approveScheduled === 0)
+  !PUB.trustedRepliers.includes(approvedSource.pubkey) && moderationPublished === 3 && approveScheduled === 0)
 
 const mutedSource = source(generateSecretKey())
 stage(mutedSource)
@@ -231,7 +252,7 @@ const muteResult = await handleModerationControlCommand(moderation('mute', muted
   publishRelease: async () => { moderationPublished++ }, schedule: () => { muteScheduled++ }, rate: () => true,
 })
 t('mute records standing policy without fetching or releasing the quarantined content',
-  muteResult.ok && PUB.muted.includes(mutedSource.pubkey) && muteFetched === 0 && moderationPublished === 2)
+  muteResult.ok && PUB.muted.includes(mutedSource.pubkey) && muteFetched === 0 && moderationPublished === 3)
 t('mute refreshes the signed aggregate state immediately', muteScheduled === 1)
 
 const duplicateSource = source(generateSecretKey())
