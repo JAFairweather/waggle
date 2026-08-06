@@ -15,7 +15,7 @@
 //
 // Run: node tests/boot.mjs   (exit 0 = pass, 1 = fail)
 
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
@@ -77,6 +77,20 @@ ok('  no FATAL', !/FATAL/.test(out))
 ok('  reaches the banner (config parsed, recipients resolved)', /waggle — mode=dryrun/.test(out))
 ok('  reaches the public-lane summary (PUB built, channels resolved)', /public read lane -> inbox/.test(out))
 ok('  reaches the gate summary (rate caps + A7 wired)', /gates: staging=/.test(out))
+
+// The launch prompt is used by both persistent agent families. Its burner fallback must not
+// silently publish a Codex key under a Claude profile, and Buzz requires a raster avatar.
+const profileEnv = { ...process.env, NVOY_NSEC: '11'.repeat(32) }
+const profile = (...args) => spawnSync(process.execPath, ['tools/session-profile.mjs', '--dry-run', ...args], { cwd: REPO, encoding: 'utf8', env: profileEnv })
+const codex = profile('--family', 'Codex', '--purpose', 'architecture test')
+ok('  Codex burner derives a checkable Codex family name', codex.status === 0 && /session-profile: Codex - [0-9a-f]{8}/.test(codex.stderr))
+ok('  shared default avatar is a raster PNG, never SVG', /https:\/\/nave\.pub\/assets\/avatars\/claude\.png/.test(codex.stderr) && !/\.svg/.test(codex.stderr))
+const claude = profile('--family', 'Claude')
+ok('  Claude remains the backwards-compatible burner family', claude.status === 0 && /session-profile: Claude - [0-9a-f]{8}/.test(claude.stderr))
+const invalidFamily = profile('--family', 'waggle')
+ok('  arbitrary profile families fail closed', invalidFamily.status !== 0 && /must be Claude or Codex/.test(invalidFamily.stderr))
+const falseOg = profile('--family', 'Codex', '--og')
+ok('  Codex cannot claim the reserved Claude OG profile', falseOg.status !== 0 && /reserved for the Claude OG/.test(falseOg.stderr))
 
 if (fails) {
   console.error('\n--- child output ---')

@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://waggle.nave.pub">Website</a> ·
   <a href="docs/GETTING_STARTED.md">Set up a hive</a> ·
+  <a href="docs/AGENT_PARTICIPANT_ARCHITECTURE.md">Agent architecture</a> ·
   <a href="docs/REVIEW_PACKET.md">Review packet</a> ·
   <a href="docs/SPEC_EXTERNAL.md">Specification</a> ·
   <a href="SECURITY.md">Security</a> ·
@@ -129,6 +130,8 @@ boot · suite roster · off-box policy protocol · policy receipt verification �
 - **[External specification](docs/SPEC_EXTERNAL.md)** — architecture, safety gates, moderation model, and roadmap.
 - **[External review packet](docs/REVIEW_PACKET.md)** — a short, sendable review path and the boundaries to challenge.
 - **[Getting started](docs/GETTING_STARTED.md)** — stand up a bridge end to end.
+- **[First-class agent architecture](docs/AGENT_PARTICIPANT_ARCHITECTURE.md)** — how Waggle,
+  isolated Nvoy identities, MCP, model-session binders and Bunker signing fit together.
 - **[Concord consumer](docs/CONCORD_CONSUMER.md)** — derived-address group routing and its no-decrypt boundary.
 - **[DM trust allowlist](docs/DM_TRUST_ALLOWLIST.md)** — listening is not obeying.
 - **[Key custody](docs/KEY_CUSTODY.md)** — what the bridge holds and why.
