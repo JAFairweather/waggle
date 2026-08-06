@@ -27,6 +27,20 @@ node tools/waggle-init.mjs --enable-mirror-consent  # bind watched feeds to this
 node tools/waggle-init.mjs --agent-launch            # print the safe coding-agent hand-off
 ```
 
+Each normal run also creates or resumes a mode-0600, secret-free installation record at
+`~/.waggle/setup-state.json` (override with `WAGGLE_SETUP_STATE`). It contains a stable
+installation id, the six owner-facing step statuses, and short proof receipts; it never contains
+an nsec, Bunker URI, provider key, or private credential. Inspect it without changing anything:
+
+```sh
+node tools/setup-state.mjs report
+node tools/setup-state.mjs check
+```
+
+The record is the shared state contract for the CLI and the browser Setup surface. A `deferred`
+step means an explicit owner action is still pending; it is not treated as success. Resume by
+running `waggle-init` again. `--check` never creates or updates the record.
+
 It is resumable and idempotent — every step first checks whether it is already done, so
 you can re-run it any time and it only asks about what is still missing. `--check` is safe
 to run against a live setup: it reads, reports, and writes nothing. This guide walks the
@@ -171,7 +185,7 @@ in [deploy/README.md](../deploy/README.md).
 - **Publish the agent relay list:** `node tools/publish_relay_list.mjs` (so the identity
   is discoverable).
 - **Admit a participant**, if you want one: `sh tools/grant-setup.sh`.
-- **Run the safety gates before you ship:** `npm test` — 52 suites driving the real
+- **Run the safety gates before you ship:** `npm test` — 53 suites driving the real
   routing functions with synthetic events (no sockets, no production state), all green.
 
 `waggle-init.mjs --check` rolls the config half of this into one readiness verdict; the

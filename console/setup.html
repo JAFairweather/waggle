@@ -12,7 +12,7 @@
     .hero{position:relative;min-height:505px;border-radius:28px;overflow:hidden;background:#eaf0dc;box-shadow:0 12px 38px #4d3a1617;display:flex;align-items:center}
     .hero img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center}.veil{position:absolute;inset:0;background:linear-gradient(90deg,rgba(255,253,246,.98) 0%,rgba(255,253,246,.88) 34%,rgba(255,253,246,.15) 64%,transparent 100%)}
     .copy{position:relative;max-width:520px;padding:52px}.eyebrow{text-transform:uppercase;letter-spacing:.14em;font-size:11px;font-weight:800;color:var(--leaf)}h1{font:700 clamp(38px,5vw,64px)/.98 Georgia,serif;letter-spacing:-.045em;margin:12px 0 20px}.copy p{max-width:43ch;color:#48443a;font-size:18px}.actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:28px}.button{display:inline-block;padding:11px 16px;border:1px solid #9a6918;border-radius:999px;background:#9a6918;color:white;font-weight:750}.button.alt{background:#fffdf6;color:#795411;border-color:#d7b970}
-    .steps{margin-top:45px}.steps h2{font:700 30px/1.1 Georgia,serif;letter-spacing:-.03em;margin:0 0 18px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.step{border:1px solid var(--line);border-radius:17px;background:#fffefa;padding:20px}.n{font:800 12px/1 ui-monospace,monospace;color:var(--honey)}.step h3{font-size:17px;margin:10px 0 5px}.step p{margin:0;color:var(--muted);font-size:14px}.foot{margin-top:22px;color:var(--muted);font-size:14px}@media(max-width:760px){main{padding:20px 15px 50px}.hero{min-height:590px;align-items:flex-start}.hero img{object-position:70% center}.veil{background:linear-gradient(180deg,rgba(255,253,246,.98),rgba(255,253,246,.78) 58%,rgba(255,253,246,.25))}.copy{padding:34px 26px}.grid{grid-template-columns:1fr}}
+    .steps{margin-top:45px}.steps h2{font:700 30px/1.1 Georgia,serif;letter-spacing:-.03em;margin:0 0 18px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.step{border:1px solid var(--line);border-radius:17px;background:#fffefa;padding:20px}.n{font:800 12px/1 ui-monospace,monospace;color:var(--honey)}.step h3{font-size:17px;margin:10px 0 5px}.step p{margin:0;color:var(--muted);font-size:14px}.foot{margin-top:22px;color:var(--muted);font-size:14px}.state{margin-top:34px;border:1px solid var(--line);border-radius:20px;background:#fffefa;padding:24px}.state h2{font:700 26px/1.1 Georgia,serif;margin:0 0 8px}.state p{margin:0;color:var(--muted);font-size:14px}.state-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:18px}.state-step{border:1px solid var(--line);border-radius:13px;padding:13px;background:#fffdf6}.state-step strong{display:block;font-size:13px}.state-step small{display:block;margin-top:6px;color:var(--muted);font:12px ui-monospace,monospace}.state-step.pass{border-color:#9bbd8b}.state-step.deferred,.state-step.pending{border-color:#d7b970}.state-step.fail{border-color:#c87559}@media(max-width:760px){main{padding:20px 15px 50px}.hero{min-height:590px;align-items:flex-start}.hero img{object-position:70% center}.veil{background:linear-gradient(180deg,rgba(255,253,246,.98),rgba(255,253,246,.78) 58%,rgba(255,253,246,.25))}.copy{padding:34px 26px}.grid,.state-grid{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
@@ -40,6 +40,25 @@
       </div>
       <p class="foot">The setup wizard is intentionally local: the page that explains a signing action should be served by the person who will sign it.</p>
     </section>
+    <section class="state" aria-live="polite">
+      <h2>Installation progress</h2>
+      <p id="state-message">Looking for this hive's secret-free setup receipt…</p>
+      <div id="state-grid" class="state-grid" hidden></div>
+    </section>
   </main>
+  <script>
+    (() => {
+      const names = ['prepare-local','bootstrap-host','pair-custody','connect-buzz','prove-installation','finish']
+      const labels = {'prepare-local':'Prepare locally','bootstrap-host':'Bootstrap host','pair-custody':'Pair custody','connect-buzz':'Connect Buzz','prove-installation':'Prove installation','finish':'Finish'}
+      const message = document.getElementById('state-message'), grid = document.getElementById('state-grid')
+      const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
+      fetch('/console/setup-state.json', {cache:'no-store'}).then(r => { if (!r.ok) throw Error('not published'); return r.json() }).then(state => {
+        if (!state || state.version !== 1 || !state.installation_id || !state.steps) throw Error('invalid receipt')
+        grid.innerHTML = names.map(name => { const step = state.steps[name] || {}; const status = ['pending','pass','fail','deferred'].includes(step.status) ? step.status : 'pending'; return `<div class="state-step ${status}"><strong>${esc(labels[name])}</strong><small>${esc(status)}</small></div>` }).join('')
+        grid.hidden = false
+        message.textContent = `Installation ${state.installation_id.slice(0, 8)}… · status is read from the owner's published, secret-free receipt.`
+      }).catch(() => { message.textContent = 'No public setup receipt is available yet. The owner can publish setup-state.json after checking that it contains no credentials.' })
+    })()
+  </script>
 </body>
 </html>

@@ -29,7 +29,9 @@ import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
+import { homedir } from 'node:os'
 import * as nip19 from 'nostr-tools/nip19'
+import { create as createSetupState, record as recordSetupState, summary as setupSummary } from './setup-state.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CONFIG = process.env.CONFIG_PATH || resolve(ROOT, 'config.json')
@@ -37,6 +39,7 @@ const EXAMPLE = resolve(ROOT, 'config.example.json')
 const CHECK_ONLY = process.argv.includes('--check')
 const ENABLE_MIRROR_CONSENT = process.argv.includes('--enable-mirror-consent')
 const AGENT_LAUNCH = process.argv.includes('--agent-launch')
+const SETUP_STATE = process.env.WAGGLE_SETUP_STATE || resolve(homedir(), '.waggle', 'setup-state.json')
 
 const c = { dim: '\x1b[2m', b: '\x1b[1m', ok: '\x1b[32m', warn: '\x1b[33m', bad: '\x1b[31m', off: '\x1b[0m' }
 const say = (s = '') => console.log(s)
@@ -96,6 +99,14 @@ try { execFileSync('buzz', ['--help'], { stdio: 'ignore' }); hasBuzz = true; goo
 catch { todo('buzz CLI not on PATH — needed to create the agent and read channel ids'); note('the bridge shells out to `buzz`; install it before running the lanes') }
 
 existsSync(resolve(ROOT, 'node_modules')) ? good('dependencies installed') : (todo('dependencies not installed — run: npm ci'), blocking++)
+
+// A normal run owns one durable, secret-free installation record. --check is strictly read-only,
+// so it never creates or updates this file. Every later invocation resumes the same installation id.
+if (!CHECK_ONLY) {
+  createSetupState(SETUP_STATE)
+  recordSetupState(SETUP_STATE, 'prepare-local', blocking || !hasBuzz ? (blocking ? 'fail' : 'pending') : 'pass',
+    `node=${process.versions.node}; dependencies=${existsSync(resolve(ROOT, 'node_modules')) ? 'installed' : 'missing'}; buzz=${hasBuzz ? 'available' : 'missing'}`)
+}
 
 // --- the parts a person must do, which no script may do for them --------------------------------
 head('Identities — yours to create, and deliberately so')
@@ -288,6 +299,17 @@ if (ready) {
 } else {
   say(`  ${c.warn}Not ready yet${c.off} — the marked items above are outstanding.`)
   say(`  Re-run this any time; it only asks about what is still missing.`)
+}
+if (!CHECK_ONLY) {
+  const finalPublic = (cfg || {}).public || {}
+  const finalConfigReady = ['inbox', 'approvers', 'grantors'].every(k => finalPublic[k] && (!Array.isArray(finalPublic[k]) || finalPublic[k].length) && !isPlaceholder(Array.isArray(finalPublic[k]) ? finalPublic[k][0] : finalPublic[k])) &&
+    (!finalPublic.mirror_require_consent || consentFields.every(k => finalPublic[k] && !isPlaceholder(finalPublic[k])))
+  recordSetupState(SETUP_STATE, 'connect-buzz', finalConfigReady ? 'pass' : 'pending',
+    finalConfigReady ? 'public configuration is complete' : 'public configuration still needs owner input')
+  recordSetupState(SETUP_STATE, 'bootstrap-host', 'deferred', 'host provisioning remains an explicit owner action')
+  const current = setupSummary(createSetupState(SETUP_STATE))
+  say(`  Setup state: ${SETUP_STATE} (${current.installation_id})`)
+  note('Resume with this command; --check remains read-only: node tools/waggle-init.mjs')
 }
 say('')
 process.exit(ready ? 0 : 1)
