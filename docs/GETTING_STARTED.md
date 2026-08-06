@@ -23,6 +23,8 @@ The setup has an executable form, and it is the source of truth for the order be
 ```sh
 node tools/waggle-init.mjs           # walk the setup, prompting only for what's missing
 node tools/waggle-init.mjs --check   # report readiness and change nothing
+node tools/waggle-init.mjs --state ~/.waggle/my-hive.json  # select one of several hive installations
+node tools/waggle-init.mjs --state ~/.waggle/my-hive.json --receipt  # machine-readable, secret-free proof receipt
 node tools/waggle-init.mjs --enable-mirror-consent  # bind watched feeds to this hive's consent
 node tools/waggle-init.mjs --agent-launch            # print the safe coding-agent hand-off
 ```
@@ -32,6 +34,15 @@ you can re-run it any time and it only asks about what is still missing. `--chec
 to run against a live setup: it reads, reports, and writes nothing. This guide walks the
 same ground in prose; when the two disagree, the tool is right.
 
+The first successful local pass creates a mode-0600, non-secret installation state at
+`~/.waggle/install-state.json` (or the explicit `--state` path). Its stable installation id,
+closed step catalogue, evidence, and safe resume actions are the shared contract for the CLI,
+Console Setup, and the host bootstrap. A pass cannot turn green without evidence. Existing state
+is resumed rather than regenerated; channel or owner drift becomes a visible failure instead of
+silently rewriting the installation. Use one state path per hive when an owner operates several.
+The owner pubkey is collected explicitly rather than inferred from the first approver: moderation
+can be delegated, while hive ownership, bridge identity, and agent identities remain distinct.
+
 Three things `waggle-init` will **not** do, on purpose:
 
 - It never asks any agent to hand over its own key. You seat credentials yourself. An
@@ -39,8 +50,9 @@ Three things `waggle-init` will **not** do, on purpose:
   nsec is a normal request — which is the whole attack.
 - It never takes a secret as a command argument (`argv` is world-readable in `ps`), never
   writes one into this repo, and never prints one back.
-- It does not touch a live host. Provisioning and seating are deliberate administrator
-  acts with their own scripts; the tool prepares and verifies, and tells you what to run.
+- This local phase does not touch a live host. The host bootstrap consumes this same manifest
+  through one authenticated, idempotent operation; identity import, Bunker pairing, and grant
+  approval remain explicit human checkpoints rather than hidden automation.
 
 ### Hives, consent, and coding agents
 
@@ -171,7 +183,7 @@ in [deploy/README.md](../deploy/README.md).
 - **Publish the agent relay list:** `node tools/publish_relay_list.mjs` (so the identity
   is discoverable).
 - **Admit a participant**, if you want one: `sh tools/grant-setup.sh`.
-- **Run the safety gates before you ship:** `npm test` — 55 suites driving the real
+- **Run the safety gates before you ship:** `npm test` — 56 suites driving the real
   routing functions with synthetic events (no sockets, no production state), all green.
 
 `waggle-init.mjs --check` rolls the config half of this into one readiness verdict; the
