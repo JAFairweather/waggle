@@ -37,7 +37,7 @@ import WebSocket from 'ws'
 // (A3 §2.5). Verification is a public-key operation and belongs wherever input is judged.
 import { getEventHash, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
-import { emit, query, checkConfigRenderable, runPolicyShadowSsh } from './egress.mjs'
+import { emit, query, checkConfigRenderable, runPolicyShadowSsh, runPolicyWriterSsh } from './egress.mjs'
 import { bridgePubkey, bridgeSignerMode, hasBridgeKey, openSeal, openRumor, sealAndWrap, consentTosBlock, signControlState, prepareRelayActionReaction, submitRelayActionReaction } from './nostr_egress.mjs'
 import { verifyConsent } from './consent.mjs'   // in-door consent (#131/#132, docs/CONSENT.md §8)
 import { createHash, randomBytes } from 'node:crypto'
@@ -53,8 +53,9 @@ import { durableSet, durableQueue } from './stores.mjs'
 import { fanout } from './fanout.mjs'
 import { recipientDmRelays } from './dm_relays.mjs'
 import { quarantineSlotsFromSource } from './buzz_policy_core.mjs'
-import { buildQuarantinePolicyRequest } from './buzz_policy_client.mjs'
+import { buildQuarantinePolicyRequest, verifyPolicyResponse, validatePolicyWriterConfig } from './buzz_policy_client.mjs'
 import { compareQuarantineShadow, validateShadowClientConfig } from './buzz_policy_shadow_client.mjs'
+import { PolicyRequestQueue } from './policy_request_queue.mjs'
 import { defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased } from './render.mjs'
 import { hex as concordHex, publicChannel, openChannelWrap } from './concord_lib.mjs'
 
@@ -228,6 +229,7 @@ let pubWatermark = loadPubWatermark()
 // kind:5 lookback is intentionally LONGER than the kind:1 watermark: deletes are rare,
 // idempotent under dedup, and a delete issued while the lane was down must not be missed.
 const POSTED_MAP_PATH = process.env.POSTED_MAP_PATH || resolve(ROOT, 'data', 'posted-map.log')
+const POLICY_REQUEST_QUEUE_PATH = process.env.POLICY_REQUEST_QUEUE_PATH || resolve(ROOT, 'data', 'policy-requests')
 // #171 — the durable record of what did NOT get delivered.
 //
 // Both Buzz lanes commit the event id to durable dedup BEFORE the async send, deliberately:
@@ -318,6 +320,20 @@ const policyShadow = policyShadowMode === 'off' ? Object.freeze({ mode: 'off' })
   user: String(policyShadowRaw.ssh_user || 'waggle-policy-shadow-ingress'),
   identityFile: String(process.env.POLICY_SHADOW_IDENTITY_FILE || policyShadowRaw.ssh_identity_file || ''),
   knownHostsFile: String(process.env.POLICY_SHADOW_KNOWN_HOSTS_FILE || policyShadowRaw.ssh_known_hosts_file || ''),
+})
+const policyWriterRaw = cfg.public?.policy_writer || {}
+const policyWriterMode = String(policyWriterRaw.mode || 'off').toLowerCase()
+if (!['off', 'remote-only'].includes(policyWriterMode)) throw new Error('public.policy_writer.mode must be off or remote-only')
+const policyWriter = policyWriterMode === 'off' ? Object.freeze({ mode: 'off' }) : Object.freeze({
+  mode: policyWriterMode,
+  policyInstance: String(policyWriterRaw.policy_instance || ''),
+  catalogueVersion: String(policyWriterRaw.catalogue_version || '').toLowerCase(),
+  posterPubkey: String(policyWriterRaw.poster_pubkey || '').toLowerCase(),
+  endpointAuthority: String(policyWriterRaw.endpoint_authority || ''),
+  host: String(policyWriterRaw.ssh_host || ''),
+  user: String(policyWriterRaw.ssh_user || 'waggle-policy-ingress'),
+  identityFile: String(process.env.POLICY_WRITER_IDENTITY_FILE || policyWriterRaw.ssh_identity_file || ''),
+  knownHostsFile: String(process.env.POLICY_WRITER_KNOWN_HOSTS_FILE || policyWriterRaw.ssh_known_hosts_file || ''),
 })
 function bumpPubWatermark(ts) {
   if (!Number.isFinite(ts) || ts <= 0 || (pubWatermark && ts <= pubWatermark)) return
@@ -433,6 +449,7 @@ const PUB = cfg.public ? {
   watchlistCommandAt: Number(cfg.public.watchlist_command_at || 0),
   trustCommandAt: Number(cfg.public.trust_command_at || 0),
   policyShadow,
+  policyWriter,
 } : null
 
 // §7 version-binding, from ONE producer (crew review of #199 → #200). The gate's expected hash, the
@@ -441,6 +458,15 @@ const PUB = cfg.public ? {
 // derived from the hive id + display identity + terms URL when all are present. Null → presence-only.
 if (PUB) {
   if (PUB.policyShadow.mode !== 'off') validateShadowClientConfig(PUB.policyShadow)
+  if (PUB.policyWriter.mode !== 'off') validatePolicyWriterConfig(PUB.policyWriter)
+  if (PUB.policyWriter.mode !== 'off' && PUB.policyShadow.mode !== 'off' &&
+      (PUB.policyWriter.policyInstance !== PUB.policyShadow.policyInstance ||
+       PUB.policyWriter.catalogueVersion !== PUB.policyShadow.catalogueVersion ||
+       PUB.policyWriter.posterPubkey !== PUB.policyShadow.posterPubkey ||
+       PUB.policyWriter.identityFile === PUB.policyShadow.identityFile ||
+       PUB.policyWriter.user === PUB.policyShadow.user)) {
+    throw new Error('public.policy_writer and public.policy_shadow must bind the same policy while using distinct SSH capabilities')
+  }
   PUB.mirrorExpectedTosHash = (() => {
     if (cfg.public.mirror_expected_tos_hash) return String(cfg.public.mirror_expected_tos_hash).toLowerCase()
     if (PUB.mirrorConsentTermsUrl && PUB.mirrorConsentHiveId && PUB.mirrorConsentHiveName && PUB.mirrorConsentHiveHandle) {
@@ -547,7 +573,7 @@ if (FORWARD_MODE === 'buzz' && !process.env.BUZZ_PRIVATE_KEY) {
 const seenStore = durableSet({ path: SEEN_PATH, cap: SEEN_CAP, label: 'dedup', noun: 'seen ids' })
 const seen = seenStore.mem
 const loadSeen = () => seenStore.load()
-const markSeen = (id) => seenStore.commit(id)
+const markSeen = (id, durable = false) => seenStore.commit(id, durable)
 
 // #171 — record a message that was accepted for delivery and then failed to land. The id is
 // already durably seen by the time this runs, so nothing will retry it: this file IS the message,
@@ -615,13 +641,36 @@ function loadPostedMap() {
   }
   if (postedMap.size) log(`A7: loaded ${postedMap.size} posted-map entries from ${POSTED_MAP_PATH}`)
 }
-function recordPosted(rec) {
+function recordPosted(rec, durable = false) {
+  const previous = postedMap.get(rec.id)
+  const previousStaging = rec.buzz ? stagingByBuzzId.get(String(rec.buzz).toLowerCase()) : undefined
   postedMap.set(rec.id, { author: rec.author, buzz: rec.buzz || null, dest: rec.dest, q: !!rec.q, deleted: false, agent: rec.agent || null })
   // Keyed lowercase to match agentAuthoredBy's read (:972). A raw write against a lowercasing read
   // fails closed silently on any uppercase id — return-lane reply/echo-attribution misses. (Finding 4.)
   if (rec.buzz) stagingByBuzzId.set(String(rec.buzz).toLowerCase(), { orig: rec.id, author: rec.author, dest: rec.dest, q: !!rec.q, agent: rec.agent || null })
-  try { mkdirSync(dirname(POSTED_MAP_PATH), { recursive: true }); appendFileSync(POSTED_MAP_PATH, JSON.stringify(rec) + '\n') }
-  catch (e) { err(`A7: posted-map append failed for ${rec.id}: ${e.message}`) }
+  let fileFd = null, dirFd = null
+  try {
+    const directory = dirname(POSTED_MAP_PATH), row = JSON.stringify(rec) + '\n'
+    mkdirSync(directory, { recursive: true })
+    if (!durable) appendFileSync(POSTED_MAP_PATH, row)
+    else {
+      fileFd = openSync(POSTED_MAP_PATH, 'a', 0o600); writeFileSync(fileFd, row); fsyncSync(fileFd)
+      closeSync(fileFd); fileFd = null
+      dirFd = openSync(directory, 'r'); fsyncSync(dirFd); closeSync(dirFd); dirFd = null
+    }
+    return true
+  } catch (e) {
+    if (previous) postedMap.set(rec.id, previous); else postedMap.delete(rec.id)
+    if (rec.buzz) {
+      const key = String(rec.buzz).toLowerCase()
+      if (previousStaging) stagingByBuzzId.set(key, previousStaging); else stagingByBuzzId.delete(key)
+    }
+    err(`A7: posted-map append failed for ${rec.id}: ${e.message}`)
+    return false
+  } finally {
+    if (fileFd !== null) { try { closeSync(fileFd) } catch {} }
+    if (dirFd !== null) { try { closeSync(dirFd) } catch {} }
+  }
 }
 function recordWithdrawn(id) {
   const e = postedMap.get(id)
@@ -1176,6 +1225,88 @@ async function comparePublicShadow(ev) {
   })
 }
 
+const policyRequests = new PolicyRequestQueue(POLICY_REQUEST_QUEUE_PATH)
+const policyWriterInFlight = new Set()
+let policyWriterRunner = runPolicyWriterSsh
+function __setPolicyWriterRunnerForTests(fn) {
+  if (process.env.WB_NO_BOOT !== '1' || typeof fn !== 'function') throw new Error('policy writer runner test seam is unavailable')
+  policyWriterRunner = fn
+}
+
+function unframePolicyWriterResponse(raw) {
+  if (typeof raw !== 'string' || !raw.endsWith('\n') || raw.slice(0, -1).includes('\n') || raw.includes('\r')) {
+    throw new Error('policy writer returned an invalid one-line response frame')
+  }
+  return raw.slice(0, -1)
+}
+
+async function processRemotePolicyRequest(sourceId, requestRaw) {
+  if (!PUB || PUB.policyWriter.mode !== 'remote-only' || policyWriterInFlight.has(sourceId)) return false
+  policyWriterInFlight.add(sourceId)
+  try {
+    let queuedSource
+    try { queuedSource = JSON.parse(requestRaw)?.evidence?.source_event } catch { queuedSource = null }
+    if (!queuedSource || queuedSource.id !== sourceId) throw new Error('queued request filename is not bound to its signed source event')
+    const responseRaw = unframePolicyWriterResponse(await policyWriterRunner(requestRaw, PUB.policyWriter))
+    const result = verifyPolicyResponse(responseRaw, {
+      requestRaw, posterPubkey: PUB.policyWriter.posterPubkey, expectedChannel: PUB.staging,
+      endpointAuthority: PUB.policyWriter.endpointAuthority,
+    })
+    if (!result.terminal) {
+      err(`PUBLIC policy[${result.status}]: ${sourceId.slice(0, 12)}… remains owed`)
+      return false
+    }
+    if (result.result === 'accepted') {
+      const source = queuedSource
+      // The off-box service has already submitted this event. Before retiring the debt, make the
+      // independent tripwire and withdrawal records crash-durable, then commit source dedup. Any
+      // local persistence failure leaves the exact request queued for byte-identical replay.
+      if (!journalSend(result.buzzEventId, { kind: 9, dest: PUB.staging, lane: 'public-policy' }, true)) return false
+      if (!recordPosted({ id: source.id, author: source.pubkey, buzz: result.buzzEventId,
+        dest: PUB.staging, q: true, ts: Math.floor(Date.now() / 1000), agent: null }, true)) return false
+      if (!markSeen(source.id, true)) return false
+      bumpPubWatermark(clampCreated(source.created_at, Math.floor(Date.now() / 1000)).clamped)
+      policyRequests.remove(sourceId)
+      log(`PUBLIC policy[accepted] -> STAGING ${PUB.staging}: kind1 ${sourceId.slice(0, 12)}… (Buzz ${result.buzzEventId.slice(0, 12)}…)`)
+      return true
+    }
+    if (!markSeen(sourceId, true)) return false
+    policyRequests.remove(sourceId)
+    err(`PUBLIC policy[${result.result}]: ${sourceId.slice(0, 12)}… ${result.result === 'ambiguous' ? 'signed terminal ambiguity requires operator inspection' : 'terminal refusal'}; no local fallback`)
+    return true
+  } catch (error) {
+    err(`PUBLIC policy[unavailable]: ${sourceId.slice(0, 12)}… ${String(error?.message || 'unavailable').slice(0, 180)} — remains owed`)
+    return false
+  } finally {
+    policyWriterInFlight.delete(sourceId)
+  }
+}
+
+function remotePolicyGatePublic(ev, why, dest) {
+  if (policyWriterInFlight.has(ev.id)) return
+  let requestRaw = policyRequests.get(ev.id)
+  if (!requestRaw) {
+    if (!rateOk(ev, dest, Date.now())) { markSeen(ev.id); return }
+    requestRaw = buildQuarantinePolicyRequest(ev, {
+      policyInstance: PUB.policyWriter.policyInstance,
+      catalogueVersion: PUB.policyWriter.catalogueVersion,
+    })
+    try { policyRequests.enqueue(ev.id, requestRaw) }
+    catch (error) {
+      err(`PUBLIC policy[queue-failed]: ${ev.id.slice(0, 12)}… ${error.message} — held before dispatch`)
+      return
+    }
+  }
+  log(`PUBLIC policy[dispatch]: ${ev.id.slice(0, 12)}… (${why})`)
+  void processRemotePolicyRequest(ev.id, requestRaw)
+}
+
+function retryRemotePolicyRequests() {
+  if (!PUB || PUB.policyWriter.mode !== 'remote-only' || !PUB.staging) return 0
+  for (const { key, requestRaw } of policyRequests.entries()) void processRemotePolicyRequest(key, requestRaw)
+  return policyRequests.entries().length
+}
+
 function dispatchPublic(ev, why, dest, quarantine) {
   const nowMs = Date.now()
   if (!rateOk(ev, dest, nowMs)) { markSeen(ev.id); return }
@@ -1353,6 +1484,10 @@ function routePublic(ev) {
   // same id from another relay isn't reprocessed.
   const bytes = Buffer.byteLength(String(ev.content || ''), 'utf8')
   if (bytes > PUB.maxContentBytes) { err(`PUBLIC drop[size]: content ${bytes}B > cap ${PUB.maxContentBytes}B — ${ev.id.slice(0, 12)}…`); markSeen(ev.id); return }
+  if (quarantine && PUB.policyWriter.mode === 'remote-only' && FORWARD_MODE === 'buzz') {
+    remotePolicyGatePublic(ev, why, dest)
+    return
+  }
   if (quarantine && PUB.policyShadow.mode !== 'off') {
     shadowGatePublic(ev, why, dest, quarantine)
     return
@@ -2848,12 +2983,16 @@ export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, c
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
 export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
-export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests }
+export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests,
+  policyRequests, policyWriterInFlight, remotePolicyGatePublic, processRemotePolicyRequest,
+  retryRemotePolicyRequests, __setPolicyWriterRunnerForTests, unframePolicyWriterResponse,
+  POLICY_REQUEST_QUEUE_PATH }
 
 // --- boot -------------------------------------------------------------------
 if (!process.env.WB_NO_BOOT) {
   loadSeen()
   loadPostedMap()
+  policyRequests.load()
   loadRlSeen()
   mirrorAskedStore.load()   // §6: who we've already sent a consent-request DM (once per target)
   rlPending.load()
@@ -2905,6 +3044,11 @@ if (!process.env.WB_NO_BOOT) {
     log(`public read lane -> inbox ${PUB.inbox}: ${PUB.relays.length} relay(s), ${PUB.authors.length} watched author(s), ${PUB.events.length} watched note(s), pub-since=${PUB.since} (${PUB_SINCE_SECS}s), watermark=${pubWatermark || 'none'}`)
     log(`  gates: staging=${PUB.staging || 'HOLD (none)'} · backfill<=${PUB.backfillLimit} · maxContent=${PUB.maxContentBytes}B · rate ${PUB.replierPerMin}/replier/min ${PUB.channelPerMin}/chan/min ${PUB.lanePerHour}/lane/h · deletes ${PUB.deletesPerHour}/h (A7)`)
     log(`  policy shadow: ${PUB.policyShadow.mode.toUpperCase()}${PUB.policyShadow.mode === 'off' ? ' — local quarantine path unchanged' : ' — remote derive-only comparison before quarantine commit'}`)
+    log(`  policy writer: ${PUB.policyWriter.mode.toUpperCase()}${PUB.policyWriter.mode === 'off' ? ' — local quarantine writer remains enabled' : ` — quarantine posts are remote-only; ${policyRequests.entries().length} request(s) owed; no local fallback`}`)
+    if (PUB.policyWriter.mode === 'remote-only') {
+      retryRemotePolicyRequests()
+      setInterval(retryRemotePolicyRequests, 15_000)
+    }
     if (PUB.grantors.length) log(`  admission: ${PUB.grantors.length} grantor key(s); NIP-DA kinds ${NIPDA.grant}/${NIPDA.revocation}/${NIPDA.index}`)
     if (PUB.mirrorRequireConsent) {
       log(`  in-door consent: ENFORCING (§8) — mirror/reply gated on consent; ${PUB.mirrorGrandfathered.length} grandfathered; version-binding ${PUB.mirrorExpectedTosHash ? 'ON (tos ' + PUB.mirrorExpectedTosHash.slice(0, 8) + '…)' : 'OFF'}`)

@@ -1,0 +1,101 @@
+import { createHash } from 'node:crypto'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
+import { canonicalJson } from '../src/buzz_policy_core.mjs'
+
+let fails = 0
+const ok = (name, pass) => { console.log(`${pass ? 'ok  ' : 'FAIL'} — ${name}`); if (!pass) fails++ }
+const wire = value => JSON.parse(JSON.stringify(value))
+const tmp = mkdtempSync(join(tmpdir(), 'waggle-policy-remote-'))
+const watched = 'd'.repeat(64), staging = 'a8186b53-537d-46ad-a7e7-b6486c58970e'
+const inbox = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', catalogue = 'c'.repeat(64)
+const signer = generateSecretKey(), poster = getPublicKey(signer), endpoint = 'buzz.example'
+const config = { relays: [], recipients: [], public: {
+  relays: [], inbox, staging_inbox: staging, watch_authors: [], watch_events: [watched], approvers: [],
+  policy_writer: { mode: 'remote-only', policy_instance: 'jaf-hive', catalogue_version: catalogue,
+    poster_pubkey: poster, endpoint_authority: endpoint, ssh_host: 'policy.example',
+    ssh_user: 'waggle-policy-ingress', ssh_identity_file: '/etc/waggle/policy-client/writer_ed25519',
+    ssh_known_hosts_file: '/etc/waggle/policy-client/known_hosts' },
+} }
+writeFileSync(join(tmp, 'config.json'), JSON.stringify(config))
+process.env.WB_NO_BOOT = '1'
+process.env.WB_STUB_SEND = '1'
+process.env.FORWARD_MODE = 'buzz'
+process.env.CONFIG_PATH = join(tmp, 'config.json')
+process.env.SEEN_PATH = join(tmp, 'seen.log')
+process.env.POSTED_MAP_PATH = join(tmp, 'posted.log')
+process.env.SEND_JOURNAL_PATH = join(tmp, 'send.log')
+process.env.PUB_WATERMARK_PATH = join(tmp, 'watermark')
+process.env.POLICY_REQUEST_QUEUE_PATH = join(tmp, 'policy-requests')
+process.env.BUZZ_PRIVATE_KEY = Buffer.from(generateSecretKey()).toString('hex')
+
+const B = await import('../src/bridge.mjs')
+const { routePublic, seen, postedMap, policyRequests, policyWriterInFlight,
+  retryRemotePolicyRequests, processRemotePolicyRequest, __setPolicyWriterRunnerForTests,
+  unframePolicyWriterResponse } = B
+policyRequests.load()
+const note = content => wire(finalizeEvent({ kind: 1, created_at: Math.floor(Date.now() / 1000),
+  tags: [['e', watched]], content }, generateSecretKey()))
+const response = (raw, result = 'accepted') => {
+  const request = JSON.parse(raw), source = request.evidence.source_event
+  const requestDigest = createHash('sha256').update(raw).digest('hex')
+  const key = createHash('sha256').update(canonicalJson([1, 'jaf-hive', catalogue,
+    'quarantine_header', [source.id], staging])).digest('hex')
+  const accepted = result === 'accepted', completed = Math.floor(Date.now() / 1000)
+  const fields = { version: 1, policy_instance: 'jaf-hive', operation: 'quarantine_header',
+    catalogue_version: catalogue, request_digest: requestDigest, idempotency_key: key,
+    source_ids: [source.id], buzz_channel: staging, endpoint_authority: endpoint,
+    buzz_event_id: accepted ? 'b'.repeat(64) : 'e'.repeat(64), result,
+    reason_code: accepted ? 'accepted' : 'relay_refused', response_digest: 'f'.repeat(64), completed_at: completed }
+  const receipt = wire(finalizeEvent({ kind: 30078, created_at: completed,
+    tags: [['d', `waggle-policy:${key}`]], content: canonicalJson(fields) }, signer))
+  return `${canonicalJson({ status: 'terminal', result, receipt: canonicalJson(receipt) })}\n`
+}
+const wait = async () => { for (let i = 0; i < 200 && policyWriterInFlight.size; i++) await new Promise(resolve => setTimeout(resolve, 5)) }
+
+let calls = 0, firstRaw = ''
+__setPolicyWriterRunnerForTests(async raw => {
+  calls++; firstRaw = raw
+  ok('the exact request is durable before the remote writer is invoked',
+    existsSync(join(tmp, 'policy-requests', `${JSON.parse(raw).evidence.source_event.id}.request`)))
+  await new Promise(resolve => setTimeout(resolve, 10))
+  return `${canonicalJson({ status: 'held', result: null, receipt: null })}\n`
+})
+const held = note('held remote-only')
+routePublic(held); routePublic(held); await wait()
+ok('duplicate relay delivery collapses to one remote policy call', calls === 1)
+ok('held policy work remains durable, unseen, and never reaches the local sender', policyRequests.has(held.id) && !seen.has(held.id) && !postedMap.has(held.id))
+
+let retryRaw = ''
+__setPolicyWriterRunnerForTests(async raw => { retryRaw = raw; return response(raw) })
+retryRemotePolicyRequests(); await wait()
+ok('retry uses byte-identical request bytes after the hold', firstRaw === retryRaw)
+ok('a verified accepted receipt closes debt and records the off-box Buzz event', !policyRequests.has(held.id) && seen.has(held.id) && postedMap.get(held.id)?.buzz === 'b'.repeat(64))
+ok('the off-box event enters the durable tripwire journal', readFileSync(join(tmp, 'send.log'), 'utf8').includes('"lane":"public-policy"'))
+
+const forged = note('forged response')
+__setPolicyWriterRunnerForTests(async raw => {
+  const parsed = JSON.parse(response(raw)); const receipt = JSON.parse(parsed.receipt)
+  receipt.sig = `${receipt.sig[0] === '0' ? '1' : '0'}${receipt.sig.slice(1)}`
+  return `${canonicalJson({ ...parsed, receipt: canonicalJson(receipt) })}\n`
+})
+routePublic(forged); await wait()
+ok('a forged receipt remains owed and cannot trigger local fallback', policyRequests.has(forged.id) && !seen.has(forged.id) && !postedMap.has(forged.id))
+
+const rejected = note('terminal reject')
+__setPolicyWriterRunnerForTests(async raw => response(raw, 'rejected'))
+routePublic(rejected); await wait()
+ok('a verified terminal refusal is handled without a Buzz post or local fallback', seen.has(rejected.id) && !policyRequests.has(rejected.id) && !postedMap.has(rejected.id))
+
+let framed = false
+try { unframePolicyWriterResponse('{"status":"held"}\n{"smuggled":true}\n') } catch { framed = true }
+ok('multi-line writer output cannot smuggle a second response', framed)
+let mismatchCalls = 0
+__setPolicyWriterRunnerForTests(async raw => { mismatchCalls++; return response(raw) })
+await processRemotePolicyRequest('f'.repeat(64), firstRaw)
+ok('a queue filename cannot be rebound to another signed source event', mismatchCalls === 0)
+
+console.log(fails ? `\npolicy_remote_gate: ${fails} FAILED` : '\npolicy_remote_gate: all checks passed')
+process.exit(fails ? 1 : 0)
