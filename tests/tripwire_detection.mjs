@@ -30,6 +30,7 @@ const BUNKER_INIT = resolve(ROOT, 'tools', 'tripwire-alarm-bunker-init.mjs')
 const DROP_IN = resolve(ROOT, 'deploy', 'tripwire-alarm.conf')
 const BUNKER_DROP_IN = resolve(ROOT, 'deploy', 'tripwire-alarm-bunker.conf')
 const BASE_UNIT = resolve(ROOT, 'deploy', 'tripwire.service')
+const TIMER_UNIT = resolve(ROOT, 'deploy', 'tripwire.timer')
 const DRILL_UNIT = resolve(ROOT, 'deploy', 'waggle-tripwire-drill.service')
 const POSTER = 'npub1s36nypljc6h88tey0kshf688eyd8myu636ctfs4e3d2w54nhsmnqfhaent'
 // Written per-run into the temp dir. The real log at data/tripwire-alarms.log is evidence an
@@ -277,10 +278,17 @@ try {
     dropIn.includes('Environment=ALARM_TO_FILE=%d/alarm.to') && !dropIn.includes('ExecStart='))
 
   const baseUnit = readFileSync(BASE_UNIT, 'utf8')
+  const timerUnit = readFileSync(TIMER_UNIT, 'utf8')
   check('the base detector unit contains no signer credential mode',
     !baseUnit.includes('LoadCredential=alarm.') &&
     !baseUnit.includes('Environment=ALARM_NSEC_FILE=') &&
     !baseUnit.includes('Environment=ALARM_BUNKER_URI_FILE='))
+  check('the shipped unit templates require the canonical waggle-tripwire installed names',
+    baseUnit.includes('install as waggle-tripwire.service') &&
+    timerUnit.includes('/etc/systemd/system/waggle-tripwire.service') &&
+    timerUnit.includes('/etc/systemd/system/waggle-tripwire.timer') &&
+    timerUnit.includes('enable --now waggle-tripwire.timer') &&
+    !timerUnit.includes('enable --now tripwire.timer'))
 
   const bunkerDropIn = readFileSync(BUNKER_DROP_IN, 'utf8')
   check('the preferred Bunker drop-in loads only pairing and recipient credential files',

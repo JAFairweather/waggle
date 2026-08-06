@@ -1,4 +1,5 @@
-# waggle tripwire unit (oneshot; driven by tripwire.timer). Out-of-process detection of
+# waggle tripwire unit (oneshot; install as waggle-tripwire.service and drive it with
+# waggle-tripwire.timer). Out-of-process detection of
 # unauthorized signing by the bridge POSTER key: tools/tripwire.mjs fetches the poster's
 # recent on-relay events and diffs them against the bridge send-journal (#33). Exit codes:
 #   0 = clean (every on-relay post came from our process)
@@ -37,7 +38,7 @@ User=bridge
 Group=bridge
 WorkingDirectory=/opt/waggle
 # --since-min 60 is deliberately WIDER than the 30-min timer cadence: overlapping windows
-# mean a single missed run never opens a detection gap (see tripwire.timer).
+# mean a single missed run never opens a detection gap (see waggle-tripwire.timer).
 ExecStart=/usr/bin/node tools/tripwire.mjs --since-min 60
 EnvironmentFile=/opt/waggle/tripwire.env
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
