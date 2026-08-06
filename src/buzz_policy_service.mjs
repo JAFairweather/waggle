@@ -28,6 +28,24 @@ function derive(raw, { policyInstance, catalogueVersion, stagingChannel, watched
   return { request, decision, requestDigest, key: policyIdempotencyKey(request, decision) }
 }
 
+// Freshness is a first-admission property, not a durability expiry. A remote-only bridge must
+// retry the SAME canonical request after an outage or restart; changing observed_at would change
+// its request digest while leaving the policy idempotency key unchanged. First try the strict
+// fresh path. Only a request rejected specifically for age gets a second parse, and that parse is
+// usable solely when the policy journal already binds the derived key to these exact bytes.
+function deriveFreshOrPreviouslyClaimed(raw, options, journal) {
+  try { return derive(raw, options) } catch (error) {
+    if (!String(error?.message || '').includes('observed_at is outside the freshness window')) throw error
+    let observedAt
+    try { observedAt = JSON.parse(raw)?.observed_at } catch { throw error }
+    if (!Number.isSafeInteger(observedAt) || observedAt < 0) throw error
+    const candidate = derive(raw, { ...options, now: observedAt })
+    const existing = journal.get(candidate.key)
+    if (!existing || existing.request_digest !== candidate.requestDigest) throw error
+    return candidate
+  }
+}
+
 export async function processBuzzPolicyRequest(raw, {
   policyInstance, catalogueVersion, stagingChannel, watchedEventIds, approverMention = '',
   artifactPolicy, journal, signer, fetchImpl = fetch, now = Math.floor(Date.now() / 1000),
@@ -35,7 +53,8 @@ export async function processBuzzPolicyRequest(raw, {
 } = {}) {
   if (!journal || typeof journal.claim !== 'function' || typeof journal.prepare !== 'function' || typeof journal.commit !== 'function') fail('journal is unavailable')
   if (!signer || typeof signer.signEvent !== 'function') fail('signer is unavailable')
-  const { request, decision, requestDigest, key } = derive(raw, { policyInstance, catalogueVersion, stagingChannel, watchedEventIds, approverMention, now })
+  const { request, decision, requestDigest, key } = deriveFreshOrPreviouslyClaimed(raw,
+    { policyInstance, catalogueVersion, stagingChannel, watchedEventIds, approverMention, now }, journal)
   const claim = journal.claim(key, requestDigest, now)
   if (!claim.claimed && claim.record.status !== 'prepared') return replay(claim.record)
 
