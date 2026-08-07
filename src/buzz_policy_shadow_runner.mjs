@@ -27,8 +27,9 @@ export function loadBuzzPolicyShadowConfig(path) {
   const legacyKeys = ['version', 'policy_instance', 'catalogue_version', 'staging_channel',
     'watched_event_ids', 'approver_mention', 'poster_pubkey', 'auth_tag']
   const keys = [...legacyKeys, 'inbox_channel', 'trusted_repliers']
+  const sealedKeys = [...keys, 'recipient_routes']
   const shape = Object.keys(config).sort().join(',')
-  if (![legacyKeys, keys].map(value => [...value].sort().join(',')).includes(shape)) fail('config has an invalid shape')
+  if (![legacyKeys, keys, sealedKeys].map(value => [...value].sort().join(',')).includes(shape)) fail('config has an invalid shape')
   if (config.version !== 1 || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(config.policy_instance) ||
       !HEX64.test(config.catalogue_version) || !UUID.test(config.staging_channel) ||
       (config.inbox_channel != null && !UUID.test(config.inbox_channel))) fail('config identity, catalogue, or channel is invalid')
@@ -37,11 +38,17 @@ export function loadBuzzPolicyShadowConfig(path) {
   if (config.trusted_repliers != null && (!Array.isArray(config.trusted_repliers) ||
       !config.trusted_repliers.every(id => HEX64.test(id)) ||
       new Set(config.trusted_repliers).size !== config.trusted_repliers.length)) fail('trusted_repliers are invalid')
+  const recipientRoutes = config.recipient_routes || {}
+  if (!recipientRoutes || typeof recipientRoutes !== 'object' || Array.isArray(recipientRoutes) ||
+      Object.entries(recipientRoutes).some(([pubkey, route]) => !HEX64.test(pubkey) || !route || typeof route !== 'object' ||
+        Array.isArray(route) || Object.keys(route).sort().join(',') !== 'inbox,name' || !UUID.test(route.inbox) ||
+        typeof route.name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9 _.\-]{0,63}$/.test(route.name))) fail('recipient_routes are invalid')
   if (typeof config.approver_mention !== 'string' || Buffer.byteLength(config.approver_mention) > 128) fail('approver_mention is invalid')
   const projectionPolicy = createProjectionPolicy({ posterPubkey: config.poster_pubkey, authTag: config.auth_tag })
   return Object.freeze({ ...config, inbox_channel: config.inbox_channel || null,
     watched_event_ids: Object.freeze([...config.watched_event_ids]),
-    trusted_repliers: Object.freeze([...(config.trusted_repliers || [])]), projectionPolicy })
+    trusted_repliers: Object.freeze([...(config.trusted_repliers || [])]),
+    recipient_routes: Object.freeze(Object.fromEntries(Object.entries(recipientRoutes).map(([key, value]) => [key, Object.freeze({ ...value })]))), projectionPolicy })
 }
 
 export async function readBoundedShadowRequest(stream, maxBytes = 128 * 1024) {
@@ -61,6 +68,6 @@ export function runBuzzPolicyShadow(raw, config, { now } = {}) {
   return encodeBuzzPolicyShadow(raw, { policyInstance: config.policy_instance,
     catalogueVersion: config.catalogue_version, stagingChannel: config.staging_channel,
     inboxChannel: config.inbox_channel, watchedEventIds: config.watched_event_ids,
-    trustedRepliers: config.trusted_repliers, approverMention: config.approver_mention,
+    trustedRepliers: config.trusted_repliers, recipientRoutes: config.recipient_routes, approverMention: config.approver_mention,
     projectionPolicy: config.projectionPolicy, now })
 }

@@ -85,6 +85,9 @@ Create `/etc/waggle-policy/policy.json` as `root:root` mode `0600`:
   "inbox_channel": "<Buzz hive inbox UUID>",
   "watched_event_ids": ["<64-hex signed Nostr event id>"],
   "trusted_repliers": ["<64-hex Nostr author allowed to reply directly>"],
+  "recipient_routes": {
+    "<64-hex direct-DM recipient>": { "name": "Codex - 231952cb", "inbox": "<fixed Buzz inbox UUID>" }
+  },
   "approver_mention": "",
   "poster_pubkey": "<64-hex Buzz poster pubkey controlled by Bunker>",
   "auth_tag": ["auth", "<owner pubkey>", "<conditions>", "<owner Schnorr signature>"],
@@ -95,7 +98,7 @@ Create `/etc/waggle-policy/policy.json` as `root:root` mode `0600`:
 
 Create `/etc/waggle-policy/shadow-policy.json` as `root:root` mode `0600`. It repeats only the
 projection fields—`version`, `policy_instance`, `catalogue_version`, `staging_channel`,
-`inbox_channel`, `watched_event_ids`, `trusted_repliers`, `approver_mention`, `poster_pubkey`, and `auth_tag`. It must not contain
+`inbox_channel`, `watched_event_ids`, `trusted_repliers`, `recipient_routes`, `approver_mention`, `poster_pubkey`, and `auth_tag`. It must not contain
 `endpoint`, `journal_path`, Bunker information, recovery state, or any credential path.
 
 Install the Bunker pairing as two separate `root:root` mode `0600` regular files—never
@@ -163,7 +166,7 @@ and sends only the canonical evidence packet on stdin. Do not use a management k
 user `known_hosts` file for either path.
 
 After the enforced-shadow rehearsal is clean, configure `public.policy_writer.mode` as
-`"remote-only"` for `quarantine_header` and `standing_trusted_reply`, using the distinct `waggle-policy-ingress` key and forced
+`"remote-only"` for `quarantine_header`, `standing_trusted_reply`, and `sealed_direct_envelope`, using the distinct `waggle-policy-ingress` key and forced
 account. The bridge durably stores the exact canonical request under `data/policy-requests/` before
 opening SSH. Held, ambiguous, malformed, unavailable, or unverifiable responses stay there and are
 retried byte-for-byte every fifteen seconds and after restart. Only a poster-signed terminal receipt
@@ -175,6 +178,7 @@ The bridge's writer configuration is intentionally separate from `policy_shadow`
 ```json
 {
   "mode": "remote-only",
+  "operations": ["quarantine_header", "standing_trusted_reply", "sealed_direct_envelope"],
   "policy_instance": "jaf-hive",
   "catalogue_version": "<64 hex>",
   "poster_pubkey": "<64 hex>",
@@ -186,8 +190,13 @@ The bridge's writer configuration is intentionally separate from `policy_shadow`
 }
 ```
 
-Do not remove the local poster credential yet: this cutover covers quarantine headers and standing
-trusted replies only. Mirrored feeds, live-grant participants, and other operation families remain
+`operations` is the migration switch. Existing configurations that omit it retain only the first
+two public families; direct sealed DMs remain on the local path until the policy-host
+`recipient_routes` roster is installed and `sealed_direct_envelope` is explicitly added to both
+the shadow and writer operation lists.
+
+Do not remove the local poster credential yet: this cutover covers quarantine headers, standing
+trusted replies, and direct sealed DMs only. Channel-plane delivery, mirrored feeds, live-grant participants, and other operation families remain
 separate policy decisions and must not be admitted through the standing-reply rule. The
 remaining operation families must move before the bridge host can lose all Buzz write authority.
 

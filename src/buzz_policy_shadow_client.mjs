@@ -3,7 +3,7 @@
 // projection at the shadow-owned evaluation time; no signer, receipt, endpoint, or event crosses
 // this boundary.
 import { createHash } from 'node:crypto'
-import { canonicalJson, decodePolicyRequest, decideQuarantineHeader, decideStandingTrustedReply } from './buzz_policy_core.mjs'
+import { canonicalJson, decodePolicyRequest, decideQuarantineHeader, decideStandingTrustedReply, decideSealedDirectEnvelope } from './buzz_policy_core.mjs'
 import { buildBuzzEvent, createProjectionPolicy, unsignedEventSha256 } from './buzz_policy_projection.mjs'
 
 const HEX64 = /^[0-9a-f]{64}$/
@@ -57,7 +57,7 @@ export function parseShadowResponse(raw, { requestRaw, policyInstance, catalogue
 
 export function comparePolicyShadow(requestRaw, rawResponse, {
   policyInstance, catalogueVersion, stagingChannel, inboxChannel, watchedEventIds,
-  trustedRepliers = [], approverMention = '',
+  trustedRepliers = [], recipientRoutes = {}, approverMention = '',
   posterPubkey, authTag,
 } = {}) {
   const remote = parseShadowResponse(rawResponse, { requestRaw, policyInstance, catalogueVersion })
@@ -69,7 +69,9 @@ export function comparePolicyShadow(requestRaw, rawResponse, {
   try {
     const decision = request.operation === 'quarantine_header'
       ? decideQuarantineHeader(request, { stagingChannel, watchedEventIds, approverMention })
-      : decideStandingTrustedReply(request, { inboxChannel, watchedEventIds, trustedRepliers })
+      : request.operation === 'standing_trusted_reply'
+        ? decideStandingTrustedReply(request, { inboxChannel, watchedEventIds, trustedRepliers })
+        : decideSealedDirectEnvelope(request, { recipientRoutes })
     const unsigned = buildBuzzEvent(decision, projectionPolicy, { now: remote.evaluation_time })
     localDecision = 'allow'
     localDigest = unsignedEventSha256(unsigned, projectionPolicy)

@@ -2,7 +2,7 @@
 // only canonical signed evidence.  This service independently decides, signs,
 // durably prepares, submits, and returns only a signed receipt.
 import { createHash, randomBytes } from 'node:crypto'
-import { canonicalJson, decodePolicyRequest, decideQuarantineHeader, decideStandingTrustedReply, policyIdempotencyKey } from './buzz_policy_core.mjs'
+import { canonicalJson, decodePolicyRequest, decideQuarantineHeader, decideStandingTrustedReply, decideSealedDirectEnvelope, policyIdempotencyKey } from './buzz_policy_core.mjs'
 import { buildBuzzEvent, buildNip98Authorization, buildSignedReceipt, signExactBuzzEvent, signExactNip98, submitBuzzEvent, verifySignedBuzzEvent } from './buzz_policy_artifacts.mjs'
 
 const fail = message => { throw new Error(`buzz-policy-service: ${message}`) }
@@ -22,11 +22,13 @@ function replay(record) {
 }
 
 function derive(raw, { policyInstance, catalogueVersion, stagingChannel, inboxChannel, watchedEventIds,
-  trustedRepliers = [], approverMention = '', now }) {
+  trustedRepliers = [], recipientRoutes = {}, approverMention = '', now }) {
   const request = decodePolicyRequest(raw, { policyInstance, catalogueVersion, now })
   const decision = request.operation === 'quarantine_header'
     ? decideQuarantineHeader(request, { stagingChannel, watchedEventIds, approverMention })
-    : decideStandingTrustedReply(request, { inboxChannel, watchedEventIds, trustedRepliers })
+    : request.operation === 'standing_trusted_reply'
+      ? decideStandingTrustedReply(request, { inboxChannel, watchedEventIds, trustedRepliers })
+      : decideSealedDirectEnvelope(request, { recipientRoutes })
   const requestDigest = createHash('sha256').update(raw).digest('hex')
   return { request, decision, requestDigest, key: policyIdempotencyKey(request, decision) }
 }
@@ -51,13 +53,14 @@ function deriveFreshOrPreviouslyClaimed(raw, options, journal) {
 
 export async function processBuzzPolicyRequest(raw, {
   policyInstance, catalogueVersion, stagingChannel, inboxChannel, watchedEventIds, trustedRepliers = [], approverMention = '',
+  recipientRoutes = {},
   artifactPolicy, journal, signer, fetchImpl = fetch, now = Math.floor(Date.now() / 1000),
   nonce = () => randomBytes(24).toString('base64url'),
 } = {}) {
   if (!journal || typeof journal.claim !== 'function' || typeof journal.prepare !== 'function' || typeof journal.commit !== 'function') fail('journal is unavailable')
   if (!signer || typeof signer.signEvent !== 'function') fail('signer is unavailable')
   const { request, decision, requestDigest, key } = deriveFreshOrPreviouslyClaimed(raw,
-    { policyInstance, catalogueVersion, stagingChannel, inboxChannel, watchedEventIds, trustedRepliers, approverMention, now }, journal)
+    { policyInstance, catalogueVersion, stagingChannel, inboxChannel, watchedEventIds, trustedRepliers, recipientRoutes, approverMention, now }, journal)
   const claim = journal.claim(key, requestDigest, now)
   if (!claim.claimed && claim.record.status !== 'prepared') return replay(claim.record)
 
@@ -100,13 +103,14 @@ export async function processBuzzPolicyRequest(raw, {
 // recovery secret are all required, and the receipt states only "ambiguous".
 export async function resolveBuzzPolicyOrphan(raw, expectedClaimedAt, {
   policyInstance, catalogueVersion, stagingChannel, inboxChannel, watchedEventIds, trustedRepliers = [], approverMention = '',
+  recipientRoutes = {},
   artifactPolicy, journal, signer, recoverySecret, now = Math.floor(Date.now() / 1000),
 } = {}) {
   if (!journal || typeof journal.get !== 'function' || typeof journal.resolveOrphan !== 'function') fail('recovery journal is unavailable')
   if (!signer || typeof signer.signEvent !== 'function') fail('signer is unavailable')
   if (!Number.isSafeInteger(expectedClaimedAt) || expectedClaimedAt < 0) fail('expectedClaimedAt is invalid')
   const { request, decision, requestDigest, key } = derive(raw, { policyInstance, catalogueVersion, stagingChannel,
-    inboxChannel, watchedEventIds, trustedRepliers, approverMention, now: expectedClaimedAt })
+    inboxChannel, watchedEventIds, trustedRepliers, recipientRoutes, approverMention, now: expectedClaimedAt })
   const record = journal.get(key)
   if (!record || record.status !== 'in-flight' || record.claimed_at !== expectedClaimedAt) fail('the exact inspected in-flight claim is no longer present')
   const fields = {

@@ -172,7 +172,7 @@ export async function buildSignedReceipt(fields, signer, policy, { now = Math.fl
     'source_ids', 'buzz_channel', 'endpoint_authority', 'buzz_event_id', 'result', 'reason_code', 'response_digest', 'completed_at']
   if (!fields || Object.keys(fields).sort().join(',') !== [...required].sort().join(',')) fail('receipt has an invalid shape')
   const outcomes = Object.freeze({ accepted: 'accepted', rejected: 'relay_refused', ambiguous: 'signing_outcome_unknown' })
-  if (fields.version !== 1 || !['quarantine_header', 'standing_trusted_reply'].includes(fields.operation) ||
+  if (fields.version !== 1 || !['quarantine_header', 'standing_trusted_reply', 'sealed_direct_envelope'].includes(fields.operation) ||
       outcomes[fields.result] !== fields.reason_code) fail('receipt outcome is invalid')
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(String(fields.policy_instance || ''))) fail('policy_instance is invalid')
   for (const name of ['catalogue_version', 'request_digest', 'idempotency_key', 'response_digest']) hex(fields[name], name)

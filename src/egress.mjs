@@ -16,7 +16,7 @@
 // INV-A3-5  every slot of every template declares one of the closed slot types
 import { execFile } from 'node:child_process'
 import { lstatSync } from 'node:fs'
-import { renderReleased, renderChannelPlain } from './render.mjs'
+import { renderReleased, renderChannelPlain, renderSealedDirect } from './render.mjs'
 import { renderQuarantineHeader } from './quarantine_projection.mjs'
 import { WHY_VALUES } from './lanes.mjs'   // the trust gradient's one source (#282)
 
@@ -149,6 +149,7 @@ const CATALOGUE = {
     slots: { name: 'handle', channel: 'channel', wrapJson: 'wrapJson' },
     optional: ['channel'],
     render: ({ name, channel, wrapJson }) => {
+      if (!channel) return renderSealedDirect({ name, wrapJson })
       const label = channel
         ? `New Concord channel post on **${channel}** — its outer \`p\` tag is a random decoy, not a recipient. ` +
           `Decrypt with the plane key you derive from the **${channel} community_root** ` +
