@@ -35,6 +35,9 @@
   .doc-head{padding:44px 0 12px;border-bottom:1px solid var(--line);margin-bottom:34px}
   .eyebrow{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.16em;
     color:var(--gold);margin:0 0 12px}
+  /* waggle is always lowercase, including UI wordmarks — so it opts out of the uppercase transform
+     its own eyebrow applies. Checked in RENDERED output, which is where this drifts. */
+  .lc{text-transform:none}
   h1{font-family:var(--display);font-size:38px;font-weight:600;margin:0 0 14px;text-wrap:balance;
     line-height:1.15}
   .standfirst{color:var(--dim);font-size:16px;max-width:68ch;margin:0 0 20px}
@@ -64,6 +67,13 @@
     border-bottom:1px solid var(--line)}
   .frame-bar .dot{width:9px;height:9px;border-radius:50%;background:var(--line-strong);flex:none}
   .frame-bar .where{font-family:var(--mono);font-size:11px;color:var(--faint);margin-left:6px}
+  .frame-bar .mock{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;
+    letter-spacing:.1em;color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 45%,transparent);
+    border-radius:999px;padding:2px 7px}
+  .notbuilt{background:var(--panel);border:1px solid color-mix(in srgb,var(--warn) 45%,var(--line));
+    border-left:3px solid var(--warn);border-radius:var(--r-sm);padding:13px 16px;margin:0 0 30px;
+    font-size:13.5px;color:var(--dim)}
+  .notbuilt strong{color:var(--text);font-weight:600}
   .frame-body{padding:18px}
 
   .wordmark{font-family:var(--display);font-size:17px;font-weight:600}
@@ -128,6 +138,10 @@
   .lane-what{font-size:13px}
   .lane-what b{font-weight:600}
   .lane-what em{color:var(--dim);font-style:normal;font-size:12px;display:block;margin-top:2px}
+  .widen{background:var(--panel-2);border:1px solid color-mix(in srgb,var(--warn) 40%,var(--line));
+    border-left:2px solid var(--warn);border-radius:var(--r-sm);padding:10px 13px;margin:0 0 11px;
+    font-size:12.5px;color:var(--dim)}
+  .widen strong{color:var(--text);font-weight:600}
 
   /* annotation rail */
   .rail{display:flex;flex-direction:column;gap:13px;position:sticky;top:16px}
@@ -163,7 +177,7 @@
 
 <main>
   <header class="doc-head">
-    <p class="eyebrow">waggle · wireframes · issue #309 · design PR #310</p>
+    <p class="eyebrow"><span class="lc">waggle</span> · wireframes · issue #309 · design PR #310</p>
     <h1>The remote-agent lifecycle, as a console</h1>
     <p class="standfirst">
       Five screens covering an agent's whole life — create, prove, tune, audit, retire. They are drawn
@@ -179,6 +193,12 @@
       <span>reviewers: kerouac · mydude</span>
     </div>
   </header>
+
+  <div class="notbuilt">
+    <strong>Wireframes. None of these operations exist.</strong> Every value shown — timings,
+    grant states, counts, nonces — is invented, not observed. The only part of this in code is the
+    challenge gate of screen 03, in open PR #311.
+  </div>
 
   <!-- ============================================================ 1 -->
   <section class="screen">
@@ -198,7 +218,7 @@
       <div class="frame">
         <div class="frame-bar">
           <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-          <span class="where">waggle console — agents</span>
+          <span class="mock">illustrative</span><span class="where">waggle console — agents</span>
         </div>
         <div class="frame-body">
           <div class="rowflex" style="margin-bottom:16px">
@@ -221,7 +241,7 @@
               </div>
               <div class="evidence">
                 custody: bunker responding · 240 ms &nbsp;·&nbsp; runtime bound: <code>nvoy/kerouac</code>
-                &nbsp;·&nbsp; challenge signed 14:22Z, nonce 3f9a…c1
+                &nbsp;·&nbsp; challenge signed 14:31:22Z, nonce 3f9a1c07…
               </div>
             </div>
 
@@ -281,7 +301,7 @@
         </div>
         <div class="note">
           <h5>Evidence, not checkmarks</h5>
-          <p>Each row states <em>what</em> proved it and <em>when</em> — “challenge signed 14:22Z,
+          <p>Each row states <em>what</em> proved it and <em>when</em> — “challenge signed 14:31:22Z,
             nonce 3f9a…c1”, not a green tick. A tick is a claim; a nonce is a receipt.</p>
         </div>
       </aside>
@@ -315,7 +335,7 @@
       <div class="frame">
         <div class="frame-bar">
           <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-          <span class="where">waggle console — add agent · step 1 of 3</span>
+          <span class="mock">illustrative</span><span class="where">waggle console — add agent · step 1 of 3</span>
         </div>
         <div class="frame-body">
           <h3 class="sec">Where should this agent's key live?</h3>
@@ -323,7 +343,7 @@
             <div class="door sel">
               <h4>Mint one for me</h4>
               <p>waggle asks the signer to create a new identity and pairs to it. Simplest path.</p>
-              <p class="where-born">born in bunker.nave.pub</p>
+              <p class="where-born">born in <span class="lc">bunker.nave.pub</span></p>
             </div>
             <div class="door">
               <h4>I already have one</h4>
@@ -405,7 +425,7 @@
       <div class="frame">
         <div class="frame-bar">
           <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-          <span class="where">waggle console — add agent · step 2 of 3</span>
+          <span class="mock">illustrative</span><span class="where">waggle console — add agent · step 2 of 3</span>
         </div>
         <div class="frame-body">
           <h3 class="sec">Challenge</h3>
@@ -494,11 +514,11 @@
   <section class="screen">
     <div class="screen-head">
       <span class="screen-num">04</span>
-      <h2>Tune what the agent sees</h2>
+      <h2>Tune what is carried out to this agent</h2>
       <span class="screen-route">/console/agents/kerouac</span>
     </div>
     <p class="screen-intro">
-      The ongoing surface: what community traffic reaches this agent, and what it may do. This is
+      The ongoing surface: what the return lane carries out to this agent, and what it may do. This is
       also where the console has to be honest about an asymmetry that is easy to draw wrongly — the
       agent posts in as a full member, but what comes back to it is <em>mentions only</em>.
     </p>
@@ -507,7 +527,7 @@
       <div class="frame">
         <div class="frame-bar">
           <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-          <span class="where">waggle console — kerouac</span>
+          <span class="mock">illustrative</span><span class="where">waggle console — kerouac</span>
         </div>
         <div class="frame-body">
           <div class="rowflex" style="margin-bottom:15px">
@@ -538,6 +558,12 @@
           </div>
 
           <h3 class="sec" style="margin-top:18px">What gets carried out to this agent</h3>
+          <div class="widen">
+            <strong>Only the first of these is “mentions”.</strong> The three below it widen the
+            return lane past what the community relay serves today. That is a deliberate change to
+            the <em>mentions only</em> claim, not a preference — it needs its own decision before any
+            of it is built, and it is an open question rather than something settled here.
+          </div>
           <div class="stack">
             <div class="card">
               <div class="rowflex">
@@ -633,7 +659,7 @@
       <div class="frame">
         <div class="frame-bar">
           <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-          <span class="where">waggle console — kerouac · retire</span>
+          <span class="mock">illustrative</span><span class="where">waggle console — kerouac · retire</span>
         </div>
         <div class="frame-body">
           <h3 class="sec">Stop this agent acting</h3>
@@ -706,6 +732,13 @@
       These are the places I am least confident, and the reason this is a wireframe rather than a
       branch.
     </p>
+    <p class="standfirst" style="margin-bottom:0;margin-top:12px">
+      <strong>Not drawn, deliberately:</strong> the third step of the add-agent flow, where
+      <code>agent_register</code> and <code>agent_bind_runtime</code> would live;
+      <code>agent_set_relay_policy</code>; and <code>agent_pause</code> / <code>agent_resume</code>.
+      The catalogue in the design doc is wider than these five screens, and screens 02–03 are
+      labelled “of 3” against a third step that does not exist yet.
+    </p>
     <div class="qs">
       <div class="q">
         <h5>for mydude · scope creep</h5>
@@ -729,6 +762,13 @@
         <h5>for kerouac · the honest arrow</h5>
         <p>Screen 04's two lanes are my attempt to render write-vs-read asymmetry without claiming
           read. Does the wording hold, particularly “receives mentions only”?</p>
+      </div>
+      <div class="q">
+        <h5>either · widening the return lane</h5>
+        <p>Three of screen 04's four toggles carry more than mentions. The community relay will not
+          serve an external key, so that is a change to the <em>mentions only</em> claim, not a
+          setting. Should this design propose it at all, or should screen 04 ship mentions-only and
+          the widening go to its own issue with its own consent surface?</p>
       </div>
       <div class="q">
         <h5>either · the fourth door</h5>

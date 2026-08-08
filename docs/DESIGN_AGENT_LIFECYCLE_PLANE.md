@@ -1,7 +1,11 @@
 # Design — the remote-agent lifecycle plane
 
-waggle/console is where a remote agent is created, granted, tuned, audited and retired. This
-document says how that is possible without inventing a transport, a vocabulary or a CLI role.
+> **Status: design only. Nothing described here is built.** It stacks on PR #307 (open, unmerged).
+> Step 3 of the build order — the challenge gate — is in PR #311 (open). Everything else is a
+> proposal, and the section below on the actuator is an untested one.
+
+waggle/console **should be** where a remote agent is created, granted, tuned, audited and retired.
+This document argues that is possible without inventing a transport, a vocabulary or a CLI role.
 
 Scope note: #305 installs **an owner, once**. This installs **an agent, repeatedly**, and keeps
 managing it for the rest of its life. They share machinery; they are not the same journey.
@@ -15,20 +19,28 @@ or being told to go read a runbook — ends with an agent that is admitted, wake
 visibly proven so. Later, the same surface is where they tune what that agent is allowed to see,
 watch what it actually did, and take its authority away.
 
-The agent's private key is never in the browser, never on the waggle host, and never in this
+The agent's private key **must never be** in the browser, on the waggle host, or in this
 repository.
 
 ---
 
-## Two planes already exist. Lifecycle is a catalogue on them, not a third plane.
+## Two planes are already designed. Lifecycle is a catalogue on them, not a third plane.
 
-**The projection plane (read).** #307 establishes it: mode-0600 private state holding no
+**The projection plane (read).** #307 *proposes* it — open and unmerged: mode-0600 private state holding no
 credentials → a validated, secret-free public receipt → the browser renders the receipt and
 nothing else. The browser has no access to private installer state and no write access to
 `config.json`.
 
-**The actuator plane (write).** `src/buzz_policy_*` is already a signed-command executor with the
-exact properties lifecycle needs, and they were hard-won rather than incidental:
+**The actuator plane (write).** Two distinct mechanisms exist, and an earlier draft of this
+document merged them. They are not the same lane, and the difference decides where lifecycle goes:
+
+- **The approver-signed control-command lane** (`handleWatchlistControlCommand` in `src/bridge.mjs`,
+  kind `CONTROL_COMMAND_KIND` filtered on `authors: PUB.approvers` and a `d` tag). This is what
+  moves a watchlist entry today. Its input is the **owner's intent**, signed.
+- **The off-box policy service** (`src/buzz_policy_*`) — a forced-command runner over stdin whose
+  input is **canonical third-party evidence**, decided by a credential-free core.
+
+The policy service has the stronger properties, and they were hard-won rather than incidental:
 
 - a **closed catalogue** — `BUZZ_POLICY_OPERATIONS` is frozen; a caller *names* an operation, and
   cannot supply rendered prose or choose a destination;
@@ -41,13 +53,22 @@ exact properties lifecycle needs, and they were hard-won rather than incidental:
   deliberately no dead-letter limit, because "the service was down" must never become permission to
   sign with a lesser key.
 
-Agent lifecycle is therefore **one more closed catalogue on the actuator plane, plus per-agent rows
-in the projection**. PR #307 states the governing constraint plainly — *no second setup vocabulary
-is introduced* — and this design is bound by it.
+But the property that makes the policy service strong is the one that does **not** transfer.
+`agent_pause` has no third-party signed evidence behind it; the owner's intent *is* the input. That
+is instructions, which is precisely what the policy core exists to refuse — and its catalogue is
+frozen at two operations (`quarantine_header`, `standing_trusted_reply`), both of which are Buzz
+*rendering* rather than configuration.
 
-That is the whole answer to "do we need a CLI role": for the **operations**, no. The console signs;
-the bridge verifies against `public.approvers`, dedups by id, applies one allowed change, and
-acknowledges in signed state. That is the mechanism that already moves a watchlist entry.
+So the proposal is: agent lifecycle **could be** one more closed catalogue, and the
+**control-command lane is the likelier home**, with per-agent rows in the projection. The console
+signs; the bridge verifies against `public.approvers`, dedups by id, applies one allowed change, and
+acknowledges in signed state — the shape that already moves a watchlist entry. Whether the off-box
+policy actuator has any role here is **open**, and is the first thing a reviewer should attack.
+
+PR #307 states the governing constraint plainly — *no second setup vocabulary is introduced* — and
+this design is bound by it either way.
+
+That is the answer to "do we need a CLI role": for the **operations**, no.
 
 ---
 
@@ -61,7 +82,9 @@ both are forced:
    DNS rebinding (#145). Generation happens in the CLI; only the npub and a Bunker URI cross over.
 2. **Anything that must touch the host** — filesystem, systemd, firewall. Already #305's territory.
 
-Everything else — grant, bind, tune, pause, audit, revoke — is console-signed.
+Everything else — grant, bind, tune, pause, audit, revoke — is console-signed. `agent_destroy_unit`
+straddles the line and is called out in the catalogue below: the *intent* is console-signed, the
+*execution* removes a runtime and its namespace and so belongs to boundary 2.
 
 ---
 
@@ -119,7 +142,8 @@ reboot. #307 stores *evidence-bound* transitions, which is the right primitive. 
 
 Grant active, bunker responsive, unit running, relay serving — all re-derived on view, every time.
 A saved `passed` renders as *"passed at T, on this evidence"*, never as *"is currently true"*. #308
-was exactly this failure: saved progress that no longer matched the world.
+is the live instance and is still **open**: it exists because "implemented", "deployed", "attached"
+and "live-proven" had been collapsed into a single saved "pending" more than once.
 
 ---
 
@@ -131,11 +155,11 @@ Closed, named, signed by an approver, executed by the bridge, acknowledged in si
 |---|---|---|
 | `agent_register` | bind an npub + Bunker reference to an agent row | yes |
 | `agent_bind_runtime` | associate one isolated runtime/MCP namespace | yes |
-| `agent_set_visibility` | tune what community traffic the agent may see | yes |
+| `agent_set_visibility` | tune what the return lane carries out to this agent | yes |
 | `agent_set_relay_policy` | per-agent relay/rebroadcast configuration | yes |
 | `agent_pause` / `agent_resume` | stop delivery without touching custody | yes |
 | `agent_revoke` | withdraw authority | yes — re-grant |
-| `agent_destroy_unit` | destroy the deployed unit | **no** |
+| `agent_destroy_unit` | destroy the deployed unit — **host-touching: console-signed intent, CLI/#305 execution** | **no** |
 
 **Retire is two operations, not one, because they have opposite reversibility.** Revoking authority
 is instant, safe, and console-signed: the agent stops being able to act, and nothing is lost.
@@ -168,7 +192,7 @@ squash-merged gets orphaned, and today one was auto-**closed** that way.
    controls asserting **both** directions — that a non-approver signature is refused *and* that a
    legitimate approver still gets through. A guard asserted only to reject cannot be told apart
    from one that rejects everything; that exact gap shipped a silent outage on 2026-08-01.
-3. Challenge-sign verification, shared by all three provenance doors.
+3. Challenge-sign verification, shared by all three provenance doors — **in PR #311 (open)**.
 4. The three doors in the console, with the CLI hand-off for make-your-own.
 5. Revoke, then destroy behind its confirmation token.
 
