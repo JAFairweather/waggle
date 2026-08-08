@@ -119,7 +119,9 @@ export function verifyAgentChallenge(challenge, response, {
 
   // Identity before signature: a valid signature by the wrong key is the interesting attack, and
   // saying "not the identity this connection claims" is more useful than "bad signature". It
-  // discloses nothing — the remote party supplied the identity in the challenge it already holds.
+  // discloses nothing HERE — the compared value is the agent's PUBLIC key, which the remote party
+  // already holds in the challenge. Do not copy this ordering into a gate that compares a SECRET:
+  // there, answering before the signature check turns the error into an oracle. (Reviewed #311.)
   if (wire.pubkey !== challenge.agent_pubkey) {
     fail('response was signed by a different key than the one this connection claims')
   }
