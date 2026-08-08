@@ -97,7 +97,15 @@ acceptance test.
 |---|---|---|
 | **Mint** (the simple option) | in `bunker.nave.pub`, in custody | a Bunker URI + revocable NIP-46 client key |
 | **BYOK** | already yours, already in a signer | a Bunker URI + revocable client key |
-| **Make your own** (guided CLI prompts) | locally, in the CLI | an npub, then a Bunker URI once paired |
+| **Make your own** (guided CLI prompts) | on the owner's own machine, in the CLI | an npub, then a Bunker URI once paired |
+
+**Where the connection credential lives — and why it does not dent the one-key claim.** A NIP-46
+client key *is* a private key, and a Bunker URI embeds a pairing secret. So "waggle receives a
+Bunker URI + revocable client key" has to say *which* waggle. It is not the bridge and not the
+console: those credentials seat directly into the **agent's own runtime unit**, across the CLI /
+#305 boundary, and never transit console or bridge state. An agent row in the projection holds a
+**reference** to that unit's credential, never the credential. The bridge still holds exactly one
+private key — its own — and each agent runtime holds only its own revocable connection.
 
 **Mint must mint into the signer, never onto the box.** waggle holds exactly one private key — its
 own. An agent nsec written to the waggle host would give it a second, and would break the single
@@ -158,12 +166,19 @@ Closed, named, signed by an approver, executed by the bridge, acknowledged in si
 | `agent_set_visibility` | tune what the return lane carries out to this agent | yes |
 | `agent_set_relay_policy` | per-agent relay/rebroadcast configuration | yes |
 | `agent_pause` / `agent_resume` | stop delivery without touching custody | yes |
-| `agent_revoke` | withdraw authority | yes — re-grant |
+| `agent_revoke` | withdraw **bridge-side admission**, which the bridge issued and can revoke | yes — re-grant |
 | `agent_destroy_unit` | destroy the deployed unit — **host-touching: console-signed intent, CLI/#305 execution** | **no** |
+
+**`agent_revoke` withdraws only what the bridge itself granted.** A grantor-signed data grant is
+not the bridge's to withdraw — only its issuer can relinquish or revoke it. The console must
+therefore show admission and data grants as separate rows with separate remedies, or an owner will
+press revoke, watch the admission drop, and reasonably conclude the agent has lost an access it
+still holds.
 
 **Retire is two operations, not one, because they have opposite reversibility.** Revoking authority
 is instant, safe, and console-signed: the agent stops being able to act, and nothing is lost.
-Destroying the unit is irreversible — `broker_credentials` is `reRenderable: false`, so it forces a
+Destroying the unit is irreversible — `broker_credentials` is `reRenderable: false` (nvoy #160, and
+the re-pair cost rests on the spent pairing secret), so it forces a
 Bunker re-pair — and must carry an explicit confirmation token in the signed command rather than
 being a button next to `pause`. The console should make revoke the obvious action and destroy the
 deliberate one.
