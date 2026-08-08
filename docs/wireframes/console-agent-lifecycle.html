@@ -1,0 +1,754 @@
+<title>waggle console — remote-agent lifecycle wireframes</title>
+<style>
+  /* Tokens lifted verbatim from console/index.html. These wireframes are meant to be argued with
+     as the console, not as a parallel design language, so nothing here invents a palette. */
+  :root {
+    --ground:#0b0906; --panel:#14100a; --panel-2:#1b1409; --line:#2a2317; --line-strong:#3a3020;
+    --field:#0d0a06; --text:#f4efe4; --dim:#9c927f; --faint:#6f6555;
+    --gold:#c39a56; --gold-bright:#e2c079;
+    --accent:#cf8a2e; --accent-bright:#e8a545; --accent-ink:#0b0906;
+    --good:#8fae6a; --warn:#d9a648; --critical:#c0705a;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","Inter",Roboto,"Helvetica Neue",Arial,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Roboto Mono",monospace;
+    --display:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+    --r-sm:6px; --r-md:10px;
+  }
+  @media (prefers-color-scheme: light){ :root:not([data-theme="dark"]){
+    --ground:#f5f0e4; --panel:#fffdf7; --panel-2:#ece4d2; --line:#ddd2ba; --line-strong:#c8b89a;
+    --field:#fffdf7; --text:#241d12; --dim:#6f6553; --faint:#8a7f66;
+    --gold:#8a6a24; --gold-bright:#6d5316;
+    --accent:#8a5a14; --accent-bright:#a86f1e; --accent-ink:#fffdf7;
+    --good:#4f7a34; --warn:#9a6a12; --critical:#a2482f; } }
+  :root[data-theme="light"]{ --ground:#f5f0e4; --panel:#fffdf7; --panel-2:#ece4d2; --line:#ddd2ba;
+    --line-strong:#c8b89a; --field:#fffdf7; --text:#241d12; --dim:#6f6553; --faint:#8a7f66;
+    --gold:#8a6a24; --gold-bright:#6d5316;
+    --accent:#8a5a14; --accent-bright:#a86f1e; --accent-ink:#fffdf7;
+    --good:#4f7a34; --warn:#9a6a12; --critical:#a2482f; }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--text);font-family:var(--sans);line-height:1.55;
+    -webkit-font-smoothing:antialiased}
+  main{max-width:1180px;margin:0 auto;padding:0 22px 80px}
+  code,.mono{font-family:var(--mono)}
+
+  /* ---- document furniture ---------------------------------------------------------------- */
+  .doc-head{padding:44px 0 12px;border-bottom:1px solid var(--line);margin-bottom:34px}
+  .eyebrow{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.16em;
+    color:var(--gold);margin:0 0 12px}
+  h1{font-family:var(--display);font-size:38px;font-weight:600;margin:0 0 14px;text-wrap:balance;
+    line-height:1.15}
+  .standfirst{color:var(--dim);font-size:16px;max-width:68ch;margin:0 0 20px}
+  .standfirst strong{color:var(--text);font-weight:600}
+  .meta{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 6px}
+  .meta span{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--line);
+    border-radius:var(--r-sm);padding:4px 9px}
+
+  /* ---- screen block ---------------------------------------------------------------------- */
+  .screen{margin:0 0 52px;scroll-margin-top:20px}
+  .screen-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:0 0 4px;
+    padding-bottom:10px;border-bottom:1px solid var(--line)}
+  .screen-num{font-family:var(--mono);font-size:12px;color:var(--accent);letter-spacing:.1em;
+    font-weight:700}
+  .screen-head h2{font-family:var(--display);font-size:25px;font-weight:600;margin:0;flex:1;
+    min-width:min(100%,320px)}
+  .screen-route{font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+  .screen-intro{color:var(--dim);font-size:14.5px;max-width:72ch;margin:12px 0 18px}
+
+  .split{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px;align-items:start}
+  @media (max-width:900px){ .split{grid-template-columns:minmax(0,1fr)} }
+
+  /* ---- the mock frame: real console components ------------------------------------------- */
+  .frame{background:var(--panel);border:1px solid var(--line-strong);border-radius:var(--r-md);
+    overflow:hidden}
+  .frame-bar{display:flex;align-items:center;gap:9px;padding:9px 14px;background:var(--panel-2);
+    border-bottom:1px solid var(--line)}
+  .frame-bar .dot{width:9px;height:9px;border-radius:50%;background:var(--line-strong);flex:none}
+  .frame-bar .where{font-family:var(--mono);font-size:11px;color:var(--faint);margin-left:6px}
+  .frame-body{padding:18px}
+
+  .wordmark{font-family:var(--display);font-size:17px;font-weight:600}
+  .wordmark span{color:var(--dim);font-weight:400;font-size:13px;font-family:var(--sans)}
+
+  h3.sec{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.14em;
+    color:var(--dim);margin:0 0 11px;font-weight:600}
+  .card{background:var(--panel-2);border:1px solid var(--line);border-radius:var(--r-sm);
+    padding:13px 15px}
+  .stack{display:flex;flex-direction:column;gap:11px}
+  .rowflex{display:flex;gap:11px;flex-wrap:wrap;align-items:center}
+  .grow{flex:1;min-width:0}
+
+  /* agent row */
+  .agent-name{font-family:var(--display);font-size:17px;font-weight:600;line-height:1.2}
+  .npub{font-family:var(--mono);font-size:11.5px;color:var(--faint);word-break:break-all}
+
+  /* pills: state encoded in form as well as colour */
+  .pill{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:10.5px;
+    text-transform:uppercase;letter-spacing:.08em;padding:3px 8px;border-radius:999px;
+    border:1px solid var(--line-strong);color:var(--dim);white-space:nowrap}
+  .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+  .pill.on{color:var(--good);border-color:color-mix(in srgb,var(--good) 45%,transparent)}
+  .pill.off{color:var(--faint);border-style:dashed}
+  .pill.off::before{background:transparent;box-shadow:inset 0 0 0 1px currentColor}
+  .pill.unk{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
+  .pill.unk::before{border-radius:1px;transform:rotate(45deg)}
+  .pill.bad{color:var(--critical);border-color:color-mix(in srgb,var(--critical) 50%,transparent)}
+
+  .evidence{font-family:var(--mono);font-size:10.5px;color:var(--faint);margin-top:5px}
+
+  /* buttons */
+  .btn{background:var(--accent);color:var(--accent-ink);border:1px solid var(--accent);
+    border-radius:var(--r-sm);padding:8px 15px;font-weight:700;font-size:13px;font-family:inherit;
+    cursor:pointer}
+  .btn.ghost{background:transparent;color:var(--text);border-color:var(--line-strong);font-weight:600}
+  .btn.danger{background:transparent;color:var(--critical);
+    border-color:color-mix(in srgb,var(--critical) 55%,transparent)}
+  .btn:focus-visible{outline:2px solid var(--gold-bright);outline-offset:2px}
+
+  label.f{display:block;font-family:var(--mono);font-size:10.5px;color:var(--dim);
+    margin:0 0 5px;text-transform:uppercase;letter-spacing:.1em}
+  .input{background:var(--field);border:1px solid var(--line);border-radius:var(--r-sm);
+    padding:9px 11px;font-family:var(--mono);font-size:12.5px;color:var(--faint)}
+
+  /* door cards */
+  .doors{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:11px}
+  .door{background:var(--panel-2);border:1px solid var(--line);border-radius:var(--r-sm);
+    padding:14px;display:flex;flex-direction:column;gap:7px}
+  .door.sel{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+  .door h4{margin:0;font-family:var(--display);font-size:16px;font-weight:600}
+  .door p{margin:0;font-size:12.5px;color:var(--dim)}
+  .door .where-born{font-family:var(--mono);font-size:10px;text-transform:uppercase;
+    letter-spacing:.08em;color:var(--gold);margin-top:auto;padding-top:6px}
+
+  /* the honest asymmetry diagram */
+  .lanes{display:flex;flex-direction:column;gap:8px}
+  .lane{display:grid;grid-template-columns:74px 1fr;gap:11px;align-items:center;
+    background:var(--panel-2);border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 13px}
+  .lane-dir{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;
+    color:var(--gold)}
+  .lane-what{font-size:13px}
+  .lane-what b{font-weight:600}
+  .lane-what em{color:var(--dim);font-style:normal;font-size:12px;display:block;margin-top:2px}
+
+  /* annotation rail */
+  .rail{display:flex;flex-direction:column;gap:13px;position:sticky;top:16px}
+  .note{border-left:2px solid var(--line-strong);padding:0 0 0 12px}
+  .note h5{margin:0 0 4px;font-family:var(--mono);font-size:10.5px;text-transform:uppercase;
+    letter-spacing:.1em;color:var(--gold);font-weight:600}
+  .note p{margin:0;font-size:12.5px;color:var(--dim);line-height:1.5}
+  .note p + p{margin-top:6px}
+  .note code{font-size:11.5px;color:var(--text);background:var(--panel-2);padding:1px 4px;
+    border-radius:3px}
+  .note.trap{border-left-color:var(--critical)}
+  .note.trap h5{color:var(--critical)}
+
+  .refuses{margin-top:16px;background:var(--panel);border:1px solid var(--line);
+    border-left:2px solid var(--gold);border-radius:var(--r-sm);padding:12px 15px}
+  .refuses h5{margin:0 0 7px;font-family:var(--mono);font-size:10.5px;text-transform:uppercase;
+    letter-spacing:.1em;color:var(--gold);font-weight:600}
+  .refuses ul{margin:0;padding-left:17px;font-size:13px;color:var(--dim)}
+  .refuses li{margin-bottom:3px}
+  .refuses li::marker{color:var(--faint)}
+
+  .open-qs{border-top:1px solid var(--line);margin-top:20px;padding-top:26px}
+  .open-qs h2{font-family:var(--display);font-size:25px;margin:0 0 6px;font-weight:600}
+  .qs{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:13px;margin-top:18px}
+  .q{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-sm);padding:14px 16px}
+  .q h5{margin:0 0 6px;font-family:var(--mono);font-size:10.5px;text-transform:uppercase;
+    letter-spacing:.1em;color:var(--accent);font-weight:600}
+  .q p{margin:0;font-size:13px;color:var(--dim)}
+  .foot{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);font-size:12.5px;
+    color:var(--faint);max-width:74ch}
+  @media (prefers-reduced-motion: reduce){ *{animation:none!important;transition:none!important} }
+</style>
+
+<main>
+  <header class="doc-head">
+    <p class="eyebrow">waggle · wireframes · issue #309 · design PR #310</p>
+    <h1>The remote-agent lifecycle, as a console</h1>
+    <p class="standfirst">
+      Five screens covering an agent's whole life — create, prove, tune, audit, retire. They are drawn
+      in the console's own tokens rather than a wireframe kit, because the argument worth having is
+      about <strong>what each screen claims and how it proves it</strong>, not about spacing.
+      Every screen carries a note on what it <strong>refuses</strong> to do; in this project that
+      has usually been the load-bearing half.
+    </p>
+    <div class="meta">
+      <span>stacks on PR #307</span>
+      <span>no new transport</span>
+      <span>no CLI role for operations</span>
+      <span>reviewers: kerouac · mydude</span>
+    </div>
+  </header>
+
+  <!-- ============================================================ 1 -->
+  <section class="screen">
+    <div class="screen-head">
+      <span class="screen-num">01</span>
+      <h2>Agents</h2>
+      <span class="screen-route">/console/agents</span>
+    </div>
+    <p class="screen-intro">
+      The index is the honest one. Each row re-derives its live properties on view; nothing here is
+      read back from saved progress. The three authorities are shown separately because they
+      <em>are</em> separate — collapsing them into one “admitted” badge is how you ship an agent that
+      looks fine and never wakes.
+    </p>
+
+    <div class="split">
+      <div class="frame">
+        <div class="frame-bar">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="where">waggle console — agents</span>
+        </div>
+        <div class="frame-body">
+          <div class="rowflex" style="margin-bottom:16px">
+            <div class="grow"><span class="wordmark">waggle <span>· agents</span></span></div>
+            <button class="btn">Add agent</button>
+          </div>
+
+          <h3 class="sec">Three agents · checked just now</h3>
+          <div class="stack">
+
+            <div class="card">
+              <div class="rowflex">
+                <div class="grow">
+                  <div class="agent-name">kerouac</div>
+                  <div class="npub">npub1q9v…7t2x</div>
+                </div>
+                <span class="pill on">admit</span>
+                <span class="pill on">task</span>
+                <span class="pill on">task-relay</span>
+              </div>
+              <div class="evidence">
+                custody: bunker responding · 240 ms &nbsp;·&nbsp; runtime bound: <code>nvoy/kerouac</code>
+                &nbsp;·&nbsp; challenge signed 14:22Z, nonce 3f9a…c1
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="rowflex">
+                <div class="grow">
+                  <div class="agent-name">dennis</div>
+                  <div class="npub">npub1x4k…9m0d</div>
+                </div>
+                <span class="pill on">admit</span>
+                <span class="pill off">task</span>
+                <span class="pill off">task-relay</span>
+              </div>
+              <div class="evidence">
+                custody: bunker responding · 310 ms &nbsp;·&nbsp; runtime bound: <code>nvoy/dennis</code>
+              </div>
+              <div class="evidence" style="color:var(--warn)">
+                admitted, not wakeable — this agent can be spoken about but cannot be woken.
+                Request <code>task</code> to change that.
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="rowflex">
+                <div class="grow">
+                  <div class="agent-name">neil</div>
+                  <div class="npub">npub1h7c…2b8s</div>
+                </div>
+                <span class="pill unk">admit ?</span>
+                <span class="pill unk">task ?</span>
+                <span class="pill unk">task-relay ?</span>
+              </div>
+              <div class="evidence" style="color:var(--warn)">
+                grant state unavailable — the relay query failed at 14:24Z. This is not “no grants”.
+                Last known good: all three active, 13:58Z. <a href="#" style="color:var(--gold-bright)">Retry</a>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <aside class="rail">
+        <div class="note trap">
+          <h5>Trap · admitted ≠ wakeable</h5>
+          <p><code>admit</code>, <code>task</code> and <code>task-relay</code> are deliberately
+            separate authorities. An <code>admit</code> grant alone cannot wake an agent.</p>
+          <p>Dennis's row shows the exact failure an owner would otherwise spend an afternoon on:
+            everything looks granted, nothing answers.</p>
+        </div>
+        <div class="note trap">
+          <h5>Trap · empty ≠ absent</h5>
+          <p>Neil's row is the one that matters. A failed query and a genuinely empty grant list
+            render identically unless you force them apart.</p>
+          <p>So the plane renders <b>unavailable</b> in warn, keeps the last known good with its
+            timestamp, and never draws an empty list it cannot vouch for.</p>
+        </div>
+        <div class="note">
+          <h5>Evidence, not checkmarks</h5>
+          <p>Each row states <em>what</em> proved it and <em>when</em> — “challenge signed 14:22Z,
+            nonce 3f9a…c1”, not a green tick. A tick is a claim; a nonce is a receipt.</p>
+        </div>
+      </aside>
+    </div>
+
+    <div class="refuses">
+      <h5>What this screen refuses to do</h5>
+      <ul>
+        <li>Render a green state from saved progress — every pill on this page is re-derived on view.</li>
+        <li>Show an empty list when it means “I could not tell”.</li>
+        <li>Collapse three authorities into one badge.</li>
+        <li>Display a channel UUID, host address, or any grant detail beyond presence.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============================================================ 2 -->
+  <section class="screen">
+    <div class="screen-head">
+      <span class="screen-num">02</span>
+      <h2>Add an agent — three doors</h2>
+      <span class="screen-route">/console/agents/new</span>
+    </div>
+    <p class="screen-intro">
+      The doors differ in exactly one respect: where the private key is born. Everything downstream
+      is identical, so the screen says that plainly instead of presenting three unrelated-looking
+      workflows.
+    </p>
+
+    <div class="split">
+      <div class="frame">
+        <div class="frame-bar">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="where">waggle console — add agent · step 1 of 3</span>
+        </div>
+        <div class="frame-body">
+          <h3 class="sec">Where should this agent's key live?</h3>
+          <div class="doors">
+            <div class="door sel">
+              <h4>Mint one for me</h4>
+              <p>waggle asks the signer to create a new identity and pairs to it. Simplest path.</p>
+              <p class="where-born">born in bunker.nave.pub</p>
+            </div>
+            <div class="door">
+              <h4>I already have one</h4>
+              <p>Paste a Bunker connection you control. Nothing about your key leaves your signer.</p>
+              <p class="where-born">already in your signer</p>
+            </div>
+            <div class="door">
+              <h4>Make my own</h4>
+              <p>Generate it yourself at the terminal. The console hands you a command and waits.</p>
+              <p class="where-born">born on your machine</p>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top:16px">
+            <h3 class="sec" style="margin-bottom:8px">Minting into custody</h3>
+            <p style="margin:0;font-size:13px;color:var(--dim)">
+              The new key is created inside the signer and stays there. waggle receives a connection
+              string and a revocable client key — never the key itself. waggle holds exactly one
+              private key, its own, and minting must not give it a second.
+            </p>
+          </div>
+
+          <div class="rowflex" style="margin-top:16px">
+            <button class="btn ghost">Back</button>
+            <div class="grow"></div>
+            <button class="btn">Continue to proof</button>
+          </div>
+        </div>
+      </div>
+
+      <aside class="rail">
+        <div class="note">
+          <h5>Why mint stays on the menu</h5>
+          <p>Simplicity was worth keeping, and it costs nothing — <em>provided</em> the key is born
+            in the signer rather than on the box.</p>
+          <p>A minted nsec written to the waggle host would give waggle a second private key and
+            break the claim this project protects hardest.</p>
+        </div>
+        <div class="note">
+          <h5>Why the third door is a terminal</h5>
+          <p>A key generated in a browser tab lives in a JS heap the console cannot prove it
+            discarded, in an origin that already needed a <code>Host</code>-header defence against
+            DNS rebinding.</p>
+          <p>So the CLI is not a leftover here. It is the only place this flow can honestly happen.</p>
+        </div>
+        <div class="note">
+          <h5>One vocabulary</h5>
+          <p>All three doors converge on step 2. The console does not grow three parallel state
+            machines — PR #307's rule is that no second setup vocabulary gets introduced.</p>
+        </div>
+      </aside>
+    </div>
+
+    <div class="refuses">
+      <h5>What this screen refuses to do</h5>
+      <ul>
+        <li>Accept a pasted <code>nsec</code>, in any door, ever.</li>
+        <li>Generate key material in the browser.</li>
+        <li>Write an agent key to the waggle host.</li>
+        <li>Treat the choice of door as changing what counts as proof.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============================================================ 3 -->
+  <section class="screen">
+    <div class="screen-head">
+      <span class="screen-num">03</span>
+      <h2>Prove control</h2>
+      <span class="screen-route">/console/agents/new · step 2</span>
+    </div>
+    <p class="screen-intro">
+      One gate, identical for all three doors. The agent signs a nonce this session generated. A
+      pasted npub proves nothing, and possession of a connection string proves nothing either — it
+      can be stale, revoked, or already spent.
+    </p>
+
+    <div class="split">
+      <div class="frame">
+        <div class="frame-bar">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="where">waggle console — add agent · step 2 of 3</span>
+        </div>
+        <div class="frame-body">
+          <h3 class="sec">Challenge</h3>
+          <div class="card">
+            <label class="f">nonce · generated 14:31:07Z · expires in 4:52</label>
+            <div class="input">3f9a1c07d4e28b6a5510cc9e17ff20bd</div>
+            <div class="evidence" style="margin-top:9px">
+              Approve the signing request in your signer. waggle is waiting for a signature over this
+              exact value.
+            </div>
+          </div>
+
+          <h3 class="sec" style="margin-top:18px">Result</h3>
+          <div class="stack">
+            <div class="card">
+              <div class="rowflex">
+                <span class="pill on">signature verified</span>
+                <div class="grow"></div>
+                <span class="evidence">14:31:22Z</span>
+              </div>
+              <div class="evidence" style="margin-top:7px">
+                signed by <code>npub1q9v…7t2x</code> — matches the identity this connection claims.
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="rowflex">
+                <span class="pill on">negative control passed</span>
+                <div class="grow"></div>
+                <span class="evidence">14:31:23Z</span>
+              </div>
+              <div class="evidence" style="margin-top:7px">
+                a deliberately wrong nonce was rejected — so this check can fail, and does.
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top:14px;border-color:color-mix(in srgb,var(--warn) 40%,var(--line))">
+            <div class="rowflex" style="margin-bottom:6px">
+              <span class="pill bad">pairing rejected</span>
+              <span class="evidence">if you see “Unknown client”</span>
+            </div>
+            <p style="margin:0;font-size:12.5px;color:var(--dim)">
+              That message usually means the pairing secret has already been used — not that
+              anything is misconfigured. Pairing secrets are effectively single-use. Issue a fresh
+              one in your signer rather than re-pasting this one.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <aside class="rail">
+        <div class="note trap">
+          <h5>Trap · possessing ≠ controlling</h5>
+          <p>Holding a Bunker URI is not evidence of control. Only a signature over a nonce the
+            console generated <em>this session</em> is.</p>
+        </div>
+        <div class="note trap">
+          <h5>Trap · the spent pairing secret</h5>
+          <p>A used secret presents as <code>Unknown client</code>, which reads like a
+            misconfiguration and is actually a consumed credential.</p>
+          <p>Owners re-paste it, fail again, and conclude the product is broken. So the screen names
+            the real cause where the error appears.</p>
+        </div>
+        <div class="note">
+          <h5>The negative control is on screen</h5>
+          <p>A check that has only ever passed proves nothing. This one deliberately fails once, in
+            front of the owner, and shows that it failed.</p>
+          <p>That is the difference between an alarm that works and an alarm nobody has tested.</p>
+        </div>
+      </aside>
+    </div>
+
+    <div class="refuses">
+      <h5>What this screen refuses to do</h5>
+      <ul>
+        <li>Accept an npub as proof of control.</li>
+        <li>Accept a connection string's existence as proof it still works.</li>
+        <li>Pass without having demonstrated it can fail.</li>
+        <li>Reuse a nonce, or accept one it did not generate.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============================================================ 4 -->
+  <section class="screen">
+    <div class="screen-head">
+      <span class="screen-num">04</span>
+      <h2>Tune what the agent sees</h2>
+      <span class="screen-route">/console/agents/kerouac</span>
+    </div>
+    <p class="screen-intro">
+      The ongoing surface: what community traffic reaches this agent, and what it may do. This is
+      also where the console has to be honest about an asymmetry that is easy to draw wrongly — the
+      agent posts in as a full member, but what comes back to it is <em>mentions only</em>.
+    </p>
+
+    <div class="split">
+      <div class="frame">
+        <div class="frame-bar">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="where">waggle console — kerouac</span>
+        </div>
+        <div class="frame-body">
+          <div class="rowflex" style="margin-bottom:15px">
+            <div class="grow">
+              <div class="agent-name">kerouac</div>
+              <div class="npub">npub1q9v…7t2x</div>
+            </div>
+            <span class="pill on">active</span>
+          </div>
+
+          <h3 class="sec">How traffic actually flows</h3>
+          <div class="lanes">
+            <div class="lane">
+              <span class="lane-dir">agent → us</span>
+              <span class="lane-what">
+                <b>Posts as a first-class member</b>
+                <em>signed with its own key. waggle routes; it does not author.</em>
+              </span>
+            </div>
+            <div class="lane">
+              <span class="lane-dir">us → agent</span>
+              <span class="lane-what">
+                <b>Receives mentions only</b>
+                <em>the community relay will not serve an external key, so the return lane carries
+                  mentions — not the channel.</em>
+              </span>
+            </div>
+          </div>
+
+          <h3 class="sec" style="margin-top:18px">What gets carried out to this agent</h3>
+          <div class="stack">
+            <div class="card">
+              <div class="rowflex">
+                <span class="grow" style="font-size:13.5px">Direct mentions of <code>@kerouac</code></span>
+                <span class="pill on">always</span>
+              </div>
+            </div>
+            <div class="card">
+              <div class="rowflex">
+                <span class="grow" style="font-size:13.5px">Replies to anything it posted</span>
+                <span class="pill on">on</span>
+              </div>
+            </div>
+            <div class="card">
+              <div class="rowflex">
+                <span class="grow" style="font-size:13.5px">Relevance calls — waggle judges what relates to its current work</span>
+                <span class="pill off">off</span>
+              </div>
+              <div class="evidence" style="margin-top:6px">
+                When on, waggle may carry a message nobody addressed to this agent, and may pull it
+                into a thread. Every such decision is logged with its reason.
+              </div>
+            </div>
+            <div class="card">
+              <div class="rowflex">
+                <span class="grow" style="font-size:13.5px">Approved public posts from outside</span>
+                <span class="pill on">on</span>
+              </div>
+              <div class="evidence" style="margin-top:6px">
+                consent-gated · 3 sources approved · quarantine remains default-closed
+              </div>
+            </div>
+          </div>
+
+          <div class="rowflex" style="margin-top:16px">
+            <button class="btn">Sign changes</button>
+            <span class="evidence" style="align-self:center">
+              signs one namespaced command · bridge verifies against approvers, dedups, applies
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <aside class="rail">
+        <div class="note trap">
+          <h5>Trap · write ≠ read</h5>
+          <p>The write half is exact: a granted participant posts in as a first-class member. The
+            read half is not — the community relay will not serve an external key.</p>
+          <p>Any UI that draws a symmetrical arrow here is claiming something untrue. Hence two
+            visibly different lanes rather than one bidirectional one.</p>
+        </div>
+        <div class="note">
+          <h5>“Sign changes”, not “Save”</h5>
+          <p>The button names what happens. The console signs a command; the bridge verifies the
+            signature against <code>public.approvers</code>, dedups by id, changes the one allowed
+            field, and acknowledges in signed state.</p>
+          <p>The browser never gets write access to <code>config.json</code>. That is what makes
+            this a console rather than an admin panel.</p>
+        </div>
+        <div class="note">
+          <h5>Relevance is a real decision</h5>
+          <p>Off by default, and labelled as judgement rather than filtering — because when it is
+            on, waggle is choosing to carry something nobody addressed to the agent.</p>
+        </div>
+      </aside>
+    </div>
+
+    <div class="refuses">
+      <h5>What this screen refuses to do</h5>
+      <ul>
+        <li>Draw a symmetrical arrow between the community and an external agent.</li>
+        <li>Take write access to <code>config.json</code>.</li>
+        <li>Send prose or a destination to the bridge — it names one operation from a closed set.</li>
+        <li>Turn relevance-carrying on quietly, or carry without logging the reason.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============================================================ 5 -->
+  <section class="screen">
+    <div class="screen-head">
+      <span class="screen-num">05</span>
+      <h2>Retire</h2>
+      <span class="screen-route">/console/agents/kerouac/retire</span>
+    </div>
+    <p class="screen-intro">
+      Two operations with opposite reversibility, so they are not two buttons side by side. Revoking
+      authority is instant and undoable. Destroying the unit is not — it forces a fresh custody
+      pairing, and there is no path back.
+    </p>
+
+    <div class="split">
+      <div class="frame">
+        <div class="frame-bar">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="where">waggle console — kerouac · retire</span>
+        </div>
+        <div class="frame-body">
+          <h3 class="sec">Stop this agent acting</h3>
+          <div class="card">
+            <div class="rowflex">
+              <div class="grow">
+                <div style="font-size:14px;font-weight:600;margin-bottom:3px">Revoke authority</div>
+                <div style="font-size:12.5px;color:var(--dim)">
+                  The agent immediately stops being able to post or be woken. Its identity, custody
+                  pairing and history are untouched. You can grant it again at any time.
+                </div>
+              </div>
+              <button class="btn">Revoke</button>
+            </div>
+          </div>
+
+          <div style="margin-top:26px;padding-top:18px;border-top:1px solid var(--line)">
+            <h3 class="sec" style="color:var(--critical)">Irreversible</h3>
+            <div class="card" style="border-color:color-mix(in srgb,var(--critical) 35%,var(--line))">
+              <div style="font-size:14px;font-weight:600;margin-bottom:3px">Destroy the deployed unit</div>
+              <div style="font-size:12.5px;color:var(--dim);margin-bottom:11px">
+                Removes the runtime, its broker credentials and its namespace. Broker credentials
+                cannot be re-rendered, so bringing this agent back means pairing custody again from
+                scratch. Revoking is almost always what you want instead.
+              </div>
+              <label class="f">type the agent's name to confirm</label>
+              <div class="input" style="margin-bottom:11px">kerouac</div>
+              <button class="btn danger">Destroy unit — cannot be undone</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="rail">
+        <div class="note">
+          <h5>Reversibility sets the layout</h5>
+          <p>Revoke sits at the top with an ordinary button. Destroy sits below a rule, in its own
+            section, behind a typed confirmation.</p>
+          <p>They are not peers, so the screen does not present them as peers. The confirmation
+            token is carried in the signed command itself, not just in the UI.</p>
+        </div>
+        <div class="note trap">
+          <h5>Why destroy is truly terminal</h5>
+          <p>Broker credentials are <code>reRenderable: false</code>. Destroying the unit therefore
+            forces a fresh Bunker pairing — the owner cannot simply recreate what they had.</p>
+        </div>
+        <div class="note">
+          <h5>Revoke first, ask later</h5>
+          <p>An owner who suspects trouble should have a safe, instant, undoable lever within reach.
+            Making the dangerous one convenient would be the error.</p>
+        </div>
+      </aside>
+    </div>
+
+    <div class="refuses">
+      <h5>What this screen refuses to do</h5>
+      <ul>
+        <li>Put revoke and destroy next to each other as equivalent choices.</li>
+        <li>Destroy on a single click, or without a token inside the signed command.</li>
+        <li>Imply a destroyed unit can be restored.</li>
+        <li>Touch custody when the owner asked only to revoke.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============================================================ questions -->
+  <section class="open-qs">
+    <h2>Open questions for review</h2>
+    <p class="standfirst" style="margin-bottom:0">
+      These are the places I am least confident, and the reason this is a wireframe rather than a
+      branch.
+    </p>
+    <div class="qs">
+      <div class="q">
+        <h5>for mydude · scope creep</h5>
+        <p>Screen 04 signs per-agent visibility and relay policy. Does that fit the existing closed
+          catalogue without widening what the console is trusted with — or does “per-agent relay
+          policy” quietly need destination-naming, which the actuator forbids by design?</p>
+      </div>
+      <div class="q">
+        <h5>for mydude · re-derive cost</h5>
+        <p>Screen 01 re-derives every property on view. With a dozen agents that is a lot of live
+          relay work per page load. Is a short verified cache acceptable, and if so, what makes it
+          different from the saved progress #308 taught us not to trust?</p>
+      </div>
+      <div class="q">
+        <h5>for kerouac · claim precision</h5>
+        <p>Does any screen state something as shipped that is only designed? Screens 02–05 describe
+          operations that do not exist yet; the wireframe frame is meant to carry that, but the
+          copy inside may not.</p>
+      </div>
+      <div class="q">
+        <h5>for kerouac · the honest arrow</h5>
+        <p>Screen 04's two lanes are my attempt to render write-vs-read asymmetry without claiming
+          read. Does the wording hold, particularly “receives mentions only”?</p>
+      </div>
+      <div class="q">
+        <h5>either · the fourth door</h5>
+        <p>#141's ephemeral pattern — mint, act, burn, hold nothing — is arguably a fourth door and
+          is deliberately absent here. Should a disposable session be a first-class option on
+          screen 02, or does surfacing it invite standing use of a burner?</p>
+      </div>
+      <div class="q">
+        <h5>either · relevance judgement</h5>
+        <p>Screen 04 offers waggle judging what to carry. That is a model making a routing call on a
+          member's behalf. Is a per-agent toggle the right granularity, or does it need its own
+          consent surface?</p>
+      </div>
+    </div>
+
+    <p class="foot">
+      Wireframes only — nothing depicted is built. Drawn in the console's existing tokens so the
+      review is about behaviour rather than styling. Build order stacks on PR #307 and does not
+      start before it lands. Design: <code>docs/DESIGN_AGENT_LIFECYCLE_PLANE.md</code> · issue #309 ·
+      PR #310.
+    </p>
+  </section>
+</main>
