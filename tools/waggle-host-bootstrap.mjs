@@ -11,11 +11,13 @@
 // executes. It has no opinions: an action kind it does not recognise is a refusal, never a no-op,
 // because silently skipping an unknown action would report a host as bootstrapped that is not.
 //
-// Exit: 0 satisfied · 1 work outstanding or drifted · 3 INCONCLUSIVE (a fact could not be read).
+// Exit: 0 satisfied · 1 work outstanding or drifted · 3 INCONCLUSIVE (a fact could not be read —
+// and `--apply` on that host exits 3 too; apply does not get a braver exit code than check).
 
-import { existsSync, lstatSync } from 'node:fs'
+import { lstatSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { planHostBootstrap, pendingActions, bootstrapVerdict, bootstrapEvidence } from '../src/host_bootstrap.mjs'
+import { directoryFact, userFact, unitFact, checkoutFact } from '../src/host_facts.mjs'
 import { loadInstallState, saveInstallState, transitionInstallStep } from '../src/install_state.mjs'
 
 const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : process.argv[i + 1] || '' }
@@ -31,53 +33,48 @@ let state
 try { state = loadInstallState(statePath) } catch (e) { die(`cannot load install state: ${e.message}`) }
 
 // ---- fact gathering ---------------------------------------------------------------------------
-// Every probe distinguishes three outcomes: satisfied, absent, and COULD NOT TELL. The third is
-// reported as unreadable rather than folded into absent — that fold is how a failed probe becomes
-// an overwrite of something live.
+// This file only OBSERVES; every judgement about what an observation means lives in
+// `src/host_facts.mjs`, which is pure and tested. The boundary that matters there: absent means
+// the probe positively saw nothing (ENOENT, "no such user"), unreadable means the probe itself
+// failed — and a probe that failed has seen nothing, including nothing about absence. Folding the
+// second into the first is how a failed probe becomes an overwrite of something live.
 const present = {}, unreadable = []
 const sh = (cmd, args) => {
   const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 15000 })
   if (r.error && r.error.code === 'ENOENT') return { missing: true }
-  if (r.status === null) return { unreadable: true }
-  return { status: r.status, out: (r.stdout || '').trim() }
+  if (r.status === null) return { timeout: true }
+  return { status: r.status, out: (r.stdout || '').trim(), err: (r.stderr || '').trim() }
 }
-
-function probeDirectory (id, path, wantMode) {
+// lstat, never existsSync: existsSync returns false on EACCES as well as ENOENT, which reads a
+// live directory behind an unreadable parent as missing. The errno is the whole signal.
+const statPath = path => {
   try {
-    if (!existsSync(path)) return
     const st = lstatSync(path)
-    if (!st.isDirectory() || st.isSymbolicLink()) { present[id] = { note: 'exists but is not a plain directory' }; return }
-    const mode = (st.mode & 0o777).toString(8).padStart(4, '0')
-    if (wantMode && mode !== wantMode) { present[id] = { mode }; return }
-    present[id] = true
-  } catch { unreadable.push(id) }
+    return { isDirectory: st.isDirectory(), isSymbolicLink: st.isSymbolicLink(), mode: st.mode }
+  } catch (e) { return { error: { code: e.code || 'UNKNOWN' } } }
 }
-
-function probeUser (id, name) {
-  const r = sh('id', ['-u', name])
-  if (r.missing || r.unreadable) { unreadable.push(id); return }
-  if (r.status === 0) present[id] = true
-}
-
-function probeUnit (id, unit) {
-  const r = sh('systemctl', ['is-enabled', unit])
-  if (r.missing) { unreadable.push(id); return }   // no systemd here: cannot judge, do not guess
-  if (r.unreadable) { unreadable.push(id); return }
-  if (r.out === 'enabled') present[id] = true
-  else if (r.out) present[id] = { enabled: r.out }
+const record = (id, fact) => {
+  if (fact.fact === 'unreadable') unreadable.push(id)
+  else if (fact.fact === 'present') present[id] = fact.value
+  // absent: left out of `present`, so the planner plans its creation
 }
 
 // A first pass over a bare plan tells us which ids to probe, so the probe set and the action set
 // cannot drift apart.
 for (const a of planHostBootstrap(state)) {
-  if (a.kind === 'system_user') probeUser(a.id, a.want.name)
-  else if (a.kind === 'directory') probeDirectory(a.id, a.want.path, a.mode)
-  else if (a.kind === 'systemd_unit' || a.kind === 'systemd_timer') probeUnit(a.id, a.want.name)
+  if (a.kind === 'system_user') record(a.id, userFact(sh('id', ['-u', a.want.name])))
+  else if (a.kind === 'directory') record(a.id, directoryFact(statPath(a.want.path), a.mode))
+  else if (a.kind === 'systemd_unit' || a.kind === 'systemd_timer') record(a.id, unitFact(sh('systemctl', ['is-enabled', a.want.name])))
   else if (a.kind === 'code_checkout') {
-    if (!existsSync(a.want.path)) continue
-    const head = sh('git', ['-C', a.want.path, 'rev-parse', '--abbrev-ref', 'HEAD'])
-    if (head.missing || head.unreadable || head.status !== 0) { unreadable.push(a.id); continue }
-    present[a.id] = head.out === a.want.ref ? true : { ref: head.out }
+    const at = statPath(a.want.path)
+    if (at.error) { record(a.id, directoryFact(at)); continue }
+    if (!at.isDirectory || at.isSymbolicLink) { record(a.id, directoryFact(at)); continue }
+    // Commit ids, never branch names: a pinned checkout is detached, where `--abbrev-ref` prints
+    // literally `HEAD` and every pinned install would report permanent drift.
+    record(a.id, checkoutFact(
+      sh('git', ['-C', a.want.path, 'rev-parse', 'HEAD']),
+      sh('git', ['-C', a.want.path, 'rev-parse', `${a.want.ref}^{commit}`]),
+    ))
   } else {
     // time_sync, firewall_rule, deploy_runner: host-specific and not probed by this runner yet.
     // Reported as unreadable so they surface as INCONCLUSIVE rather than silently passing.
@@ -100,7 +97,12 @@ if (!apply) {
 }
 
 // ---- apply ---------------------------------------------------------------------------------------
-if (verdict.blocked) die('refusing to apply while any host fact is unreadable — resolve those first')
+if (verdict.blocked) {
+  // The same INCONCLUSIVE the check reports, with the same exit code — `--check` exiting 3 while
+  // `--apply` exited 1 on the identical host would make the two computations disagree.
+  console.error('waggle-host-bootstrap: refusing to apply while any host fact is unreadable — resolve those first')
+  process.exit(3)
+}
 const todo = pendingActions(plan)
 if (todo.some(a => a.destructive) && !has('--assume-yes')) {
   die('this plan contains a destructive action; re-run with --assume-yes if that is intended')
@@ -119,9 +121,12 @@ for (const a of todo) {
   die(`no executor is wired for action kind '${a.kind}' yet — this slice ships the planner and the checks; run the printed plan by hand`)
 }
 
+// Serialized: install-state evidence items are validated as printable TEXT, and an object here
+// throws inside the transition — which is why this line, the only path that records the step, had
+// never successfully run.
 const advanced = transitionInstallStep(state, 'host_bootstrap', {
   status: verdict.exit === 0 ? 'passed' : 'failed',
-  evidence: [bootstrapEvidence(plan, verdict)],
+  evidence: [JSON.stringify(bootstrapEvidence(plan, verdict))],
 })
 saveInstallState(statePath, advanced)
 console.log('install state advanced')
