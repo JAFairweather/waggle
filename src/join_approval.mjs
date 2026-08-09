@@ -49,7 +49,20 @@ export function decideJoinReply(body) {
     // byte-perfect. They send the identical thing again and it fails identically. `trim()`
     // already handles Unicode whitespace at the edges, so handling it only there was the
     // inconsistency. This is the one path where a human has to succeed.
-    const unicodeSpace = /(?![ \t])[\s   -   　﻿]/u.exec(exact)
+    // SINGLE-LINE ONLY. `\s` includes `\n`, so without this guard a multi-line reply starting with
+    // the verb — "APPROVE <id>\n\nSent from my iPhone", the likeliest malformed reply a real owner
+    // ever sends — was told to hunt for an invisible character in a message whose fault is a
+    // signature block they can plainly see. That inverts the fix: this message exists because a
+    // generic refusal against an INVISIBLE fault sends the owner in circles, and it was doing the
+    // same thing in reverse against a visible one. A multi-line reply's fault is the extra line,
+    // and the generic refusal already names it.
+    //
+    // Written as \u escapes, not literal characters. The literal form put invisible bytes in the
+    // source where the `-` between two of them reads like an accidental range — a reviewer had to
+    // sweep U+0000..U+FFFF to prove it was not one. A class you cannot read is a class nobody can
+    // check. The range is U+2000..U+200A, the en-quad..hair-space block.
+    const UNICODE_SPACE = /(?![ \t])[\s\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]/u
+    const unicodeSpace = !/[\n\r]/.test(exact) && UNICODE_SPACE.exec(exact)
     if (unicodeSpace && /^(APPROVE|DENY)/.test(exact)) {
       const cp = unicodeSpace[0].codePointAt(0).toString(16).padStart(4, '0')
       return {

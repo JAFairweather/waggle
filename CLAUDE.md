@@ -137,6 +137,22 @@ that merely ran.** The suite was green through all of them.
 - **Syntax valid ≠ works.** `node --check` has passed on code whose identifiers did not exist.
 - **`$?` after a pipeline** reports the last command in the pipe, not your script.
 - **Assert anchors before a scripted edit** — a replace that matches nothing prints success.
+- **A mutation that does not apply is indistinguishable from one that is not detected.** Both look
+  like a suite that stayed green, and the second is the conclusion you will draw. Print
+  `ANCHOR MISS` and treat it as a failed run — 2026-08-09, a mutation proved nothing because the
+  anchor held a literal NUL byte that `grep` could not carry.
+- **Never put an invisible character literally in source — use `\uXXXX`.** A NUL as a probe key and
+  a non-breaking space inside a character class each broke tooling that reads the file, and a class
+  nobody can read is a class nobody can check: a reviewer had to sweep U+0000–U+FFFF to prove that
+  a `-` between two invisible characters was not an accidental range.
+- **A probe that loses its own input has told you nothing.** A shell heredoc silently dropped the
+  non-breaking space a check was written to exercise, so it reported a pass for a case it never
+  ran. Confirm the input is what you think it is before believing the output.
+- **Assert the reason, not only the refusal**, wherever the message is the thing someone acts on.
+  `!ok` cannot distinguish a correct refusal from a correct refusal with a misleading explanation.
+  2026-08-09: a new guard made three existing fixtures refuse for a stated reason that sent the
+  owner hunting for an invisible character in a message whose fault was a visible extra line. Every
+  assertion still passed, because every one of them asserted only that it refused.
 - **Put a size floor on fetched input** — a scan of an empty file once reported everything clean.
 - **Being unable to check is not the same as being fine.** Tools here exit **3 = INCONCLUSIVE**
   rather than 0 when they could not see enough to judge (`tripwire.mjs`, `verify-firewall.sh`).

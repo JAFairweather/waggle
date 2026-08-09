@@ -71,6 +71,32 @@ const setup = () => {
   }
   check(!decideJoinReply(null).ok && !decideJoinReply(undefined).ok && !decideJoinReply(42).ok,
     'REFUSED — a reply that is not text at all')
+
+  // ASSERT THE REASON, not just the refusal. Found in re-review: adding the invisible-character
+  // message made three of the fixtures above refuse for the WRONG stated reason — a multi-line
+  // reply was told to hunt for an invisible character, when `\s` matching `\n` was the whole
+  // cause and the fault is a visible extra line. Every assertion above still passed, because
+  // `!ok` cannot tell a right refusal from a right refusal with a misleading explanation. On this
+  // path the reason IS the deliverable: it is the only thing the owner can act on.
+  const multiLine = [
+    [`${APPROVE} ${ID}\n\n> quoted from someone else`, 'a quote block appended by a reply client'],
+    [`${APPROVE} ${ID}\n${APPROVE} ${'c'.repeat(64)}`, 'two tokens on two lines'],
+    [`${APPROVE} ${ID}\ndone`, 'a second line of any kind'],
+  ]
+  for (const [body, why] of multiLine) {
+    const r = decideJoinReply(body)
+    check(!r.ok, `REFUSED — ${why}`)
+    check(/no quoted text|no comment|extra lines/.test(r.reason),
+      `  …and told it is an EXTRA LINE — the fault the owner can actually see (${why})`)
+    check(!/invisible character/.test(r.reason),
+      `  …not sent hunting for an invisible character that is not there (${why})`)
+  }
+
+  // The counterpart, so this is a distinction and not a blanket: a SINGLE-line reply whose
+  // separator is invisible must still get the invisible-character message.
+  const nbsp = decideJoinReply(`${APPROVE}\u00a0${ID}`)   // explicit escape: a literal NBSP here is unreadable
+  check(!nbsp.ok && /invisible character \(U\+00A0\)/.test(nbsp.reason),
+    'while a single-line reply with an invisible separator still gets the message naming the code point')
 }
 
 // ── A near-miss is told what to send ────────────────────────────────────────────────────────
