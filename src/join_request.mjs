@@ -54,13 +54,20 @@ export function buildJoinRequest({ hivePubkey, caps, purpose = '', label = '', c
 /**
  * Read a join request that arrived from a stranger. Returns `{ ok, request }` or `{ ok, reason }`.
  *
- * Signature verification is the CALLER's, because it needs a verifier this module must not import
- * — but this refuses to look at anything until it has been told the event was verified, so the
- * check cannot be forgotten silently.
+ * The verifier is INJECTED rather than imported, because the implementation belongs to the caller
+ * — but it is called here, so verification is something this module observed rather than something
+ * it was told.
  */
-export function readJoinRequest(ev, { hivePubkey, verified, now = Math.floor(Date.now() / 1000), maxAgeSecs = 3600, maxSkewSecs = 300 } = {}) {
-  if (verified !== true) return { ok: false, reason: 'join request was not signature-verified before being read' }
+export function readJoinRequest(ev, { hivePubkey, verify, now = Math.floor(Date.now() / 1000), maxAgeSecs = 3600, maxSkewSecs = 300 } = {}) {
+  // `verify` is a FUNCTION, not a boolean, and that distinction is the whole point. The previous
+  // shape took `verified: true` and refused anything else — which catches "forgot to pass it" but
+  // cannot catch "asserted it without checking", and the second is the one that happens. One
+  // honest line of caller code defeated it. Taking the verifier and calling it here turns *the
+  // caller asserts* into *this module observed*.
+  if (typeof verify !== 'function') return { ok: false, reason: 'readJoinRequest needs a verify(ev) function — a signature-verified claim is not a signature check' }
   if (!ev || ev.kind !== JOIN_REQUEST_KIND) return { ok: false, reason: 'not a join request' }
+  // Strict true. A verifier that returns a truthy object, or a Promise, has not told us it passed.
+  if (verify(ev) !== true) return { ok: false, reason: 'join request signature did not verify' }
   const requester = String(ev.pubkey || '').toLowerCase()
   if (!HEX64.test(requester)) return { ok: false, reason: 'join request has no usable author' }
 
@@ -95,5 +102,15 @@ export function readJoinRequest(ev, { hivePubkey, verified, now = Math.floor(Dat
     if (CREDENTIAL_SHAPED.test(value)) return { ok: false, reason: `join request ${field} is credential-shaped` }
   }
 
-  return { ok: true, request: { requester, hive: addressed[0], caps: caps.sort(), purpose, label, createdAt: ev.created_at, id: String(ev.id || '').toLowerCase() } }
+  // The id is the one field that used to escape this module's own contract. Everything else here
+  // is bounded and screened; `id` was passed through raw, so a stranger's JSON could put five
+  // thousand characters, a counterfeit `APPROVE <token>` and a U+202E right-to-left override into
+  // the artifact an owner reads AT THE MOMENT they decide to grant channel access — returning
+  // ok: true. That is the exact threat class the rendering suite exists for. The fixtures could
+  // not see it because the test helper always supplied a well-formed id, so "the id field" and
+  // "a valid id" were the same value in every test.
+  const id = String(ev.id || '').toLowerCase()
+  if (!HEX64.test(id)) return { ok: false, reason: 'join request has no usable id' }
+
+  return { ok: true, request: { requester, hive: addressed[0], caps: caps.sort(), purpose, label, createdAt: ev.created_at, id } }
 }

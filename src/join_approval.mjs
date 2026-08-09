@@ -42,6 +42,21 @@ export function decideJoinReply(body) {
   if (!m) {
     // The refusal names the shape, because the most likely sender of a malformed reply is the
     // owner, and a refusal they cannot act on is a refusal that turns into a support question.
+    //
+    // Unicode whitespace gets its own message. A non-breaking space between the verb and the id
+    // is INVISIBLE, so the generic refusal — "no quoted text, no comment, no extra lines" — is
+    // read by an owner whose reply has none of those things, against a message that looks
+    // byte-perfect. They send the identical thing again and it fails identically. `trim()`
+    // already handles Unicode whitespace at the edges, so handling it only there was the
+    // inconsistency. This is the one path where a human has to succeed.
+    const unicodeSpace = /(?![ \t])[\s   -   　﻿]/u.exec(exact)
+    if (unicodeSpace && /^(APPROVE|DENY)/.test(exact)) {
+      const cp = unicodeSpace[0].codePointAt(0).toString(16).padStart(4, '0')
+      return {
+        ok: false,
+        reason: `reply contains an invisible character (U+${cp.toUpperCase()}) where a plain space belongs — it looks correct but is not. Retype it rather than copying it, using one ordinary space`,
+      }
+    }
     const looksClose = /approve|deny/i.test(exact)
     return {
       ok: false,
@@ -78,14 +93,25 @@ export function authorizeJoinReply({ body, senderPubkey, approvers, registry }) 
 
   // An empty approvers list must refuse everyone, never admit everyone. A misconfigured or
   // unread config is exactly when this is most likely to be consulted.
-  const allowed = Array.isArray(approvers) ? approvers.map(a => String(a || '').toLowerCase()) : []
+  //
+  // "not a list" and "an empty list" fail the same way but are different operator mistakes, and
+  // telling someone who configured one approver as a bare string that none are configured sends
+  // them to the wrong file.
+  if (!Array.isArray(approvers)) {
+    return { ok: false, reason: `approvers must be a list of pubkeys, not ${typeof approvers} — a single approver still goes in a list` }
+  }
+  const allowed = approvers.map(a => String(a || '').toLowerCase())
   if (!allowed.length) return { ok: false, reason: 'no approvers are configured, so nobody may decide' }
   if (!allowed.includes(sender)) return { ok: false, reason: 'sender is not an approver' }
 
   // Spend the request id. Both APPROVE and DENY consume it: a decided request is finished either
   // way, and leaving a denied id spendable would let a later replay of an earlier APPROVE
   // overturn the owner's refusal.
-  const spent = registry.consume(decided.requestId, sender)
+  //
+  // `spend`, NOT `consume`. Approver authority is established on the line above; a second subject
+  // check inside the registry is redundant, and destructive the moment two approvers exist —
+  // it burned the request when the legitimate approver was not the one the record was bound to.
+  const spent = registry.spend(decided.requestId)
   if (!spent.ok) return { ok: false, reason: spent.reason }
 
   return { ok: true, decision: decided.decision, requestId: decided.requestId, request: spent.record, approver: sender }

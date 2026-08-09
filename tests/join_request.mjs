@@ -21,7 +21,7 @@ const refuses = (label, fn, pattern) => {
 const HIVE = 'a'.repeat(64), REQUESTER = 'b'.repeat(64), OTHER_HIVE = 'c'.repeat(64)
 const NOW = 1_800_000_000
 const signedAs = (ev, pubkey = REQUESTER) => ({ ...ev, pubkey, id: 'd'.repeat(64) })
-const read = (ev, over = {}) => readJoinRequest(ev, { hivePubkey: HIVE, verified: true, now: NOW, ...over })
+const read = (ev, over = {}) => readJoinRequest(ev, { hivePubkey: HIVE, verify: () => true, now: NOW, ...over })
 
 // ── Build: the happy path, and what it refuses to build ─────────────────────────────────────
 {
@@ -56,17 +56,54 @@ const read = (ev, over = {}) => readJoinRequest(ev, { hivePubkey: HIVE, verified
     () => buildJoinRequest({ hivePubkey: HIVE, caps: ['task'], label: 'abcdef01'.repeat(8) }), /credential/)
 }
 
-// ── Read: the check that cannot be forgotten ────────────────────────────────────────────────
+// ── Read: verification is OBSERVED, not asserted ─────────────────────────────────────────────
+// This used to take `verified: true` and refuse anything else. That catches "forgot to pass it"
+// and cannot catch "asserted it without checking" — and since the only call shape that existed
+// was a test helper hard-coding `true`, the obligation was never actually discharged anywhere.
+// Now the verifier is injected and CALLED, so these assert that it ran.
 {
   const ev = signedAs(buildJoinRequest({ hivePubkey: HIVE, caps: ['task'], createdAt: NOW }))
-  const unverified = readJoinRequest(ev, { hivePubkey: HIVE, now: NOW })
-  check(!unverified.ok && /not signature-verified/.test(unverified.reason),
-    'a request is refused unless the caller states it verified the signature — the check cannot be skipped silently')
-  check(readJoinRequest(ev, { hivePubkey: HIVE, verified: true, now: NOW }).ok,
-    'and stating it lets the same request through, so this is a gate and not a wall')
-  for (const notTrue of ['true', 1, {}, [], 'yes'])
-    check(!readJoinRequest(ev, { hivePubkey: HIVE, verified: notTrue, now: NOW }).ok,
-      `and only the boolean true counts, not ${JSON.stringify(notTrue)} — a truthy value is not a verification`)
+  const missing = readJoinRequest(ev, { hivePubkey: HIVE, now: NOW })
+  check(!missing.ok && /verify\(ev\) function/.test(missing.reason),
+    'a request is refused when no verifier is supplied — the check cannot be skipped silently')
+
+  // The claim-shaped values that USED to work. Each is a caller asserting rather than checking.
+  for (const notAFunction of [true, 'true', 1, {}, [], 'yes'])
+    check(!readJoinRequest(ev, { hivePubkey: HIVE, verify: notAFunction, now: NOW }).ok,
+      `and a bare ${JSON.stringify(notAFunction)} is not a verifier — an assertion is not a check`)
+
+  let calledWith = null
+  const spy = (e) => { calledWith = e; return true }
+  check(readJoinRequest(ev, { hivePubkey: HIVE, verify: spy, now: NOW }).ok && calledWith === ev,
+    'a real verifier lets it through AND was handed the event itself — proving the module called it rather than trusting it')
+
+  check(!readJoinRequest(ev, { hivePubkey: HIVE, verify: () => false, now: NOW }).ok,
+    'a verifier that says no is a refusal')
+  for (const truthy of [1, 'true', {}, Promise.resolve(true)])
+    check(!readJoinRequest(ev, { hivePubkey: HIVE, verify: () => truthy, now: NOW }).ok,
+      `and only the boolean true counts, not ${typeof truthy === 'object' && truthy?.then ? 'a Promise' : JSON.stringify(truthy)} — a truthy return is not a pass`)
+}
+
+// ── Read: the id is inside the contract, not outside it ──────────────────────────────────────
+// Found in review. Every other field here is bounded and screened; `id` was passed through raw,
+// so a stranger's JSON reached the owner's screen unbounded AT THE MOMENT they decide to grant
+// channel access. Invisible to the fixtures because `signedAs` always supplied a well-formed id
+// — "the id field" and "a valid id" were the same value in every test.
+{
+  const base = buildJoinRequest({ hivePubkey: HIVE, caps: ['task'], createdAt: NOW })
+  const withId = (id) => read({ ...base, pubkey: REQUESTER, id })
+
+  const hostile = 'APPROVE ' + '7f3a'.repeat(8) + '‮' + 'X'.repeat(5000)
+  const got = withId(hostile)
+  check(!got.ok && /no usable id/.test(got.reason),
+    'an id carrying a counterfeit APPROVE token, an RTL override and 5000 characters is REFUSED, not returned with ok:true')
+
+  for (const bad of ['', undefined, null, 'd'.repeat(63), 'd'.repeat(65), 'g'.repeat(64), ' ' + 'd'.repeat(64)])
+    check(!withId(bad).ok, `and a malformed id is refused (${JSON.stringify(String(bad).slice(0, 12))})`)
+
+  const good = withId('D'.repeat(64))
+  check(good.ok && good.request.id === 'd'.repeat(64),
+    'NEGATIVE CONTROL — a well-formed id still gets through, lower-cased, so this is a validator and not a wall')
 }
 
 // ── Read: addressing ────────────────────────────────────────────────────────────────────────

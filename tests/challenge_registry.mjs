@@ -117,6 +117,76 @@ const clock = (start = 1_000_000) => { let t = start; return { now: () => t, adv
     'and spending it through one handle spends it for both — the store is the truth, not the instance')
 }
 
+// ── An ASYNC store is refused, loudly, before it can destroy anything ────────────────────────
+// The header used to INVITE a durable store and say entries()/delete() were all it needed. Both
+// were wrong. An async get returns a Promise — truthy, so it passed the existence check; delete
+// fired; `at < undefined` is false, so the FIRST consume of a LIVE nonce reported 'expired' and
+// had already destroyed the record. The restart test above cannot see it, because a shared
+// synchronous Map is the one shape that cannot have the bug.
+{
+  const inner = new Map()
+  const asyncStore = {
+    get: async (k) => inner.get(k), set: async (k, v) => { inner.set(k, v) },
+    delete: async (k) => inner.delete(k), entries: () => inner.entries(),
+  }
+  let threw = null
+  try { createChallengeRegistry({ store: asyncStore }) } catch (e) { threw = e }
+  check(threw !== null, 'an async store is REFUSED at construction, not at the first consume')
+  check(threw && /synchronous/.test(threw.message),
+    'and the error says the store must be synchronous, so the fix is obvious from the message')
+  check(inner.size === 0, 'and nothing was written or destroyed on the way to finding out')
+
+  for (const missing of ['get', 'set', 'delete', 'entries']) {
+    const partial = new Map()
+    const store = { get: (k) => partial.get(k), set: (k, v) => partial.set(k, v), delete: (k) => partial.delete(k), entries: () => partial.entries() }
+    delete store[missing]
+    let e2 = null
+    try { createChallengeRegistry({ store }) } catch (e) { e2 = e }
+    check(e2 && e2.message.includes(missing),
+      `a store missing ${missing}() is refused BY NAME — the header once listed the wrong method set and an operator got a TypeError`)
+  }
+
+  // NEGATIVE CONTROL for the probe: a synchronous write-through facade — the shape the header now
+  // recommends for durability — is accepted and works.
+  const disk = new Map()
+  const writeThrough = {
+    get: (k) => disk.get(k), set: (k, v) => { disk.set(k, v); return writeThrough },
+    delete: (k) => disk.delete(k), entries: () => disk.entries(),
+  }
+  const durable = createChallengeRegistry({ store: writeThrough })
+  const rec = durable.issue(SUBJECT)
+  check(durable.consume(rec.id, SUBJECT).ok,
+    'NEGATIVE CONTROL — a SYNCHRONOUS write-through facade is accepted and spends correctly, so the probe rejects async and not custom stores')
+}
+
+// ── spend(): authority established elsewhere ────────────────────────────────────────────────
+// Join proves the sender is an approver before it reaches the registry, so a second subject check
+// here is redundant — and destructive when the two disagree. spend() is a separate method rather
+// than an optional argument because an omittable argument makes "I checked elsewhere" and "I
+// forgot" look identical at the call site.
+{
+  const r = createChallengeRegistry()
+  const issued = r.issue(SUBJECT)
+  const first = r.spend(issued.id)
+  check(first.ok && first.record.subject === SUBJECT,
+    'spend() succeeds without being told a subject, and still returns the record with its binding intact')
+  check(!r.spend(issued.id).ok, 'and it is single-use exactly like consume()')
+
+  const r2 = createChallengeRegistry()
+  const other = r2.issue(SUBJECT)
+  check(!r2.spend('f'.repeat(64)).ok, 'an id that was never issued is refused')
+  check(!r2.spend('nope').ok, 'and a malformed id is refused')
+  check(r2.spend(other.id).ok, 'while the real one still works — spend is not a wall')
+
+  // Expiry still applies: spend skips the SUBJECT check, not the liveness check.
+  let t = 1000
+  const r3 = createChallengeRegistry({ ttlSecs: 10, now: () => t })
+  const old = r3.issue(SUBJECT)
+  t += 11
+  const late = r3.spend(old.id)
+  check(!late.ok && /expired/.test(late.reason), 'and an expired nonce is still refused by spend() — it drops the subject check, not the TTL')
+}
+
 // ── NEGATIVE CONTROL ────────────────────────────────────────────────────────────────────────
 // Almost every check above is a refusal. A registry whose consume always returned {ok:false}
 // would pass them all. Prove the accept path is real and is what the refusals are distinguished

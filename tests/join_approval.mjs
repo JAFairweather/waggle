@@ -22,9 +22,15 @@ const check = (cond, label) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${la
 
 const ID = '7f3a'.repeat(16)                       // 64 hex
 const OWNER = 'a'.repeat(64), STRANGER = 'b'.repeat(64)
+// A SECOND approver, and a requester that is nobody's approver. The review found that every
+// fixture here wired approver-authority and registry-subject to the same one-element constant, so
+// the two could never disagree — and the multi-approver defect lives exactly where they differ.
+const SECOND_APPROVER = 'c'.repeat(64), REQUESTER = 'e'.repeat(64)
 const setup = () => {
   const registry = createChallengeRegistry()
-  const issued = registry.issue(OWNER, { caps: ['task'] })
+  // Bound to the REQUESTER, which is what the subject means for a join: who asked. Deliberately
+  // not an approver — binding it to one is what caused the defect.
+  const issued = registry.issue(REQUESTER, { caps: ['task'] })
   return { registry, id: issued.id }
 }
 
@@ -108,6 +114,66 @@ const setup = () => {
     'and a malformed author is refused')
   check(authorizeJoinReply({ body: `${APPROVE} ${id}`, senderPubkey: OWNER.toUpperCase(), approvers: [OWNER], registry }).ok,
     'while case in the author key does not change who they are')
+}
+{
+  // "not a list" and "an empty list" are different operator mistakes and must not share a message
+  // — telling someone who configured one approver as a bare string that NONE are configured sends
+  // them to the wrong file.
+  const { registry, id } = setup()
+  const asString = authorizeJoinReply({ body: `${APPROVE} ${id}`, senderPubkey: OWNER, approvers: OWNER, registry })
+  check(!asString.ok, 'approvers supplied as a bare string fails closed')
+  check(/must be a list/.test(asString.reason) && !/no approvers are configured/.test(asString.reason),
+    'and says the list is the wrong SHAPE, not that nothing was configured — the operator did configure one')
+}
+
+// ── MORE THAN ONE APPROVER ──────────────────────────────────────────────────────────────────
+// The defect this suite structurally could not see. Every other fixture uses a one-element
+// approver list whose single member IS the registry subject, so approver-authority and
+// registry-subject are the same constant and can never disagree. Here they differ.
+{
+  const { registry, id } = setup()
+  const both = [OWNER, SECOND_APPROVER]
+  const bySecond = authorizeJoinReply({ body: `${APPROVE} ${id}`, senderPubkey: SECOND_APPROVER, approvers: both, registry })
+  check(bySecond.ok && bySecond.approver === SECOND_APPROVER,
+    'EITHER configured approver may decide — a second approver replying byte-exactly is authorized, not refused')
+  check(bySecond.decision === 'APPROVE', 'and their decision is carried through as their own')
+}
+{
+  // The failure mode as it actually presented: the legitimate second approver's reply destroyed
+  // the request, and the first approver could then never spend it.
+  const { registry, id } = setup()
+  const both = [OWNER, SECOND_APPROVER]
+  authorizeJoinReply({ body: `${APPROVE} ${id}`, senderPubkey: SECOND_APPROVER, approvers: both, registry })
+  const afterwards = authorizeJoinReply({ body: `${APPROVE} ${id}`, senderPubkey: OWNER, approvers: both, registry })
+  check(!afterwards.ok && /already-used/.test(afterwards.reason),
+    'and once EITHER of them has decided, the request is spent for both — refused as already-used, which is the honest reason')
+}
+{
+  // The stranger path must not have been widened by any of the above.
+  const { registry, id } = setup()
+  const both = [OWNER, SECOND_APPROVER]
+  const stranger = authorizeJoinReply({ body: `${APPROVE} ${id}`, senderPubkey: STRANGER, approvers: both, registry })
+  check(!stranger.ok && /not an approver/.test(stranger.reason),
+    'NEGATIVE CONTROL — a stranger is still refused with two approvers configured')
+  check(authorizeJoinReply({ body: `${APPROVE} ${id}`, senderPubkey: OWNER, approvers: both, registry }).ok,
+    'and their attempt did not burn it — the approver gate still runs before the registry')
+}
+
+// ── The owner's reply with an INVISIBLE character ────────────────────────────────────────────
+// The one path where a human has to succeed. A non-breaking space between verb and id is
+// invisible, so a generic "no quoted text, no comment, no extra lines" is read by an owner whose
+// reply has none of those things — they resend the identical bytes and it fails identically.
+{
+  const { registry, id } = setup()
+  const NBSP = ' ', NARROW = ' ', IDEOGRAPHIC = '　'
+  for (const [name, sep] of [['NBSP', NBSP], ['narrow NBSP', NARROW], ['ideographic space', IDEOGRAPHIC]]) {
+    const got = authorizeJoinReply({ body: `${APPROVE}${sep}${id}`, senderPubkey: OWNER, approvers: [OWNER], registry })
+    check(!got.ok, `a ${name} where the separator belongs is still refused — the parse does not get looser`)
+    check(/invisible character \(U\+[0-9A-F]{4}\)/.test(got.reason) && /ordinary space/.test(got.reason),
+      `and the refusal SAYS it is invisible and names the code point, instead of listing things the reply does not contain (${name})`)
+  }
+  check(authorizeJoinReply({ body: `${APPROVE} ${id}`, senderPubkey: OWNER, approvers: [OWNER], registry }).ok,
+    'NEGATIVE CONTROL — after all that, an ordinary space still works and none of those attempts burned the request')
 }
 
 // ── DENY finishes the request too ───────────────────────────────────────────────────────────
