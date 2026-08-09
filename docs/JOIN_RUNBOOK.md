@@ -68,12 +68,26 @@ Three different machines appear below and the steps are not interchangeable. Bef
 Every command block below starts with the `cd` it needs. If a block has no `cd`, it continues in
 the directory the previous one set.
 
-**Prerequisite, once per checkout.** `node_modules` is not in git, and the checkout on your laptop
-may not have it — this is what makes a command fail with `ERR_MODULE_NOT_FOUND: Cannot find
-package 'nostr-tools'`, which reads like a broken tool and is actually a missing install:
+**Prerequisites, before anything below.** Both of these have caused a step here to fail in a way
+that looks like a broken tool.
+
+**1. Be on `main`, and be current.** A checkout sitting on a feature branch, or eleven commits
+behind, does not have the tools this runbook names — and the error is `Cannot find module`, which
+reads like the tool does not exist rather than like the checkout being stale:
 
 ```bash
 cd ~/.buzz/REPOS/waggle-main
+git branch --show-current                       # expect: main
+git rev-list --left-right --count origin/main...HEAD    # expect: 0<tab>0
+```
+
+If it is not on `main`, check nothing is unpushed before switching — `git status --short` empty and
+`git rev-list --count @{u}..HEAD` zero — then `git checkout main && git pull --ff-only`.
+
+**2. Install dependencies.** `node_modules` is not in git, and this is what makes a command fail
+with `ERR_MODULE_NOT_FOUND: Cannot find package 'nostr-tools'`:
+
+```bash
 npm ci
 ```
 
@@ -155,21 +169,43 @@ The one-time secret establishes the pairing. After that, the *client credential*
 re-connects — which is the whole point: a restart re-pairs to the same identity without the
 secret and without ever holding the key.
 
-The signer lives in the **nvoy** checkout, which is a different repo from waggle:
+The signer lives in the **nvoy** checkout, which is a different repo from waggle. Prove the pairing
+by making it *sign* something and publishing nothing — `DRY_RUN=1` seals a wrap, which the Bunker
+must sign, then stops before any relay is contacted:
 
 ```bash
 cd ~/Projects/nvoy/mcp
-NVOY_BUNKER_URI_FILE="$AGENT_RUNTIME/credentials/bunker-uri" \
-NVOY_NIP46_CLIENT_FILE="$AGENT_RUNTIME/credentials/bunker-client" \
-  node tools/nip46-signer.mjs --get-public-key
+export AGENT_RUNTIME=~/.nvoy/desktop/my-agent
+echo "pairing check" | DRY_RUN=1 \
+  NVOY_BUNKER_URI_FILE="$AGENT_RUNTIME/credentials/bunker-uri" \
+  NVOY_NIP46_CLIENT_FILE="$AGENT_RUNTIME/credentials/bunker-client" \
+  node tools/relay-send.mjs
 ```
 
-It should print the npub from 2a. **If it prints a different key, stop** — you paired to the wrong
-identity, and everything downstream would grant to the wrong agent.
+Two lines, the second of which is the point:
 
-> One known trap: `nip46-signer.mjs` swallows the failure on `connect`, so a broken pairing
-> surfaces as an error on the *following* `get_public_key` rather than at connect time. A clean
-> `--get-public-key` is the proof of pairing; a clean connect is not.
+```
+relay-send: sealed wrap <id>… (…B) -> waggle <id>… for channel <uuid>…
+relay-send: DRY_RUN — nothing published
+```
+
+**A sealed wrap is the proof.** Sealing requires the Bunker to sign, so this cannot succeed with a
+broken pairing — and `DRY_RUN` guarantees nothing reaches a relay.
+
+> **`nip46-signer.mjs` is a library, not a command.** An earlier version of this runbook told you
+> to run it with `--get-public-key`. That flag does not exist, the file has no argument handling at
+> all, so Node loaded the module, defined its exports, printed nothing and **exited 0** — a total
+> failure reporting success. If you ran that and saw an empty line, nothing was wrong with your
+> pairing; the instruction was wrong.
+
+> **Confirm the negative control once.** Run the same command with the credential paths pointing
+> somewhere empty and watch it say `cannot read Bunker URI credential`. A check you have only ever
+> seen pass proves nothing.
+
+If the pairing is broken you get a loud failure, not silence. The two failures worth recognising:
+`cannot read Bunker URI credential` means the path is wrong — usually `AGENT_RUNTIME` was never
+exported, so it expanded to `/credentials/bunker-uri`. `set NVOY_NSEC or the Bunker credential-file
+pair` means neither env var reached the process at all.
 
 ---
 
@@ -303,12 +339,15 @@ That last one matters most. A check that has only ever passed proves nothing.
 | symptom | what it means |
 |---|---|
 | `ERR_MODULE_NOT_FOUND: Cannot find package 'nostr-tools'` | you are in a directory with no `node_modules` — usually your home directory, or a fresh checkout. `cd ~/.buzz/REPOS/waggle-main && npm ci`. It is a missing install, not a broken tool |
+| `Cannot find module '…/tools/<name>.mjs'` | the checkout is on a feature branch or behind `main`. See prerequisite 1. A tool that seems missing is far more often a stale checkout than a tool that does not exist |
+| a command **prints nothing and exits 0** | do not read that as success. `nip46-signer.mjs --get-public-key` did exactly this, because that flag never existed and the file is a library with no argument handling. Check the exit status *and* the byte count before believing silence |
 | a `$AGENT_RUNTIME` path expands to `/credentials/…` | the variable is unset. It is not exported for you; `export AGENT_RUNTIME=~/.nvoy/desktop/<agent>` first |
 | the console page is blank, or buttons do nothing | you opened `console/index.html` as a `file://` URL. Serve it: `npm run console`, then `http://127.0.0.1:8080/console/` |
 | `mint-identity` says the file already exists | it refuses to overwrite a key file, deliberately — overwriting orphans every grant pointing at the old identity. Move it aside if you truly mean to replace it |
 | `join` exits **3** | relays accepted but nothing is fetchable. Treat the request as unpublished; do not approve it |
-| `--get-public-key` prints an unexpected npub | you paired to the wrong identity. Stop before granting |
-| `--get-public-key` errors after a clean connect | the pairing failed at connect and was swallowed. Re-pair from a fresh `bunker://` |
+| the pairing check prints `cannot read Bunker URI credential` | the credential path is wrong — usually `AGENT_RUNTIME` was never exported, so it expanded to `/credentials/bunker-uri` |
+| the pairing check prints `set NVOY_NSEC or the Bunker credential-file pair` | neither env var reached the process. Check the line continuations in the command |
+| the pairing check hangs, then fails | the pairing itself is broken. `nip46-signer.mjs` swallows the failure at `connect`, so it surfaces on the first real operation — here, sealing. Re-pair from a fresh `bunker://` |
 | the console shows the agent on Access but not Agents | expected today — issue #321 |
 | a capability is refused at request time | `admit+read` and `mirror` cannot be requested. This is intentional |
 | a relay says `pow: 28 bits needed` | normal for `nos.lol`, not a failure. One relay accepting is enough |
