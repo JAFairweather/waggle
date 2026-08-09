@@ -2044,7 +2044,7 @@ function buildControlState() {
     // rows file straight into a signed, public, already-published artifact with nobody deciding to
     // publish it.
     agents: Object.values(loadAgentRows())
-      .filter(row => /^[0-9a-f]{64}$/.test(String(row?.agent || '')) && AGENT_STATUSES.includes(row?.status))
+      .filter(row => projectableAgentRow(row))
       .map(row => ({
         pubkey: String(row.agent).toLowerCase(),
         status: row.status,
@@ -2244,6 +2244,26 @@ function applyLifecycle(rows, command, at) {
   }
   next[command.agent] = row
   return next
+}
+
+// A row the projection will not publish. Kerouac's #316 read: the browser rejects the WHOLE state on
+// an unrecognised status, while this side quietly filtered the row — asymmetric, and a filtered row
+// vanishes from what the console itself calls the owner's only view of what the bridge routes for.
+// So dropping one is now loud. Logged once per distinct row, because buildControlState runs on every
+// refresh and an alarm that repeats every tick is one an operator learns to scroll past.
+const agentRowDropLogged = new Set()
+function projectableAgentRow(row) {
+  const key = String(row?.agent || '<no agent>')
+  const badKey = !/^[0-9a-f]{64}$/.test(key)
+  const badStatus = !AGENT_STATUSES.includes(row?.status)
+  if (!badKey && !badStatus) { agentRowDropLogged.delete(key); return true }
+  if (!agentRowDropLogged.has(key)) {
+    agentRowDropLogged.add(key)
+    err(`lifecycle: agent row ${key.slice(0, 16)}… withheld from the published state — ` +
+      `${badKey ? 'unusable pubkey' : `status ${JSON.stringify(row?.status)} is outside the closed catalogue`}. ` +
+      'It is NOT visible in the console; the bridge may still hold it.')
+  }
+  return false
 }
 
 function handleAgentLifecycleCommand(ev) {
