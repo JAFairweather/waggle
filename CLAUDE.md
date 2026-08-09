@@ -137,6 +137,22 @@ that merely ran.** The suite was green through all of them.
 - **Syntax valid ≠ works.** `node --check` has passed on code whose identifiers did not exist.
 - **`$?` after a pipeline** reports the last command in the pipe, not your script.
 - **Assert anchors before a scripted edit** — a replace that matches nothing prints success.
+- **A mutation that does not apply is indistinguishable from one that is not detected.** Both look
+  like a suite that stayed green, and the second is the conclusion you will draw. Print
+  `ANCHOR MISS` and treat it as a failed run — 2026-08-09, a mutation proved nothing because the
+  anchor held a literal NUL byte that `grep` could not carry.
+- **Never put an invisible character literally in source — use `\uXXXX`.** A NUL as a probe key and
+  a non-breaking space inside a character class each broke tooling that reads the file, and a class
+  nobody can read is a class nobody can check: a reviewer had to sweep U+0000–U+FFFF to prove that
+  a `-` between two invisible characters was not an accidental range.
+- **A probe that loses its own input has told you nothing.** A shell heredoc silently dropped the
+  non-breaking space a check was written to exercise, so it reported a pass for a case it never
+  ran. Confirm the input is what you think it is before believing the output.
+- **Assert the reason, not only the refusal**, wherever the message is the thing someone acts on.
+  `!ok` cannot distinguish a correct refusal from a correct refusal with a misleading explanation.
+  2026-08-09: a new guard made three existing fixtures refuse for a stated reason that sent the
+  owner hunting for an invisible character in a message whose fault was a visible extra line. Every
+  assertion still passed, because every one of them asserted only that it refused.
 - **Put a size floor on fetched input** — a scan of an empty file once reported everything clean.
 - **Being unable to check is not the same as being fine.** Tools here exit **3 = INCONCLUSIVE**
   rather than 0 when they could not see enough to judge (`tripwire.mjs`, `verify-firewall.sh`).
@@ -145,14 +161,14 @@ that merely ran.** The suite was green through all of them.
 
 ## Tests
 
-`npm test` — 61 suites, against the real exported functions with synthetic events. No sockets,
+`npm test` — 65 suites, against the real exported functions with synthetic events. No sockets,
 no production state, no writes outside a temp dir.
 
 boot · install state · host bootstrap · host facts · suite roster · off-box policy protocol · standing trusted-reply policy · policy receipt verification · derive-only shadow client · shadow-mode gate · policy journal · policy-owned Buzz artifacts · off-box policy service · policy request queue · remote-only policy gate · forced-command policy runner · policy-host deployment · Nostr remote signer · read resilience · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant
 admission · admission return-lane lifecycle · message rendering · deployed-build verification · routing-policy snapshot · latency trace · return lane · return-lane scan · typed channel task carry ·
-return-lane no-miss · return-lane pending · relay ingress · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · recipient DM relays · DM relay-list publisher · watchlist hot-reload · signed owner control state · signed trust tiers · trust-gradient lane vocabulary · agent lifecycle catalogue · agent lifecycle lane · capability issue paths · agent challenge gate · console importmap coverage · console access list · capability vocabulary
+return-lane no-miss · return-lane pending · relay ingress · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · recipient DM relays · DM relay-list publisher · watchlist hot-reload · signed owner control state · signed trust tiers · trust-gradient lane vocabulary · agent lifecycle catalogue · agent lifecycle lane · capability issue paths · agent challenge gate · console importmap coverage · console access list · capability vocabulary · challenge registry · join request · join approval · mint identity
 
-CI runs them on push and PR. **If a run reports fewer than 61, the branch is on a stale base.**
+CI runs them on push and PR. **If a run reports fewer than 65, the branch is on a stale base.**
 The count of record is the `test` script in `package.json`; a prose count that disagrees with it
 is the prose being wrong.
 
