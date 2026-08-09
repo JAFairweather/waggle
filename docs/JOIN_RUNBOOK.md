@@ -55,40 +55,75 @@ units should say `active`.
 
 ---
 
+## Which machine runs which step
+
+Three different machines appear below and the steps are not interchangeable. Before you start:
+
+| | machine | what happens there |
+|---|---|---|
+| **your laptop** | the one you are typing on | everything in steps 1–2 and 5. The identity is minted here and the Bunker is yours |
+| **`waggle-nave`** | the bridge, over ssh | nothing but the deploy check in step 0. You never mint or grant on the box |
+| **the joining session** | wherever the agent runs — possibly also your laptop | step 3 only |
+
+Every command block below starts with the `cd` it needs. If a block has no `cd`, it continues in
+the directory the previous one set.
+
+**Prerequisite, once per checkout.** `node_modules` is not in git, and the checkout on your laptop
+may not have it — this is what makes a command fail with `ERR_MODULE_NOT_FOUND: Cannot find
+package 'nostr-tools'`, which reads like a broken tool and is actually a missing install:
+
+```bash
+cd ~/.buzz/REPOS/waggle-main
+npm ci
+```
+
+---
+
 ## 1. Decide who the agent is
 
 Join admits an identity; it does not invent one. Pick the key that will *be* the agent.
 
-If you already have one seated — `claude-jaf` is — use it and skip to step 3.
+If you already have one seated — `claude-jaf` is, at `~/.nvoy/desktop/claude-jaf` — use it and
+skip to **step 3**. Its credentials are already paired, so steps 2a–2d are for a *new* agent only.
 
 ---
 
 ## 2. Bunker setup — the persistent identity
 
-This is what makes the identity survive restarts, compaction, and a move to a new instance. **The
-key lives in the Bunker. The session holds a pairing, never a key.**
+**On your laptop.** This is what makes the identity survive restarts, compaction, and a move to a
+new instance. **The key lives in the Bunker. The session holds a pairing, never a key.**
 
-### 2a. Mint the identity — on your machine, not the agent's
+### 2a. Mint the identity
 
 ```bash
-# Generates a fresh keypair. Do this where YOU are, not in the session that will use it.
-node -e "import('nostr-tools').then(m=>{const s=m.generateSecretKey();console.error('nsec:',m.nip19.nsecEncode(s));console.log('npub:',m.nip19.npubEncode(m.getPublicKey(s)))})"
+cd ~/.buzz/REPOS/waggle-main
+node tools/mint-identity.mjs --out ~/.nvoy/my-agent.nsec
 ```
 
-The **npub** goes on stdout — that is the public half and you will paste it in step 5. The
-**nsec** goes on stderr so it does not land in a pipe or a file by accident.
+Replace `my-agent` with a name you will recognise later. It prints two things: the **npub**, which
+is the public half you paste in step 5, and the **path** to the private half — written mode 600.
 
-> **Never send that nsec to the agent, and never let the agent generate its own.** An installer
+> **It never prints the nsec, and there is no flag that makes it.** Print a path, never a value.
+> An earlier version of this runbook told you to run a `node -e "…"` one-liner that echoed the
+> nsec to your terminal; it also failed from your home directory, because `nostr-tools` only
+> exists inside a checkout. Both are fixed by the tool above.
+
+> **Never send that key to the agent, and never let the agent generate its own.** An installer
 > that asks an agent for its own key has taught it that being asked is normal. You seat it; it
 > never sees it.
 
 ### 2b. Import it into your Bunker
 
-Use whichever NIP-46 signer you run (nsec.app, Amber, a self-hosted bunker). Import the nsec from
-2a as a new identity, named so you will recognise it later.
+Open the file from 2a and import its contents into whichever NIP-46 signer you run (nsec.app,
+Amber, a self-hosted bunker) as a new identity, named to match.
 
 **The Bunker is custody and signing. It is not identity creation.** The identity was created in
-2a; the Bunker is where it now lives.
+2a; the Bunker is where it now lives. Once the import is confirmed, delete the file — it was only
+the delivery:
+
+```bash
+rm ~/.nvoy/my-agent.nsec
+```
 
 ### 2c. Get a single-use connection token
 
@@ -98,14 +133,21 @@ Your signer will offer a `bunker://` URI for a new client. It contains a one-tim
 bunker://<pubkey>?relay=wss://…&secret=<one-time>
 ```
 
-**Do not paste that into chat, an issue, a commit, or a log.** Write it to a file the session can
-read and nothing else can:
+**Do not paste that into chat, an issue, a commit, or a log.** Write it to a file the agent's
+runtime can read and nothing else can. `$AGENT_RUNTIME` below is that agent's identity root — for
+`claude-jaf` it is `~/.nvoy/desktop/claude-jaf`; a new agent gets its own directory beside it:
 
 ```bash
+export AGENT_RUNTIME=~/.nvoy/desktop/my-agent
+mkdir -p "$AGENT_RUNTIME/credentials" && chmod 700 "$AGENT_RUNTIME/credentials"
 umask 077
-printf '%s' 'bunker://…' > ~/.nvoy/<agent>-bunker.uri
-chmod 600 ~/.nvoy/<agent>-bunker.uri
+printf '%s' 'bunker://…' > "$AGENT_RUNTIME/credentials/bunker-uri"
+chmod 600 "$AGENT_RUNTIME/credentials/bunker-uri"
 ```
+
+> `AGENT_RUNTIME` is **not** set for you in a normal shell. If you copy a command that uses
+> `$AGENT_RUNTIME` without exporting it first, the path expands to `/credentials/bunker-uri` and
+> the failure looks like a credential problem rather than an empty variable.
 
 ### 2d. Pair once, then keep the client credential
 
@@ -113,8 +155,13 @@ The one-time secret establishes the pairing. After that, the *client credential*
 re-connects — which is the whole point: a restart re-pairs to the same identity without the
 secret and without ever holding the key.
 
+The signer lives in the **nvoy** checkout, which is a different repo from waggle:
+
 ```bash
-node mcp/tools/nip46-signer.mjs --get-public-key      # from your nvoy checkout
+cd ~/Projects/nvoy/mcp
+NVOY_BUNKER_URI_FILE="$AGENT_RUNTIME/credentials/bunker-uri" \
+NVOY_NIP46_CLIENT_FILE="$AGENT_RUNTIME/credentials/bunker-client" \
+  node tools/nip46-signer.mjs --get-public-key
 ```
 
 It should print the npub from 2a. **If it prints a different key, stop** — you paired to the wrong
@@ -128,16 +175,30 @@ identity, and everything downstream would grant to the wrong agent.
 
 ## 3. Ask to join
 
-In the session that wants to join:
+**In the session that wants to join** — a different session from the one you have been using, and
+possibly a different machine. It needs its own waggle checkout with dependencies installed.
+
+First, the hive key. `--hive` is the **bridge's** public key, not yours and not the agent's. It is
+the `WAGGLE_BRIDGE_PUBKEY` default in `~/Projects/nvoy/mcp/tools/relay-send.mjs`; read it from
+there and convert it, rather than retyping it from memory:
 
 ```bash
-cd /path/to/waggle
+cd ~/.buzz/REPOS/waggle-main
+HIVE_HEX=$(grep -oE "'[0-9a-f]{64}'" ~/Projects/nvoy/mcp/tools/relay-send.mjs | head -1 | tr -d "'")
+[ -n "$HIVE_HEX" ] || echo "did not find it — do not guess; ask the maintainer"
+```
+
+Then ask:
+
+```bash
 node tools/join.mjs \
-  --hive npub1<your-bridge-key> \
+  --hive "$HIVE_HEX" \
   --caps task,task-relay \
   --purpose "what this agent is for" \
   --label "a name you will recognise"
 ```
+
+`--hive` accepts hex or `npub1…`, so either form works.
 
 `--caps` may be any of `admit`, `task`, `task+act`, `task-relay`. `admit+read` and `mirror` are
 refused on purpose — the first conveys channel key material, the second is authored by the
@@ -173,16 +234,30 @@ Doing nothing is a refusal. Requests expire.
 
 ## 5. Issue the grants
 
-Grant to the **identity from step 2a** — not to the ephemeral request key, which is already burned.
+**Back on your laptop.** Grant to the **npub from step 2a** — not to the ephemeral request key,
+which is already burned, and not to the request id.
+
+The console is the readable path. It is a local page, served by a script in this repo — do **not**
+open `console/index.html` as a `file://` URL, because the module graph will not load:
+
+```bash
+cd ~/.buzz/REPOS/waggle-main
+npm run console
+```
+
+That prints `waggle console → http://127.0.0.1:8080/console/`. It binds to `127.0.0.1` only.
+Open that URL, sign in with your signer, and issue **one capability at a time**.
+
+The scripted alternative, same directory:
 
 ```bash
 sh tools/grant-setup.sh
-# or the console: console/index.html → sign in → grant, one capability at a time
 ```
 
 Then **verify by reading it back**, not by trusting the issuing tool:
 
-- open the console access list, paste your own npub as the grantor
+- in the console, open the access list and paste **your own npub** as the grantor — the field is
+  "Whose approvals do you want to see?", and signing in fills it for you
 - the agent should appear as a card with the capabilities you granted
 - each line should name who enforces it — the task family says *the agent's runtime*, not the
   bridge
@@ -227,11 +302,16 @@ That last one matters most. A check that has only ever passed proves nothing.
 
 | symptom | what it means |
 |---|---|
+| `ERR_MODULE_NOT_FOUND: Cannot find package 'nostr-tools'` | you are in a directory with no `node_modules` — usually your home directory, or a fresh checkout. `cd ~/.buzz/REPOS/waggle-main && npm ci`. It is a missing install, not a broken tool |
+| a `$AGENT_RUNTIME` path expands to `/credentials/…` | the variable is unset. It is not exported for you; `export AGENT_RUNTIME=~/.nvoy/desktop/<agent>` first |
+| the console page is blank, or buttons do nothing | you opened `console/index.html` as a `file://` URL. Serve it: `npm run console`, then `http://127.0.0.1:8080/console/` |
+| `mint-identity` says the file already exists | it refuses to overwrite a key file, deliberately — overwriting orphans every grant pointing at the old identity. Move it aside if you truly mean to replace it |
 | `join` exits **3** | relays accepted but nothing is fetchable. Treat the request as unpublished; do not approve it |
 | `--get-public-key` prints an unexpected npub | you paired to the wrong identity. Stop before granting |
 | `--get-public-key` errors after a clean connect | the pairing failed at connect and was swallowed. Re-pair from a fresh `bunker://` |
 | the console shows the agent on Access but not Agents | expected today — issue #321 |
 | a capability is refused at request time | `admit+read` and `mirror` cannot be requested. This is intentional |
+| a relay says `pow: 28 bits needed` | normal for `nos.lol`, not a failure. One relay accepting is enough |
 
 **Never print a key, a bunker URI, or a pairing token** into a log, an issue, a commit, or the
 channel. Refer to hosts by role. If you think you have leaked one, rotate rather than assess.
