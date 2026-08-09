@@ -50,6 +50,7 @@ import { LANE_IDS, LANES, RELEASED } from './lanes.mjs'   // the trust gradient'
 import { log, err } from './log.mjs'
 import { markLatency } from './latency.mjs'
 import { durableSet, durableQueue } from './stores.mjs'
+import { parseLifecycleCommand, lifecycleAdmissible, lifecycleReceipt, LIFECYCLE_COMMAND_D } from './agent_lifecycle.mjs'   // #309
 import { fanout } from './fanout.mjs'
 import { recipientDmRelays } from './dm_relays.mjs'
 import { quarantineSlotsFromSource } from './buzz_policy_core.mjs'
@@ -447,6 +448,7 @@ const PUB = cfg.public ? {
   controlStateRefreshSecs: Number(cfg.public.control_state_refresh_secs != null ? cfg.public.control_state_refresh_secs : 300),
   controlStateCommandAt: Number(cfg.public.control_state_command_at || 0),
   watchlistCommandAt: Number(cfg.public.watchlist_command_at || 0),
+  lifecycleCommandAt: Number(cfg.public.lifecycle_command_at || 0),
   moderationCommandAt: Number(cfg.public.moderation_command_at || 0),
   moderationCommandIds: (cfg.public.moderation_command_ids || []).map(String)
     .filter(id => /^[0-9a-f]{64}$/i.test(id)).map(id => id.toLowerCase()),
@@ -2166,6 +2168,86 @@ function handleWatchlistControlCommand(ev) {
   return { ok: true, action: body.action, target, ...result }
 }
 
+// --- agent lifecycle (#309) -----------------------------------------------------------------------
+// The lifecycle plane needs no new transport: it is this same approver-signed control-command lane.
+// This handler owns ONLY the envelope — roster, signature, exact addressing, freshness, watermark,
+// identical to its three siblings above. Every lifecycle decision (which operations exist, what each
+// one may do, and whether it may be applied to the row it names) lives in `agent_lifecycle.mjs`,
+// which is pure and carries its own suite. Policy in here would be policy nobody can test in isolation.
+//
+// It is deliberately NOT the off-box policy service. That lane's property is "evidence, not
+// instructions"; here the owner's intent IS the instruction, and the approver signature is the gate.
+const AGENTROWS_PATH = process.env.AGENTROWS_PATH || resolve(ROOT, 'data', 'agent-rows.json')
+function loadAgentRows() {
+  try { const rows = JSON.parse(readFileSync(AGENTROWS_PATH, 'utf8')); return rows && typeof rows === 'object' && !Array.isArray(rows) ? rows : {} }
+  catch { return {} }   // absent or unreadable reads as empty; nothing here is a security decision
+}
+function saveAgentRows(rows) {
+  try {
+    mkdirSync(dirname(AGENTROWS_PATH), { recursive: true })
+    const tmp = `${AGENTROWS_PATH}.tmp`
+    writeFileSync(tmp, JSON.stringify(rows, null, 2))
+    renameSync(tmp, AGENTROWS_PATH)   // atomic: a torn rows file would lose the record of who is admitted
+    return true
+  } catch (e) { err(`lifecycle: could not persist agent rows: ${e.message}`); return false }
+}
+
+// The one place an operation becomes a row change. Kept as a table rather than a switch inside the
+// handler so the set of reachable statuses is visible at a glance.
+function applyLifecycle(rows, command, at) {
+  const next = { ...rows }
+  const prior = next[command.agent] || null
+  const row = { agent: command.agent, label: prior?.label || null, return_lane: prior?.return_lane || false,
+    status: prior?.status || 'unknown', updated_at: at }
+  switch (command.op) {
+    case 'agent_admit': row.status = 'admitted'; break
+    case 'agent_revoke': row.status = 'revoked'; break
+    case 'agent_pause': row.status = 'paused'; break
+    case 'agent_resume': row.status = 'admitted'; break
+    case 'agent_rename': row.label = command.label; break
+    case 'agent_return_lane': row.return_lane = command.enabled; break
+    case 'agent_forget': delete next[command.agent]; return next
+  }
+  next[command.agent] = row
+  return next
+}
+
+function handleAgentLifecycleCommand(ev) {
+  if (!ev || ev.kind !== CONTROL_COMMAND_KIND || !PUB || !BRIDGE_PK) return { ok: false, reason: 'not a lifecycle command' }
+  const author = String(ev.pubkey || '').toLowerCase()
+  if (!PUB.approvers.includes(author)) return { ok: false, reason: 'author is not an approver' }
+  let sigOk; try { sigOk = verifyEvent(ev) } catch { sigOk = false }
+  if (!sigOk) return { ok: false, reason: 'invalid signature' }
+  const tags = ev.tags || []
+  if (tags.length !== 2 || tags[0]?.[0] !== 'd' || tags[0]?.[1] !== LIFECYCLE_COMMAND_D || tags[0].length !== 2 || tags[1]?.[0] !== 'p' || String(tags[1]?.[1]).toLowerCase() !== BRIDGE_PK || tags[1].length !== 2) return { ok: false, reason: 'not addressed to this bridge' }
+  const now = Math.floor(Date.now() / 1000)
+  if (!Number.isInteger(ev.created_at) || ev.created_at > now + 300 || now - ev.created_at > CONTROL_COMMAND_MAX_AGE_SECS) return { ok: false, reason: 'stale command' }
+  let body
+  try { body = JSON.parse(ev.content) } catch { return { ok: false, reason: 'invalid body' } }
+  const command = parseLifecycleCommand(body)
+  if (!command.ok) return command
+  if (ev.created_at <= PUB.lifecycleCommandAt) return { ok: false, reason: 'superseded command' }
+
+  const rows = loadAgentRows()
+  const admissible = lifecycleAdmissible(command, rows[command.agent] || null)
+  if (!admissible.ok) return admissible
+  // A no-op is still a WATERMARK advance and still a success: an owner clicking twice must not see
+  // an alarm, and the replayed event must not stay replayable.
+  if (!admissible.noop) {
+    if (!saveAgentRows(applyLifecycle(rows, command, new Date(ev.created_at * 1000).toISOString()))) {
+      return { ok: false, reason: 'could not persist agent rows' }
+    }
+  }
+  if (!mutateConfig(c => { c.public.lifecycle_command_at = ev.created_at })) return { ok: false, reason: 'could not persist lifecycle watermark' }
+  PUB.lifecycleCommandAt = ev.created_at
+
+  const receipt = lifecycleReceipt(command, { approver: author, at: new Date(ev.created_at * 1000).toISOString(), eventId: ev.id })
+  // The reach is logged explicitly. "lifecycle: agent_return_lane accepted" would not tell an owner
+  // reading this log that their agent's reach just grew.
+  log(`lifecycle: ${command.op} (${receipt.reach}${admissible.noop ? ', no-op' : ''}) for ${receipt.agent}… accepted from approver ${author.slice(0, 12)}… (${ev.id.slice(0, 12)}…)`)
+  return { ok: true, op: command.op, agent: command.agent, noop: Boolean(admissible.noop), receipt }
+}
+
 // Public owner-command twin of the private staging verbs.  The event is itself the signed audit
 // artifact.  Its target is the already-public Nostr source id, never the private Buzz staging id;
 // reject is intentionally absent because a durable public denial would identify the stranger.
@@ -3007,7 +3089,7 @@ function connectPublic(url) {
       // #206: owner-console control events. NIP-78 is shared with the read-only state record,
       // but a distinct `d` tag, an approver author filter, and a bridge p-tag make this a narrow
       // command inbox rather than a general public-event subscription.
-      if (BRIDGE_PK && PUB.approvers.length) ws.send(JSON.stringify(['REQ', 'pctl', { kinds: [CONTROL_COMMAND_KIND], authors: PUB.approvers, '#d': [CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TRUST_COMMAND_D, MODERATION_COMMAND_D], '#p': [BRIDGE_PK], since: Math.floor(Date.now() / 1000) - CONTROL_COMMAND_MAX_AGE_SECS, limit: 100 }]))
+      if (BRIDGE_PK && PUB.approvers.length) ws.send(JSON.stringify(['REQ', 'pctl', { kinds: [CONTROL_COMMAND_KIND], authors: PUB.approvers, '#d': [CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TRUST_COMMAND_D, MODERATION_COMMAND_D, LIFECYCLE_COMMAND_D], '#p': [BRIDGE_PK], since: Math.floor(Date.now() / 1000) - CONTROL_COMMAND_MAX_AGE_SECS, limit: 100 }]))
       // Re-open the record-id subscriptions on reconnect. New 440s refresh this live after
       // verification; these existing ids cover a revocation that arrives without a bridge p-tag.
       subscribeConsentRevocations()
@@ -3045,6 +3127,7 @@ function connectPublic(url) {
           if (handleControlStateCommand(ev).ok) return
           if (handleWatchlistControlCommand(ev).ok) return
           if (handleTrustControlCommand(ev).ok) return
+          if (handleAgentLifecycleCommand(ev).ok) return
           return
         }
         if (ev && (ev.kind === NIPDA.grant || ev.kind === NIPDA.revocation)) {
@@ -3099,7 +3182,7 @@ export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, c
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests,
   policyRequests, policyWriterInFlight, remotePolicyGatePublic, processRemotePolicyRequest,
   retryRemotePolicyRequests, __setPolicyWriterRunnerForTests, unframePolicyWriterResponse,
