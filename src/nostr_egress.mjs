@@ -179,10 +179,47 @@ const controlState = (v) => {
     return { pubkey, consent }
   }).sort((a, b) => a.pubkey.localeCompare(b.pubkey))
   if (typeof s.publishing !== 'boolean') reject('control state publishing is not boolean')
+  // Per-agent lifecycle rows (#309). Additive exactly like `operations` below: absent means omitted,
+  // so records signed before this field remain valid. The projection in bridge.mjs already
+  // re-derives and shape-checks each field; it is checked AGAIN here because this schema sits beside
+  // the key and is the last thing between a caller and a signed public artifact. Two checks that
+  // fail independently are the point — one of them being right is not the same as both being right.
+  //
+  // This field was omitted when the console screen landed, and because the schema REBUILDS the
+  // object from an exact field list rather than rejecting unknown keys, `agents` was silently
+  // stripped on every publish while the console rendered "no agents admitted" and looked fine.
+  const agentStatuses = new Set(['admitted', 'paused', 'revoked'])
+  let agents = null
+  if (s.agents != null) {
+    const rows = Array.isArray(s.agents) ? s.agents : reject('control state agents is not an array')
+    if (rows.length > 1000) reject('control state has too many agents')
+    const seenAgents = new Set()
+    agents = rows.map((a) => {
+      if (!a || typeof a !== 'object') reject('control state agent is not an object')
+      if (Object.keys(a).sort().join(',') !== 'label,pubkey,return_lane,status') reject('control state agent has unexpected fields')
+      const pubkey = hex64(a.pubkey, 'control state agent.pubkey')
+      if (seenAgents.has(pubkey)) reject('control state has duplicate agent')
+      seenAgents.add(pubkey)
+      if (!agentStatuses.has(String(a.status))) reject('control state agent.status is invalid')
+      if (typeof a.return_lane !== 'boolean') reject('control state agent.return_lane is not boolean')
+      let label = null
+      if (a.label != null) {
+        if (typeof a.label !== 'string' || !/^[\x20-\x7e]{1,64}$/.test(a.label)) reject('control state agent.label is invalid')
+        // A label is free owner-supplied text on its way into a SIGNED, WORLD-READABLE record, and
+        // the shape check above cannot tell prose from a credential — a bech32 nsec is 63 printable
+        // ASCII characters and passes it cleanly. The realistic vector is an owner mis-pasting into
+        // the label field, so refuse the paste rather than publish it.
+        if (/nsec1|ncryptsec1|bunker:/i.test(a.label)) reject('control state agent.label looks like a credential')
+        label = a.label
+      }
+      return { pubkey, status: String(a.status), label, return_lane: a.return_lane }
+    }).sort((x, y) => x.pubkey.localeCompare(y.pubkey))
+  }
+  const withAgents = agents === null ? {} : { agents }
   // v1 originally carried just hive/bridge/publishing/follows. Operations was added as an
   // additive v1 summary, so old signed records must remain valid rather than being rewritten
   // under a fictional v2 contract.
-  if (s.operations == null) return { v: 1, observed_at: observedAt, hive: { id: hiveId, name: hiveName, handle: hiveHandle }, bridge: hex64(s.bridge, 'control state bridge'), publishing: s.publishing, follows: cleaned }
+  if (s.operations == null) return { v: 1, observed_at: observedAt, hive: { id: hiveId, name: hiveName, handle: hiveHandle }, bridge: hex64(s.bridge, 'control state bridge'), publishing: s.publishing, follows: cleaned, ...withAgents }
   const operations = (typeof s.operations === 'object') ? s.operations : reject('control state operations is invalid')
   const exact = (obj, keys, label) => { if (Object.keys(obj).sort().join(',') !== keys.slice().sort().join(',')) reject(`${label} has unexpected fields`) }
   const count = (value, label) => { const n = Math.floor(num(value, label)); if (n < 0 || n > 1000000) reject(`${label} out of bounds`); return n }
@@ -197,7 +234,7 @@ const controlState = (v) => {
   if (typeof gates.consent_required !== 'boolean') reject('control state consent_required is not boolean')
   const drops = (operations.drops && typeof operations.drops === 'object') ? operations.drops : reject('control state drops is missing')
   exact(drops, ['relay_preauth', 'relay_not_relay'], 'control state drops')
-  return { v: 1, observed_at: observedAt, hive: { id: hiveId, name: hiveName, handle: hiveHandle }, bridge: hex64(s.bridge, 'control state bridge'), publishing: s.publishing, follows: cleaned,
+  return { v: 1, observed_at: observedAt, hive: { id: hiveId, name: hiveName, handle: hiveHandle }, bridge: hex64(s.bridge, 'control state bridge'), publishing: s.publishing, follows: cleaned, ...withAgents,
     operations: { trust: { trusted_repliers: count(trust.trusted_repliers, 'trusted_repliers'), muted_authors: count(trust.muted_authors, 'muted_authors'), watched_notes: count(trust.watched_notes, 'watched_notes') }, lanes,
       gates: { consent_required: gates.consent_required, ask_per_hour: count(gates.ask_per_hour, 'ask_per_hour'), public_content_bytes: count(gates.public_content_bytes, 'public_content_bytes'), public_replier_per_min: count(gates.public_replier_per_min, 'public_replier_per_min'), public_channel_per_min: count(gates.public_channel_per_min, 'public_channel_per_min'), public_lane_per_hour: count(gates.public_lane_per_hour, 'public_lane_per_hour') },
       drops: { relay_preauth: count(drops.relay_preauth, 'relay_preauth'), relay_not_relay: count(drops.relay_not_relay, 'relay_not_relay') } } }
