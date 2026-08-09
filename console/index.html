@@ -36,6 +36,12 @@
     --good:#4f7a34; --warn:#9a6a12; --critical:#a2482f; }
 
   *{box-sizing:border-box}
+  /* The `hidden` ATTRIBUTE only carries a UA `display:none`, so any rule that sets `display` on
+     the same element silently beats it. `.cards{display:grid}` did exactly that: switching to
+     Details un-hid the table without hiding the cards, and the page showed BOTH views of the
+     same data at once. Nothing in CI can see this — it is a cascade outcome, not markup or
+     script. Stated once, at the top, so it holds for every element on the page. */
+  [hidden]{display:none !important}
   html,body{margin:0;background:var(--ground);color:var(--text);font-family:var(--sans);line-height:1.55}
   main{max-width:1000px;margin:0 auto;padding:0 20px 60px}
   a{color:var(--accent-bright)}
@@ -106,6 +112,39 @@
   .pill.warn{color:var(--warn);border-color:var(--warn)}
   .tablewrap{overflow-x:auto}
   .empty{color:var(--faint);font-size:14px;padding:14px 0}
+
+  /* ── The readable access list ────────────────────────────────────────────────────────────
+     One card per KEY, not one row per grant. An agent holding three approvals used to appear
+     as three unrelated rows in relay order, so the question this page exists to answer —
+     "what does waggle have, and where?" — could only be read by grouping in your head. The
+     table is still here, behind Details, because the ids and the exact protocol vocabulary
+     are what you want when you are reconciling against a signed record rather than deciding
+     whether to revoke. */
+  .listhead{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+  .viewtoggle{display:inline-flex;border:1px solid var(--line);border-radius:999px;overflow:hidden;margin:0 0 12px}
+  .viewtoggle button{background:transparent;border:none;color:var(--dim);font-family:var(--mono);
+    font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;padding:5px 13px;cursor:pointer}
+  .viewtoggle button[aria-pressed="true"]{background:var(--panel-2);color:var(--text)}
+  .viewtoggle button:hover{color:var(--accent-bright)}
+  .cards{display:grid;gap:12px}
+  .agentcard{border:1px solid var(--line);border-radius:var(--r-md);background:var(--panel-2);overflow:hidden}
+  .agentcard-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
+    padding:13px 16px;border-bottom:1px solid var(--line)}
+  .agentcard-count{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+  .agentcard-count b{color:var(--good);font-weight:600}
+  .agentcard-count.none b{color:var(--faint)}
+  .grants{list-style:none;margin:0;padding:0}
+  .grantline{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;
+    padding:12px 16px;border-top:1px solid var(--line)}
+  .grants > .grantline:first-child{border-top:none}
+  .grant-what{font-size:14.5px;color:var(--text);font-weight:600}
+  /* A removed approval is history, not a live control. It stays visible — an owner needs to see
+     that something WAS granted — but it must not read as something still in force. */
+  .grantline.gone .grant-what{color:var(--dim);font-weight:400}
+  .grant-meta{color:var(--dim);font-size:12.5px;margin-top:3px;line-height:1.5}
+  .grant-meta .u{border-bottom:1px dotted var(--line-strong);cursor:help}
+  .grant-act{flex:none}
+
   .rel{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin-top:12px;line-height:1.8}
   .rel b{color:var(--dim);font-weight:600}
   .note{border:1px dashed var(--line-strong);border-radius:var(--r-md);padding:14px 16px;
@@ -233,19 +272,26 @@
   </div>
 
   <div class="panel">
-    <h2>Access list</h2>
-    <div class="tablewrap"><table id="tbl">
-      <thead><tr><th>Who</th><th>Status</th><th>What they can do</th><th>Where</th><th>Given</th><th>Record</th><th></th></tr></thead>
-      <tbody id="rows"><tr><td colspan="7" class="empty">Sign in — or paste a key above — to see who has access.</td></tr></tbody>
+    <div class="listhead">
+      <h2>Access list</h2>
+      <div class="viewtoggle" role="group" aria-label="How to show the access list">
+        <button id="view-plain" aria-pressed="true">Plain</button>
+        <button id="view-pro" aria-pressed="false">Details</button>
+      </div>
+    </div>
+    <div class="cards" id="cards"><div class="empty">Sign in — or paste a key above — to see who has access.</div></div>
+    <div class="tablewrap" id="prowrap" hidden><table id="tbl">
+      <thead><tr><th>Who</th><th>Status</th><th>Capability</th><th>Scope</th><th>Enforced by</th><th>Given</th><th>Record</th><th></th></tr></thead>
+      <tbody id="rows"><tr><td colspan="8" class="empty">Sign in — or paste a key above — to see who has access.</td></tr></tbody>
     </table></div>
   </div>
 
   <div class="note">
-    <b>Why “Where” often says Hidden.</b> Each approval records the channel it is for as a
-    scrambled fingerprint rather than a name. Anyone can see that you approved someone; nobody can
-    see <i>into what</i> — and two approvals into the same channel cannot be matched up by an
-    onlooker. If you already know the channel, type it in the box above and the matching rows fill
-    in. <b>Hidden is the privacy working, not something failing to load.</b>
+    <b>Why it says “a channel this record does not name”.</b> Each approval records what it is
+    for as a scrambled fingerprint rather than a name. Anyone can see that you approved someone;
+    nobody can see <i>into what</i> — and two approvals into the same channel cannot be matched up
+    by an onlooker. If you already know the channel or the agent, type it in the box above and the
+    matching approvals resolve. <b>That is the privacy working, not something failing to load.</b>
   </div>
   <div class="note">
     <b>Keys stay with your signer.</b> Reading needs no key and no bridge access. When you issue or
@@ -261,6 +307,7 @@
 // signatures must not fetch its verifier from a third party at load time.
 import { verifyEvent, nip19 } from 'nostr-tools'
 import { verifyNvoyVisibility } from './nvoy-visibility.mjs'
+import { groupByGrantee, byLiveThenNewest, scopePhrase, givenOn } from './access-list.mjs'
 const { decode } = nip19
 
 const $ = (id) => document.getElementById(id)
@@ -425,28 +472,72 @@ async function loadProfiles(pubkeys) {
   }
   renderRows()
 }
+// Arrangement lives in access-list.mjs so it can be asserted without a browser. See its header.
+const scopeCell = (g) => {
+  const { text, title } = scopePhrase(g)
+  return title ? `<span class="u" title="${esc(title)}">${esc(text)}</span>` : esc(text)
+}
+const canRevoke = () => signer && signerPk === lastGrantor
+const revokeButton = (g) => canRevoke() && g.live
+  ? `<button class="btn ghost" style="margin:0;padding:5px 12px;font-size:12.5px" onclick="__revoke('${esc(g.id)}','${esc(short(g.grantee))}')">Revoke</button>`
+  : ''
+
 function renderRows() {
-  const rows = $('rows')
+  const cards = $('cards'), rows = $('rows')
   if (lastGrants === null) return              // never read yet — leave the "sign in to see" prompt
   if (!lastGrants.length) {
-    rows.innerHTML = `<tr><td colspan="7" class="empty">Nobody has been given access by this key${lastSubjectNote}.</td></tr>`
+    const none = `Nobody has been given access by this key${lastSubjectNote}.`
+    cards.innerHTML = `<div class="empty">${esc(none)}</div>`
+    rows.innerHTML = `<tr><td colspan="8" class="empty">${esc(none)}</td></tr>`
     return
   }
-  rows.innerHTML = lastGrants.map(g => `
+
+  cards.innerHTML = groupByGrantee(lastGrants).map(group => `
+      <section class="agentcard">
+        <div class="agentcard-head">
+          ${identityCell(group.grantee)}
+          <span class="agentcard-count${group.live ? '' : ' none'}">${group.live
+            ? `<b>${group.live}</b> active`
+            : `<b>no</b> access`}</span>
+        </div>
+        <ul class="grants">${group.grants.map(g => `
+          <li class="grantline${g.live ? '' : ' gone'}">
+            <div>
+              <div class="grant-what">${g.live ? '' : 'Removed — '}${esc(capLabel(g.cap))}</div>
+              <div class="grant-meta">${scopeCell(g)} · checked by ${esc(CAP_ENFORCER[g.cap] || 'the agent’s runtime')}
+                · given ${esc(givenOn(g.at))}</div>
+            </div>
+            <div class="grant-act">${revokeButton(g)}</div>
+          </li>`).join('')}</ul>
+      </section>`).join('')
+
+  rows.innerHTML = [...lastGrants].sort(byLiveThenNewest).map(g => `
       <tr>
         <td class="who">${identityCell(g.grantee)}</td>
         <td><span class="pill ${g.live ? 'live' : 'revoked'}">${g.live ? 'Active' : 'Removed'}</span></td>
-        <td>${esc(capLabel(g.cap))}</td>
+        <td>${esc(g.cap)}</td>
         <td>${g.scopeLabel === 'opaque'
-              ? `<span title="This approval names its channel as a salted hash, so a passer-by cannot tell which one it is. Enter the channel above and it will resolve.">Hidden</span>`
-              : g.scopeLabel}</td>
+              ? `<span title="This approval names its subject as a salted hash, so a passer-by cannot tell which one it is. Enter it above and it will resolve.">Hidden</span>`
+              : esc(g.scopeLabel)}</td>
+        <td>${esc(CAP_ENFORCER[g.cap] || '?')}</td>
         <td>${new Date(g.at * 1000).toISOString().slice(0, 16).replace('T', ' ')}</td>
         <td class="record">${short(g.id)}</td>
-        <td>${g.live && signer && signerPk === lastGrantor
-            ? `<button class="btn ghost" style="margin:0;padding:5px 12px;font-size:12.5px" onclick="__revoke('${esc(g.id)}','${esc(short(g.grantee))}')">Revoke</button>`
-            : ''}</td>
+        <td>${revokeButton(g)}</td>
       </tr>`).join('')
 }
+
+// The toggle swaps which of the two already-rendered views is visible; it never re-reads and
+// never re-renders, so switching cannot change what you are looking at.
+function setView(pro) {
+  $('cards').hidden = pro
+  $('prowrap').hidden = !pro
+  $('view-plain').setAttribute('aria-pressed', String(!pro))
+  $('view-pro').setAttribute('aria-pressed', String(pro))
+  try { localStorage.setItem('waggle.accesslist.view', pro ? 'pro' : 'plain') } catch { /* private mode */ }
+}
+$('view-plain').onclick = () => setView(false)
+$('view-pro').onclick = () => setView(true)
+try { if (localStorage.getItem('waggle.accesslist.view') === 'pro') setView(true) } catch { /* private mode */ }
 
 // ── The shared identity bar ─────────────────────────────────────────────────────────────────
 // Vendored from the estate's component rather than hand-rolled: one sign-in across the fleet,
@@ -927,7 +1018,11 @@ $('go').addEventListener('click', async () => {
     if (!answered.length) {
       st.className = 'status err'
       st.textContent = 'No relay answered. Nothing is shown because nothing could be verified — this is not the same as "nobody is admitted".'
-      rows.innerHTML = '<tr><td colspan="7" class="empty">Unverifiable — no relay answered.</td></tr>'
+      // BOTH views, or the hidden one keeps a stale answer that becomes the visible one the
+      // moment somebody clicks the toggle — a list nobody could verify, shown as if verified.
+      rows.innerHTML = '<tr><td colspan="8" class="empty">Unverifiable — no relay answered.</td></tr>'
+      $('cards').innerHTML = '<div class="empty">Unverifiable — no relay answered.</div>'
+      lastGrants = null
       return
     }
     lastGrants = out
@@ -938,10 +1033,19 @@ $('go').addEventListener('click', async () => {
     // then enrich each key with its latest signed kind:0 identity when the profile reads return.
     void loadProfiles(out.map(g => g.grantee))
 
-    st.className = 'status ok'
-    st.textContent = `${out.filter(g => g.live).length} live · ${out.filter(g => !g.live).length} revoked · `
-      + `${answered.length}/${RELAYS.length} relays answered`
-      + (forged ? ` · ${forged} event(s) failed signature verification and were discarded` : '')
+    // Say it the way the person reading it would. The relay count stays, because it is the
+    // evidence that separates "nobody is admitted" from "we could not see" — and a failed
+    // signature stays loud, because a discarded forgery is the one thing here worth alarming on.
+    const live = out.filter(g => g.live).length
+    const gone = out.length - live
+    const holders = new Set(out.filter(g => g.live).map(g => g.grantee)).size
+    st.className = forged ? 'status err' : 'status ok'
+    st.textContent =
+      (live ? `${holders} ${holders === 1 ? 'key has' : 'keys have'} access — ${live} ${live === 1 ? 'approval' : 'approvals'} in force`
+            : 'Nothing is in force')
+      + (gone ? `, ${gone} removed` : '')
+      + `. Read back from ${answered.length} of ${RELAYS.length} relays.`
+      + (forged ? ` ${forged} event(s) FAILED signature verification and were discarded — they are not shown.` : '')
   } catch (e) {
     st.className = 'status err'
     st.textContent = e.message
