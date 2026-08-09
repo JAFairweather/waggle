@@ -100,7 +100,13 @@ check(extraTag.ok === false && /addressed/.test(extraTag.reason), 'an extra tag 
 const stale = handleAgentLifecycleCommand(sign(admit, { at: now() - 3600 }))
 check(stale.ok === false && /stale/.test(stale.reason), 'an hour-old command is refused')
 const future = handleAgentLifecycleCommand(sign(admit, { at: now() + 3600 }))
-check(future.ok === false && /stale/.test(future.reason), 'a command from the future is refused')
+check(future.ok === false, 'a command from the future is refused')
+// Same refusal, DIFFERENT diagnosis. Reporting a future-dated event as 'stale' is the misleading
+// string an operator reads while chasing clock skew — the future case almost always means the
+// signer's clock is ahead, not that anything is old.
+check(/future/.test(future.reason) && !/stale/.test(future.reason),
+  'and says it is FUTURE-dated rather than stale — the two are different diagnoses for an operator')
+check(stale.reason !== future.reason, 'so the two refusals are actually distinguishable, not the same string twice')
 
 // Replay: re-submitting the accepted revoke below must not take effect twice.
 const revokeAt = at()

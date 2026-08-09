@@ -50,7 +50,7 @@ import { LANE_IDS, LANES, RELEASED } from './lanes.mjs'   // the trust gradient'
 import { log, err } from './log.mjs'
 import { markLatency } from './latency.mjs'
 import { durableSet, durableQueue } from './stores.mjs'
-import { parseLifecycleCommand, lifecycleAdmissible, lifecycleReceipt, LIFECYCLE_COMMAND_D, AGENT_STATUSES } from './agent_lifecycle.mjs'   // #309
+import { parseLifecycleCommand, lifecycleAdmissible, lifecycleReceipt, LIFECYCLE_COMMAND_D, AGENT_STATUSES, CREDENTIAL_SHAPED } from './agent_lifecycle.mjs'   // #309
 import { fanout } from './fanout.mjs'
 import { recipientDmRelays } from './dm_relays.mjs'
 import { quarantineSlotsFromSource } from './buzz_policy_core.mjs'
@@ -2051,7 +2051,7 @@ function buildControlState() {
         // Owner-supplied text on its way to a browser. It is shape-checked on the way in too; it is
         // re-checked here because this artifact is signed and public, and the two checks fail
         // independently — one of them being right is not the same as both being right.
-        label: typeof row.label === 'string' && /^[\x20-\x7e]{1,64}$/.test(row.label) ? row.label : null,
+        label: projectableLabel(row),
         return_lane: row.return_lane === true,
       }))
       .sort((a, b) => a.pubkey.localeCompare(b.pubkey)),   // stable order, so a re-publish is not a spurious diff
@@ -2266,6 +2266,35 @@ function projectableAgentRow(row) {
   return false
 }
 
+// A label that reaches the projection but looks like a credential is DROPPED to null here rather
+// than passed on for the egress schema to reject. The difference is the blast radius: signControlState
+// throws on a credential-shaped label, publishControlState logs and returns 0, and the ENTIRE control
+// state — follows, consent, operations — stops publishing. Fifteen minutes later the console calls
+// the state stale and disables the very rename control the owner would use to fix it. One poisoned
+// label must not be able to ossify the whole artifact and lock the owner out of the repair.
+//
+// The parser and the console both refuse these on the way in, so reaching here means a hand-signed
+// command or a row written before those gates existed. Egress stays the hard backstop; this is the
+// containment. Logged loudly and once, like projectableAgentRow, because a silently blanked label
+// is a console lying about what the bridge holds.
+const labelDropLogged = new Set()
+function projectableLabel(row) {
+  const label = row?.label
+  if (typeof label !== 'string' || !/^[\x20-\x7e]{1,64}$/.test(label)) return null
+  const key = String(row?.agent || '<no agent>')
+  if (CREDENTIAL_SHAPED.test(label)) {
+    if (!labelDropLogged.has(key)) {
+      labelDropLogged.add(key)
+      // The label itself is NEVER logged — it may be the credential.
+      err(`lifecycle: agent ${key.slice(0, 16)}… has a credential-shaped label. It is withheld from ` +
+        'the published state and shown as unnamed. Rename it; the value is not printed here on purpose.')
+    }
+    return null
+  }
+  labelDropLogged.delete(key)
+  return label
+}
+
 function handleAgentLifecycleCommand(ev) {
   if (!ev || ev.kind !== CONTROL_COMMAND_KIND || !PUB || !BRIDGE_PK) return { ok: false, reason: 'not a lifecycle command' }
   const author = String(ev.pubkey || '').toLowerCase()
@@ -2275,7 +2304,12 @@ function handleAgentLifecycleCommand(ev) {
   const tags = ev.tags || []
   if (tags.length !== 2 || tags[0]?.[0] !== 'd' || tags[0]?.[1] !== LIFECYCLE_COMMAND_D || tags[0].length !== 2 || tags[1]?.[0] !== 'p' || String(tags[1]?.[1]).toLowerCase() !== BRIDGE_PK || tags[1].length !== 2) return { ok: false, reason: 'not addressed to this bridge' }
   const now = Math.floor(Date.now() / 1000)
-  if (!Number.isInteger(ev.created_at) || ev.created_at > now + 300 || now - ev.created_at > CONTROL_COMMAND_MAX_AGE_SECS) return { ok: false, reason: 'stale command' }
+  if (!Number.isInteger(ev.created_at)) return { ok: false, reason: 'stale command' }
+  // A future-dated event and an old one are different diagnoses, and 'stale command' is exactly the
+  // misleading string an operator reads while chasing clock skew — the future case usually means the
+  // SIGNER's clock is ahead, not that anything is old. Same refusal, honest reason.
+  if (ev.created_at > now + 300) return { ok: false, reason: 'command is dated in the future' }
+  if (now - ev.created_at > CONTROL_COMMAND_MAX_AGE_SECS) return { ok: false, reason: 'stale command' }
   let body
   try { body = JSON.parse(ev.content) } catch { return { ok: false, reason: 'invalid body' } }
   const command = parseLifecycleCommand(body)

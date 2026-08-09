@@ -222,6 +222,16 @@ $('lane-on').onclick = () => send('agent_return_lane', { enabled: true })
 $('lane-off').onclick = () => send('agent_return_lane', { enabled: false })
 $('rename').onclick = () => {
   const label = $('label').value
+  // Declared again rather than imported: src/ is Node and this page's document root is console/, so
+  // it cannot import across that boundary at runtime (src/lanes.mjs). tests/agent_lifecycle.mjs
+  // asserts this agrees with CREDENTIAL_SHAPED in src/agent_lifecycle.mjs. THIS is the gate that
+  // matters for the named vector — the paste goes to public relays inside the signed command from
+  // here, before any bridge-side check runs.
+  if (/nsec1|ncryptsec1|bunker:|^[0-9a-f]{64}$/i.test(label)) {
+    out.className = 'bad'
+    out.textContent = 'That looks like a key or a Bunker URI. A rename is published to public relays, so this would make it world-readable. Nothing was sent.'
+    return
+  }
   if (!/^[\x20-\x7e]{1,64}$/.test(label)) {
     const out = $('manage-status'); out.className = 'status err'
     out.textContent = 'A label is 1–64 printable characters on one line. Spaces are fine.'

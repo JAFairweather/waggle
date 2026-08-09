@@ -209,7 +209,12 @@ const controlState = (v) => {
         // the shape check above cannot tell prose from a credential — a bech32 nsec is 63 printable
         // ASCII characters and passes it cleanly. The realistic vector is an owner mis-pasting into
         // the label field, so refuse the paste rather than publish it.
-        if (/nsec1|ncryptsec1|bunker:/i.test(a.label)) reject('control state agent.label looks like a credential')
+        // Declared here rather than imported from agent_lifecycle.mjs on purpose: this schema sits
+        // beside the key and is the last independent check before signing. tests/agent_lifecycle.mjs
+        // asserts it agrees with the catalogue's copy and the console's, so independence does not
+        // become drift. Bare 64-hex included — private keys live as raw hex in env vars in this
+        // stack, and no bare hex string is a legitimate display label.
+        if (/nsec1|ncryptsec1|bunker:|^[0-9a-f]{64}$/i.test(a.label)) reject('control state agent.label looks like a credential')
         label = a.label
       }
       return { pubkey, status: String(a.status), label, return_lane: a.return_lane }

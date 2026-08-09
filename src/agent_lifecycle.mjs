@@ -118,6 +118,21 @@ const HEX64 = /^[0-9a-f]{64}$/i
 // the console, and the rendering suite already carries the lesson that a hostile string reaches the
 // approver's screen. Keeping it boring here means the renderer is not the only thing standing up.
 const LABEL = /^[\x20-\x7e]{1,64}$/
+// A label VALUE that looks like a credential. SECRET_FIELD above screens field NAMES, which does
+// nothing about an owner pasting a key into the label box — and the paste is published to public
+// relays inside this signed command, by the browser, BEFORE the bridge or the egress schema ever
+// sees it. Screening only at egress would stop the second copy in the state artifact and let the
+// first one go world-readable. So the gate belongs here, and in the console.
+//
+// Bare 64-hex is included deliberately: in this stack private keys live as raw hex in env vars, a
+// 64-hex paste passes every shape check including the bech32 ones, and no bare hex string is a
+// legitimate display label.
+//
+// `console/agents.html` declares this pattern again rather than importing it — src/ is Node and the
+// console is a browser page whose document root is console/, so it cannot import across that
+// boundary at runtime (see src/lanes.mjs). tests/agent_lifecycle.mjs asserts the copies agree, so
+// the drift is caught in CI rather than trusted to discipline.
+export const CREDENTIAL_SHAPED = /nsec1|ncryptsec1|bunker:|^[0-9a-f]{64}$/i
 
 const refuse = reason => Object.freeze({ ok: false, reason })
 
@@ -157,6 +172,7 @@ export function parseLifecycleCommand(body) {
 
   if (spec.fields.includes('label')) {
     if (typeof body.label !== 'string' || !LABEL.test(body.label)) return refuse('label must be 1–64 printable characters')
+    if (CREDENTIAL_SHAPED.test(body.label)) return refuse('label looks like a credential')
     out.label = body.label
   }
   if (spec.fields.includes('enabled')) {

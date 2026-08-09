@@ -68,8 +68,21 @@ This section exists because the tempting lie in a lifecycle UI is a "destroy age
   does not retract anything that key already published. **Revoked is not disarmed.**
 - **`agent_forget` erases a row, not a history.** Everything the agent published is still public.
 - **No command may carry a credential.** These events are published to public relays, so a body with
-  a key in it is not a leak — it is a publication, and it is not undoable. Secret-bearing fields are
-  refused by shape, in both the parser and the lane, rather than by a caller remembering.
+  a key in it is not a leak — it is a publication, and it is not undoable. Two different things are
+  screened, and the distinction matters because for a while only the first was true:
+  - **field NAMES**, by `SECRET_FIELD` — a body with an `nsec` or `bunker` key is refused outright;
+  - **the label VALUE**, by `CREDENTIAL_SHAPED` — because a name screen does nothing about an owner
+    pasting a key into the label box. That paste is published inside the signed rename command, from
+    the browser, before any bridge-side check runs, so the screen lives at three independent gates:
+    `console/agents.html` (where the paste happens), `parseLifecycleCommand` (the lane), and the
+    egress schema in `src/nostr_egress.mjs` (the last check before the key). Bare 64-hex is included:
+    private keys live as raw hex in env vars in this stack. `tests/agent_lifecycle.mjs` asserts the
+    three copies agree, so independence does not become drift.
+
+- **`agent_revoke` and `agent_pause` are not yet ENFORCED.** They record the owner's decision and the
+  console shows it. Nothing in the delivery path reads these rows today — routing is governed by the
+  agent's grant, which these operations do not withdraw. Until that wiring lands, do not describe a
+  revoked agent as one the bridge has stopped routing for.
 
 ---
 
