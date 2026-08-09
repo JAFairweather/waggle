@@ -26,6 +26,10 @@ export const LIFECYCLE_COMMAND_D = 'waggle-agent-lifecycle'
 
 // What an operation does to the agent's reach. Narrowing is always safe to apply; widening is the
 // thing an approver is actually being asked to decide, and the console must say so.
+// The closed set of statuses a row may hold. Exported because the signed public projection filters
+// on it: a row with a status nobody defined must not reach a browser as if it were meaningful.
+export const AGENT_STATUSES = Object.freeze(['admitted', 'paused', 'revoked'])
+
 export const REACH = Object.freeze({ WIDENS: 'widens', NARROWS: 'narrows', NEUTRAL: 'neutral' })
 
 /**
@@ -51,10 +55,13 @@ export const LIFECYCLE_OPERATIONS = Object.freeze({
     fields: Object.freeze(['agent']),
     reach: REACH.NARROWS,
     destructive: false,
-    summary: 'withdraw bridge-side admission — the bridge stops routing for this key',
+    summary: 'withdraw the bridge-side admission the owner granted to this key',
     limits: 'withdraws ONLY the admission this bridge issued and can revoke. It does not reach the ' +
       "agent's runtime, does not delete or rotate the agent's key, and does not retract anything " +
-      'that key already published. Revoked is not disarmed.',
+      'that key already published. Revoked is not disarmed. AND NOT YET ENFORCED: delivery is ' +
+      "governed by the agent's grant, which this does not withdraw, and no routing path consults " +
+      'these rows today. Until that wiring lands this records the decision and shows it in the ' +
+      'console; it does not by itself stop a message.',
   }),
   agent_rename: Object.freeze({
     fields: Object.freeze(['agent', 'label']),
@@ -76,9 +83,11 @@ export const LIFECYCLE_OPERATIONS = Object.freeze({
     fields: Object.freeze(['agent']),
     reach: REACH.NARROWS,
     destructive: false,
-    summary: 'stop routing for this agent without withdrawing its admission',
+    summary: 'mark this agent paused, without withdrawing its admission',
     limits: 'reversible by agent_resume. The admission record is untouched, so this is a lane ' +
-      'decision, not a membership one.',
+      'decision, not a membership one. Carries the same not-yet-enforced caveat as agent_revoke: ' +
+      'no routing path consults these rows today, so pausing records the decision rather than ' +
+      'stopping delivery.',
   }),
   agent_resume: Object.freeze({
     fields: Object.freeze(['agent']),
@@ -109,6 +118,21 @@ const HEX64 = /^[0-9a-f]{64}$/i
 // the console, and the rendering suite already carries the lesson that a hostile string reaches the
 // approver's screen. Keeping it boring here means the renderer is not the only thing standing up.
 const LABEL = /^[\x20-\x7e]{1,64}$/
+// A label VALUE that looks like a credential. SECRET_FIELD above screens field NAMES, which does
+// nothing about an owner pasting a key into the label box — and the paste is published to public
+// relays inside this signed command, by the browser, BEFORE the bridge or the egress schema ever
+// sees it. Screening only at egress would stop the second copy in the state artifact and let the
+// first one go world-readable. So the gate belongs here, and in the console.
+//
+// Bare 64-hex is included deliberately: in this stack private keys live as raw hex in env vars, a
+// 64-hex paste passes every shape check including the bech32 ones, and no bare hex string is a
+// legitimate display label.
+//
+// `console/agents.html` declares this pattern again rather than importing it — src/ is Node and the
+// console is a browser page whose document root is console/, so it cannot import across that
+// boundary at runtime (see src/lanes.mjs). tests/agent_lifecycle.mjs asserts the copies agree, so
+// the drift is caught in CI rather than trusted to discipline.
+export const CREDENTIAL_SHAPED = /nsec1|ncryptsec1|bunker:|^[0-9a-f]{64}$/i
 
 const refuse = reason => Object.freeze({ ok: false, reason })
 
@@ -148,6 +172,7 @@ export function parseLifecycleCommand(body) {
 
   if (spec.fields.includes('label')) {
     if (typeof body.label !== 'string' || !LABEL.test(body.label)) return refuse('label must be 1–64 printable characters')
+    if (CREDENTIAL_SHAPED.test(body.label)) return refuse('label looks like a credential')
     out.label = body.label
   }
   if (spec.fields.includes('enabled')) {

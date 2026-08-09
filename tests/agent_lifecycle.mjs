@@ -16,6 +16,8 @@
 //
 //   node tests/agent_lifecycle.mjs
 
+import { readFileSync } from 'node:fs'
+import { CREDENTIAL_SHAPED } from '../src/agent_lifecycle.mjs'
 import { parseLifecycleCommand, lifecycleAdmissible, lifecycleReceipt, LIFECYCLE_OPERATIONS,
   LIFECYCLE_OPERATION_NAMES, LIFECYCLE_VERSION, LIFECYCLE_COMMAND_D, REACH } from '../src/agent_lifecycle.mjs'
 
@@ -166,6 +168,47 @@ check(receipt.reach === REACH.WIDENS, 'the receipt names the reach — a log lin
 check(receipt.limits === LIFECYCLE_OPERATIONS.agent_admit.limits, 'and carries the operation\'s limits verbatim')
 check(!/[0-9a-f]{40}/.test(JSON.stringify(receipt)), 'the receipt truncates keys — presentation, since these are public keys anyway')
 check(receipt.v === LIFECYCLE_VERSION && receipt.at === '2026-08-08T00:00:00.000Z', 'the receipt is versioned and timestamped')
+
+// ---- the credential screen, at the gate that actually publishes ---------------------------------
+// The named vector is an owner pasting a key into the label box. That paste goes to public relays
+// inside the SIGNED RENAME COMMAND, from the browser, before the bridge or the egress schema runs.
+// Screening only at egress stops the second copy in the state artifact and lets the first one go
+// world-readable — so the parser and the console are the gates that matter, and egress is a backstop.
+const NSEC = 'nsec1' + 'q'.repeat(58)
+const rename = label => parseLifecycleCommand({ v: 1, op: 'agent_rename', agent: 'a'.repeat(64), label })
+check(rename(NSEC).ok === false && /credential/.test(rename(NSEC).reason),
+  'the PARSER refuses an nsec pasted into a label — not just the egress schema downstream')
+check(rename('bunker://deadbeef?relay=wss://r').ok === false, 'and a Bunker URI')
+check(rename('ncryptsec1' + 'q'.repeat(50)).ok === false, 'and an encrypted nsec')
+// Bare 64-hex: in this stack private keys live as raw hex in env vars, so a hex paste passes every
+// bech32 screen. No bare hex string is a legitimate display label.
+check(rename('f'.repeat(64)).ok === false, 'and a bare 64-hex string, which is how a private key looks in an env var here')
+check(rename('F'.repeat(64)).ok === false, 'case-insensitively')
+// PAIR: ordinary labels still get through, including ones that merely CONTAIN hex or the word key.
+check(rename('My Dude (reviewer)').ok === true, 'PAIR: an ordinary label with a space and parentheses is accepted')
+check(rename('deadbeef probe').ok === true, 'PAIR: a label containing short hex is accepted — the screen is not a hex phobia')
+check(rename('key rotation bot').ok === true, 'PAIR: a label containing the word key is accepted')
+check(rename('a'.repeat(63)).ok === true, 'PAIR: 63 hex characters is not a key shape and is accepted')
+
+// ---- the three copies of the screen must agree ---------------------------------------------------
+// src/ is Node and the console is a browser page whose document root is console/, so it cannot
+// import across that boundary at runtime (src/lanes.mjs carries the same constraint and the same
+// remedy). The egress schema declares its own copy deliberately, because it is the last independent
+// check before the key. Independence is the design; drift is the risk — so CI checks, rather than
+// discipline being trusted.
+const src = f => readFileSync(new URL(f, import.meta.url), 'utf8')
+const copies = [
+  ['console/agents.html', src('../console/agents.html')],
+  ['src/nostr_egress.mjs', src('../src/nostr_egress.mjs')],
+]
+for (const [where, text] of copies) {
+  check(text.includes(CREDENTIAL_SHAPED.source),
+    `${where} declares the SAME credential screen as src/agent_lifecycle.mjs — the copies have not drifted`)
+}
+// NEGATIVE CONTROL: the check above is a substring match, so prove it can actually fail rather than
+// matching something incidental. An alarm that never fires and one that always fires are identical.
+check(!src('../console/following.html').includes(CREDENTIAL_SHAPED.source),
+  'NEGATIVE CONTROL — a console page that does NOT carry the screen is correctly reported as not carrying it')
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
 process.exit(pass ? 0 : 1)
