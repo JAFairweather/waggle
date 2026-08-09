@@ -50,7 +50,7 @@ import { LANE_IDS, LANES, RELEASED } from './lanes.mjs'   // the trust gradient'
 import { log, err } from './log.mjs'
 import { markLatency } from './latency.mjs'
 import { durableSet, durableQueue } from './stores.mjs'
-import { parseLifecycleCommand, lifecycleAdmissible, lifecycleReceipt, LIFECYCLE_COMMAND_D } from './agent_lifecycle.mjs'   // #309
+import { parseLifecycleCommand, lifecycleAdmissible, lifecycleReceipt, LIFECYCLE_COMMAND_D, AGENT_STATUSES } from './agent_lifecycle.mjs'   // #309
 import { fanout } from './fanout.mjs'
 import { recipientDmRelays } from './dm_relays.mjs'
 import { quarantineSlotsFromSource } from './buzz_policy_core.mjs'
@@ -2038,6 +2038,23 @@ function buildControlState() {
           : mirrorAsked.has(pubkey) ? 'asked'
             : 'pending',
     })),
+    // Per-agent lifecycle rows (#309). Public-safe by construction: a public key, a status from a
+    // closed set, an owner-chosen label and one boolean. This projection RE-DERIVES each field
+    // rather than spreading the row — a spread would carry whatever a future writer added to the
+    // rows file straight into a signed, public, already-published artifact with nobody deciding to
+    // publish it.
+    agents: Object.values(loadAgentRows())
+      .filter(row => /^[0-9a-f]{64}$/.test(String(row?.agent || '')) && AGENT_STATUSES.includes(row?.status))
+      .map(row => ({
+        pubkey: String(row.agent).toLowerCase(),
+        status: row.status,
+        // Owner-supplied text on its way to a browser. It is shape-checked on the way in too; it is
+        // re-checked here because this artifact is signed and public, and the two checks fail
+        // independently — one of them being right is not the same as both being right.
+        label: typeof row.label === 'string' && /^[\x20-\x7e]{1,64}$/.test(row.label) ? row.label : null,
+        return_lane: row.return_lane === true,
+      }))
+      .sort((a, b) => a.pubkey.localeCompare(b.pubkey)),   // stable order, so a re-publish is not a spurious diff
     // Owner-observable, public-safe operations summary (#67). These are bounded policy facts and
     // aggregate counters only: no channel UUIDs, host paths, relay URLs, credentials, or payloads.
     operations: {

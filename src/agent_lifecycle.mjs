@@ -26,6 +26,10 @@ export const LIFECYCLE_COMMAND_D = 'waggle-agent-lifecycle'
 
 // What an operation does to the agent's reach. Narrowing is always safe to apply; widening is the
 // thing an approver is actually being asked to decide, and the console must say so.
+// The closed set of statuses a row may hold. Exported because the signed public projection filters
+// on it: a row with a status nobody defined must not reach a browser as if it were meaningful.
+export const AGENT_STATUSES = Object.freeze(['admitted', 'paused', 'revoked'])
+
 export const REACH = Object.freeze({ WIDENS: 'widens', NARROWS: 'narrows', NEUTRAL: 'neutral' })
 
 /**
