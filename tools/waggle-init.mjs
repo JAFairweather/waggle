@@ -333,6 +333,16 @@ try {
       status: mismatches.length ? 'failed' : 'passed', evidence: configEvidence,
       action: mismatches.length ? 'Resolve the manifest mismatch explicitly; do not overwrite an identity or channel in place.' : null,
     })
+    // The host bootstrap is a separate act on a separate machine, so the wizard only points at it —
+    // it never claims a host it cannot see. And it never re-opens a step the runner already proved:
+    // overwriting recorded evidence with a fresh "waiting" is how a done step becomes undone.
+    if (!['passed', 'failed'].includes(installState.steps.host_bootstrap.status)) {
+      installState = transitionInstallStep(installState, 'host_bootstrap', {
+        status: 'waiting',
+        evidence: ['not attempted from here — the host is a different machine'],
+        action: `On the runtime host: node tools/waggle-host-bootstrap.mjs --state ${STATE_PATH}  (add --apply once the plan reads right)`,
+      })
+    }
     if (!CHECK_ONLY) saveInstallState(STATE_PATH, installState)
     for (const id of INSTALL_STEPS) {
       const step = installState.steps[id]
