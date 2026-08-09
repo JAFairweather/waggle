@@ -308,6 +308,7 @@
 import { verifyEvent, nip19 } from 'nostr-tools'
 import { verifyNvoyVisibility } from './nvoy-visibility.mjs'
 import { groupByGrantee, byLiveThenNewest, scopePhrase, givenOn } from './access-list.mjs'
+import { CAP_LABEL, capLabel, CAP_ENFORCER, capEnforcer, ISSUABLE } from './capability-vocabulary.mjs'
 const { decode } = nip19
 
 const $ = (id) => document.getElementById(id)
@@ -374,52 +375,7 @@ function query(url, filter, ms = 9000) {
 
 // Rendering is separate from reading so signing in can re-draw the same data with actions
 // attached, without re-querying the relays.
-// Protocol vocabulary -> what the person actually gets. `admit` and `task` are meaningful
-// inside NIP-DA and meaningless to an administrator deciding whether to click Remove.
-const CAP_LABEL = {
-  'admit': 'Post into the channel',
-  'admit+read': 'Post into the channel, and read it',
-  'task': 'Take tasks from you',
-  'task+act': 'Take tasks, and act on them',
-  'task-relay': 'Carry signed instructions',
-  'mirror': 'Mirror their public posts',
-}
-const capLabel = (c) => CAP_LABEL[c] || c
-
-// WHO ENFORCES WHAT. The operator signs every one of these here, but this bridge only
-// consumes two of them (see processGrantEvent: `cap !== 'admit' && cap !== 'admit+read'`).
-// The task family is enforced on the AGENT side, by the runtime's own invocation policy.
-// A surface that let you sign a grant without saying who checks it would be recording
-// intent and implying enforcement — the same defect as a routing board rendering a lane
-// nothing delivers to.
-const CAP_ENFORCER = {
-  'admit': 'this bridge',
-  'admit+read': 'this bridge',
-  'task': "the agent's runtime",
-  'task+act': "the agent's runtime",
-  'task-relay': "the agent's runtime",
-  'mirror': 'this bridge (authored by the participant, not by you)',
-}
-
-// The caps this console may ISSUE, per subject shape. Two deliberate exclusions:
-//   admit+read — conveying the read cap means putting Concord channel key material in a
-//     30440, which makes this page key-touching and makes REVOKE a Concord rotation
-//     client rather than an event signer (SPEC_EXTERNAL §4.1.1). Offered, disabled, with
-//     the reason: a greyed option with a reason teaches; a missing one confuses.
-//   mirror — authored by the participant about themselves, never by the operator. It is
-//     not the operator's to grant, so it is not in this list at all.
-const ISSUABLE = {
-  channel: [
-    { cap: 'admit', ok: true },
-    { cap: 'admit+read', ok: false,
-      reason: 'not issuable here — it conveys channel key material, which would make this page hold a key and make revoke a Concord rotation, not just a 441' },
-  ],
-  agent: [
-    { cap: 'task', ok: true },
-    { cap: 'task+act', ok: true },
-    { cap: 'task-relay', ok: true },
-  ],
-}
+// The capability vocabulary is shared — see console/capability-vocabulary.mjs for why.
 
 let lastGrants = null, lastSubjectNote = '', lastGrantor = null
 // Profiles are a presentation layer, never access policy. Kind:0 metadata is signed, but its
@@ -504,7 +460,7 @@ function renderRows() {
           <li class="grantline${g.live ? '' : ' gone'}">
             <div>
               <div class="grant-what">${g.live ? '' : 'Removed — '}${esc(capLabel(g.cap))}</div>
-              <div class="grant-meta">${scopeCell(g)} · checked by ${esc(CAP_ENFORCER[g.cap] || 'the agent’s runtime')}
+              <div class="grant-meta">${scopeCell(g)} · checked by ${esc(capEnforcer(g.cap))}
                 · given ${esc(givenOn(g.at))}</div>
             </div>
             <div class="grant-act">${revokeButton(g)}</div>
@@ -519,7 +475,7 @@ function renderRows() {
         <td>${g.scopeLabel === 'opaque'
               ? `<span title="This approval names its subject as a salted hash, so a passer-by cannot tell which one it is. Enter it above and it will resolve.">Hidden</span>`
               : esc(g.scopeLabel)}</td>
-        <td>${esc(CAP_ENFORCER[g.cap] || '?')}</td>
+        <td>${esc(capEnforcer(g.cap))}</td>
         <td>${new Date(g.at * 1000).toISOString().slice(0, 16).replace('T', ' ')}</td>
         <td class="record">${short(g.id)}</td>
         <td>${revokeButton(g)}</td>
@@ -781,7 +737,7 @@ $('g-preview').addEventListener('click', async () => {
 // it, and what it does not convey — the last part being where a reader is most likely to
 // assume more than was signed.
 function capWhy(cap, grantee, subject, subjRaw, isAgent) {
-  const who = short(grantee), enforcer = CAP_ENFORCER[cap] || 'an unknown consumer'
+  const who = short(grantee), enforcer = capEnforcer(cap)
   const hidden = 'The subject is stored as a salted hash, so nobody watching can tell which one it is.'
   if (cap === 'admit') {
     return `This admits ${who} to the channel ${subjRaw}. It conveys NO ability to read the channel — only to post into it. Checked by ${enforcer}. The channel id never rides publicly — it is stored as a salted hash that only someone who already knows the channel can match.`
@@ -812,7 +768,7 @@ function refreshCaps() {
   const chosen = opts.find(o => o.cap === sel.value)
   const blocked = opts.filter(o => !o.ok)
   $('g-cap-note').innerHTML = [
-    chosen ? `Checked by <b>${CAP_ENFORCER[chosen.cap]}</b>.` : '',
+    chosen ? `Checked by <b>${capEnforcer(chosen.cap)}</b>.` : '',
     ...blocked.map(o => `<b>${capLabel(o.cap)}</b> is ${o.reason}.`),
   ].filter(Boolean).join('<br>')
 }
