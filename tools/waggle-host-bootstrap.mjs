@@ -13,7 +13,7 @@
 //
 // Exit: 0 satisfied · 1 work outstanding or drifted · 3 INCONCLUSIVE (a fact could not be read).
 
-import { existsSync, lstatSync, readFileSync } from 'node:fs'
+import { existsSync, lstatSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { planHostBootstrap, pendingActions, bootstrapVerdict, bootstrapEvidence } from '../src/host_bootstrap.mjs'
 import { loadInstallState, saveInstallState, transitionInstallStep } from '../src/install_state.mjs'
@@ -42,7 +42,7 @@ const sh = (cmd, args) => {
   return { status: r.status, out: (r.stdout || '').trim() }
 }
 
-function probeDirectory (id, path, wantMode, wantOwner) {
+function probeDirectory (id, path, wantMode) {
   try {
     if (!existsSync(path)) return
     const st = lstatSync(path)
@@ -71,7 +71,7 @@ function probeUnit (id, unit) {
 // cannot drift apart.
 for (const a of planHostBootstrap(state)) {
   if (a.kind === 'system_user') probeUser(a.id, a.want.name)
-  else if (a.kind === 'directory') probeDirectory(a.id, a.want.path, a.mode, a.owner)
+  else if (a.kind === 'directory') probeDirectory(a.id, a.want.path, a.mode)
   else if (a.kind === 'systemd_unit' || a.kind === 'systemd_timer') probeUnit(a.id, a.want.name)
   else if (a.kind === 'code_checkout') {
     if (!existsSync(a.want.path)) continue
