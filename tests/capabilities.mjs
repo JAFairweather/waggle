@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import { finalizeEvent, generateSecretKey, verifyEvent } from 'nostr-tools'
 import { verifyNvoyVisibility } from '../console/nvoy-visibility.mjs'
+import { CAP_LABEL, CAP_ENFORCER, ISSUABLE } from '../console/capability-vocabulary.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 let pass = 0, fail = 0
@@ -35,30 +36,15 @@ ok('the Nvoy visibility claim queries Nvoy default relays, not Waggle-only publi
   /const NVOY_RELAYS = \['wss:\/\/nos\.lol','wss:\/\/relay\.primal\.net'\]/.test(consoleSrc) &&
   /verifyNvoyVisibility\(\{ relays: NVOY_RELAYS, event/.test(consoleSrc))
 
-// Pull the declarations out of the console page. It is a browser page with a DOM at load,
-// so evaluating the block is the practical way to read its real values.
-// Returns {} for a declaration that is absent, so a missing map reports as failed
-// assertions naming what is missing rather than as a stack trace. A test whose output is
-// a crash tells you it broke but not what it wanted.
-const grab = (name) => {
-  const i = consoleSrc.indexOf(`const ${name} = {`)
-  if (i < 0) return {}
-  const open = consoleSrc.indexOf('{', i)
-  let depth = 0, j = open
-  for (; j < consoleSrc.length; j++) {
-    if (consoleSrc[j] === '{') depth++
-    else if (consoleSrc[j] === '}') { depth--; if (!depth) break }
-  }
-  try { return new Function(`return ${consoleSrc.slice(open, j + 1)}`)() } catch { return {} }
-}
-const CAP_LABEL = grab('CAP_LABEL')
-const CAP_ENFORCER = grab('CAP_ENFORCER')
-const ISSUABLE = grab('ISSUABLE')
+// The vocabulary used to be declared inline in the console page, so this suite scraped the
+// declaration out of the HTML with `new Function`. It now lives in console/capability-vocabulary.mjs
+// and is imported directly — which asserts the REAL exported values rather than a text pattern
+// that happens to look like them. A scrape can pass against a declaration the page never uses.
 const issuable = (kind) => Array.isArray(ISSUABLE[kind]) ? ISSUABLE[kind] : []
 
-ok('the console declares a capability label map', Object.keys(CAP_LABEL).length > 0)
-ok('the console declares who enforces each capability', Object.keys(CAP_ENFORCER).length > 0)
-ok('the console declares which capabilities it may issue, per subject shape',
+ok('the shared vocabulary declares a capability label map', Object.keys(CAP_LABEL).length > 0)
+ok('the shared vocabulary declares who enforces each capability', Object.keys(CAP_ENFORCER).length > 0)
+ok('the shared vocabulary declares which capabilities it may issue, per subject shape',
   issuable('agent').length > 0 && issuable('channel').length > 0)
 
 // ── every capability the estate uses has a human label ────────────────────────
