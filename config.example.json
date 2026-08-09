@@ -38,6 +38,7 @@
     "lane_per_hour": 200,
     "deletes_per_hour": 20,
     "approver_mention": "<Buzz @name mentioned in quarantine headers so arrivals notify the approver; omit for none>",
+    "owner_pubkey": "<64-hex Nostr pubkey of the human who owns this hive; distinct from its bridge/agent identities>",
     "approvers": ["<hex pubkey allowed to reply approve|watch|mute|reject on a quarantined post>"],
     "grantors": ["<hex pubkey whose signed NIP-DA 440/441 admit or revoke a granted participant; defaults to approvers>"],
     "scan_channels": ["<channel name or UUID of a WORKING channel to scan for @mentions/replies to a return-lane agent; NEVER the staging_inbox; omit => scan nothing>"],
