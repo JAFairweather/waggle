@@ -21,27 +21,37 @@ step 6.
 
 ## 0. Land the code
 
-Three PRs, in this order. I could not merge them — `gh pr merge` is refused by the local
-permission classifier in my session, not by anything in the repo.
+The groundwork is already on `main` — #324 (shared capability vocabulary) and #323 (the join
+design). What is left is this PR:
 
 ```bash
 cd ~/.buzz/REPOS/waggle-main
-
-gh pr merge 324 --squash      # shared capability vocabulary (groundwork)
-gh pr merge 323 --squash      # the join design doc
 gh pr merge 325 --squash      # this runbook + the join modules and their suites
 ```
 
 **Merging deploys.** The runner polls `main` and ships the first CI-green commit within minutes.
-None of these three touch a lane, a gate, a key or the deploy runner, but confirm the box anyway:
+This one touches no lane, gate, key or deploy runner, but confirm the box anyway:
 
 ```bash
-ssh <bridge-host> 'cat /opt/waggle-read/DEPLOYED_SHA; systemctl is-active waggle-read waggle-sealed'
+ssh waggle-nave 'cat /opt/waggle-read/DEPLOYED_SHA; systemctl is-active waggle-read waggle-sealed'
 git -C ~/.buzz/REPOS/waggle-main fetch -q origin && git rev-parse origin/main
 ```
 
 The first line's SHA should reach the second within about three and a half minutes, and both
 units should say `active`.
+
+> **Which host, and why it is named here.** `waggle-nave` is the ssh alias for the box running
+> `waggle-read` and `waggle-sealed`. `waggle-box` is an alias for the **same machine** — the two
+> answer with the same `/etc/machine-id` and the same unit set, so a step that says one is not
+> choosing against the other. `nave.pub` is a **different** machine, hosting the nave site; it is
+> not the bridge and nothing in this runbook touches it.
+>
+> An alias is cheap to repoint, and a stale one would send this check at the wrong machine and get
+> a confident `active` back from it. So confirm rather than trust the name:
+>
+> ```bash
+> ssh waggle-nave 'hostname; cut -c1-8 /etc/machine-id; systemctl is-active waggle-read'
+> ```
 
 ---
 
