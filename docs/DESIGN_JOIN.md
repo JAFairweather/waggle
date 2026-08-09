@@ -100,16 +100,51 @@ This is where the tempting shortcut is, so the rule is explicit:
 
 Revoke, pause and decline may be a Telegram button — worst case, an attacker who owns the
 Telegram account can turn an agent off. Grant may not, because worst case there is an attacker
-who can admit an agent to the community by tapping a message. Telegram and DM are not signers and
-must never be treated as one.
+who can admit an agent to the community by tapping a message. **Telegram is not a signer.**
 
-So for **grant**, the transports carry a one-tap deep link into the signing surface, plus enough
-context to decide before opening it. The signature happens in the owner's own signer. The tap
-saves the owner from hunting for the console; it does not replace the key.
+**A Nostr DM is different, and this is the distinction the initial build rests on.** A NIP-17
+reply is sealed and *signed by the owner's own key*. It is not a tap on a button in someone
+else's system; it is an authenticated statement from the key that holds the authority. So a DM
+reply satisfies the rule above rather than bending it, and it is what the first build uses.
+Telegram comes later, and when it does it inherits the reduces/creates split: buttons for revoke
+and pause, a deep link for grant.
 
-If that trade is ever revisited — a bot seat holding a narrowly-scoped issuing grant, so a tap
-really is sufficient — it must be a deliberate decision recorded here, with the blast radius
-written down. It is not a thing to arrive at by convenience.
+### The initial build: a strict semantic reply
+
+The owner receives one sealed DM describing the request, and replies. The parse is
+**deliberately not natural language**:
+
+- **The whole decrypted body, trimmed, must equal `APPROVE <request-id>`** — or `DENY
+  <request-id>`. Not "contains". Not "a line within". The entire message. A reply that also
+  quotes, comments, or explains is **not** an approval, and says so back.
+- `<request-id>` is the 64-hex nonce unique to that request. It only ever appears in the DM
+  waggle sent the owner, so it cannot be fabricated for a request the owner has not seen.
+- The sender must be in `approvers`.
+- The reply is **single-use and freshness-bound**, consumed on first acceptance — the same
+  registry #311 needs, and the same reason: an observed message must not be replayable.
+- Anything else is a **no-op with a logged reason**. Default closed.
+
+The whole-body equality is the load-bearing rule, and it exists because this repo has already
+been bitten by the class it defends against. The rendering suite exists because a hostile note
+tried to mint an `APPROVED BY` heading inside quoted text. A `contains`-style parse would make
+every quoted string in every forwarded message a potential approval.
+
+### Who actually signs the 440, and the blast radius
+
+The DM proves the owner authorised it. Something still has to *issue* the grants, and **waggle
+must never issue them** — it would be signing authority it does not hold.
+
+The initial build uses the estate's existing off-box policy machinery (`docs/OFFBOX_POLICY_RUNBOOK.md`,
+the forced-command policy runner and policy-host deployment suites): an owner-controlled
+responder holding a narrow issuing capability, which reads sealed DMs, applies the parse above,
+and issues the grant set plus releases the pairing token.
+
+**The blast radius, stated rather than discovered:** whatever holds that issuing capability can
+mint grants. It is constrained by the forced command, by the approvers list, by the exact-match
+parse, and by single-use request ids — but it is a standing capability and should be treated as
+one. It is a smaller radius than a Telegram button (which would add "and anyone with the
+owner's Telegram") and a larger one than the owner signing each 440 by hand in the console.
+The console path stays available and remains the highest-assurance route.
 
 ## Proving the session controls what it claims
 
@@ -175,8 +210,12 @@ disagree with the first.
    new session" must be a first-class case rather than an accident.
 3. **What expiry?** Long enough for an owner who is asleep, short enough that a stale request is
    not a standing offer. The control lane's 15-minute freshness is too short for a human.
-4. **Telegram bot seat.** Whether the bot gets a narrow revoke/pause grant of its own, per the
-   rule above.
+4. **Telegram bot seat.** Deferred — the initial build is DM-only. When it lands, whether the
+   bot gets a narrow revoke/pause grant of its own, per the reduces/creates rule above.
+5. **Does the responder run on the bridge host or off it?** The off-box policy machinery exists
+   precisely so a standing issuing capability need not sit beside the bridge key. Co-locating
+   them would put two separately-valuable secrets on one box, which is the thing the lean
+   re-mintable bridge identity is designed to avoid.
 
 ## Acceptance
 
