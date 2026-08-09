@@ -14,7 +14,7 @@
 //
 //   node tests/agent_lifecycle_lane.mjs
 
-import { mkdtempSync, writeFileSync, existsSync, unlinkSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools/pure'
@@ -134,6 +134,64 @@ check(!(AGENT in loadAgentRows()), 'and neither wrote a row')
 const finalAdmit = handleAgentLifecycleCommand(sign(admit, { at: at() }))
 check(finalAdmit.ok === true && loadAgentRows()[AGENT]?.status === 'admitted',
   'PAIR: after all of the above, a legitimate command is still accepted — the lane refuses duplicates and forgeries, not everything')
+
+// ---- same-second commands: the watermark keeps an id set, not just a timestamp -------------------
+// Nostr timestamps are one-second resolution and lifecycle commands target INDEPENDENT rows, so a
+// same-second pair is legitimate work, not a duplicate. A timestamp-only watermark dropped the
+// second one silently — and defeated this handler's own no-op path, because an owner clicking twice
+// lands inside a single second. Note this suite deliberately steps a synthetic clock everywhere
+// else; that is exactly why the defect could hide, so it is pinned explicitly here.
+const AGENT_B = 'd'.repeat(64), AGENT_C = 'e'.repeat(64)
+const sameSecond = at()
+const firstOfSecond = handleAgentLifecycleCommand(sign({ v: 1, op: 'agent_admit', agent: AGENT_B }, { at: sameSecond }))
+check(firstOfSecond.ok === true, 'the first command in a second is accepted')
+const secondOfSecond = sign({ v: 1, op: 'agent_admit', agent: AGENT_C }, { at: sameSecond })
+const secondResult = handleAgentLifecycleCommand(secondOfSecond)
+check(secondResult.ok === true,
+  'a DISTINCT second command signed in the SAME second is also accepted — two console actions one second apart in wall-clock terms are not a replay')
+check(loadAgentRows()[AGENT_B]?.status === 'admitted' && loadAgentRows()[AGENT_C]?.status === 'admitted',
+  'and BOTH rows are persisted — the second decision was not silently dropped')
+// PAIR: the id set must still close the replay door it exists to hold. Same second, same id.
+const sameSecondReplay = handleAgentLifecycleCommand(secondOfSecond)
+check(sameSecondReplay.ok === false && /superseded/.test(sameSecondReplay.reason),
+  'PAIR: replaying that exact same-second event IS still refused — the id set widens the watermark without opening it')
+// And a genuinely older command is still refused, so the monotonic floor survives the change.
+const older = handleAgentLifecycleCommand(sign({ v: 1, op: 'agent_admit', agent: AGENT_B }, { at: sameSecond - 5 }))
+check(older.ok === false && /superseded/.test(older.reason), 'PAIR: a command older than the watermark is still refused')
+
+// ---- widening reach must not apply to a revoked row ----------------------------------------------
+// agent_return_lane WIDENS reach. On a revoked row it is an undone revocation by the side door:
+// the projection would publish return_lane true for a key the owner believes is cut off.
+check(handleAgentLifecycleCommand(sign({ v: 1, op: 'agent_revoke', agent: AGENT_B }, { at: at() })).ok === true,
+  'AGENT_B is revoked, to set up the widening case')
+const widenRevoked = handleAgentLifecycleCommand(sign({ v: 1, op: 'agent_return_lane', agent: AGENT_B, enabled: true }, { at: at() }))
+check(widenRevoked.ok === false && /revoked/.test(widenRevoked.reason),
+  'enabling the return lane on a REVOKED agent is refused — revocation cannot be undone by the side door')
+check(loadAgentRows()[AGENT_B]?.return_lane !== true, 'and the row did not gain the widened reach')
+// PAIR: the same op on a live agent still works, so this refuses the dangerous case, not the feature.
+const widenLive = handleAgentLifecycleCommand(sign({ v: 1, op: 'agent_return_lane', agent: AGENT_C, enabled: true }, { at: at() }))
+check(widenLive.ok === true, 'PAIR: the same op on an ADMITTED agent is still accepted')
+// PAIR: a rename — which does NOT widen reach — stays admissible on a revoked row.
+const renameRevoked = handleAgentLifecycleCommand(sign({ v: 1, op: 'agent_rename', agent: AGENT_B, label: 'retired probe' }, { at: at() }))
+check(renameRevoked.ok === true,
+  'PAIR: renaming a revoked agent is still allowed — the refusal is about REACH, not about the row being revoked')
+
+// ---- an unreadable ledger is not an empty one ----------------------------------------------------
+// Reading a torn or permission-denied rows file as {} let the next accepted command rename a
+// single-row object over the top, erasing every other agent including revoked markers.
+const goodRows = readFileSync(ROWS, 'utf8')
+writeFileSync(ROWS, '{ this is not json')
+const onTornRows = handleAgentLifecycleCommand(sign({ v: 1, op: 'agent_admit', agent: AGENT }, { at: at() }))
+check(onTornRows.ok === false && /unreadable/.test(onTornRows.reason),
+  'a command against a TORN rows file is refused, not applied against an empty ledger')
+check(readFileSync(ROWS, 'utf8') === '{ this is not json',
+  'and the torn file was not overwritten — the other agents\' rows are still recoverable')
+// PAIR: restore the file and the identical command is accepted, so this refuses the fault, not the op.
+writeFileSync(ROWS, goodRows)
+const afterRestore = handleAgentLifecycleCommand(sign({ v: 1, op: 'agent_admit', agent: AGENT }, { at: at() }))
+check(afterRestore.ok === true, 'PAIR: with the ledger readable again, the same command is accepted')
+check(loadAgentRows()[AGENT_C]?.status === 'admitted',
+  'and the previously-written rows survived — nothing was erased by the refused command')
 
 if (existsSync(ROWS)) unlinkSync(ROWS)
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)

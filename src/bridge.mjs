@@ -449,6 +449,8 @@ const PUB = cfg.public ? {
   controlStateCommandAt: Number(cfg.public.control_state_command_at || 0),
   watchlistCommandAt: Number(cfg.public.watchlist_command_at || 0),
   lifecycleCommandAt: Number(cfg.public.lifecycle_command_at || 0),
+  lifecycleCommandIds: (cfg.public.lifecycle_command_ids || []).map(String)
+    .filter(id => /^[0-9a-f]{64}$/i.test(id)).map(id => id.toLowerCase()),
   moderationCommandAt: Number(cfg.public.moderation_command_at || 0),
   moderationCommandIds: (cfg.public.moderation_command_ids || []).map(String)
     .filter(id => /^[0-9a-f]{64}$/i.test(id)).map(id => id.toLowerCase()),
@@ -2178,9 +2180,24 @@ function handleWatchlistControlCommand(ev) {
 // It is deliberately NOT the off-box policy service. That lane's property is "evidence, not
 // instructions"; here the owner's intent IS the instruction, and the approver signature is the gate.
 const AGENTROWS_PATH = process.env.AGENTROWS_PATH || resolve(ROOT, 'data', 'agent-rows.json')
+// ABSENT and UNREADABLE are different facts and only one of them means "no agents". A file behind a
+// permission error, or one torn by a crash mid-write, read as `{}` here — and the very next accepted
+// command had `saveAgentRows` rename a single-row object over the top, erasing every other agent's
+// row including revoked markers. That is exactly the "routing for something the owner can no longer
+// see" that agent_forget's ordering rule exists to prevent, arrived at through a different door. So
+// only ENOENT is empty; anything else throws and the caller refuses to persist a mutation.
 function loadAgentRows() {
-  try { const rows = JSON.parse(readFileSync(AGENTROWS_PATH, 'utf8')); return rows && typeof rows === 'object' && !Array.isArray(rows) ? rows : {} }
-  catch { return {} }   // absent or unreadable reads as empty; nothing here is a security decision
+  let text
+  try { text = readFileSync(AGENTROWS_PATH, 'utf8') }
+  catch (e) {
+    if (e && e.code === 'ENOENT') return {}
+    throw new Error(`agent rows are unreadable (${e && e.code ? e.code : e.message})`)
+  }
+  let rows
+  try { rows = JSON.parse(text) }
+  catch (e) { throw new Error(`agent rows are not valid JSON (${e.message})`) }
+  if (!rows || typeof rows !== 'object' || Array.isArray(rows)) throw new Error('agent rows are not an object')
+  return rows
 }
 function saveAgentRows(rows) {
   try {
@@ -2226,9 +2243,26 @@ function handleAgentLifecycleCommand(ev) {
   try { body = JSON.parse(ev.content) } catch { return { ok: false, reason: 'invalid body' } }
   const command = parseLifecycleCommand(body)
   if (!command.ok) return command
-  if (ev.created_at <= PUB.lifecycleCommandAt) return { ok: false, reason: 'superseded command' }
+  const commandId = String(ev.id || '').toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(commandId)) return { ok: false, reason: 'invalid command id' }
+  if (ev.created_at < PUB.lifecycleCommandAt) return { ok: false, reason: 'superseded command' }
+  // Nostr timestamps have one-second resolution, and lifecycle commands target INDEPENDENT rows, so
+  // a same-second pair is legitimate work (a console acting on two agents) rather than a duplicate.
+  // A timestamp-only watermark drops the second one silently — and defeats this handler's own no-op
+  // path below, since an owner clicking twice lands inside a single second. Keep every accepted id
+  // at the newest second: replayed relay copies stay inert, distinct decisions survive. A legacy
+  // timestamp carrying no id set stays closed at equality, because after an upgrade the id that
+  // already applied at that second is unknowable.
+  if (ev.created_at === PUB.lifecycleCommandAt &&
+      (!PUB.lifecycleCommandIds.length || PUB.lifecycleCommandIds.includes(commandId))) {
+    return { ok: false, reason: 'superseded command' }
+  }
 
-  const rows = loadAgentRows()
+  // Refuse rather than proceed on an unreadable ledger: applying a command against rows we could not
+  // read would persist a projection that silently drops every agent we failed to see.
+  let rows
+  try { rows = loadAgentRows() }
+  catch (e) { err(`lifecycle: refusing ${command.op} — ${e.message}`); return { ok: false, reason: 'agent rows unreadable' } }
   const admissible = lifecycleAdmissible(command, rows[command.agent] || null)
   if (!admissible.ok) return admissible
   // A no-op is still a WATERMARK advance and still a success: an owner clicking twice must not see
@@ -2238,7 +2272,14 @@ function handleAgentLifecycleCommand(ev) {
       return { ok: false, reason: 'could not persist agent rows' }
     }
   }
-  if (!mutateConfig(c => { c.public.lifecycle_command_at = ev.created_at })) return { ok: false, reason: 'could not persist lifecycle watermark' }
+  const acceptedIds = ev.created_at === PUB.lifecycleCommandAt
+    ? Array.from(new Set([...PUB.lifecycleCommandIds, commandId]))
+    : [commandId]
+  if (!mutateConfig(c => {
+    c.public.lifecycle_command_at = ev.created_at
+    c.public.lifecycle_command_ids = acceptedIds
+  })) return { ok: false, reason: 'could not persist lifecycle watermark' }
+  PUB.lifecycleCommandIds = acceptedIds
   PUB.lifecycleCommandAt = ev.created_at
 
   const receipt = lifecycleReceipt(command, { approver: author, at: new Date(ev.created_at * 1000).toISOString(), eventId: ev.id })

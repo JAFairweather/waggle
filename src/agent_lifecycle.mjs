@@ -201,8 +201,18 @@ export function lifecycleAdmissible(command, row) {
       if (status !== 'revoked') return refuse('revoke this agent before forgetting it')
       return Object.freeze({ ok: true, noop: false })
     case 'agent_rename':
+      if (!known) return refuse('no such agent')
+      // A rename is a label change on a row the owner can already see, so it stays admissible at any
+      // status — including revoked, where correcting a misleading label is legitimate work.
+      return Object.freeze({ ok: true, noop: false })
     case 'agent_return_lane':
       if (!known) return refuse('no such agent')
+      // This op WIDENS reach, so it must not apply to a revoked row. Enabling the return lane on a
+      // revoked agent is an undone revocation by the side door: the projection publishes
+      // return_lane true for a key the owner believes is cut off, and the moment anything routes on
+      // that flag the revocation is silently reversed. Revocation is the one decision this
+      // catalogue makes deliberately hard to walk back — see agent_resume above.
+      if (status === 'revoked') return refuse('cannot change the return lane of a revoked agent — admit it again explicitly')
       return Object.freeze({ ok: true, noop: false })
     default:
       // Unreachable while `parseLifecycleCommand` gates the catalogue, and kept as a refusal rather
