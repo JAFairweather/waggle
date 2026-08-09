@@ -2323,6 +2323,13 @@ function handleAgentLifecycleCommand(ev) {
   // The reach is logged explicitly. "lifecycle: agent_return_lane accepted" would not tell an owner
   // reading this log that their agent's reach just grew.
   log(`lifecycle: ${command.op} (${receipt.reach}${admissible.noop ? ', no-op' : ''}) for ${receipt.agent}… accepted from approver ${author.slice(0, 12)}… (${ev.id.slice(0, 12)}…)`)
+  // Republish the projection now, as the trust, consent and task-route paths already do. Without
+  // this a revoke waits on the 300s refresh interval while the console — which reloads every 2.5s —
+  // keeps showing the pre-command state underneath a green success banner. An owner who has just
+  // revoked an agent and is looking at the row to confirm it is exactly the person who must not be
+  // shown a stale one. A no-op republishes too: it costs one event, and keeps what the console shows
+  // from depending on whether the command happened to change anything.
+  scheduleControlState()
   return { ok: true, op: command.op, agent: command.agent, noop: Boolean(admissible.noop), receipt }
 }
 

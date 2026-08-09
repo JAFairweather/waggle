@@ -55,10 +55,13 @@ export const LIFECYCLE_OPERATIONS = Object.freeze({
     fields: Object.freeze(['agent']),
     reach: REACH.NARROWS,
     destructive: false,
-    summary: 'withdraw bridge-side admission — the bridge stops routing for this key',
+    summary: 'withdraw the bridge-side admission the owner granted to this key',
     limits: 'withdraws ONLY the admission this bridge issued and can revoke. It does not reach the ' +
       "agent's runtime, does not delete or rotate the agent's key, and does not retract anything " +
-      'that key already published. Revoked is not disarmed.',
+      'that key already published. Revoked is not disarmed. AND NOT YET ENFORCED: delivery is ' +
+      "governed by the agent's grant, which this does not withdraw, and no routing path consults " +
+      'these rows today. Until that wiring lands this records the decision and shows it in the ' +
+      'console; it does not by itself stop a message.',
   }),
   agent_rename: Object.freeze({
     fields: Object.freeze(['agent', 'label']),
@@ -80,9 +83,11 @@ export const LIFECYCLE_OPERATIONS = Object.freeze({
     fields: Object.freeze(['agent']),
     reach: REACH.NARROWS,
     destructive: false,
-    summary: 'stop routing for this agent without withdrawing its admission',
+    summary: 'mark this agent paused, without withdrawing its admission',
     limits: 'reversible by agent_resume. The admission record is untouched, so this is a lane ' +
-      'decision, not a membership one.',
+      'decision, not a membership one. Carries the same not-yet-enforced caveat as agent_revoke: ' +
+      'no routing path consults these rows today, so pausing records the decision rather than ' +
+      'stopping delivery.',
   }),
   agent_resume: Object.freeze({
     fields: Object.freeze(['agent']),
