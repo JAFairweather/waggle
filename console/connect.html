@@ -84,6 +84,12 @@
   .enforcer.elsewhere{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
   .plane-caution{font-size:12.5px;color:var(--faint);margin:10px 0 0;padding-top:10px;border-top:1px solid var(--line)}
 
+  /* Appears only when a ticked choice needs it. Marked with the accent rail so it reads as a
+     consequence of the choice above rather than as another field you forgot to fill in. */
+  .extra{border:1px solid var(--line);border-left:2px solid var(--accent);border-radius:var(--r-md);
+    background:var(--panel);padding:16px 18px;margin-bottom:16px}
+  .extra[hidden]{display:none}
+
   .choice{display:flex;gap:12px;align-items:flex-start;padding:13px 0;border-top:1px solid var(--line)}
   .plane-head + .choice{border-top:1px solid var(--line);margin-top:14px}
   .choice input{margin:3px 0 0;accent-color:var(--accent);width:16px;height:16px;flex:none}
@@ -183,6 +189,7 @@
     <p class="step-note">Two different things, checked by two different pieces of software. Keep
       them apart in your head; the page keeps them apart on screen.</p>
     <div id="planes"></div>
+    <div id="extras"></div>
   </section>
 
   <section class="step">
@@ -209,7 +216,7 @@
 
 <script type="module">
 import { nip19, verifyEvent } from 'nostr-tools'
-import { planConnection, planSummary, INTENTS, INTENT_KEYS } from './connect-plan.mjs'
+import { planConnection, planSummary, INTENTS, INTENT_KEYS, PARTY, EXTRA_PARTIES } from './connect-plan.mjs'
 import { PLANE_COPY } from './capability-vocabulary.mjs'
 import { scopeHash } from './scope-hash.mjs'
 import { consoleSigner } from './signer-session.mjs'
@@ -271,34 +278,96 @@ function renderPlanes() {
   for (const box of document.querySelectorAll('[data-intent]')) box.addEventListener('change', refresh)
 }
 
+// ── Step 3½: the parties only some choices need ──────────────────────────────────────────────
+// Two intents require a party — `other` and `carrier` — that no fixed field above collects. When
+// this section did not exist, ticking either produced "Missing other", a demand naming a field
+// that was nowhere on the page: a dead end you could not clear except by unticking the choice.
+//
+// The inputs are built once from EXTRA_PARTIES (derived from the intent table, not hand-listed)
+// and then only SHOWN when a ticked choice needs them. Building them lazily would throw away
+// whatever had been typed each time a checkbox moved.
+function renderExtras() {
+  $('extras').innerHTML = EXTRA_PARTIES.map(p => {
+    const meta = PARTY[p]
+    return `<div class="extra" id="extra-${esc(p)}" hidden>
+      <div class="two">
+        <div>
+          <label for="x-name-${esc(p)}">What you call it</label>
+          <input type="text" id="x-name-${esc(p)}" placeholder="a name for the review below" autocomplete="off" data-extra-name="${esc(p)}">
+        </div>
+        <div>
+          <label for="x-key-${esc(p)}">${esc(meta.prompt)}</label>
+          <input type="text" id="x-key-${esc(p)}" placeholder="npub1… or 64-hex" autocomplete="off" spellcheck="false" data-extra-key="${esc(p)}">
+        </div>
+      </div>
+      <div class="field-note">${esc(meta.note)}</div>
+    </div>`
+  }).join('')
+  for (const el of document.querySelectorAll('[data-extra-key],[data-extra-name]')) {
+    el.addEventListener('input', refresh)
+  }
+}
+
+// Which extra slots the current ticks actually require. Read from `needs` so this can never drift
+// from what the planner will ask for.
+function neededExtras() {
+  const checked = [...document.querySelectorAll('[data-intent]:checked')].map(b => b.value)
+  return new Set(checked.flatMap(k => INTENTS[k]?.needs || []))
+}
+
+function syncExtras() {
+  const needed = neededExtras()
+  for (const p of EXTRA_PARTIES) $(`extra-${p}`).hidden = !needed.has(p)
+}
+
 // ── Step 4: direction, drawn ─────────────────────────────────────────────────────────────────
 const ARROW = `<svg width="34" height="10" viewBox="0 0 34 10" aria-hidden="true">
   <path d="M0 5h27" stroke="currentColor" stroke-width="1.5" fill="none"/>
   <path d="M26 1l6 4-6 4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linejoin="round"/>
 </svg>`
 
+// Name a party the way the operator named it. Built by walking every slot rather than the two
+// fixed ones, so `other` and `carrier` read as words in the review instead of as key fragments —
+// the review is the one place where knowing exactly who is the entire point.
 function partyLabel(step, which) {
   const value = step[which]
   const isChannel = UUID.test(String(value))
-  const named = { [readParties().agent]: readNames().agent, [readParties().owner]: readNames().owner }
-  const name = isChannel ? (readNames().channel || String(value)) : (named[value] || `${String(value).slice(0, 8)}…`)
+  const parties = readParties(), names = readNames()
+  const slot = Object.keys(parties).find(k => parties[k] && parties[k] === value)
+  const name = isChannel
+    ? (names.channel || String(value))
+    : ((slot && names[slot]) || `${String(value).slice(0, 8)}…`)
   return `<span class="party${isChannel ? ' chan' : ''}">${esc(name)}</span>`
 }
 
-const readParties = () => ({
-  owner: toHex($('owner-key').value),
-  agent: toHex($('agent-key').value),
-  channel: $('channel-id').value.trim().toLowerCase(),
-})
-const readNames = () => ({
-  owner: 'you',
-  agent: $('agent-name').value.trim() || 'this agent',
-  channel: $('channel-id').value.trim() ? 'the channel' : '',
-})
+// Only slots a ticked choice actually needs are read. A stale value left in a hidden extra field
+// must not reach the planner — it would sit in `parties` unreferenced by any step, which is
+// harmless today and exactly the kind of thing that stops being harmless later.
+const readParties = () => {
+  const needed = neededExtras()
+  const parties = {
+    owner: toHex($('owner-key').value),
+    agent: toHex($('agent-key').value),
+    channel: $('channel-id').value.trim().toLowerCase(),
+  }
+  for (const p of EXTRA_PARTIES) if (needed.has(p)) parties[p] = toHex($(`x-key-${p}`).value)
+  return parties
+}
+const readNames = () => {
+  const needed = neededExtras()
+  const names = {
+    owner: 'you',
+    agent: $('agent-name').value.trim() || 'this agent',
+    channel: $('channel-id').value.trim() ? 'the channel' : '',
+  }
+  for (const p of EXTRA_PARTIES) if (needed.has(p)) names[p] = $(`x-name-${p}`).value.trim()
+  return names
+}
 
 let currentPlan = null
 
 function refresh() {
+  syncExtras()
   validateFields()
   const intents = [...document.querySelectorAll('[data-intent]:checked')].map(b => b.value)
   const plan = planConnection({ intents, parties: readParties(), names: readNames() })
@@ -453,6 +522,7 @@ function renderHandoff() {
 }
 
 renderPlanes()
+renderExtras()
 refresh()
 </script>
 </body>

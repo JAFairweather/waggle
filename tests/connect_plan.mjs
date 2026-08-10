@@ -21,7 +21,8 @@
 //
 //   node tests/connect_plan.mjs
 
-import { planConnection, planSummary, INTENTS, INTENT_KEYS } from '../console/connect-plan.mjs'
+import { readFileSync } from 'node:fs'
+import { planConnection, planSummary, INTENTS, INTENT_KEYS, PARTY, EXTRA_PARTIES } from '../console/connect-plan.mjs'
 
 let pass = true
 const check = (cond, label) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${label}`); if (!cond) pass = false }
@@ -261,6 +262,75 @@ for (const key of INTENT_KEYS) {
   const p = planConnection({ intents: ['owner-directs-agent'], parties: { owner: OWNER, agent: AGENT }, names })
   check(p.ok && p.steps.length === 1,
     'NEGATIVE CONTROL — two DIFFERENT keys in the orders plane are still accepted')
+}
+
+// ── EVERY REQUIRED PARTY CAN BE ASKED FOR, AND NAMED ────────────────────────────────────────
+// Shipped defect, found by using the page: `agent-directs-other` and `carrier-relays-to-agent`
+// each require a party — `other`, `carrier` — that no input on connect.html collected. Ticking
+// either produced "Missing other — this is required by one of the things you chose": a demand
+// naming a field that did not exist, a choice it did not identify, and no way forward except
+// untick. The planner was right and the surface could not satisfy it.
+//
+// Both halves are asserted here, because either alone lets it back in: a slot needs a WORD for
+// the message and a FIELD for the operator, and the field is checked against the actual page.
+{
+  const html = readFileSync(new URL('../console/connect.html', import.meta.url), 'utf8')
+  const required = [...new Set(Object.values(INTENTS).flatMap(i => i.needs || []))]
+
+  check(required.length > 0, `some intents require an extra party (${required.join(', ')}) — otherwise this whole section is vacuous`)
+  check(EXTRA_PARTIES.length === required.length && required.every(p => EXTRA_PARTIES.includes(p)),
+    'EXTRA_PARTIES is derived from the intent table, so it cannot drift from what the planner asks for')
+
+  for (const p of ['owner', 'agent', 'channel', ...required]) {
+    const meta = PARTY[p]
+    check(!!meta?.label && !!meta?.prompt && !!meta?.kind,
+      `party "${p}" has a label, a prompt and a kind — a slot with no words gets its variable name printed at the operator`)
+    check(meta?.label !== p, `party "${p}" is named in words, not as the identifier "${p}"`)
+  }
+
+  // The page must actually build an input for each one. Asserting against the real file is the
+  // only version of this check that could have caught the defect — a fixture would have passed.
+  for (const p of required) {
+    check(html.includes(`data-extra-key="${p}"`) || html.includes('data-extra-key="${esc(p)}"'),
+      `connect.html renders a key input for "${p}"`)
+  }
+  check(html.includes('EXTRA_PARTIES'), 'connect.html builds those inputs from EXTRA_PARTIES rather than hand-listing them')
+}
+
+// ── THE MESSAGE NAMES THE FIELD AND THE CHOICE ──────────────────────────────────────────────
+// Asserting the REASON, not only the refusal. `!ok` cannot tell a correct refusal from a correct
+// refusal that sends the operator looking for something that is not there — which is exactly what
+// happened. So: the sentence must contain the human label, must NOT contain the raw slot name,
+// and must say which ticked choice caused it.
+{
+  const partial = planConnection({
+    intents: ['agent-directs-other'],
+    parties: { owner: OWNER, agent: AGENT },  // `other` deliberately absent
+  })
+  check(!partial.ok, 'a plan missing a required extra party is refused')
+  const msg = partial.problems.join(' | ')
+  check(msg.includes(PARTY.other.label), `the message names the field in words: "${PARTY.other.label}"`)
+  check(!/Missing other\b/.test(msg), 'the message does NOT print the raw slot name "other"')
+  check(msg.includes(INTENTS['agent-directs-other'].question),
+    'the message names the CHOICE that requires it, so the fix is visible without guessing')
+  check(/untick/i.test(msg), 'and offers the other way out — untick the choice')
+
+  // Same slot, when nothing requires it, must not be demanded at all.
+  const unrelated = planConnection({
+    intents: ['admit-agent-to-channel'],
+    parties: { owner: OWNER, agent: AGENT, channel: CHANNEL },
+  })
+  check(unrelated.ok, 'NEGATIVE CONTROL — a plan that needs no extra party is accepted, so the demand above is conditional and not blanket')
+
+  // And supplying it clears the refusal — pairing the rejection with an acceptance, so this
+  // cannot pass by refusing everything.
+  const complete = planConnection({
+    intents: ['agent-directs-other'],
+    parties: { owner: OWNER, agent: AGENT, other: OTHER },
+  })
+  check(complete.ok, 'NEGATIVE CONTROL — supplying the extra party clears the refusal')
+  check(complete.steps.length === 1 && complete.steps[0].subject === OTHER,
+    'and the resulting grant has the OTHER agent as subject, which is the direction that matters')
 }
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
