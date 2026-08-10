@@ -1130,6 +1130,43 @@ function broadcastRateOk(originator, dest, nowMs) {
   return broadcastLimiter(originator, dest, nowMs)
 }
 
+// Per-(originator → recipient) CIRCUIT BREAKER on the return lane.
+//
+// The rate caps above throttle; they do not terminate. Two agents that auto-reply to each other
+// produce a freshly authored message every hop, so nothing structural ends it — and there is no
+// depth to count, because relay-lane posts are flat `send`s (egress.mjs:190, `action: 'send'`)
+// with no reply thread to walk. Left at the caps alone, a runaway pair runs at the per-minute cap
+// forever. That is rate-bounded, not bounded.
+//
+// So: bounded, then STOPPED, and loud at both edges. It is not a rate limit — it is the thing that
+// notices a pair has stopped behaving like a conversation. A legitimate busy pair that trips it
+// resumes on its own once the window goes quiet; nothing needs resetting by hand, and the open and
+// close are both logged, because a breaker that opens silently is indistinguishable from a lane
+// that broke.
+//
+// Deliberately keyed on the PAIR, not the sender: an agent talking to five different peers is
+// working, and the same volume aimed at one peer is a loop.
+const RL_PAIR_MAX = Number(process.env.RL_PAIR_MAX || 60)
+const RL_PAIR_WINDOW_MS = Number(process.env.RL_PAIR_WINDOW_MS || 3600_000)
+const rlPairWindows = new Map()
+const rlPairOpen = new Set()
+function pairBreakerOk(originator, recipient) {
+  const key = `${originator}>${recipient}`
+  const now = Date.now()
+  const w = slide(rlPairWindows.get(key) || [], now, RL_PAIR_WINDOW_MS)
+  rlPairWindows.set(key, w)
+  if (w.length >= RL_PAIR_MAX) {
+    if (!rlPairOpen.has(key)) {
+      rlPairOpen.add(key)
+      err(`RETURN breaker[open]: ${originator.slice(0, 12)}… -> ${recipient.slice(0, 12)}… reached ${RL_PAIR_MAX} carries in ${Math.round(RL_PAIR_WINDOW_MS / 60000)}min — this pair has stopped looking like a conversation. Carries between them are STOPPED until the window goes quiet.`)
+    }
+    return false
+  }
+  if (rlPairOpen.delete(key)) log(`RETURN breaker[closed]: ${originator.slice(0, 12)}… -> ${recipient.slice(0, 12)}… went quiet; carries between them resume`)
+  w.push(now)
+  return true
+}
+
 // §7 decrypt-budget window + the pre-decrypt drop counter. The counter is LOUD by design: it is the
 // number the #116 silence/accept-count alarm watches, so a flood spikes a monitored signal rather
 // than a dead integer. The wire INTO the alarm lands once #116/#121 is in main (that seam does not
@@ -2825,19 +2862,27 @@ async function scanReturnLane(msgs, opts = {}) {
     const parents = tags.filter(t => t[0] === 'e' && t[1] && t[3] === 'reply').map(t => String(t[1]).toLowerCase())
     const repliesToAgent = parents.some(pid => !!agentAuthoredBy(pid))
     const body = String(m.content || '')
-    // Second narrow exception to the signer gate, and the one that makes the marker work AT ALL on
-    // a real deployment. An admitted agent speaks through the relay lane, so the kind:9 that lands
-    // in the channel is signed by the bridge's Buzz poster key — which is deliberately STRIPPED
-    // from scan_authors (:509). Without this, every agent-authored post is dropped here, before
-    // the marker is ever looked at: observed live on 2026-08-10 as a three-day run of
-    // `RETURN drop[author]: … signer 84753207… not in scan_authors`.
+    // Second exception to the signer gate, and the one that makes ANY agent-to-agent traffic
+    // possible on a real deployment. An admitted agent speaks through the relay lane, so the kind:9
+    // that lands in the channel is signed by the bridge's Buzz poster key — deliberately STRIPPED
+    // from scan_authors (:509). Without this, every agent-authored post dies here: observed live on
+    // 2026-08-10 as a three-day run of `RETURN drop[author]: … signer 84753207… not in
+    // scan_authors`, dropping the requester's own messages as well as the crew's.
+    //
+    // The exclusion was written when echo was the ONLY reason the bridge key could appear as a
+    // signer (:495 — "it is skip-self/echo, keyed through the registry, not this gate"). The relay
+    // lane (#122) then made that key sign FOR admitted agents, a case that did not exist when the
+    // exclusion was written. Echo is already handled where that comment says it should be — the
+    // per-recipient registry check below — so the exclusion is redundant for its stated purpose
+    // and over-broad for the world it now lives in.
     //
     // Same safety argument as the reply exception directly above, and deliberately NOT `|| from`:
-    // it keys on the per-event registry, which is bridge-authored state an outsider cannot
-    // nominate himself into, and it additionally requires a LIVE grant. A stranger's mirrored note
-    // resolves to no agent, so `grantSet.has('')` fails closed. Typing the marker earns nothing.
-    const markedByGrantedAgent = BROADCAST_MARKER.test(body) && grantSet.has(agentAuthoredBy(m.id) || '')
-    if (gateActive && !gate.has(from) && !repliesToAgent && !markedByGrantedAgent) { // signer gate — logged once per id, never silent
+    // it keys on the per-event registry, bridge-authored state an outsider cannot nominate himself
+    // into, and it additionally requires a LIVE grant. A quarantine header, a console confirmation
+    // or a stranger's mirrored note resolves to no agent at all, so it fails closed.
+    const agentAuthor = agentAuthoredBy(m.id)
+    const byGrantedAgent = !!agentAuthor && grantSet.has(agentAuthor)
+    if (gateActive && !gate.has(from) && !repliesToAgent && !byGrantedAgent) { // signer gate — logged once per id, never silent
       if (rlDropOnce(m.id)) err(`RETURN drop[author]: ${String(m.id).slice(0, 12)}… signer ${from.slice(0, 12)}… not in scan_authors`)
       continue
     }
@@ -2907,6 +2952,9 @@ async function scanReturnLane(msgs, opts = {}) {
       // you personally, and a reply is a continuation of your own thread — either is a truer
       // account of why this reached you than "everyone got it".
       const why = mentioned ? 'mention' : (repliedTo ? 'reply' : 'broadcast')
+      // Last check before the seal, and after rlSeen — so a re-scan of already-carried messages
+      // never spends the budget, and only a carry that is really about to happen counts toward it.
+      if (!pairBreakerOk(originator, r.npub_hex)) continue
       if (why === 'broadcast' && !roster) roster = { from: originator, peers: broadcastRoster() }
       let descriptor
       try { descriptor = carryDescriptor(r, m, why, opts.channel, roster) }

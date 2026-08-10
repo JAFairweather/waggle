@@ -73,6 +73,11 @@ process.env.BUZZ_PRIVATE_KEY = Buffer.from(bridgeSk).toString('hex')
 process.env.FORWARD_MODE = 'buzz'
 process.env.WB_STUB_SEND = '1'
 process.env.WB_NO_BOOT = '1'
+// A small breaker threshold so the loop test exercises the real mechanism rather than a mock of it.
+// Set BEFORE the import that reads it — a value applied afterwards would leave the suite asserting
+// the default and passing for the wrong reason.
+const PAIR_MAX = 4
+process.env.RL_PAIR_MAX = String(PAIR_MAX)
 
 const { scanReturnLane, recordPosted, PUB, grantSet, BROADCAST_MARKER, broadcastRoster } =
   await import('../src/bridge.mjs')
@@ -266,14 +271,79 @@ ok('the roster is sorted (stable across scans, not relay arrival order)',
     second.rows.length === 0)
   ok('and it is refused at the signer gate by name', /drop\[author\]/.test(second.log))
 
-  // NEGATIVE CONTROL: no marker, same stripped gate. The exception must be the marker's doing, not
-  // a hole that swallowed the gate.
-  const wire3 = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 3900, tags: [['p', mcclaude]],
-    content: 'a plain post naming mcclaude with no marker' }, sharedSignerSk)))
-  recordPosted({ id: 'orig-b11', author: bumble, buzz: wire3.id, dest: 'chan', q: false, ts: 0, agent: bumble })
-  const third = await scanDelta([wire3], { authors: PROD_GATE, channel: 'chan' })
-  ok('a bridge-signed post WITHOUT the marker is still gated out — the exception is marker-scoped',
-    third.rows.length === 0)
+}
+
+// --- THE RELAXED GATE: agent-to-agent traffic generally, not only the marker --------------------
+// The gate exclusion was written when echo was the only reason the bridge key could sign a channel
+// post. The relay lane made that key sign FOR admitted agents. Echo is handled by the per-recipient
+// registry check, not by this gate — so what follows must prove both halves: the traffic crosses,
+// AND echo is still closed now that the gate is no longer doing that job by accident.
+{
+  const PROD_GATE = [crew]
+  // FRESH identities, not oliver/mcclaude: those two have exchanged enough carries earlier in this
+  // suite to trip the per-pair breaker, and a breaker trip reads exactly like a gate drop. That
+  // coupling has now bitten this file twice — once on the rate cap, once here.
+  const alfa = getPublicKey(generateSecretKey())
+  const bravo = getPublicKey(generateSecretKey())
+  grantOf(alfa, 7); grantOf(bravo, 8)
+
+  // A plain p-tagged message from one agent to another, no marker anywhere.
+  const wire = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 4200, tags: [['p', bravo]],
+    content: 'alfa here, a direct word for one person and no marker' }, sharedSignerSk)))
+  recordPosted({ id: 'orig-g1', author: alfa, buzz: wire.id, dest: 'chan', q: false, ts: 0, agent: alfa })
+  const { rows } = await scanDelta([wire], { authors: PROD_GATE, channel: 'chan' })
+  ok('one agent can now reach another by p-tag, with no marker at all',
+    rows.some(r => r.to === short(bravo) && r.why === 'mention'))
+
+  // ECHO, now load-bearing: the gate used to stop this by accident, and no longer does.
+  const echo = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 4300, tags: [['p', alfa]],
+    content: 'alfa naming himself, which must never come back to him' }, sharedSignerSk)))
+  recordPosted({ id: 'orig-g2', author: alfa, buzz: echo.id, dest: 'chan', q: false, ts: 0, agent: alfa })
+  const back = await scanDelta([echo], { authors: PROD_GATE, channel: 'chan' })
+  ok('ECHO — an agent\'s own words never come back to them through the relaxed gate',
+    !back.rows.some(r => r.to === short(alfa)))
+  grantSet.delete(alfa); grantSet.delete(bravo)
+
+  // NEGATIVE CONTROL — the bridge's OTHER posts. A quarantine header, a console confirmation or a
+  // stranger's mirrored note is recorded with no agent at all, and must not ride the relaxation.
+  const noAgent = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 4400, tags: [['p', mcclaude]],
+    content: 'a bridge post attributed to nobody, naming mcclaude' }, sharedSignerSk)))
+  recordPosted({ id: 'orig-g3', author: crew, buzz: noAgent.id, dest: 'chan', q: false, ts: 0, agent: null })
+  const none = await scanDelta([noAgent], { authors: PROD_GATE, channel: 'chan' })
+  ok('NEGATIVE CONTROL — a bridge post with NO agent attribution is still gated out', none.rows.length === 0)
+  ok('and it is refused by name at the signer gate', /drop\[author\]/.test(none.log))
+}
+
+// --- THE LOOP BREAKER ---------------------------------------------------------------------------
+// The caps throttle; they do not terminate. Relay-lane posts are flat sends with no reply thread,
+// so there is no depth to count — two auto-replying agents would otherwise run at the cap forever.
+{
+  const loopA = getPublicKey(generateSecretKey())
+  const loopB = getPublicKey(generateSecretKey())
+  grantOf(loopA, 5); grantOf(loopB, 6)
+  // The open line fires ONCE, at the transition — so collect across the whole run. Reading only the
+  // last iteration's log asserts the absence of a line that is deliberately not repeated.
+  let carried = 0, allLogs = ''
+  for (let i = 0; i < PAIR_MAX + 3; i++) {
+    const w = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 5000 + i, tags: [['p', loopB]],
+      content: `loop hop ${i}` }, sharedSignerSk)))
+    recordPosted({ id: `orig-loop-${i}`, author: loopA, buzz: w.id, dest: 'chan', q: false, ts: 0, agent: loopA })
+    const r = await scanDelta([w], { authors: [crew], channel: 'chan' })
+    if (r.rows.some(x => x.to === short(loopB))) carried++
+    allLogs += r.log
+  }
+  ok(`the breaker stops the pair at ${PAIR_MAX}, not at ${PAIR_MAX + 3}`, carried === PAIR_MAX)
+  ok('the breaker SAYS it opened, and names both ends',
+    /RETURN breaker\[open\]/.test(allLogs) && allLogs.includes(loopA.slice(0, 12)) && allLogs.includes(loopB.slice(0, 12)))
+  // CONTROL, the direction that matters most: a breaker keyed too widely would take out the whole
+  // lane and read as "the bridge is down". The same sender, a different peer, must still get through.
+  const w = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 5900, tags: [['p', mcclaude]],
+    content: 'same sender, different peer' }, sharedSignerSk)))
+  recordPosted({ id: 'orig-loop-other', author: loopA, buzz: w.id, dest: 'chan', q: false, ts: 0, agent: loopA })
+  const r = await scanDelta([w], { authors: [crew], channel: 'chan' })
+  ok('CONTROL — the SAME sender still reaches a DIFFERENT peer; the breaker is per-pair, not per-sender',
+    r.rows.some(x => x.to === short(mcclaude)))
+  grantSet.delete(loopA); grantSet.delete(loopB)
 }
 
 // --- the rate cap, asserted rather than stumbled into --------------------------------------------
