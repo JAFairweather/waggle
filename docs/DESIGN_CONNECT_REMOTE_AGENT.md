@@ -319,6 +319,39 @@ nothing. The manifest validation above was written this way and the control did 
 
 ---
 
+## Part V½ — What "landed" means, and why the threshold inverts
+
+Raised in review of the first build. The Connect flow publishes a grant, then cold-reads it back
+by id from a fresh connection, and calls it landed if **any** relay serves it. That is strictly
+stronger than a relay `OK` — a relay can accept and drop — and it is worth keeping.
+
+But it proves the wrong property. It proves **publication**. What matters is **reachability by the
+consumer**: the agent's runtime reads *its own* relay list, and a grant that landed on a relay
+outside that set is published and invisible to the only software that enforces it. The check
+reports green for a state that does not work.
+
+> **"Landed" must mean present on a relay the enforcer reads** — not present anywhere. That needs
+> the consumer's relay list, not the publisher's, and the console does not have it today.
+
+This is not hypothetical here: both of the live agent's grants sit on `relay.primal.net` only,
+because `nos.lol` refuses them for proof-of-work while advertising `min_pow=none`. That happens to
+be inside the runtime's set. Nothing checked that it was.
+
+### The threshold inverts for revocation
+
+There is no revoke surface in this flow yet, and the number must be decided before there is one,
+because the two directions are not symmetric:
+
+| | landed on 1 of 5 relays | what it means |
+|---|---|---|
+| **440 grant** | weakly live | one relay serves it; the enforcer may or may not read that one. Fragile, but the failure is *closed* — the capability does not apply. |
+| **441 revocation** | **broken** | four relays still serve a grant every reader will treat as live. The failure is *open* — the capability keeps applying. |
+
+So a grant needs *a relay the enforcer reads*, and a revocation needs **all of them**. A partial
+revocation is not a success with a caveat; it is a failure, and it has to be shouted. A revoke
+surface that reuses the grant flow's "any relay is fine" rule would report a revocation as done
+while the access it was meant to remove is still being enforced.
+
 ## Part VI — Decisions needed
 
 These are the maintainer's, not the implementer's:

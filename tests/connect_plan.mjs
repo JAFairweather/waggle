@@ -125,10 +125,73 @@ const stepOf = (intent, extra) => { const p = one(intent, extra); return p.ok ? 
   const p = planConnection({ intents: ['admit-agent-to-channel'], parties: { owner: OWNER, agent: AGENT }, names })
   check(!p.ok && p.problems.some(x => /channel/.test(x)), 'a door grant with no channel is refused')
 }
+
+// ── CASE NORMALISATION ──────────────────────────────────────────────────────────────────────
+// Found in review, 2026-08-10, and it is the worst shape of bug this project has: every check on
+// the page passes and the grant is dead.
+//
+// The party regexes are case-insensitive, so an UPPERCASE pubkey validates. If it reaches the
+// scope hash unchanged the two halves of the grant are treated differently downstream:
+//
+//   p-tag  survives — attention.mjs lowercases the grantee when keying the permitted map
+//   SCOPE  dies     — the subject is hashed raw, and the enforcer recomputes over ME, which is
+//                     always lowercase hex
+//
+// So the grant signs, publishes, reads back green from every relay, renders a correct sentence,
+// and is permanently invisible to the only software that has to see it. Reproduced before the
+// fix: console signed 5c15c378…, enforcer recomputed b6c00312….
+{
+  const p = planConnection({ intents: ['owner-directs-agent'], parties: { owner: OWNER.toUpperCase(), agent: AGENT.toUpperCase() }, names })
+  check(p.ok, 'an uppercase key is still accepted — rejecting it would just move the problem to the paste')
+  check(p.steps[0].grantee === OWNER && p.steps[0].subject === AGENT,
+    'and BOTH parties come out lowercase, so the scope hashes over the same bytes the enforcer does')
+  check(!/[A-F]/.test(p.steps[0].subject), 'no uppercase survives into the subject at all')
+}
+{
+  const mixed = 'EbC6eEc1a7C36304c8093D2f60337045b60678e858fe3997eb9740215bfdd2f3'
+  const p = planConnection({ intents: ['owner-directs-agent'], parties: { owner: OWNER, agent: mixed }, names })
+  check(p.ok && p.steps[0].subject === AGENT, 'mixed case is normalised too, not just fully-uppercase')
+}
+{
+  const p = planConnection({ intents: ['admit-agent-to-channel'], parties: { ...parties, channel: CHANNEL.toUpperCase() }, names })
+  check(p.ok && p.steps[0].subject === CHANNEL,
+    'a channel uuid is lowercased on the same path — it is hashed as a string exactly like a key')
+}
+{
+  const p = planConnection({ intents: ['owner-directs-agent'], parties: { owner: `  ${OWNER}  `, agent: AGENT }, names })
+  check(p.ok && p.steps[0].grantee === OWNER, 'and surrounding whitespace is trimmed, because paste adds it')
+}
+
+// ── THE SELF-LOOP INVARIANT, OVER STEPS ─────────────────────────────────────────────────────
+// This was first written as a per-intent guard on `agent-directs-other` — the intent where the
+// footgun was imagined. Three of the four intents signed one anyway. `owner === agent` is not
+// exotic: it is what happens when someone seats an agent with the key they are already signing
+// with, the most likely paste error on this form.
 {
   const p = planConnection({ intents: ['agent-directs-other'], parties: { ...parties, other: AGENT }, names })
   check(!p.ok && p.problems.some(x => /itself/.test(x)),
     'an agent granted the ability to instruct ITSELF is refused — every signature in that loop is valid')
+}
+for (const [intent, parts] of [
+  ['owner-directs-agent', { owner: AGENT, agent: AGENT }],
+  ['owner-directs-agent-acting', { owner: AGENT, agent: AGENT }],
+  ['carrier-relays-to-agent', { owner: OWNER, agent: AGENT, carrier: AGENT }],
+]) {
+  const p = planConnection({ intents: [intent], parties: parts, names })
+  check(!p.ok && p.problems.some(x => /itself/.test(x)),
+    `"${intent}" with the same key on both ends is refused — the invariant is over steps, not per intent`)
+}
+{
+  // Case must not be a way round the invariant, since case is normalised first.
+  const p = planConnection({ intents: ['owner-directs-agent'], parties: { owner: AGENT.toUpperCase(), agent: AGENT }, names })
+  check(!p.ok && p.problems.some(x => /itself/.test(x)),
+    'and an UPPERCASE key on one end cannot smuggle a self-loop past it')
+}
+{
+  // The door plane is exempt on purpose: grantee and subject are a key and a uuid, so they can
+  // never be equal, and asserting it there would be a check that has only ever passed.
+  const p = planConnection({ intents: ['admit-agent-to-channel'], parties, names })
+  check(p.ok, 'the door plane is unaffected — its two parties are different kinds of thing')
 }
 {
   const p = planConnection({ intents: ['make-it-do-whatever'], parties, names })
@@ -172,6 +235,22 @@ for (const key of INTENT_KEYS) {
   const p = one('admit-agent-to-channel')
   check(p.ok && p.problems.length === 0,
     'NEGATIVE CONTROL — a legitimate plan is accepted, so the refusals above are not "refuses everything"')
+}
+{
+  // The case assertions above would pass trivially if the fixtures were already lowercase. Prove
+  // the uppercase input really is uppercase before normalisation, and that comparing raw strings
+  // would have FAILED — this is the probe-loses-its-own-input trap, and it has bitten here before.
+  const upper = AGENT.toUpperCase()
+  check(upper !== AGENT && /[A-F]/.test(upper),
+    'NEGATIVE CONTROL — the uppercase fixture really is uppercase, so the case checks are not vacuous')
+  check(planConnection({ intents: ['owner-directs-agent'], parties: { owner: OWNER, agent: upper }, names }).steps[0].subject !== upper,
+    'and the planner genuinely CHANGES it rather than passing it through')
+}
+{
+  // The self-loop invariant must not be "refuses everything in the orders plane".
+  const p = planConnection({ intents: ['owner-directs-agent'], parties: { owner: OWNER, agent: AGENT }, names })
+  check(p.ok && p.steps.length === 1,
+    'NEGATIVE CONTROL — two DIFFERENT keys in the orders plane are still accepted')
 }
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)

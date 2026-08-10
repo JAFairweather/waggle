@@ -84,6 +84,27 @@ export const INTENT_KEYS = Object.keys(INTENTS)
 // a grant that verifies and admits nobody.
 const partyKind = (v) => HEX64.test(String(v || '')) ? 'key' : (UUID.test(String(v || '')) ? 'channel' : 'invalid')
 
+// ── CASE. Every key and uuid is lowercased HERE, once, at the boundary. ──────────────────────
+//
+// The regexes above are case-insensitive, so an uppercase pubkey validates. If it then reaches
+// the scope hash unchanged, the two halves of the grant are treated differently downstream and
+// only one of them dies:
+//
+//   the p-tag  survives — `attention.mjs` does String(grantee).toLowerCase() when it keys the
+//                         permitted-senders map, so an uppercase grantee still matches
+//   the SCOPE  dies     — the subject is hashed as its raw bytes, and the enforcer recomputes
+//                         over `ME`, which is always lowercase hex. The hashes differ.
+//
+// The result is a grant that signs, publishes, reads back green from every relay, renders a
+// correct sentence on screen, and is permanently invisible to the only software that has to see
+// it. Every check on the page passes. It is the same "binds to a subject nothing can match"
+// failure as a drifted hash construction, arriving through case normalisation instead.
+//
+// Reproduced 2026-08-10 with an uppercase agent key: console signs 5c15c378…, enforcer recomputes
+// b6c00312…, p-tag fine. Normalising at the boundary means no downstream surface has to remember.
+const normaliseParties = (parties) => Object.fromEntries(
+  Object.entries(parties || {}).map(([k, v]) => [k, typeof v === 'string' ? v.trim().toLowerCase() : v]))
+
 /**
  * Build the set of grants that expresses these intents.
  *
@@ -94,7 +115,9 @@ const partyKind = (v) => HEX64.test(String(v || '')) ? 'key' : (UUID.test(String
  * instructed but cannot post is a configuration nobody wants and reading it in that order makes
  * the omission obvious.
  */
-export function planConnection({ intents = [], parties = {}, names = {} } = {}) {
+export function planConnection({ intents: rawIntents = [], parties: rawParties = {}, names = {} } = {}) {
+  const parties = normaliseParties(rawParties)
+  const intents = rawIntents
   const problems = []
   const chosen = [...new Set(intents)]
   if (!chosen.length) problems.push('Choose at least one thing this agent may do — an agent with no grants is admitted to nothing.')
@@ -115,16 +138,7 @@ export function planConnection({ intents = [], parties = {}, names = {} } = {}) 
     if (kind !== wanted) {
       problems.push(party === 'channel'
         ? 'The channel must be a uuid.'
-        : `The ${party} must be a 64-character public key. A name is not enough — a grant binds to a key.`)
-    }
-  }
-
-  // Self-direction is a real footgun: an agent granted the ability to instruct itself creates a
-  // loop that nothing downstream refuses, because every signature on it is valid.
-  for (const key of chosen) {
-    if (key !== 'agent-directs-other') continue
-    if (parties.other && parties.agent && String(parties.other).toLowerCase() === String(parties.agent).toLowerCase()) {
-      problems.push('An agent cannot be granted the ability to instruct itself.')
+        : `The ${party} must be a 64-character public key — paste the hex, or let the page convert an npub1… first. A name is not enough: a grant binds to a key.`)
     }
   }
 
@@ -161,6 +175,27 @@ export function planConnection({ intents = [], parties = {}, names = {} } = {}) 
       detail: intent.detail,
     }
   }).sort((a, b) => (a.plane === 'door' ? 0 : 1) - (b.plane === 'door' ? 0 : 1))
+
+  // ── The self-loop invariant, asserted over the BUILT STEPS ────────────────────────────────
+  //
+  // This was first written as a per-intent check on `agent-directs-other`, which is where the
+  // footgun was imagined. Three of the four intents happily signed one anyway — most obviously
+  // `owner-directs-agent` with owner === agent, which is not exotic at all: it is what happens
+  // when someone seats an agent using the key they are already signing with, the single most
+  // likely paste error on this form. The sentence even rendered the same fragment on both sides,
+  // so the surface DISPLAYED the defect and did not refuse it.
+  //
+  // The property is universal — `grantee !== subject` for anything in the orders plane — so it is
+  // asserted once, here, on the steps rather than on the intents. That covers intents nobody has
+  // written yet, which a per-intent guard by construction cannot.
+  const loops = steps.filter(s => s.plane === 'orders' && s.grantee === s.subject)
+  if (loops.length) {
+    return {
+      ok: false,
+      steps: [],
+      problems: loops.map(s => `"${s.question}" would make an identity instruct itself — the same key is on both ends. Every signature in that loop is valid, so nothing downstream would refuse it.`),
+    }
+  }
 
   return { ok: true, steps, problems: [] }
 }

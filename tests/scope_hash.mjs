@@ -102,6 +102,67 @@ for (const [name, subject] of [['an agent pubkey', OLIVER], ['a channel uuid', C
   check(/hex/.test(threw), `a malformed salt throws rather than silently hashing garbage: ${threw}`)
 }
 
+// ── DIFFERENTIAL MATRIX vs THE ISSUER ───────────────────────────────────────────────────────
+// Raised in review: this module and tools/grant.mjs must agree on every input the issue path can
+// produce, and where they diverge the divergence must be understood rather than discovered later.
+//
+// The issue path always produces a 16-byte CSPRNG salt as lowercase hex, so the malformed cases
+// below are unreachable *from there*. They stop being unreachable the moment this function is used
+// to VERIFY a salt that arrived from the wire — which tools/grant.mjs:216 already does when it
+// recomputes from `tag[2]`. So the behaviour is pinned now, before that call site is ported.
+{
+  const issuer = (subject, saltHex) => {
+    try {
+      return createHash('sha256').update(Buffer.concat([
+        Buffer.from('waggle/da-scope/v1'), Buffer.from([0]),
+        Buffer.from(subject), Buffer.from(saltHex, 'hex')])).digest('hex')
+    } catch (e) { return `THREW:${e.constructor.name}` }
+  }
+  const mine = async (subject, saltHex) => {
+    try { return await scopeHash(subject, saltHex) } catch (e) { return `THREW:${e.constructor.name}` }
+  }
+
+  // Reachable from the issue path — these MUST agree.
+  const reachable = [
+    ['lowercase hex subject, 16-byte salt', OLIVER, SALT],
+    ['channel uuid subject', CHANNEL, SALT],
+    ['all-zero salt', OLIVER, '0'.repeat(32)],
+    ['all-f salt', OLIVER, 'f'.repeat(32)],
+  ]
+  for (const [label, subject, salt] of reachable) {
+    const a = issuer(subject, salt), b = await mine(subject, salt)
+    check(a === b && !a.startsWith('THREW'), `${label}: issuer and this module agree (${String(a).slice(0, 12)}…)`)
+  }
+
+  // NOT reachable from the issue path. Pinned deliberately, and this module is the LOUDER of the
+  // two on every one of them — a malformed salt raises instead of hashing something plausible.
+  // That asymmetry is the point: silently agreeing on garbage is how a verify path ships a hash
+  // that matches nothing and says nothing.
+  const malformed = [
+    ['empty salt', ''],
+    ['odd-length salt', 'abc'],
+    ['non-hex salt', 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz'],
+  ]
+  for (const [label, salt] of malformed) {
+    const a = issuer(OLIVER, salt), b = await mine(OLIVER, salt)
+    if (salt === '') {
+      check(a === b, `${label}: both produce the same hash — an empty salt is well-defined on both sides`)
+    } else {
+      check(String(b).startsWith('THREW') && !String(a).startsWith('THREW'),
+        `${label}: this module REFUSES where the issuer silently hashes something (${String(a).slice(0, 12)}…)`)
+    }
+  }
+
+  // Case, which is the failure that actually shipped in this PR — on the plan side, not here.
+  // Recorded from this end too, so the reason the planner lowercases is visible from both files.
+  const upper = await scopeHash(OLIVER.toUpperCase(), SALT)
+  const lower = await scopeHash(OLIVER, SALT)
+  check(upper !== lower,
+    'an UPPERCASE subject hashes differently — this is why console/connect-plan.mjs lowercases at the boundary')
+  check(issuer(OLIVER.toUpperCase(), SALT) === upper,
+    'and the issuer agrees on the uppercase hash too, so the divergence is in the CALLER, never here')
+}
+
 // ── NEGATIVE CONTROL ────────────────────────────────────────────────────────────────────────
 // Every comparison above has only been asked to agree. Prove the comparison can see a drift, by
 // running it against constructions that are wrong in the three most plausible ways.
