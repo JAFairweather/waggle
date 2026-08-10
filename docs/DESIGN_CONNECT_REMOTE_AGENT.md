@@ -337,6 +337,27 @@ This is not hypothetical here: both of the live agent's grants sit on `relay.pri
 because `nos.lol` refuses them for proof-of-work while advertising `min_pow=none`. That happens to
 be inside the runtime's set. Nothing checked that it was.
 
+### The read-back's own blind spot: not every relay serves an `ids` filter
+
+Found while publishing a kind 0 for the live agent, which is the same publish-then-read-back shape
+the Connect flow uses:
+
+```
+publish        purplepag.es: accepted
+read back      purplepag.es: no (CLOSED)      ← by id
+query by author purplepag.es: 1 event  EOSE   ← it had it all along
+```
+
+`purplepag.es` accepts the event and stores it, and does **not** answer a `{ ids: [...] }` filter.
+The by-id read-back therefore reports a perfectly good publish as `NOT PROVEN` — a false negative
+on a check whose entire job is to distinguish "stored" from "accepted and dropped".
+
+This is the other half of the same discipline. A check that can report failure for a working relay
+teaches an operator to disregard it, and a disregarded verification is worse than none, because the
+first real failure looks like the noise they have learned to ignore. **The read-back should fall
+back to a filter the relay will answer** — kind plus author plus a `since` — and treat "no answer
+to either" as inconclusive rather than as absent.
+
 ### The threshold inverts for revocation
 
 There is no revoke surface in this flow yet, and the number must be decided before there is one,

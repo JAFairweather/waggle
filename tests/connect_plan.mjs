@@ -182,10 +182,20 @@ for (const [intent, parts] of [
     `"${intent}" with the same key on both ends is refused — the invariant is over steps, not per intent`)
 }
 {
-  // Case must not be a way round the invariant, since case is normalised first.
+  // THE INTERACTION CASE. Raised in review as the one worth a fixture of its own, because it is
+  // where two individually-correct fixes could have combined into a wrong one.
+  //
+  // Normalising case CREATES self-loops that did not exist in the input: `owner` uppercase and
+  // `agent` lowercase are different strings on the way in and the same key on the way out. If the
+  // invariant compared raw values it would not see it, and the case fix would have manufactured
+  // exactly the defect the loop guard exists to catch. It doesn't, because normalisation happens
+  // at the boundary and the invariant runs on the normalised steps — but that ordering is load
+  // bearing and nothing else in this file would notice if it were swapped.
   const p = planConnection({ intents: ['owner-directs-agent'], parties: { owner: AGENT.toUpperCase(), agent: AGENT }, names })
   check(!p.ok && p.problems.some(x => /itself/.test(x)),
-    'and an UPPERCASE key on one end cannot smuggle a self-loop past it')
+    'MIXED CASE self-loop is refused — normalisation runs BEFORE the invariant, so case cannot smuggle one past it')
+  check(AGENT.toUpperCase() !== AGENT,
+    'and the two inputs really are different strings before normalisation, so this case is not vacuous')
 }
 {
   // The door plane is exempt on purpose: grantee and subject are a key and a uuid, so they can
