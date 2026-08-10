@@ -16,6 +16,9 @@
 // INV-A3-2  exactly one function per transport invokes a signer. This is the Nostr one.
 import { finalizeEvent, generateSecretKey, getEventHash, verifyEvent } from 'nostr-tools/pure'
 import * as nip44 from 'nostr-tools/nip44'
+// A pure encoder, not a second signing path: it turns an already-validated 64-hex pubkey into its
+// display form. INV-A3-2 is about who may invoke a signer, and npubEncode invokes nothing.
+import { npubEncode } from 'nostr-tools/nip19'
 import { loadNostrSigner } from './nostr_signer.mjs'
 import { createHash, randomBytes } from 'node:crypto'
 
@@ -144,6 +147,11 @@ const handle = (v) => {
 // The community's own words, carried out to a guest. Untrusted in the same sense as the Buzz
 // side's carried_body: quoted, never rendered as waggle's own voice.
 const carried = (v) => String(v == null ? '' : v)
+
+// How many peer keys a broadcast's discovery roster names before it says "+N more". A cap so one
+// large community cannot turn every broadcast into a wall of keys; a stated cap so the reader is
+// never told a partial room is the whole one.
+const ROSTER_MAX = 24
 
 const url = (v, what) => {
   const s = String(v == null ? '' : v).trim()
@@ -360,20 +368,49 @@ const CATALOGUE = {
   // The return lane's actual product: a community message carried out to a guest the community
   // relay will not serve. The prose is here; the caller supplies who, why, and the body.
   return_carry: {
-    whys: ['mention', 'reply'],
-    build: ({ mention, why, body }, spec) => {
+    whys: ['mention', 'reply', 'broadcast'],
+    // A broadcast is addressed to the ROOM, not to a handle, so it deliberately does not open with
+    // `**${mention}**` — an admitted-only recipient has no handle but 'guest', and greeting them by
+    // a placeholder would be a lie about who was named. Nothing was: that is what makes it a
+    // broadcast. Skipping `handle()` here also removes a throw path from a fan-out carry.
+    //
+    // `from` and `peers` are the DISCOVERY payload, and the reason this template exists rather than
+    // reusing the mention prose: an agent that has never been told another agent's key cannot
+    // address it, and #wagglebroadcast is the bootstrap out of that. Both are OPTIONAL — an on-disk
+    // pending carry enqueued before this field existed must still render on retry, not dead-letter.
+    // Neither discloses anything new: every peer here holds a public kind:440 from the same grantor.
+    build: ({ mention, why, body, from = null, peers = [] }, spec) => {
       if (!spec.whys.includes(why)) reject(`carry reason not in {${spec.whys.join('|')}}: ${JSON.stringify(why)}`)
-      return `📥 **${handle(mention)}** — you were ${why === 'reply' ? 'replied to' : 'mentioned'} in the community.\n\n> ` +
-        carried(body).replace(/\r/g, '').split('\n').join('\n> ') +
-        `\n\n_carried out by waggle's return lane. Replying to this message reaches nobody; ` +
-        `post from your own key and the bridge brings it back in._`
+      const quote = carried(body).replace(/\r/g, '').split('\n').join('\n> ')
+      if (why !== 'broadcast') {
+        return `📥 **${handle(mention)}** — you were ${why === 'reply' ? 'replied to' : 'mentioned'} in the community.\n\n> ` +
+          quote +
+          `\n\n_carried out by waggle's return lane. Replying to this message reaches nobody; ` +
+          `post from your own key and the bridge brings it back in._`
+      }
+      const list = (Array.isArray(peers) ? peers : reject('peers is not an array'))
+        .map(p => npubEncode(hex64(p, 'peer')))
+      // Bounded, and it SAYS it is bounded. A roster that silently truncates reads as the whole
+      // room, which is the one thing a discovery payload must never get wrong.
+      const shown = list.slice(0, ROSTER_MAX)
+      const tail = list.length > shown.length ? ` (+${list.length - shown.length} more)` : ''
+      return `📢 **Broadcast** — carried to every admitted participant.` +
+        (from ? ` From \`${npubEncode(hex64(from, 'from'))}\`.` : '') + `\n\n> ` +
+        quote +
+        `\n\n_carried out by waggle's return lane because the message carried the #wagglebroadcast marker. ` +
+        `Replying to this message reaches nobody; post from your own key and the bridge brings it back in._` +
+        (shown.length ? `\n\n_Admitted alongside you: ${shown.map(n => `\`${n}\``).join(', ')}${tail}._` : '')
     },
   },
   // Machine-readable carrier contract for a grant-aware Nvoy runtime. The original kind:9 is
   // embedded byte-for-byte in semantic fields and verified again here; Waggle's seal proves only
   // transport/channel provenance and never replaces the original author's signature.
   return_task_carry: {
-    whys: ['mention', 'reply'],
+    // 'broadcast' is ADDITIVE to the `reason` enum a v:1 consumer already parses. A consumer that
+    // switches on reason and has no broadcast arm sees an unknown value, not a malformed carry —
+    // and the alternative (silently relabelling a broadcast as a mention) would tell it something
+    // false about why it was woken. docs/CONCORD_CONSUMER.md.
+    whys: ['mention', 'reply', 'broadcast'],
     build: ({ channel, why, source }, spec) => {
       const ch = String(channel || '').toLowerCase()
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(ch)) reject('task carry channel is not a UUID')

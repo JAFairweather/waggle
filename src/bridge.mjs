@@ -1120,6 +1120,16 @@ function relayRateOk(sender, dest, nowMs) {
   return relayLimiter(sender, dest, nowMs)
 }
 
+// Broadcast lane (#337). Its own counters for the same reason the relay lane has its own: a
+// fan-out primitive must not be able to starve the mention lane it sits beside. Keyed on the
+// ORIGINATOR — the admitted participant whose words these are — not on the Buzz signer, which for
+// a relayed agent post is the shared bridge key and would pool every agent into one bucket.
+// Reuses the existing PUB.* caps: broadcast is a new trigger, not a new policy surface.
+const broadcastLimiter = laneLimiter({ tag: 'BROADCAST', subjectNoun: 'broadcaster' })
+function broadcastRateOk(originator, dest, nowMs) {
+  return broadcastLimiter(originator, dest, nowMs)
+}
+
 // §7 decrypt-budget window + the pre-decrypt drop counter. The counter is LOUD by design: it is the
 // number the #116 silence/accept-count alarm watches, so a flood spikes a monitored signal rather
 // than a dead integer. The wire INTO the alarm lands once #116/#121 is in main (that seam does not
@@ -2691,9 +2701,38 @@ function sourceWireRejectReason(message) {
   return 'signature-or-id-mismatch'
 }
 
-function carryDescriptor(recipient, message, why, channel) {
+// #wagglebroadcast — the room marker (#337). A FIXED literal that resolves to nothing: it names no
+// handle, so it can never go stale the way the @name table did, and it needs no prior knowledge of
+// who is out there. That is the whole point. Two admitted agents in one channel could each post and
+// each be read by the community, but neither could address the other, because neither had ever been
+// told the other existed. The marker is the bootstrap: broadcast once, learn the room from the
+// carry's roster, then address people directly.
+//
+// Word-boundary terminated for the same reason the @name regex is: `#wagglebroadcasting` is a
+// different word and must not trigger a fan-out. Case-insensitive because a human typed it.
+//
+// It survives rendering into the community: renderReleased defuses `@` and `nostr:` but never runs
+// defuseMarkup, which is the quarantine path — so a granted participant's `#` reaches the channel
+// intact at any position, including the start of a line.
+const BROADCAST_MARKER = /#wagglebroadcast(?![\w-])/i
+
+// The discovery payload: every participant holding a live admission grant, sorted so the carry is
+// byte-stable across recipients and across scans. Sorted, not insertion-ordered — grantSet's order
+// depends on the order 440s happened to arrive from relays, which is not a property worth leaking
+// into a message body. Read live from grantSet so a 441 revocation removes a key from the roster in
+// the same pass it removes them from the lane.
+const broadcastRoster = () => [...grantSet.keys()].sort()
+
+function carryDescriptor(recipient, message, why, channel, roster = null) {
   if (recipient.protocol !== 'nvoy-task-carry-v1') {
-    return { template: 'return_carry', slots: { mention: recipient.mention, why, body: String(message.content || '') } }
+    const slots = { mention: recipient.mention, why, body: String(message.content || '') }
+    if (why === 'broadcast') {
+      slots.from = roster?.from || null
+      // Never name the recipient to themselves as a peer they could address — they cannot, and a
+      // roster that includes you reads as though the bridge would carry your own words back.
+      slots.peers = (roster?.peers || []).filter(p => p !== recipient.npub_hex)
+    }
+    return { template: 'return_carry', slots }
   }
   const ch = String(channel || '').toLowerCase()
   const source = sourceWireEvent(message)
@@ -2798,6 +2837,29 @@ async function scanReturnLane(msgs, opts = {}) {
     }
     const body = String(m.content || '')
     const ptags = tags.filter(t => t[0] === 'p' && t[1]).map(t => String(t[1]).toLowerCase())
+    // Who is speaking, as an ADDRESSABLE identity. For a relayed agent post the Buzz signer is the
+    // shared bridge key — `from` would attribute every agent's words to waggle — so the per-event
+    // registry wins where it has a record, exactly as echo-skip and reply-detection already do.
+    const originator = agentAuthoredBy(m.id) || from
+    // Only an admitted participant may broadcast: you may address the room if you are in the room.
+    // One lever, symmetric — a 441 takes away both halves at once. Checked against grantSet
+    // explicitly rather than inferred from the marker surviving defusal; a rendering detail is not
+    // an authorization. The refusal is LOUD: a member who types the marker and gets silence would
+    // reasonably conclude the marker does not work.
+    const marked = BROADCAST_MARKER.test(body)
+    let broadcast = marked && grantSet.has(originator)
+    if (marked && !broadcast && rlDropOnce(m.id))
+      err(`RETURN drop[broadcast]: ${String(m.id).slice(0, 12)}… carries #wagglebroadcast but ${originator.slice(0, 12)}… holds no live admission grant — not fanned out`)
+    // Consulted LAZILY, and at most once per message: the cap must be spent on a carry that is
+    // actually about to happen, not on an overlap re-read whose recipients are all already in
+    // rlSeen. A capped broadcast never suppresses a direct mention or reply in the same message —
+    // those earn their carry on their own trigger.
+    let broadcastAllowed = null
+    const allowBroadcast = () => {
+      if (broadcastAllowed === null) broadcastAllowed = broadcastRateOk(originator, String(opts.channel || 'return'), Date.now())
+      return broadcastAllowed
+    }
+    let roster = null
     let carried = false
     // No break: one message fans out to EVERY matching recipient, each deduped on its own
     // (source × recipient) key. "@a @b" reaching only one of them was finding #4.
@@ -2809,8 +2871,11 @@ async function scanReturnLane(msgs, opts = {}) {
       // this participant merely because both appear in the global unions. A direct reply to an
       // event already recorded for this recipient is the one exception: it continues that exact
       // conversation as data even when the replier is not the route's instruction principal.
+      // A broadcast joins the direct-reply exception on the SENDER half only. The CHANNEL binding
+      // is untouched by design: a broadcast is "everyone in this room", never "everyone anywhere",
+      // and letting it cross channels would fan a message out of the very room it was scoped to.
       if (r.managedTaskRoute && (r.scan_channel !== String(opts.channel || '').toLowerCase() ||
-          (r.scan_author !== from && !repliedTo))) continue
+          (r.scan_author !== from && !repliedTo && !broadcast))) continue
       const key = rlKey(m.id, r.npub_hex)
       if (rlSeen.has(key)) continue                        // this recipient already carried for this message
       // Echo: never carry the recipient's own words back. Three forms, all the agent's own:
@@ -2821,10 +2886,18 @@ async function scanReturnLane(msgs, opts = {}) {
       if (from === r.npub_hex || boundUnique || agentAuthoredBy(m.id) === r.npub_hex) continue
       const mentioned = ptags.includes(r.npub_hex) ||
         (!r.dynamic && !!r.mention && new RegExp('@' + r.mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])', 'i').test(body))
-      if (!mentioned && !repliedTo) continue
-      const why = repliedTo && !mentioned ? 'reply' : 'mention'
+      // Broadcast delivery is grant-scoped on BOTH ends, so "carried to every admitted participant"
+      // is literally what happened: the roster in the body and the set of keys this fanned out to
+      // are the same set. A legacy configured route that holds no grant keeps its mentions and its
+      // replies and is simply not part of the room a broadcast addresses.
+      if (!mentioned && !repliedTo && !(broadcast && grantSet.has(r.npub_hex) && allowBroadcast())) continue
+      // Lowest precedence. A message that both names you and carries the marker was addressed to
+      // you personally, and a reply is a continuation of your own thread — either is a truer
+      // account of why this reached you than "everyone got it".
+      const why = mentioned ? 'mention' : (repliedTo ? 'reply' : 'broadcast')
+      if (why === 'broadcast' && !roster) roster = { from: originator, peers: broadcastRoster() }
       let descriptor
-      try { descriptor = carryDescriptor(r, m, why, opts.channel) }
+      try { descriptor = carryDescriptor(r, m, why, opts.channel, roster) }
       catch (e) { err(`RETURN drop[task-carry]: ${String(m.id).slice(0, 12)}… -> ${r.npub_hex.slice(0, 12)}…: ${e.message}`); continue }
       addRlSeen(key)                                       // in-memory now: no double-carry within this scan/overlap
       const accepted = await returnLaneSend(r.npub_hex, descriptor,
@@ -2838,8 +2911,13 @@ async function scanReturnLane(msgs, opts = {}) {
         dropRlSeen(key)
         // Owed, durably. The overlap re-read may still catch it first; enqueue is idempotent and
         // does not reset the attempt count, so the two paths cannot inflate each other.
+        // The discovery payload is snapshotted INTO the durable record, not recomputed on retry.
+        // A retry days later would otherwise name today's room in a message about that day's — and
+        // the roster is the one part of a broadcast a recipient will act on.
         rlPending.enqueue(key, { to: r.npub_hex, mention: r.mention, why, body, src: m.id,
-          protocol: r.protocol || null, channel: opts.channel || null, source: r.protocol === 'nvoy-task-carry-v1' ? sourceWireEvent(m) : null })
+          protocol: r.protocol || null, channel: opts.channel || null, source: r.protocol === 'nvoy-task-carry-v1' ? sourceWireEvent(m) : null,
+          ...(descriptor.template === 'return_carry' && why === 'broadcast'
+            ? { from: descriptor.slots.from, peers: descriptor.slots.peers } : {}) })
       }
     }
     if (carried) await confirmRelayAction(m.id, react)
@@ -2876,7 +2954,10 @@ async function retryPendingCarries(opts = {}) {
     try {
       descriptor = item.protocol === 'nvoy-task-carry-v1'
         ? { template: 'return_task_carry', slots: { channel: item.channel, why: item.why, source: item.source } }
-        : { template: 'return_carry', slots: { mention: item.mention, why: item.why, body: item.body } }
+        // `from`/`peers` are read back from the record and default to absent, so a broadcast
+        // enqueued by an older build — or any non-broadcast carry — renders exactly as before
+        // rather than dead-lettering on a slot that did not exist when it was written.
+        : { template: 'return_carry', slots: { mention: item.mention, why: item.why, body: item.body, from: item.from || null, peers: item.peers || [] } }
     } catch (e) { err(`RETURN retry invalid: ${String(item.src).slice(0, 12)}…: ${e.message}`); rlPending.remove(key); continue }
     const accepted = await returnLaneSend(item.to, descriptor,
       { src: item.src, why: item.why, protocol: item.protocol || 'return-carry-v1', channel: item.channel || null, retry: n }, opts.publish)
@@ -3301,7 +3382,7 @@ export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, c
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, BROADCAST_MARKER, broadcastRoster, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests,
   policyRequests, policyWriterInFlight, remotePolicyGatePublic, processRemotePolicyRequest,
   retryRemotePolicyRequests, __setPolicyWriterRunnerForTests, unframePolicyWriterResponse,
