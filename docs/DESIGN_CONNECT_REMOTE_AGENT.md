@@ -1,8 +1,22 @@
 # Connect Remote Agent — gaps, provenance, and design
 
-**Status: design. Nothing here is shipped.** Issue #309 asks for an agent deployment wizard. This
+**Status: partly built, none of it deployed.** Issue #309 asks for an agent deployment wizard. This
 document is the evidence and the design behind it, written immediately after onboarding one agent
-entirely by hand.
+entirely by hand — and then the first slice of the build.
+
+| | |
+|---|---|
+| `console/capability-vocabulary.mjs` | **built** — directional sentences; the inverted task label is gone |
+| `console/connect-plan.mjs` | **built** — intent → correctly-directed grants; the operator never picks a grantee |
+| `console/connect.html` | **built** — the owner's flow, with direction drawn as an arrow |
+| `src/agent_install_state.mjs` | **built** — four-state reporting: present / unverified / missing / unknown |
+| `tools/connect-agent.mjs` | **built** — the machine-side half, idempotent, never overwrites |
+| NIP-05 registration | **not built** — the directory is not this repo's to write |
+| kind 0 publication | **not built** |
+
+Three suites cover the new code — `capability_vocabulary`, `connect_plan`, `agent_install_state` —
+each with a negative control that fires. **None of it has run in production**, and a green suite is
+not a live proof.
 
 The short version: **an agent is not one artifact, it is eleven**, spread across two machines, three
 checkouts and a public relay network. Nine of the eleven have no tool that creates them. Every
@@ -131,27 +145,35 @@ putGrant(String(grantee).toLowerCase(), { grantId: ev.id, grantor: ev.pubkey, ca
 The **scope subject is the agent being instructed**. The **`p` grantee is who may instruct it**.
 `tools/grant.mjs` agrees: *"`--agent <npub>` cap task — this grantee may TASK that agent."*
 
-`console/capability-vocabulary.mjs` disagrees:
+`console/capability-vocabulary.mjs` disagreed:
 
 ```js
 'task':      'Take tasks from you',
 'task+act':  'Take tasks, and act on them',
 ```
 
-and `console/index.html:754` renders
-
-```js
-`This grants ${capLabel(cap)} to ${who} over ${short(subject)}.`
-```
-
-which produces, for a grant whose grantee is the operator and whose subject is an agent:
-
-> This grants **Take tasks from you** to **‹the operator›** over **‹the agent›**.
-
 The grantee is described as the task-*taker*. In the enforcement code the grantee is the
-task-*giver*. `admit` reads correctly — only the task family is backwards. **This is a live defect
-on a surface whose entire job is to let a human authorise something accurately**, and it caused a
-real misissued grant during this onboarding.
+task-*giver*.
+
+**Where that phrase actually reached the operator matters, and the first version of this document
+got it wrong.** `capWhy()` in `console/index.html` has bespoke, *correct* paragraphs for the task
+family — *"This authorises ‹who› to TASK the agent ‹subject›"*. The inverted phrase was never in
+the confirmation. It was in the two places where the decision is formed:
+
+- **the grant card** (`:462`) — `${esc(capLabel(g.cap))}`, alone, with no parties. This is what an
+  operator reads when auditing what is live.
+- **the issue dropdown** (`:765`) — the same phrase at the moment of choosing what to sign. The
+  correct paragraph only appears *after* the choice.
+
+So the accurate text sat in the confirmation while the inverted text sat in the decision. That is a
+worse arrangement than a uniformly wrong label, and it is consistent with the misissued grant: the
+operator chose from the dropdown.
+
+**Fixed in this change.** The vocabulary now carries `CAP_SENTENCE` — a template naming both
+parties — and `describeGrant()` is the only supported way to render one. Both surfaces above call
+it. `tests/capability_vocabulary.mjs` asserts the exact rendered strings, that the grantee always
+precedes the subject in the task family, and that the historical phrasing can never return; a
+negative control renders the inverted template and proves those assertions reject it.
 
 The fix is not a better adjective. The label must be a **sentence with a direction**, generated from
 grantee and subject together rather than from the capability alone:
@@ -241,6 +263,31 @@ and refuse to continue when it cannot.**
 
 Steps 1–4 and 8 are fully automatable. Step 5 needs a directory write the repo does not own today.
 Step 6 needs a human approval by design. Step 7 needs a human decision, which is the point.
+
+### The one change that removes the whole class of error
+
+The console used to ask for a **grantee** and a **subject**. Those two fields look symmetrical and
+are not, nothing on the form said which way round they went, and the operator had to do the
+translation from intent to protocol every time, silently, with no way to check the answer.
+
+`console/connect-plan.mjs` deletes that question. The operator picks from five **intents** —
+sentences about who does what to whom — and the planner assigns the parties:
+
+| The operator chooses | grantee | subject |
+|---|---|---|
+| Let this agent post into the channel | the agent | the channel |
+| Let me give this agent instructions | **you** | the agent |
+| Let this agent give instructions to another | **the agent** | the other |
+| Let the bridge carry instructions to it | the carrier | the agent |
+
+The middle two are the same protocol event with the parties swapped, which is exactly the pair
+that was got wrong. A caller cannot pass a grantee — there is no parameter for it — and
+`tests/connect_plan.mjs` asserts the assignment per intent, asserts the two task intents are exact
+mirrors, and runs a negative control against an inverted table to prove those assertions would
+catch it.
+
+The review step then draws the direction as an **arrow** rather than describing it. A sentence
+about who instructs whom can be read backwards. An arrow cannot.
 
 ### Where it runs
 
