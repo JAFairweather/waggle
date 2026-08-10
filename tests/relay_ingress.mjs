@@ -44,6 +44,7 @@ process.env.POSTED_MAP_PATH = resolve(dir, 'posted.log')
 process.env.RLSEEN_PATH = resolve(dir, 'return-lane-seen.log')
 process.env.RELAYSEEN_PATH = resolve(dir, 'relay-lane-seen.log')
 process.env.LATENCY_PATH = resolve(dir, 'latency-trace.jsonl')
+process.env.UNDELIVERED_PATH = resolve(dir, 'undelivered.log')
 process.env.LATENCY_TRACE_KEY = 'relay-ingress-test-key-that-is-long-enough-to-be-secret'
 process.env.BUZZ_PRIVATE_KEY = Buffer.from(bridgeSk).toString('hex')
 process.env.FORWARD_MODE = 'buzz'
@@ -176,6 +177,79 @@ ok('resolveRelayDest rejects empty', resolveRelayDest('') === null)
   const ci = argv ? argv.indexOf('--content') : -1
   ok('  the body is carried through UNCHANGED — at-words intact, not stripped or rewritten',
     ci !== -1 && argv[ci + 1].includes('@oliver') && argv[ci + 1].includes('@claude'))
+}
+
+// --- Buzz's own retryable flag decides whether a refusal replays (#342) ----------------------
+//
+// The defect: EVERY send failure rolled the claim back and logged "will retry", so a
+// `retryable:false` user_error — an @name Buzz will never resolve — re-posted on every restart
+// forever. Observed 2026-08-10 as a queue replaying since the day it was written.
+//
+// BOTH directions are asserted on purpose. A "fix" that simply stopped retrying everything would
+// pass a one-sided test identically, and would silently drop every message a transient failure
+// touched. The refusal case and the retry case have to be told apart.
+{
+  const { __setTransportForTests } = await import('../src/egress.mjs')
+  const stub = process.env.WB_STUB_SEND
+  delete process.env.WB_STUB_SEND     // exercise the real emit path, not the stub short-circuit
+  const undelivered = () => existsSync(process.env.UNDELIVERED_PATH)
+    ? readFileSync(process.env.UNDELIVERED_PATH, 'utf8').split('\n').filter(Boolean).map(JSON.parse) : []
+  const BUZZ_REFUSAL = "mention '@claude' does not match a current channel member; retry with --mention <pubkey>"
+
+  // (a) permanent — Buzz declares it non-retryable, so the wrap must be committed, not replayed.
+  const skA = generateSecretKey(); const wA = wrapFor(skA, { body: 'a post naming someone Buzz cannot resolve' })
+  admit(wA.senderPk); delta()
+  let restore = __setTransportForTests(async () => {
+    throw new Error(JSON.stringify({ error: 'user_error', message: BUZZ_REFUSAL, retryable: false }))
+  })
+  // AWAIT the carry, do not just tick. `addRelaySeen` stakes the claim BEFORE the send, so a wrap
+  // still in flight is indistinguishable from one this fix committed — asserting `relaySeen` on an
+  // unfinished carry passes for the wrong reason. Found exactly that way while writing this block.
+  // Capture the lane's own output: the ack is ATTEMPTED here, but whether it seals depends on the
+  // sender having published a kind:10050, which a synthetic test key has not. That precondition
+  // belongs to the return lane and has its own suite — asserting delivery here would assert the
+  // wrong module. What this block owns is that the refusal is not silent.
+  const said = []
+  const realErr = console.error, realLog = console.log
+  console.error = (...a) => { said.push(a.join(' ')); realErr(...a) }
+  console.log = (...a) => { said.push(a.join(' ')); realLog(...a) }
+  await handleRelayIngress(wA.wrap); await new Promise(r => setTimeout(r, 100))
+  console.error = realErr; console.log = realLog
+  restore()
+  const dA = delta()
+  ok('retryable:false → the wrap is marked seen, so it does NOT replay', relaySeen.has(wA.wrap.id))
+  ok('  the refusal is not silent — an ack to the sender is attempted',
+    said.some(l => l.includes('RETURN') && l.includes(wA.senderPk.slice(0, 12))))
+  ok('  and the journal says WHY it was not retried, naming Buzz\'s verdict',
+    said.some(l => l.includes('RELAY[buzz] REFUSED') && l.includes('retryable:false')))
+  ok('  and nothing was posted', !relayPost(dA))
+  const rec = undelivered().find(r => r.id === wA.wrap.id)
+  // Assert the REASON, not merely that a row exists: the Buzz message is the only actionable
+  // thing in this failure, and a record that lost it sends an operator hunting.
+  ok('  the loss is recorded with Buzz\'s own reason, so it is diagnosable', !!rec && rec.reason.includes('does not match a current channel member'))
+  ok('  the record names the relay lane and the destination', !!rec && rec.lane === 'relay' && rec.dest === CHAN)
+
+  // (b) transient — a failure carrying no verdict we can read MUST still retry. Being unable to
+  // classify a refusal is not evidence that it is permanent.
+  const skB = generateSecretKey(); const wB = wrapFor(skB, { body: 'a post that hits a flaky transport' })
+  admit(wB.senderPk); delta()
+  restore = __setTransportForTests(async () => { throw new Error('connection reset by peer') })
+  await handleRelayIngress(wB.wrap); await tick()
+  restore()
+  ok('an unclassifiable failure rolls the claim back, so it DOES retry', !relaySeen.has(wB.wrap.id))
+  ok('  and it is not recorded as an undelivered loss', !undelivered().some(r => r.id === wB.wrap.id))
+
+  // (c) the flag is read, not guessed at: retryable:true is JSON we CAN parse and must still retry.
+  const skC = generateSecretKey(); const wC = wrapFor(skC, { body: 'a post refused but retryable' })
+  admit(wC.senderPk); delta()
+  restore = __setTransportForTests(async () => {
+    throw new Error(JSON.stringify({ error: 'upstream', message: 'relay busy', retryable: true }))
+  })
+  await handleRelayIngress(wC.wrap); await tick()
+  restore()
+  ok('an explicit retryable:true still retries', !relaySeen.has(wC.wrap.id))
+
+  if (stub) process.env.WB_STUB_SEND = stub
 }
 
 // --- route() dispatches the branch ------------------------------------------

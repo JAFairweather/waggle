@@ -2623,8 +2623,34 @@ async function postRelay(ev, sender, dest, wantCh, body) {
   }).catch(e => {
     // A channel waggle is not a member of fails HERE with a distinct RELAY[buzz] ERR — it can never
     // masquerade as a §7 drop, and it is NOT marked seen, so it retries rather than dropping.
+    //
+    // But not every refusal is worth retrying, and rolling back UNCONDITIONALLY was a defect. Buzz
+    // returns its own verdict: `e.message` is the CLI's stderr (egress.mjs:369), JSON carrying an
+    // explicit `retryable` flag. A `retryable:false` user_error — an @name Buzz will never resolve —
+    // was re-posted on every restart, forever. Observed 2026-08-10 as a queue of `@claude` posts
+    // replaying since the day they were written, and still growing.
+    //
+    // Honour the flag, and honour it in ONE direction only: anything we cannot classify stays
+    // retryable. Being unable to read a refusal is not evidence that it is permanent, and silently
+    // dropping a message that would have landed is the worse of the two failures.
+    const detail = String(e.message || '')
+    let permanent = false
+    try { permanent = JSON.parse(detail).retryable === false } catch { permanent = false }
+    if (permanent) {
+      markRelaySeen(ev.id)
+      recordUndelivered({ lane: 'relay', dest, recipient: null, id: ev.id, author: sender, reason: detail })
+      // The ack `reason` is a CLOSED set on purpose (nostr_egress.mjs:335) — Buzz's own message is
+      // platform free text and does not go on the wire. It goes to the journal and the undelivered
+      // record, which is where an operator looks. The sender learns it is permanent and must ask.
+      returnLaneSend(sender, {
+        template: 'relay_ack_err',
+        slots: { reason: 'refused by buzz', channel: wantCh, ts: Math.floor(Date.now() / 1000) },
+      }, { lane: 'relay-ack' })
+      err(`RELAY[buzz] REFUSED -> ${dest}: ${detail} — buzz says retryable:false, so this is NOT retried; recorded in ${UNDELIVERED_PATH}`)
+      return
+    }
     dropRelaySeen(ev.id)
-    err(`RELAY[buzz] ERR -> ${dest}: ${e.message} — claim rolled back, will retry`)
+    err(`RELAY[buzz] ERR -> ${dest}: ${detail} — claim rolled back, will retry`)
   })
 }
 async function handleRelayIngress(ev, { openSealFn = openSeal, openRumorFn = openRumor, postRelayFn = postRelay,
