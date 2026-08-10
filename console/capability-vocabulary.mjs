@@ -12,24 +12,100 @@
 //
 // tests/capability_vocabulary.mjs asserts the tables stay complete and consistent with each
 // other. Nothing here is policy — no gate consults it. It decides only what a person is told.
+//
+// ── DIRECTION IS THE WHOLE PROBLEM ──────────────────────────────────────────────────────────
+//
+// A grant has two parties and they are not interchangeable. In every kind-440 this project
+// issues:
+//
+//     ["p", <grantee>]                 the party who GAINS the capability
+//     ["da-scope", <hash>, <salt>]     a salted hash of the SUBJECT the capability is over
+//
+// For the task family the subject is the agent BEING INSTRUCTED and the grantee is the party who
+// MAY INSTRUCT IT. `tools/attention.mjs` is the enforcement site and settles it:
+//
+//     if (scope[1] !== scopeHash(ME, scope[2] || '')) continue  // authorises tasking some other agent
+//     putGrant(String(grantee).toLowerCase(), { grantId: ev.id, grantor: ev.pubkey, cap })
+//
+// ME is the agent running that runtime — the subject. The grantee goes into the permitted-senders
+// map. `tools/grant.mjs` says the same in prose: "--agent <npub> cap task — this grantee may TASK
+// that agent."
+//
+// This file used to label `task` as "Take tasks from you", which describes the GRANTEE as the
+// task-taker — the exact inverse. Rendered through the confirmation sentence in the console it
+// read "This grants Take tasks from you to <grantee> over <subject>", and an operator signed a
+// grant that authorised the opposite of their intent: well-formed, verifying, live, and backwards.
+// It was found by recomputing salted scope hashes by hand, because no surface could show it.
+//
+// The lesson is stronger than "that label was wrong". A capability label with NO DIRECTION IN IT
+// cannot be checked by the person reading it, because direction is the thing they get wrong. So
+// the unit of description here is a SENTENCE naming both parties, not an adjective phrase, and
+// `describeGrant()` is the only supported way to render one. The short `CAP_LABEL` survives for
+// dropdowns, where there is no grantee to name yet — and it is written in the ACTIVE voice from
+// the grantee's side so it cannot contradict the sentence.
 
-// Protocol vocabulary -> what the person actually gets.
+// ── Sentences. Both parties, always, in a fixed order: grantee first, subject second. ─────────
+// Placeholders are substituted by describeGrant(); they are not optional and the suite asserts
+// every template carries both, because a template that mentions one party has silently picked a
+// direction the reader cannot verify.
+export const CAP_SENTENCE = {
+  'admit': '{grantee} may post into {subject}',
+  'admit+read': '{grantee} may post into {subject}, and read it',
+  'task': '{grantee} may send instructions to {subject}',
+  'task+act': '{grantee} may send instructions to {subject}, and {subject} may act on them',
+  'task-relay': '{grantee} may carry instructions addressed to {subject}',
+  'mirror': "{subject} may mirror {grantee}'s public posts",
+}
+
+// Render a capability as a sentence about two named parties. `grantee` and `subject` are already
+// display-ready (a name, a short npub) — this does no escaping and no lookup, so a caller that
+// forgets to escape has an XSS defect in its own template rather than a hidden one in here.
+//
+// An unknown capability does NOT fall through to prose. It renders as a sentence that admits it
+// does not know, because inventing a direction for an unrecognised cap is the original defect
+// with extra steps.
+export function describeGrant({ cap, grantee, subject } = {}) {
+  const who = String(grantee ?? '').trim() || 'someone'
+  const what = String(subject ?? '').trim() || 'something'
+  const template = CAP_SENTENCE[cap]
+  if (!template) return `${who} holds "${cap}" over ${what} — this surface does not recognise that capability`
+  return template.replaceAll('{grantee}', who).replaceAll('{subject}', what)
+}
+
+// ── Short labels, for a dropdown where no grantee has been chosen yet. ───────────────────────
+// Active voice, grantee's side, always. "Take tasks from you" was passive about the wrong party
+// and that is how the inversion hid for so long. Read each of these as "«the grantee» may …".
 export const CAP_LABEL = {
   'admit': 'Post into the channel',
   'admit+read': 'Post into the channel, and read it',
-  'task': 'Take tasks from you',
-  'task+act': 'Take tasks, and act on them',
-  'task-relay': 'Carry signed instructions',
-  'mirror': 'Mirror their public posts',
+  'task': 'Send instructions to the agent',
+  'task+act': 'Send instructions the agent may act on',
+  'task-relay': 'Carry instructions addressed to the agent',
+  'mirror': 'Have their public posts mirrored',
 }
 // An unknown capability falls back to its raw protocol name rather than to a friendly phrase.
 // A cap this console has never heard of must LOOK unfamiliar — inventing readable prose for it
 // would be the surface asserting it understands something it does not.
 export const capLabel = (c) => CAP_LABEL[c] || c
 
-// WHO ENFORCES WHAT. The operator signs every one of these, but this bridge only consumes two
-// (see processGrantEvent: `cap !== 'admit' && cap !== 'admit+read'`). The task family is enforced
-// on the AGENT side, by the runtime's own invocation policy. A surface that let you sign a grant
+// ── What the subject of each capability IS. ──────────────────────────────────────────────────
+// A surface that asks "who may do this, and to what?" has to know whether the second field is a
+// channel or an agent before it can label the field, and getting that wrong is the same class of
+// error as getting the direction wrong.
+export const CAP_SUBJECT = {
+  'admit': 'channel',
+  'admit+read': 'channel',
+  'task': 'agent',
+  'task+act': 'agent',
+  'task-relay': 'agent',
+  'mirror': 'channel',
+}
+export const capSubject = (c) => CAP_SUBJECT[c] || 'unknown'
+
+// ── WHO ENFORCES WHAT. ───────────────────────────────────────────────────────────────────────
+// The operator signs every one of these, but this bridge only consumes two (see
+// processGrantEvent: `cap !== 'admit' && cap !== 'admit+read'`). The task family is enforced on
+// the AGENT side, by the runtime's own invocation policy. A surface that let you sign a grant
 // without saying who checks it would be recording intent and implying enforcement — the same
 // defect as a routing board rendering a lane nothing delivers to.
 export const CAP_ENFORCER = {
@@ -43,6 +119,35 @@ export const CAP_ENFORCER = {
 // Unknown caps get the cautious answer, not a confident one. Claiming "this bridge" for something
 // unrecognised would tell an owner their bridge is checking a thing it has never heard of.
 export const capEnforcer = (c) => CAP_ENFORCER[c] || 'an unknown consumer'
+
+// ── The two planes, named for a human. ───────────────────────────────────────────────────────
+// "admit" and "task" are protocol words that sound like they belong to the same system and do
+// not. One decides who is allowed in and is enforced HERE; the other decides who may give an
+// agent orders and is enforced on the far side, by software this bridge does not run. An owner
+// who does not hold those apart cannot reason about either. Surfaces group by this.
+export const PLANE = {
+  'admit': 'door',
+  'admit+read': 'door',
+  'task': 'orders',
+  'task+act': 'orders',
+  'task-relay': 'orders',
+  'mirror': 'door',
+}
+export const PLANE_COPY = {
+  door: {
+    title: 'The door',
+    question: 'Who is allowed in?',
+    enforcedBy: 'this bridge',
+    caution: 'Revoking this stops them posting, on the next grant re-read.',
+  },
+  orders: {
+    title: 'Orders',
+    question: 'Who may tell this agent what to do?',
+    enforcedBy: "the agent's own runtime",
+    caution: 'This bridge does not check it. If that runtime is not reading grants, nothing here is enforced.',
+  },
+}
+export const capPlane = (c) => PLANE[c] || 'unknown'
 
 // The caps a console surface may ISSUE, per subject shape. Two deliberate exclusions:
 //   admit+read — conveying the read cap means putting Concord channel key material in a 30440,

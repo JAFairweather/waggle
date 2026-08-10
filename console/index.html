@@ -176,7 +176,7 @@
 <div id="titlebar" style="max-width:1000px;margin:0 auto;padding:0 20px"></div>
 
 <main>
-  <nav class="console-tabs" aria-label="waggle console"><a class="active" href="/console/">Access</a><a href="/console/following.html">Following</a><a href="/console/agents.html">Agents</a><a href="/console/routing.html">Routing</a><a href="/console/config.html">Config</a><a href="/console/setup.html">Setup</a></nav>
+  <nav class="console-tabs" aria-label="waggle console"><a class="active" href="/console/">Access</a><a href="/console/connect.html">Connect</a><a href="/console/following.html">Following</a><a href="/console/agents.html">Agents</a><a href="/console/routing.html">Routing</a><a href="/console/config.html">Config</a><a href="/console/setup.html">Setup</a></nav>
   <p class="sub" style="margin-top:26px">This page shows everyone who has been given access to your community, and who approved them.
   <b>It checks every approval here, in your browser</b> — nothing is taken on trust from a server.
   It needs no connection to your bridge and no password: an approval is a public, signed record, so
@@ -308,7 +308,8 @@
 import { verifyEvent, nip19 } from 'nostr-tools'
 import { verifyNvoyVisibility } from './nvoy-visibility.mjs'
 import { groupByGrantee, byLiveThenNewest, scopePhrase, givenOn } from './access-list.mjs'
-import { CAP_LABEL, capLabel, CAP_ENFORCER, capEnforcer, ISSUABLE } from './capability-vocabulary.mjs'
+import { CAP_LABEL, capLabel, CAP_ENFORCER, capEnforcer, ISSUABLE, describeGrant } from './capability-vocabulary.mjs'
+import { scopeHash } from './scope-hash.mjs'
 const { decode } = nip19
 
 const $ = (id) => document.getElementById(id)
@@ -324,17 +325,9 @@ const hexToBytes = (h) => Uint8Array.from(h.match(/.{1,2}/g).map(b => parseInt(b
 const bytesToHex = (u) => [...u].map(b => b.toString(16).padStart(2, '0')).join('')
 const enc = new TextEncoder()
 
-// Same construction the issuer and the bridge use. If this drifts, grants stop resolving here
-// while remaining perfectly valid — so it is deliberately written to mirror them literally.
-async function scopeHash(subject, saltHex) {
-  const salt = saltHex ? hexToBytes(saltHex) : new Uint8Array(0)
-  const prefix = enc.encode('waggle/da-scope/v1')
-  const subj = enc.encode(String(subject))
-  const buf = new Uint8Array(prefix.length + 1 + subj.length + salt.length)
-  buf.set(prefix, 0); buf[prefix.length] = 0
-  buf.set(subj, prefix.length + 1); buf.set(salt, prefix.length + 1 + subj.length)
-  return bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', buf)))
-}
+// The construction is shared with the issuer and every other reader — console/scope-hash.mjs.
+// It used to be written out here as well; two hand-written copies of a hash construction fail
+// silently in both directions and produce a hash either way.
 
 const toHex = (v) => {
   const s = String(v || '').trim()
@@ -395,6 +388,18 @@ const profilePicture = (pubkey) => {
     const u = new URL(picture)
     return /^https?:$/.test(u.protocol) ? u.href : null
   } catch { return null }
+}
+// A grant rendered as a sentence with BOTH parties in it. The card used to show `capLabel(cap)`
+// alone — "Take tasks from you" — which named neither party and, for the task family, described
+// the wrong one as the recipient of orders. A reader auditing what is live has no way to check a
+// capability phrase that does not say who is doing what to whom. Both inputs are escaped here,
+// because describeGrant() composes plain text and does no escaping of its own.
+function grantSentence(g) {
+  const grantee = esc(profileName(g.grantee))
+  const subject = g.scopeLabel === 'opaque'
+    ? 'a subject only you can identify'
+    : esc(g.scopeLabel)
+  return describeGrant({ cap: g.cap, grantee, subject })
 }
 function identityCell(pubkey) {
   const name = profileName(pubkey)
@@ -459,7 +464,7 @@ function renderRows() {
         <ul class="grants">${group.grants.map(g => `
           <li class="grantline${g.live ? '' : ' gone'}">
             <div>
-              <div class="grant-what">${g.live ? '' : 'Removed — '}${esc(capLabel(g.cap))}</div>
+              <div class="grant-what">${g.live ? '' : 'Removed — '}${grantSentence(g)}</div>
               <div class="grant-meta">${scopeCell(g)} · checked by ${esc(capEnforcer(g.cap))}
                 · given ${esc(givenOn(g.at))}</div>
             </div>
@@ -751,7 +756,10 @@ function capWhy(cap, grantee, subject, subjRaw, isAgent) {
   if (cap === 'task-relay') {
     return `This authorises ${who} to CARRY signed instructions to the agent ${short(subject)} — as transport, never as the author. It grants no authority to instruct: a carried message is only actionable if its original signer separately holds a task grant. Checked by ${enforcer}, not by this bridge. ${hidden}`
   }
-  return `This grants ${capLabel(cap)} to ${who} over ${short(subject)}. Checked by ${enforcer}. ${hidden}`
+  // Anything without a bespoke paragraph above still gets a sentence naming BOTH parties. The
+  // previous fallback read "This grants «label» to «grantee» over «subject»", which put a
+  // directionless phrase in the middle of a sentence that looked like it had a direction.
+  return `${describeGrant({ cap, grantee: who, subject: short(subject) })}. Checked by ${enforcer}. ${hidden}`
 }
 
 // Offer only the capabilities that are valid for the subject in the box, and disable the
