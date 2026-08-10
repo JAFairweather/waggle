@@ -79,6 +79,36 @@ export const INTENTS = {
 
 export const INTENT_KEYS = Object.keys(INTENTS)
 
+// ── The party slots, in the operator's words ─────────────────────────────────────────────────
+//
+// `owner`, `agent`, `other` and `carrier` are variable names. They are meaningful to the code and
+// meaningless to the person signing, and for a while this module leaked them straight onto the
+// screen — "Missing other — this is required by one of the things you chose." That sentence names
+// no field the operator can see, no choice that caused it, and nothing they can do about it.
+//
+// So the vocabulary lives HERE, next to the slots it names, rather than in the page. A surface
+// that renders a slot renders its `prompt`; a message that mentions a slot uses its `label`. The
+// suite asserts that every slot an intent can require has an entry, which is what stops a new
+// intent from introducing a party no screen can ask for and no message can name.
+export const PARTY = {
+  owner: { label: 'your public key', prompt: 'Your public key', kind: 'key',
+    note: 'The key that signs these approvals.' },
+  agent: { label: "the agent's public key", prompt: 'Its public key', kind: 'key',
+    note: 'The identity being connected.' },
+  channel: { label: 'the channel', prompt: 'Channel', kind: 'channel',
+    note: 'Stored as a salted hash — the id itself never rides publicly.' },
+  other: { label: 'the agent it may instruct', prompt: 'The agent it may instruct', kind: 'key',
+    note: 'A second agent, the one receiving instructions. Not you, and not the agent above.' },
+  carrier: { label: 'the carrier', prompt: 'The carrier', kind: 'key',
+    note: 'Whoever transports the message. Carrying is not authoring — a carried instruction is actionable only if its original signer separately holds a grant.' },
+}
+
+// Slots that no fixed field covers, derived from the intent table rather than hand-listed — the
+// same rule the plane rendering follows. Hand-listing is exactly how `other` and `carrier` came to
+// be required by two intents while no input for either existed anywhere on the page: the planner
+// asked for them, the surface never offered them, and the flow dead-ended with the choice ticked.
+export const EXTRA_PARTIES = [...new Set(Object.values(INTENTS).flatMap(i => i.needs || []))]
+
 // A party is either a 64-hex pubkey or a channel uuid. Names are display only and never reach a
 // grant, because a grant binds to a key — a surface that let a typo'd name through would produce
 // a grant that verifies and admits nobody.
@@ -123,22 +153,31 @@ export function planConnection({ intents: rawIntents = [], parties: rawParties =
   if (!chosen.length) problems.push('Choose at least one thing this agent may do — an agent with no grants is admitted to nothing.')
   for (const key of chosen) if (!INTENTS[key]) problems.push(`"${key}" is not something this surface knows how to grant.`)
 
-  const need = new Set(['owner', 'agent'])
+  // party -> the choice that made it necessary, or null when every approval needs it. Carrying the
+  // reason is what turns "something is missing" into a sentence the operator can act on, because
+  // the fix is always either "fill this in" or "untick that".
+  const need = new Map([['owner', null], ['agent', null]])
   for (const key of chosen) {
     const intent = INTENTS[key]
     if (!intent) continue
-    if (capSubject(intent.cap) === 'channel') need.add('channel')
-    for (const extra of intent.needs || []) need.add(extra)
+    if (capSubject(intent.cap) === 'channel' && !need.has('channel')) need.set('channel', intent.question)
+    for (const extra of intent.needs || []) if (!need.has(extra)) need.set(extra, intent.question)
   }
-  for (const party of need) {
+  for (const [party, because] of need) {
+    const what = PARTY[party]?.label || party
     const value = parties[party]
-    if (!value) { problems.push(`Missing ${party} — this is required by one of the things you chose.`); continue }
+    if (!value) {
+      problems.push(because
+        ? `Missing ${what} — “${because}” needs it. Fill it in, or untick that choice.`
+        : `Missing ${what} — every approval needs it.`)
+      continue
+    }
     const kind = partyKind(value)
-    const wanted = party === 'channel' ? 'channel' : 'key'
+    const wanted = PARTY[party]?.kind || 'key'
     if (kind !== wanted) {
-      problems.push(party === 'channel'
+      problems.push(wanted === 'channel'
         ? 'The channel must be a uuid.'
-        : `The ${party} must be a 64-character public key — paste the hex, or let the page convert an npub1… first. A name is not enough: a grant binds to a key.`)
+        : `${what[0].toUpperCase()}${what.slice(1)} must be a 64-character public key — paste the hex, or let the page convert an npub1… first. A name is not enough: a grant binds to a key.`)
     }
   }
 
