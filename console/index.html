@@ -309,6 +309,7 @@ import { verifyEvent, nip19 } from 'nostr-tools'
 import { verifyNvoyVisibility } from './nvoy-visibility.mjs'
 import { groupByGrantee, byLiveThenNewest, scopePhrase, givenOn } from './access-list.mjs'
 import { CAP_LABEL, capLabel, CAP_ENFORCER, capEnforcer, ISSUABLE, describeGrant } from './capability-vocabulary.mjs'
+import { scopeHash } from './scope-hash.mjs'
 const { decode } = nip19
 
 const $ = (id) => document.getElementById(id)
@@ -324,17 +325,9 @@ const hexToBytes = (h) => Uint8Array.from(h.match(/.{1,2}/g).map(b => parseInt(b
 const bytesToHex = (u) => [...u].map(b => b.toString(16).padStart(2, '0')).join('')
 const enc = new TextEncoder()
 
-// Same construction the issuer and the bridge use. If this drifts, grants stop resolving here
-// while remaining perfectly valid — so it is deliberately written to mirror them literally.
-async function scopeHash(subject, saltHex) {
-  const salt = saltHex ? hexToBytes(saltHex) : new Uint8Array(0)
-  const prefix = enc.encode('waggle/da-scope/v1')
-  const subj = enc.encode(String(subject))
-  const buf = new Uint8Array(prefix.length + 1 + subj.length + salt.length)
-  buf.set(prefix, 0); buf[prefix.length] = 0
-  buf.set(subj, prefix.length + 1); buf.set(salt, prefix.length + 1 + subj.length)
-  return bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', buf)))
-}
+// The construction is shared with the issuer and every other reader — console/scope-hash.mjs.
+// It used to be written out here as well; two hand-written copies of a hash construction fail
+// silently in both directions and produce a hash either way.
 
 const toHex = (v) => {
   const s = String(v || '').trim()

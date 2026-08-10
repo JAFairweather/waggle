@@ -211,6 +211,7 @@
 import { nip19, verifyEvent } from 'nostr-tools'
 import { planConnection, planSummary, INTENTS, INTENT_KEYS } from './connect-plan.mjs'
 import { PLANE_COPY } from './capability-vocabulary.mjs'
+import { scopeHash } from './scope-hash.mjs'
 import { consoleSigner } from './signer-session.mjs'
 import { renderTitlebar } from './vendor/nave-titlebar.mjs'
 
@@ -347,20 +348,8 @@ for (const id of ['agent-name', 'agent-key', 'owner-key', 'channel-id']) {
 }
 
 // ── Signing ──────────────────────────────────────────────────────────────────────────────────
-// scopeHash must match tools/grant.mjs byte for byte or the grant binds to a subject nothing can
-// match: 'waggle/da-scope/v1' || 0x00 || subject || salt, sha256.
-async function scopeHash(subject, saltHex) {
-  const enc = new TextEncoder()
-  const salt = Uint8Array.from(saltHex.match(/../g).map(h => parseInt(h, 16)))
-  const prefix = enc.encode('waggle/da-scope/v1')
-  const subj = enc.encode(subject)
-  const buf = new Uint8Array(prefix.length + 1 + subj.length + salt.length)
-  buf.set(prefix, 0); buf[prefix.length] = 0
-  buf.set(subj, prefix.length + 1); buf.set(salt, prefix.length + 1 + subj.length)
-  const digest = await crypto.subtle.digest('SHA-256', buf)
-  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('')
-}
-
+// scopeHash lives in one place for the whole project — see console/scope-hash.mjs for why a
+// second hand-written copy is a silent-failure cliff rather than a style problem.
 function publish(ev) {
   return Promise.all(RELAYS.map(url => new Promise(res => {
     let ws, done = false
