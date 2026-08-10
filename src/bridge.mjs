@@ -2824,7 +2824,20 @@ async function scanReturnLane(msgs, opts = {}) {
     // bridge-authored state: an outsider cannot nominate an arbitrary event as an agent post.
     const parents = tags.filter(t => t[0] === 'e' && t[1] && t[3] === 'reply').map(t => String(t[1]).toLowerCase())
     const repliesToAgent = parents.some(pid => !!agentAuthoredBy(pid))
-    if (gateActive && !gate.has(from) && !repliesToAgent) { // signer gate — logged once per id, never silent
+    const body = String(m.content || '')
+    // Second narrow exception to the signer gate, and the one that makes the marker work AT ALL on
+    // a real deployment. An admitted agent speaks through the relay lane, so the kind:9 that lands
+    // in the channel is signed by the bridge's Buzz poster key — which is deliberately STRIPPED
+    // from scan_authors (:509). Without this, every agent-authored post is dropped here, before
+    // the marker is ever looked at: observed live on 2026-08-10 as a three-day run of
+    // `RETURN drop[author]: … signer 84753207… not in scan_authors`.
+    //
+    // Same safety argument as the reply exception directly above, and deliberately NOT `|| from`:
+    // it keys on the per-event registry, which is bridge-authored state an outsider cannot
+    // nominate himself into, and it additionally requires a LIVE grant. A stranger's mirrored note
+    // resolves to no agent, so `grantSet.has('')` fails closed. Typing the marker earns nothing.
+    const markedByGrantedAgent = BROADCAST_MARKER.test(body) && grantSet.has(agentAuthoredBy(m.id) || '')
+    if (gateActive && !gate.has(from) && !repliesToAgent && !markedByGrantedAgent) { // signer gate — logged once per id, never silent
       if (rlDropOnce(m.id)) err(`RETURN drop[author]: ${String(m.id).slice(0, 12)}… signer ${from.slice(0, 12)}… not in scan_authors`)
       continue
     }
@@ -2835,7 +2848,6 @@ async function scanReturnLane(msgs, opts = {}) {
       if (rlDropOnce(m.id)) err(`RETURN drop[source]: ${String(m.id).slice(0, 12)}… is not a valid signed kind:9 event (${sourceWireRejectReason(m)})`)
       continue
     }
-    const body = String(m.content || '')
     const ptags = tags.filter(t => t[0] === 'p' && t[1]).map(t => String(t[1]).toLowerCase())
     // Who is speaking, as an ADDRESSABLE identity. For a relayed agent post the Buzz signer is the
     // shared bridge key — `from` would attribute every agent's words to waggle — so the per-event

@@ -235,6 +235,74 @@ ok('the roster is sorted (stable across scans, not relay arrival order)',
   PUB.returnLane.pop()
 }
 
+// --- PRODUCTION SHAPE: the gate that strips the bridge's own signer -----------------------------
+// Every check above passed while `sharedSigner` sat inside scan_authors, and that is not what the
+// box looks like: PUB.scanAuthors deliberately STRIPS the bridge's Buzz poster key, and an admitted
+// agent speaks through the relay lane, so the kind:9 in the channel is signed by exactly that
+// stripped key. Observed live on 2026-08-10 — three days of
+// `RETURN drop[author]: … signer 84753207… not in scan_authors`, dropping every agent-authored post
+// before the marker was ever read. A fixture that puts the bridge signer in the gate cannot see it.
+{
+  const PROD_GATE = [crew]   // the bridge signer is NOT in here, exactly as on the box
+  // A broadcaster who has not spent their per-minute cap in an earlier block. Using `oliver` here
+  // failed on the rate limiter, not the gate — an accumulated-state coupling that would have read
+  // as "the gate still drops it" and sent the next reader hunting in the wrong place.
+  const wire = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 3700, tags: [],
+    content: 'anyone out there? #wagglebroadcast' }, sharedSignerSk)))
+  recordPosted({ id: 'orig-b9', author: bumble, buzz: wire.id, dest: 'chan', q: false, ts: 0, agent: bumble })
+  const { rows } = await scanDelta([wire], { authors: PROD_GATE, channel: 'chan' })
+  ok('a granted agent\'s relay-lane broadcast crosses the signer gate that strips the bridge key',
+    rows.length === 2 && rows.every(r => r.why === 'broadcast'))
+
+  // NEGATIVE CONTROL, and the one that keeps the exception narrow: the SAME bridge-signed shape,
+  // the same marker, but the registry resolves to a key holding no grant. A stranger's mirrored
+  // note is exactly this: recorded with no agent at all, so it must not buy a fan-out.
+  const stranger = getPublicKey(generateSecretKey())
+  const wire2 = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 3800, tags: [],
+    content: 'let me in #wagglebroadcast' }, sharedSignerSk)))
+  recordPosted({ id: 'orig-b10', author: stranger, buzz: wire2.id, dest: 'chan', q: false, ts: 0, agent: stranger })
+  const second = await scanDelta([wire2], { authors: PROD_GATE, channel: 'chan' })
+  ok('an UNGRANTED agent-attributed post does not buy its way past the signer gate with the marker',
+    second.rows.length === 0)
+  ok('and it is refused at the signer gate by name', /drop\[author\]/.test(second.log))
+
+  // NEGATIVE CONTROL: no marker, same stripped gate. The exception must be the marker's doing, not
+  // a hole that swallowed the gate.
+  const wire3 = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 3900, tags: [['p', mcclaude]],
+    content: 'a plain post naming mcclaude with no marker' }, sharedSignerSk)))
+  recordPosted({ id: 'orig-b11', author: bumble, buzz: wire3.id, dest: 'chan', q: false, ts: 0, agent: bumble })
+  const third = await scanDelta([wire3], { authors: PROD_GATE, channel: 'chan' })
+  ok('a bridge-signed post WITHOUT the marker is still gated out — the exception is marker-scoped',
+    third.rows.length === 0)
+}
+
+// --- the rate cap, asserted rather than stumbled into --------------------------------------------
+// It was found by a fixture failing on it, which means nothing pinned it. A fan-out primitive whose
+// cap nobody asserts is a cap that can be removed without a single suite noticing.
+{
+  const nova = getPublicKey(generateSecretKey())
+  grantOf(nova, 4)
+  let lastLog = '', delivered = 0
+  for (let i = 0; i < 7; i++) {
+    const w = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 4000 + i, tags: [],
+      content: `flood ${i} #wagglebroadcast` }, sharedSignerSk)))
+    recordPosted({ id: `orig-flood-${i}`, author: nova, buzz: w.id, dest: 'chan', q: false, ts: 0, agent: nova })
+    const r = await scanDelta([w], { authors: [crew], channel: 'chan' })
+    if (r.rows.length) delivered++
+    lastLog = r.log
+  }
+  ok('a broadcaster is capped before all seven land', delivered < 7)
+  ok('the cap SAYS what it dropped, and names the broadcaster', /BROADCAST drop\[rate\]/.test(lastLog))
+  // CONTROL, in the other direction: the broadcast cap has its own counters and must not have
+  // starved the lane it sits beside. A spent broadcaster can still be mentioned.
+  const w = JSON.parse(JSON.stringify(finalizeEvent({ kind: 9, created_at: 4100, tags: [['p', nova]],
+    content: 'naming nova directly, no marker' }, crewSk)))
+  const r = await scanDelta([w], { authors: [crew], channel: 'chan' })
+  ok('CONTROL — a direct mention still reaches a broadcaster who has spent their broadcast cap',
+    r.rows.length === 1 && r.rows[0].why === 'mention')
+  grantSet.delete(nova)
+}
+
 // --- the rendered body: what a recipient actually reads ------------------------------------------
 {
   const body = buildBody('return_carry', { mention: 'guest', why: 'broadcast',
