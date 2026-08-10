@@ -16,7 +16,7 @@
 //   node tests/capability_vocabulary.mjs
 
 import { CAP_LABEL, capLabel, CAP_ENFORCER, capEnforcer, ISSUABLE, BRIDGE_ENFORCED, isBridgeEnforced,
-  CAP_SENTENCE, describeGrant, CAP_SUBJECT, capSubject, PLANE, PLANE_COPY, capPlane }
+  CAP_SENTENCE, describeGrant, CAP_SUBJECT, PLANE, PLANE_COPY }
   from '../console/capability-vocabulary.mjs'
 
 let pass = true
