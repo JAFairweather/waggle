@@ -258,6 +258,15 @@
         </div>
         <div class="status" id="mint-relayst"></div>
       </div>
+      <!-- The name. Only this key can publish its own profile — the relay rejects any event whose
+           pubkey is not the authenticated one — so this must happen while the key is still here. -->
+      <div id="mint-name" style="display:none;margin-top:18px;padding-top:16px;border-top:1px solid var(--line)">
+        <label for="mint-name-input">Name <span class="hint">what people will type to reach this agent</span></label>
+        <input id="mint-name-input" placeholder="Oliver" spellcheck="false" maxlength="64">
+        <button class="btn" id="mint-name-go" style="margin-top:8px">Give it this name</button>
+        <div class="hint" style="margin-top:8px">Only this key can publish its own name — not waggle, and not you. So it happens here, before you save the key.</div>
+        <div class="status" id="mint-namest"></div>
+      </div>
       <div id="mint-secret-row" style="margin-top:16px">
         <button class="btn" id="mint-save">Save the private half</button>
         <span class="hint" id="mint-secret-note">Downloads one file, <code>agent.nsec</code>. Never paste it into a chat, an issue, or a log.</span>
@@ -357,6 +366,8 @@ import { CAP_LABEL, capLabel, CAP_ENFORCER, capEnforcer, ISSUABLE, describeGrant
 import { scopeHash } from './scope-hash.mjs'
 import { mintAgentKey, keyFileContents, keyFileName } from './mint-agent-key.mjs'
 import { letOntoRelay } from './relay-invite.mjs'
+import { publishProfile } from './publish-profile.mjs'
+import { SimplePool } from 'nostr-tools/pool'
 const { decode } = nip19
 
 const $ = (id) => document.getElementById(id)
@@ -784,6 +795,9 @@ $('mint-go').addEventListener('click', () => {
     $('mint-onto-relay').disabled = false
     $('mint-onto-relay').textContent = 'Let them onto the relay'
     $('mint-relayst').className = 'status'; $('mint-relayst').textContent = ''
+    $('mint-name').style.display = 'none'
+    $('mint-name-input').value = ''
+    $('mint-namest').className = 'status'; $('mint-namest').textContent = ''
     $('mint-secret-note').textContent = 'Downloads one file, agent.nsec. Never paste it into a chat, an issue, or a log.'
     $('mint-out').style.display = ''
     st.className = 'status'
@@ -883,12 +897,63 @@ $('mint-onto-relay').addEventListener('click', async () => {
       // that key being able to sign in. That is only shown by its own profile landing.
       st.textContent += ' (Not yet proved it can sign in — that shows when its name resolves in the community.)'
       btn.textContent = 'Done'
+      $('mint-name').style.display = ''
     } else {
       st.className = 'status err'
       // Always name the step and the outcome, even when the sentence reads perfectly well without
       // them. A screenshot of this line is how a failure gets reported, and a bare `join_policy_
       // required` with no step cost a round trip working out which of three calls had produced it.
       st.textContent = `${res.detail || 'Refused.'} [${res.step}: ${res.outcome}${res.status ? ` ${res.status}` : ''}]`
+      btn.disabled = false
+    }
+  } catch (e) {
+    st.className = 'status err'; st.textContent = e.message; btn.disabled = false
+  }
+})
+
+// A pool per call, deliberately. The read-back is worthless if it can be answered out of the same
+// connection that did the writing — a relay that accepted and dropped would still hand it back.
+const freshPool = () => {
+  const pool = new SimplePool()
+  return {
+    publish: (urls, ev, opts) => Promise.all(pool.publish(urls, ev, opts)),
+    get: (urls, filter, opts) => pool.get(urls, filter, opts),
+    close: (urls) => { try { pool.close(urls) } catch { /* closing a dead socket is not a failure */ } },
+  }
+}
+
+$('mint-name-go').addEventListener('click', async () => {
+  const st = $('mint-namest')
+  const btn = $('mint-name-go')
+  const relayUrl = $('mint-relay-url').value.trim()
+  if (!minted) { st.className = 'status err'; st.textContent = 'Make a key first.'; return }
+  if (minted.secret.taken()) {
+    st.className = 'status err'
+    st.textContent = 'That key has already been saved and cleared from this page, so it can no longer publish its own name. Make a new one and name it before saving.'
+    return
+  }
+  btn.disabled = true
+  st.className = 'status'; st.textContent = 'Signing in to the community relay as this key, and publishing its name…'
+  try {
+    const res = await publishProfile({
+      relayUrl,
+      name: $('mint-name-input').value,
+      pubkeyHex: minted.display.pubkeyHex,
+      openPool: freshPool,
+      nowSec: Math.floor(Date.now() / 1000),
+      // One signer for both the profile and the relay AUTH, because they must be the same key —
+      // the relay drops any event whose author is not the identity that authenticated.
+      sign: (t) => minted.secret.sign(t, { decode: nip19.decode, finalize: finalizeEvent }),
+    })
+    if (res.ok) {
+      st.className = 'status ok'
+      // This one IS proof, and it is the only line in this panel that gets to say so: written, then
+      // read back cold from a new connection and matched by id.
+      st.textContent = `Named “${res.name}” — published and read back cold from the relay. Save the key below.`
+      btn.disabled = true; btn.textContent = 'Named'
+    } else {
+      st.className = 'status err'
+      st.textContent = `${res.detail || 'Refused.'} [${res.step}: ${res.outcome}]`
       btn.disabled = false
     }
   } catch (e) {
