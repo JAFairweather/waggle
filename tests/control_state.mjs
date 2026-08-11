@@ -32,6 +32,8 @@ process.env.POSTED_MAP_PATH = join(tmp, 'posted.log')
 process.env.MIRRORASKED_PATH = join(tmp, 'asked.log')
 process.env.SEND_JOURNAL_PATH = SEND_JOURNAL
 process.env.RELAYSEEN_PATH = join(tmp, 'relay-lane-seen.log')
+const AGENT_ROWS = join(tmp, 'agent-rows.json')
+process.env.AGENTROWS_PATH = AGENT_ROWS
 writeFileSync(CFG, JSON.stringify({
   relays: [], recipients: [],
   public: {
@@ -94,10 +96,63 @@ t('state has the fixed address and no secret/config fields',
   !/config|secret|private_key|inbox_uuid/i.test(signed.content))
 const body = JSON.parse(signed.content)
 t('state contains only the declared owner-visible fields',
-  Object.keys(body).sort().join(',') === 'bridge,follows,hive,observed_at,operations,publishing,v' &&
+  Object.keys(body).sort().join(',') === 'agents,bridge,follows,hive,observed_at,operations,publishing,v' &&
   Object.keys(body.follows[0]).sort().join(',') === 'consent,pubkey' &&
   Object.keys(body.operations).sort().join(',') === 'drops,gates,lanes,trust' &&
   Object.keys(body.operations.drops).sort().join(',') === 'relay_not_relay,relay_preauth')
+
+// ---- agents must survive to the SIGNED artifact, not merely to buildControlState ------------------
+// This is the assertion whose absence let the console screen ship dead. `buildControlState` added an
+// `agents` field, but `signControlState` validates through a CLOSED schema that REBUILDS the object
+// from an exact field list — so the field was stripped on every publish, and the console's
+// `agents === undefined → []` tolerance rendered "no agents admitted" forever, indistinguishable
+// from working. Asserting on buildControlState's return value would still pass today. Only the
+// signed content proves it.
+const AGENT_A = 'a1'.repeat(32), AGENT_B = 'b2'.repeat(32)
+writeFileSync(AGENT_ROWS, JSON.stringify({
+  [AGENT_B]: { agent: AGENT_B, status: 'revoked', label: 'retired probe', return_lane: false },
+  [AGENT_A]: { agent: AGENT_A, status: 'admitted', label: 'Dennis', return_lane: true },
+}))
+const withAgents = wire(await signControlState(buildControlState()))
+const agentBody = JSON.parse(withAgents.content)
+t('agents SURVIVE the closed egress schema into the signed content',
+  Array.isArray(agentBody.agents) && agentBody.agents.length === 2)
+t('and each agent carries exactly the four declared public-safe fields',
+  agentBody.agents.every(a => Object.keys(a).sort().join(',') === 'label,pubkey,return_lane,status'))
+t('and they are sorted by pubkey, so a re-publish is not a spurious diff',
+  agentBody.agents[0].pubkey < agentBody.agents[1].pubkey)
+t('and the values are the real ones, not defaults',
+  agentBody.agents.find(a => a.pubkey === AGENT_A)?.status === 'admitted' &&
+  agentBody.agents.find(a => a.pubkey === AGENT_A)?.return_lane === true &&
+  agentBody.agents.find(a => a.pubkey === AGENT_B)?.status === 'revoked')
+
+// The schema sits beside the key, so it must refuse independently of the projection upstream.
+const okRow = { pubkey: AGENT_A, status: 'admitted', label: 'Dennis', return_lane: true }
+const refusesAgent = async (agents, label) => {
+  let refused = false
+  try { await signControlState({ ...buildControlState(), agents }) } catch { refused = true }
+  t(label, refused)
+}
+await refusesAgent([{ ...okRow, status: 'deputised' }], 'the schema refuses a status outside the closed set')
+await refusesAgent([{ ...okRow, return_lane: 'yes' }], 'the schema refuses a non-boolean return_lane')
+await refusesAgent([{ ...okRow, pubkey: 'not-a-key' }], 'the schema refuses a malformed agent pubkey')
+await refusesAgent([{ ...okRow, note: 'invented field' }], 'the schema refuses an agent carrying an undeclared field')
+await refusesAgent([okRow, { ...okRow }], 'the schema refuses duplicate agents')
+// A bech32 nsec is 63 printable ASCII characters and passes the label shape check cleanly. An owner
+// mis-pasting into the label field would otherwise publish it in a signed, world-readable record.
+await refusesAgent([{ ...okRow, label: 'nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq' }],
+  'the schema refuses a label that looks like an nsec — a credential must not reach a signed public artifact')
+await refusesAgent([{ ...okRow, label: 'bunker://deadbeef' }], 'and refuses a label that looks like a Bunker URI')
+// PAIR: after all of those refusals, an ordinary label still gets through — the guard refuses
+// credentials, not labels. Note the space and parentheses: fixtures resembling production is the
+// lesson from the slot-validator outage, where every test name was 'A', 'B' or 'Dennis'.
+let ordinaryLabel = false
+try {
+  const ok = wire(await signControlState({ ...buildControlState(), agents: [{ ...okRow, label: 'My Dude (reviewer)' }] }))
+  ordinaryLabel = JSON.parse(ok.content).agents[0].label === 'My Dude (reviewer)'
+} catch { ordinaryLabel = false }
+t('PAIR: an ordinary label with a space and punctuation still reaches the signed artifact', ordinaryLabel)
+unlinkSync(AGENT_ROWS)
 
 let publishedControlId = ''
 const acceptedControl = await publishControlState(async (event) => { publishedControlId = event.id; return 1 }, true)

@@ -111,7 +111,9 @@ node tools/waggle-init.mjs
 npm test
 ```
 
-`waggle-init --check` reports readiness without changing anything. The full guided walkthrough is in **[Getting started](docs/GETTING_STARTED.md)**.
+`waggle-init --check` reports readiness without changing anything. Each hive receives a stable,
+non-secret installation state that is the shared contract for CLI and Console Setup; `--receipt` exports its
+evidence without credentials. The full guided walkthrough is in **[Getting started](docs/GETTING_STARTED.md)**.
 
 The setup intentionally never asks an agent to supply its own key, and never accepts a secret as a command argument.
 
@@ -119,9 +121,9 @@ The setup intentionally never asks an agent to supply its own key, and never acc
 
 ## Tests
 
-`npm test` runs 54 suites against real exported functions with synthetic events—no production state and no network sockets. The suite is designed to prove what the bridge refuses as carefully as what it delivers:
+`npm test` runs 72 suites against real exported functions with synthetic events—no production state and no network sockets. The suite is designed to prove what the bridge refuses as carefully as what it delivers:
 
-boot · suite roster · off-box policy protocol · standing trusted-reply policy · sealed direct-envelope policy · receipt-bound withdrawal policy · policy receipt verification · derive-only shadow client · shadow-mode gate · policy journal · policy-owned Buzz artifacts · off-box policy service · policy request queue · remote-only policy gate · forced-command policy runner · policy-host deployment · Nostr remote signer · read resilience · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant admission · admission return-lane lifecycle · message rendering · deployed-build verification · routing-policy snapshot · latency trace · return lane · return-lane scan · typed channel task carry · return-lane no-miss · return-lane pending · relay ingress · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · recipient DM relays · DM relay-list publisher · watchlist hot-reload · signed owner control state · signed trust tiers · trust-gradient lane vocabulary · capability issue paths
+boot · install state · config example coverage · suite roster · off-box policy protocol · standing trusted-reply policy · policy receipt verification · derive-only shadow client · shadow-mode gate · sealed direct-envelope policy · receipt-bound withdrawal policy · policy journal · policy-owned Buzz artifacts · off-box policy service · policy request queue · remote-only policy gate · forced-command policy runner · policy-host deployment · Nostr remote signer · read resilience · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant admission · admission return-lane lifecycle · message rendering · deployed-build verification · routing-policy snapshot · latency trace · return lane · return-lane scan · typed channel task carry · return-lane no-miss · return-lane pending · relay ingress · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · recipient DM relays · DM relay-list publisher · watchlist hot-reload · signed owner control state · signed trust tiers · trust-gradient lane vocabulary · agent lifecycle catalogue · agent lifecycle lane · capability issue paths · agent challenge gate · host bootstrap · host facts · console importmap coverage · console access list · capability vocabulary · challenge registry · join request · join approval · mint identity · connect plan · agent install state · scope hash · console vocabulary
 
 ---
 

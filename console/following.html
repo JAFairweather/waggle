@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>waggle — following</title>
 <meta name="description" content="Verified, read-only view of a Waggle hive's followed public feeds and their consent state.">
-<script type="importmap">{ "imports": { "nostr-tools": "./vendor/nostr-tools.mjs" } }</script>
+<script type="importmap">{ "imports": { "nostr-tools": "./vendor/nostr-tools.mjs", "nostr-tools/pool": "./vendor/nostr-tools-pool.mjs", "nostr-tools/nip46": "./vendor/nostr-tools-nip46.mjs" } }</script>
 <style>
   :root{--ground:#0b0906;--panel:#14100a;--line:#2a2317;--text:#f4efe4;--dim:#9c927f;--faint:#6f6555;--gold:#e2c079;--accent:#cf8a2e;--good:#8fae6a;--warn:#d9a648;--critical:#c0705a;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,monospace;--display:"Iowan Old Style",Palatino,Georgia,serif}
   @media (prefers-color-scheme:light){:root{--ground:#f5f0e4;--panel:#fffdf7;--line:#ddd2ba;--text:#241d12;--dim:#6f6553;--faint:#8a7f66;--gold:#8a5a14;--accent:#8a5a14;--good:#4f7a34;--warn:#9a6a12;--critical:#a2482f}}
@@ -13,7 +13,7 @@
 </style>
 </head>
 <body><main>
-  <nav class="console-tabs" aria-label="Waggle console"><a href="/console/">Access</a><a class="active" href="/console/following.html">Following</a><a href="/console/routing.html">Routing</a><a href="/console/config.html">Config</a><a href="/console/setup.html">Setup</a></nav>
+  <nav class="console-tabs" aria-label="waggle console"><a href="/console/">Access</a><a href="/console/connect.html">Connect</a><a class="active" href="/console/following.html">Following</a><a href="/console/agents.html">Agents</a><a href="/console/routing.html">Routing</a><a href="/console/config.html">Config</a><a href="/console/setup.html">Setup</a></nav>
   <h1>Following</h1>
   <p class="sub">A verified view of the public writers this hive follows. The bridge signs this state; this page verifies it in your browser, then reads each writer’s public profile. It has no bridge-host access.</p>
   <section class="panel"><h2>Find a hive</h2><label for="bridge">Bridge public key</label><input id="bridge" placeholder="npub1… or 64-character hex bridge key" spellcheck="false"><button id="load">Show following</button><div class="status" id="status"></div></section>

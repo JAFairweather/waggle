@@ -50,6 +50,7 @@ import { LANE_IDS, LANES, RELEASED } from './lanes.mjs'   // the trust gradient'
 import { log, err } from './log.mjs'
 import { markLatency } from './latency.mjs'
 import { durableSet, durableQueue } from './stores.mjs'
+import { parseLifecycleCommand, lifecycleAdmissible, lifecycleReceipt, LIFECYCLE_COMMAND_D, AGENT_STATUSES, CREDENTIAL_SHAPED } from './agent_lifecycle.mjs'   // #309
 import { fanout } from './fanout.mjs'
 import { recipientDmRelays } from './dm_relays.mjs'
 import { quarantineSlotsFromSource } from './buzz_policy_core.mjs'
@@ -451,6 +452,9 @@ const PUB = cfg.public ? {
   controlStateRefreshSecs: Number(cfg.public.control_state_refresh_secs != null ? cfg.public.control_state_refresh_secs : 300),
   controlStateCommandAt: Number(cfg.public.control_state_command_at || 0),
   watchlistCommandAt: Number(cfg.public.watchlist_command_at || 0),
+  lifecycleCommandAt: Number(cfg.public.lifecycle_command_at || 0),
+  lifecycleCommandIds: (cfg.public.lifecycle_command_ids || []).map(String)
+    .filter(id => /^[0-9a-f]{64}$/i.test(id)).map(id => id.toLowerCase()),
   moderationCommandAt: Number(cfg.public.moderation_command_at || 0),
   moderationCommandIds: (cfg.public.moderation_command_ids || []).map(String)
     .filter(id => /^[0-9a-f]{64}$/i.test(id)).map(id => id.toLowerCase()),
@@ -1063,15 +1067,25 @@ function route(ev) {
   if (BRIDGE_PK && PUB && ps.includes(BRIDGE_PK) && (PUB.relayChannels.length || PUB.approvers.length)) return dispatchBridgeWrap(ev)
   const hits = ps.filter(p => TARGETS.includes(p))
   if (!hits.length) return // not for us; do NOT record — keep the dedup store to real deliveries
+  // A NIP-17 direct gift wrap names exactly one recipient. Refuse the complete signed wrap when
+  // it names any additional key — even if only one p-tag happens to match our roster. Letting the
+  // bridge count roster hits while the policy host counts all p-tags creates permanent remote
+  // debt: the bridge queues it, the host correctly refuses it, and every retry repeats forever.
+  // This is malformed terminal input, not transient delivery work, so commit the drop in live mode.
+  if (ps.length !== 1) {
+    err(`SEALED drop[recipient-count]: kind1059 ${ev.id.slice(0, 12)}… carries ${ps.length} p-tags (expected exactly one)`)
+    if (FORWARD_MODE === 'buzz') markSeen(ev.id)
+    return
+  }
   // A direct gift wrap has one signed recipient. It is the first sealed operation safe to move to
   // the off-box writer: the policy host independently resolves that p-tag through its own roster.
   // Channel-plane wraps never reach this branch (they route by author above), so a decoy p-tag
   // cannot be mistaken for a direct recipient.
-  if (hits.length === 1 && PUB.policyWriter.mode === 'remote-only' && PUB.policyWriter.operations.includes('sealed_direct_envelope') && FORWARD_MODE === 'buzz') {
+  if (hits.length === 1 && PUB && PUB.policyWriter.mode === 'remote-only' && PUB.policyWriter.operations.includes('sealed_direct_envelope') && FORWARD_MODE === 'buzz') {
     remotePolicyGateSealed(ev)
     return
   }
-  if (hits.length === 1 && PUB.policyShadow.mode !== 'off' && PUB.policyShadow.operations.includes('sealed_direct_envelope')) {
+  if (hits.length === 1 && PUB && PUB.policyShadow.mode !== 'off' && PUB.policyShadow.operations.includes('sealed_direct_envelope')) {
     shadowGateSealedDirect(ev, hits)
     return
   }
@@ -1535,7 +1549,11 @@ async function forwardPublic(ev, why, dest, quarantine) {
       dest,
       slots: quarantineSlotsFromSource(ev, { approverMention: PUB.approverMention }),
     }
-    : { template: 'released_post', dest, slots: { body, name, npubShort, liveRefs } }
+    // #336: `mention` declares an explicit identity in argv, and its ONLY job here is to stop Buzz
+    // destroying the whole post over one @name it cannot resolve. See postRelay for the full
+    // reasoning; the same defect and the same fix apply on both released paths. Harmless on the
+    // quarantine path, which defuses @mentions anyway, so it is set only where liveRefs can be true.
+    : { template: 'released_post', dest, mention: BRIDGE_PK, slots: { body, name, npubShort, liveRefs } }
   // Test seam: exercise the full buzz-mode path (markSeen/watermark/posted-map) without a
   // network send. The synthetic buzz id (orig id reversed — still 64 hex, still unique)
   // exercises the same capture shape the live path records.
@@ -2194,6 +2212,23 @@ function buildControlState() {
           : mirrorAsked.has(pubkey) ? 'asked'
             : 'pending',
     })),
+    // Per-agent lifecycle rows (#309). Public-safe by construction: a public key, a status from a
+    // closed set, an owner-chosen label and one boolean. This projection RE-DERIVES each field
+    // rather than spreading the row — a spread would carry whatever a future writer added to the
+    // rows file straight into a signed, public, already-published artifact with nobody deciding to
+    // publish it.
+    agents: Object.values(loadAgentRows())
+      .filter(row => projectableAgentRow(row))
+      .map(row => ({
+        pubkey: String(row.agent).toLowerCase(),
+        status: row.status,
+        // Owner-supplied text on its way to a browser. It is shape-checked on the way in too; it is
+        // re-checked here because this artifact is signed and public, and the two checks fail
+        // independently — one of them being right is not the same as both being right.
+        label: projectableLabel(row),
+        return_lane: row.return_lane === true,
+      }))
+      .sort((a, b) => a.pubkey.localeCompare(b.pubkey)),   // stable order, so a re-publish is not a spurious diff
     // Owner-observable, public-safe operations summary (#67). These are bounded policy facts and
     // aggregate counters only: no channel UUIDs, host paths, relay URLs, credentials, or payloads.
     operations: {
@@ -2324,6 +2359,186 @@ function handleWatchlistControlCommand(ev) {
   if (!result.ok) return result
   log(`watchlist: ${body.action} accepted from approver ${author.slice(0, 12)}… (${ev.id.slice(0, 12)}…)`)
   return { ok: true, action: body.action, target, ...result }
+}
+
+// --- agent lifecycle (#309) -----------------------------------------------------------------------
+// The lifecycle plane needs no new transport: it is this same approver-signed control-command lane.
+// This handler owns ONLY the envelope — roster, signature, exact addressing, freshness, watermark,
+// identical to its three siblings above. Every lifecycle decision (which operations exist, what each
+// one may do, and whether it may be applied to the row it names) lives in `agent_lifecycle.mjs`,
+// which is pure and carries its own suite. Policy in here would be policy nobody can test in isolation.
+//
+// It is deliberately NOT the off-box policy service. That lane's property is "evidence, not
+// instructions"; here the owner's intent IS the instruction, and the approver signature is the gate.
+const AGENTROWS_PATH = process.env.AGENTROWS_PATH || resolve(ROOT, 'data', 'agent-rows.json')
+// ABSENT and UNREADABLE are different facts and only one of them means "no agents". A file behind a
+// permission error, or one torn by a crash mid-write, read as `{}` here — and the very next accepted
+// command had `saveAgentRows` rename a single-row object over the top, erasing every other agent's
+// row including revoked markers. That is exactly the "routing for something the owner can no longer
+// see" that agent_forget's ordering rule exists to prevent, arrived at through a different door. So
+// only ENOENT is empty; anything else throws and the caller refuses to persist a mutation.
+function loadAgentRows() {
+  let text
+  try { text = readFileSync(AGENTROWS_PATH, 'utf8') }
+  catch (e) {
+    if (e && e.code === 'ENOENT') return {}
+    throw new Error(`agent rows are unreadable (${e && e.code ? e.code : e.message})`)
+  }
+  let rows
+  try { rows = JSON.parse(text) }
+  catch (e) { throw new Error(`agent rows are not valid JSON (${e.message})`) }
+  if (!rows || typeof rows !== 'object' || Array.isArray(rows)) throw new Error('agent rows are not an object')
+  return rows
+}
+function saveAgentRows(rows) {
+  try {
+    mkdirSync(dirname(AGENTROWS_PATH), { recursive: true })
+    const tmp = `${AGENTROWS_PATH}.tmp`
+    writeFileSync(tmp, JSON.stringify(rows, null, 2))
+    renameSync(tmp, AGENTROWS_PATH)   // atomic: a torn rows file would lose the record of who is admitted
+    return true
+  } catch (e) { err(`lifecycle: could not persist agent rows: ${e.message}`); return false }
+}
+
+// The one place an operation becomes a row change. Kept as a table rather than a switch inside the
+// handler so the set of reachable statuses is visible at a glance.
+function applyLifecycle(rows, command, at) {
+  const next = { ...rows }
+  const prior = next[command.agent] || null
+  const row = { agent: command.agent, label: prior?.label || null, return_lane: prior?.return_lane || false,
+    status: prior?.status || 'unknown', updated_at: at }
+  switch (command.op) {
+    case 'agent_admit': row.status = 'admitted'; break
+    case 'agent_revoke': row.status = 'revoked'; break
+    case 'agent_pause': row.status = 'paused'; break
+    case 'agent_resume': row.status = 'admitted'; break
+    case 'agent_rename': row.label = command.label; break
+    case 'agent_return_lane': row.return_lane = command.enabled; break
+    case 'agent_forget': delete next[command.agent]; return next
+  }
+  next[command.agent] = row
+  return next
+}
+
+// A row the projection will not publish. Kerouac's #316 read: the browser rejects the WHOLE state on
+// an unrecognised status, while this side quietly filtered the row — asymmetric, and a filtered row
+// vanishes from what the console itself calls the owner's only view of what the bridge routes for.
+// So dropping one is now loud. Logged once per distinct row, because buildControlState runs on every
+// refresh and an alarm that repeats every tick is one an operator learns to scroll past.
+const agentRowDropLogged = new Set()
+function projectableAgentRow(row) {
+  const key = String(row?.agent || '<no agent>')
+  const badKey = !/^[0-9a-f]{64}$/.test(key)
+  const badStatus = !AGENT_STATUSES.includes(row?.status)
+  if (!badKey && !badStatus) { agentRowDropLogged.delete(key); return true }
+  if (!agentRowDropLogged.has(key)) {
+    agentRowDropLogged.add(key)
+    err(`lifecycle: agent row ${key.slice(0, 16)}… withheld from the published state — ` +
+      `${badKey ? 'unusable pubkey' : `status ${JSON.stringify(row?.status)} is outside the closed catalogue`}. ` +
+      'It is NOT visible in the console; the bridge may still hold it.')
+  }
+  return false
+}
+
+// A label that reaches the projection but looks like a credential is DROPPED to null here rather
+// than passed on for the egress schema to reject. The difference is the blast radius: signControlState
+// throws on a credential-shaped label, publishControlState logs and returns 0, and the ENTIRE control
+// state — follows, consent, operations — stops publishing. Fifteen minutes later the console calls
+// the state stale and disables the very rename control the owner would use to fix it. One poisoned
+// label must not be able to ossify the whole artifact and lock the owner out of the repair.
+//
+// The parser and the console both refuse these on the way in, so reaching here means a hand-signed
+// command or a row written before those gates existed. Egress stays the hard backstop; this is the
+// containment. Logged loudly and once, like projectableAgentRow, because a silently blanked label
+// is a console lying about what the bridge holds.
+const labelDropLogged = new Set()
+function projectableLabel(row) {
+  const label = row?.label
+  if (typeof label !== 'string' || !/^[\x20-\x7e]{1,64}$/.test(label)) return null
+  const key = String(row?.agent || '<no agent>')
+  if (CREDENTIAL_SHAPED.test(label)) {
+    if (!labelDropLogged.has(key)) {
+      labelDropLogged.add(key)
+      // The label itself is NEVER logged — it may be the credential.
+      err(`lifecycle: agent ${key.slice(0, 16)}… has a credential-shaped label. It is withheld from ` +
+        'the published state and shown as unnamed. Rename it; the value is not printed here on purpose.')
+    }
+    return null
+  }
+  labelDropLogged.delete(key)
+  return label
+}
+
+function handleAgentLifecycleCommand(ev) {
+  if (!ev || ev.kind !== CONTROL_COMMAND_KIND || !PUB || !BRIDGE_PK) return { ok: false, reason: 'not a lifecycle command' }
+  const author = String(ev.pubkey || '').toLowerCase()
+  if (!PUB.approvers.includes(author)) return { ok: false, reason: 'author is not an approver' }
+  let sigOk; try { sigOk = verifyEvent(ev) } catch { sigOk = false }
+  if (!sigOk) return { ok: false, reason: 'invalid signature' }
+  const tags = ev.tags || []
+  if (tags.length !== 2 || tags[0]?.[0] !== 'd' || tags[0]?.[1] !== LIFECYCLE_COMMAND_D || tags[0].length !== 2 || tags[1]?.[0] !== 'p' || String(tags[1]?.[1]).toLowerCase() !== BRIDGE_PK || tags[1].length !== 2) return { ok: false, reason: 'not addressed to this bridge' }
+  const now = Math.floor(Date.now() / 1000)
+  if (!Number.isInteger(ev.created_at)) return { ok: false, reason: 'stale command' }
+  // A future-dated event and an old one are different diagnoses, and 'stale command' is exactly the
+  // misleading string an operator reads while chasing clock skew — the future case usually means the
+  // SIGNER's clock is ahead, not that anything is old. Same refusal, honest reason.
+  if (ev.created_at > now + 300) return { ok: false, reason: 'command is dated in the future' }
+  if (now - ev.created_at > CONTROL_COMMAND_MAX_AGE_SECS) return { ok: false, reason: 'stale command' }
+  let body
+  try { body = JSON.parse(ev.content) } catch { return { ok: false, reason: 'invalid body' } }
+  const command = parseLifecycleCommand(body)
+  if (!command.ok) return command
+  const commandId = String(ev.id || '').toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(commandId)) return { ok: false, reason: 'invalid command id' }
+  if (ev.created_at < PUB.lifecycleCommandAt) return { ok: false, reason: 'superseded command' }
+  // Nostr timestamps have one-second resolution, and lifecycle commands target INDEPENDENT rows, so
+  // a same-second pair is legitimate work (a console acting on two agents) rather than a duplicate.
+  // A timestamp-only watermark drops the second one silently — and defeats this handler's own no-op
+  // path below, since an owner clicking twice lands inside a single second. Keep every accepted id
+  // at the newest second: replayed relay copies stay inert, distinct decisions survive. A legacy
+  // timestamp carrying no id set stays closed at equality, because after an upgrade the id that
+  // already applied at that second is unknowable.
+  if (ev.created_at === PUB.lifecycleCommandAt &&
+      (!PUB.lifecycleCommandIds.length || PUB.lifecycleCommandIds.includes(commandId))) {
+    return { ok: false, reason: 'superseded command' }
+  }
+
+  // Refuse rather than proceed on an unreadable ledger: applying a command against rows we could not
+  // read would persist a projection that silently drops every agent we failed to see.
+  let rows
+  try { rows = loadAgentRows() }
+  catch (e) { err(`lifecycle: refusing ${command.op} — ${e.message}`); return { ok: false, reason: 'agent rows unreadable' } }
+  const admissible = lifecycleAdmissible(command, rows[command.agent] || null)
+  if (!admissible.ok) return admissible
+  // A no-op is still a WATERMARK advance and still a success: an owner clicking twice must not see
+  // an alarm, and the replayed event must not stay replayable.
+  if (!admissible.noop) {
+    if (!saveAgentRows(applyLifecycle(rows, command, new Date(ev.created_at * 1000).toISOString()))) {
+      return { ok: false, reason: 'could not persist agent rows' }
+    }
+  }
+  const acceptedIds = ev.created_at === PUB.lifecycleCommandAt
+    ? Array.from(new Set([...PUB.lifecycleCommandIds, commandId]))
+    : [commandId]
+  if (!mutateConfig(c => {
+    c.public.lifecycle_command_at = ev.created_at
+    c.public.lifecycle_command_ids = acceptedIds
+  })) return { ok: false, reason: 'could not persist lifecycle watermark' }
+  PUB.lifecycleCommandIds = acceptedIds
+  PUB.lifecycleCommandAt = ev.created_at
+
+  const receipt = lifecycleReceipt(command, { approver: author, at: new Date(ev.created_at * 1000).toISOString(), eventId: ev.id })
+  // The reach is logged explicitly. "lifecycle: agent_return_lane accepted" would not tell an owner
+  // reading this log that their agent's reach just grew.
+  log(`lifecycle: ${command.op} (${receipt.reach}${admissible.noop ? ', no-op' : ''}) for ${receipt.agent}… accepted from approver ${author.slice(0, 12)}… (${ev.id.slice(0, 12)}…)`)
+  // Republish the projection now, as the trust, consent and task-route paths already do. Without
+  // this a revoke waits on the 300s refresh interval while the console — which reloads every 2.5s —
+  // keeps showing the pre-command state underneath a green success banner. An owner who has just
+  // revoked an agent and is looking at the row to confirm it is exactly the person who must not be
+  // shown a stale one. A no-op republishes too: it costs one event, and keeps what the console shows
+  // from depending on whether the command happened to change anything.
+  scheduleControlState()
+  return { ok: true, op: command.op, agent: command.agent, noop: Boolean(admissible.noop), receipt }
 }
 
 // Public owner-command twin of the private staging verbs.  The event is itself the signed audit
@@ -2547,7 +2762,24 @@ async function postRelay(ev, sender, dest, wantCh, body) {
     log(`RELAY[stub] -> ${dest}: from ${sender.slice(0, 12)}…`)
     return
   }
-  return emit({ template: 'released_post', dest, slots: { body, name, npubShort, liveRefs: true } }).then(({ stdout: so }) => {
+  // #336: an agent on this lane could not name ANYONE. Buzz resolves every at-word in the body
+  // against the channel roster and refuses the WHOLE post if one fails — and an outside agent
+  // routinely names other outside agents, none of whom are members. So a single `@oliver` did not
+  // lose a mention, it lost the message. Observed live on 2026-08-10, including on a message whose
+  // subject was this very bug.
+  //
+  // `--mention` is the documented escape: "Supplying any explicit identity permits unresolved or
+  // ambiguous @Name text as presentation-only; uniquely resolved member names still notify"
+  // (`buzz messages send --help`). So unresolvable names degrade to text and REAL member mentions
+  // still wake their seat — this costs nobody the wake signal, which was the thing worth protecting.
+  //
+  // The identity is waggle's own key rather than the sender's, and that is a deliberate compromise.
+  // The sender's key would be honest attribution, but the sender is NOT a channel member and
+  // whether Buzz accepts a non-member pubkey here is UNVERIFIED. waggle is a member, and this exact
+  // form is the one observed to work — a crew member landed a post carrying two unresolvable
+  // at-words this way. Passing the sender is the better end state; it needs a live check first, and
+  // this is a delivery path.
+  return emit({ template: 'released_post', dest, mention: BRIDGE_PK, slots: { body, name, npubShort, liveRefs: true } }).then(({ stdout: so }) => {
     // commit-AFTER-send (#114 finding-3): mark the wrap carried only once the kind:9 posted, so a
     // transient failure retries. Residual: a crash after this post but before the mark re-posts on
     // restart — kind:9 has no idempotency key, so the dup-on-crash residual stands (§6).
@@ -3167,7 +3399,7 @@ function connectPublic(url) {
       // #206: owner-console control events. NIP-78 is shared with the read-only state record,
       // but a distinct `d` tag, an approver author filter, and a bridge p-tag make this a narrow
       // command inbox rather than a general public-event subscription.
-      if (BRIDGE_PK && PUB.approvers.length) ws.send(JSON.stringify(['REQ', 'pctl', { kinds: [CONTROL_COMMAND_KIND], authors: PUB.approvers, '#d': [CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TRUST_COMMAND_D, MODERATION_COMMAND_D], '#p': [BRIDGE_PK], since: Math.floor(Date.now() / 1000) - CONTROL_COMMAND_MAX_AGE_SECS, limit: 100 }]))
+      if (BRIDGE_PK && PUB.approvers.length) ws.send(JSON.stringify(['REQ', 'pctl', { kinds: [CONTROL_COMMAND_KIND], authors: PUB.approvers, '#d': [CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TRUST_COMMAND_D, MODERATION_COMMAND_D, LIFECYCLE_COMMAND_D], '#p': [BRIDGE_PK], since: Math.floor(Date.now() / 1000) - CONTROL_COMMAND_MAX_AGE_SECS, limit: 100 }]))
       // Re-open the record-id subscriptions on reconnect. New 440s refresh this live after
       // verification; these existing ids cover a revocation that arrives without a bridge p-tag.
       subscribeConsentRevocations()
@@ -3205,6 +3437,7 @@ function connectPublic(url) {
           if (handleControlStateCommand(ev).ok) return
           if (handleWatchlistControlCommand(ev).ok) return
           if (handleTrustControlCommand(ev).ok) return
+          if (handleAgentLifecycleCommand(ev).ok) return
           return
         }
         if (ev && (ev.kind === NIPDA.grant || ev.kind === NIPDA.revocation)) {
@@ -3259,7 +3492,7 @@ export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, c
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests,
   policyRequests, policyWriterInFlight, remotePolicyGatePublic, processRemotePolicyRequest,
   retryRemotePolicyRequests, __setPolicyWriterRunnerForTests, unframePolicyWriterResponse,
