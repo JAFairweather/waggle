@@ -9,7 +9,7 @@
 //
 //   node tests/member_seating.mjs
 
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { randomBytes, createHash } from 'node:crypto'
@@ -41,8 +41,10 @@ process.env.POSTED_MAP_PATH = resolve(dir, 'posted.log')
 process.env.BUZZ_PRIVATE_KEY = Buffer.from(bridgeSk).toString('hex')
 process.env.FORWARD_MODE = 'buzz'
 process.env.WB_NO_BOOT = '1'
+process.env.UNSEATPENDING_PATH = resolve(dir, 'roster-unseat-pending.log')
+process.env.UNSEATPENDING_MAX_ATTEMPTS = '2'    // small, so the dead-letter path is reachable in a test
 
-const { processGrantEvent, grantSet, revokedGrants, seatGrantee, seated, seatingCoverageGap, rosterRole, isElevated, seatingAuthority, PUB } = await import('../src/bridge.mjs')
+const { processGrantEvent, grantSet, revokedGrants, seatGrantee, seated, seatingCoverageGap, rosterRole, isElevated, seatingAuthority, unseatGrantee, unseatPending, retryPendingUnseats, UNSEATPENDING_MAX_ATTEMPTS, PUB } = await import('../src/bridge.mjs')
 const { emit, query, __setTransportForTests } = await import('../src/egress.mjs')
 
 let fails = 0
@@ -367,6 +369,88 @@ ok('isElevated is true for exactly owner and admin',
   const blind = await seatingAuthority(CHAN, me, async () => { throw new Error('relay timeout') })
   ok('a roster read that fails is UNREADABLE, not a verdict — inconclusive is not a pass',
     blind.state === 'unreadable' && /relay timeout/.test(blind.why))
+}
+
+// --- B3. The half that REMOVES access was the fire-once one ------------------------------------
+// seatGrantee leaves `seated` unset on failure so the next replay retries. unseatGrantee cleared
+// it, so nothing ever re-drove a failed removal — and the only recovery was an operator reading a
+// log line. That asymmetry runs the wrong way for something whose whole claim is that the row
+// cannot outlive the grant.
+{
+  ok('NEGATIVE CONTROL — nothing is owed to begin with, so an empty queue is not a passing default',
+    unseatPending.size() === 0)
+  // …and a retry pass over an empty queue must emit nothing, or every assertion below about
+  // "exactly one remove" is measuring a driver that fires unconditionally.
+  await retryPendingUnseats({ emitFn: capture })
+  ok('  and a retry pass with nothing owed emits nothing at all', drain().length === 0)
+
+  const pk = getPublicKey(generateSecretKey())
+  const boom = async () => { throw new Error('buzz: 503 from the community relay') }
+
+  ok('a failed unseat returns false', (await unseatGrantee(pk, boom)) === false)
+  ok('…and the removal is RECORDED as owed rather than lost to a log line', unseatPending.has(pk))
+  // Claims exactly what it proves: the record is ON DISK, so a restart re-loads it. It does NOT
+  // prove the fsync — `durableQueue.append` writes the bytes on both branches (stores.mjs:98) and
+  // only fsyncs the file and its directory on the durable one, which no in-process assertion can
+  // tell apart. Mutating that flag to `false` is therefore NOT detected by this suite, and saying
+  // so here is the point: an assertion that reads as covering the fsync would be worse than none.
+  ok('…and the record is on disk, so a restart re-loads it rather than forgetting the row',
+    existsSync(process.env.UNSEATPENDING_PATH) &&
+    readFileSync(process.env.UNSEATPENDING_PATH, 'utf8').includes(pk))
+
+  // The retry actually re-drives it. This is the whole finding.
+  await retryPendingUnseats({ emitFn: capture })
+  const retried = drain()
+  ok('a retry pass re-drives the owed removal — exactly one remove-member, naming that key',
+    retried.length === 1 && retried[0].template === 'member_unseat' && retried[0].pubkey === pk)
+  ok('…and a removal that succeeded is no longer owed', !unseatPending.has(pk))
+  await retryPendingUnseats({ emitFn: capture })
+  ok('…so a second pass does nothing — success is not re-driven forever', drain().length === 0)
+}
+{
+  // THE CORRECTNESS CASE. The queue records what was true when the removal failed; grantSet records
+  // what is true now. Where they disagree the GRANT wins — otherwise the retry faithfully removes a
+  // key the owner has just re-admitted, which is the queue being right about history and wrong
+  // about the world.
+  const sk = generateSecretKey(), pk = getPublicKey(sk)
+  await unseatGrantee(pk, async () => { throw new Error('buzz: 503') })
+  ok('a removal is owed for a key with no grant', unseatPending.has(pk))
+
+  roster = []
+  processGrantEvent(grantEvent(grantorSk, { grantee: pk }), { emitFn: capture, queryFn: rosterQuery })
+  await settle()
+  drain()
+  ok('re-admitting that key CANCELS the owed removal at the moment it is seated', !unseatPending.has(pk))
+}
+{
+  // …and the same protection from the retry side, for a grant that arrived without going through
+  // seatGrantee (already seated, or seating switched on later). Belt and braces on purpose: this is
+  // the one place the feature can actively do harm.
+  const pk = getPublicKey(generateSecretKey())
+  unseatPending.enqueue(pk, { dest: CHAN, pubkey: pk, since: 1 }, false)
+  grantSet.set(pk, { grantId: 'f'.repeat(64), grantor: grantorPk })
+  await retryPendingUnseats({ emitFn: capture })
+  ok('the retry refuses to remove a key that holds a live grant NOW, whatever the queue says',
+    drain().length === 0 && !unseatPending.has(pk))
+  grantSet.delete(pk)
+}
+{
+  // Bounded. An unbounded retry against a channel waggle can never act on is the other way to fail,
+  // and it would bury the one line an operator has to act on under thousands of identical ones.
+  const pk = getPublicKey(generateSecretKey())
+  const boom = async () => { throw new Error('buzz: only owners/admins may remove other members') }
+  await unseatGrantee(pk, boom)
+  const saidD = []
+  const realErr = console.error, realLog = console.log
+  console.error = (...a) => { saidD.push(a.join(' ')); realErr(...a) }
+  console.log = (...a) => { saidD.push(a.join(' ')); realLog(...a) }
+  for (let i = 0; i <= UNSEATPENDING_MAX_ATTEMPTS + 1; i++) await retryPendingUnseats({ emitFn: boom })
+  console.error = realErr; console.log = realLog
+  ok('a permanently-failing removal is dead-lettered rather than retried forever', !unseatPending.has(pk))
+  // Assert the REASON and the CONTENT, not merely that it stopped. This line is the only thing an
+  // operator can act on, and it has to carry the key and the channel they need to type.
+  ok('…and the dead-letter names the key and the channel, and says waggle cannot remove it',
+    saidD.some(l => l.includes('UNSEAT DEAD-LETTERED') && l.includes(pk) && l.includes(CHAN) && /remove it by hand/.test(l)))
 }
 
 restore()
