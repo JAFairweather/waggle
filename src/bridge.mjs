@@ -2714,7 +2714,9 @@ function sourceWireRejectReason(message) {
 
 function carryDescriptor(recipient, message, why, channel) {
   if (recipient.protocol !== 'nvoy-task-carry-v1') {
-    return { template: 'return_carry', slots: { mention: recipient.mention, why, body: String(message.content || '') } }
+    // #352: carry the AUTHOR. The bridge has held `message.pubkey` here all along — it simply was
+    // not passed, so every carried reply arrived attributed to waggle, the carrier.
+    return { template: 'return_carry', slots: { mention: recipient.mention, why, body: String(message.content || ''), author: message.pubkey || null } }
   }
   const ch = String(channel || '').toLowerCase()
   const source = sourceWireEvent(message)
@@ -2859,7 +2861,7 @@ async function scanReturnLane(msgs, opts = {}) {
         dropRlSeen(key)
         // Owed, durably. The overlap re-read may still catch it first; enqueue is idempotent and
         // does not reset the attempt count, so the two paths cannot inflate each other.
-        rlPending.enqueue(key, { to: r.npub_hex, mention: r.mention, why, body, src: m.id,
+        rlPending.enqueue(key, { to: r.npub_hex, mention: r.mention, why, body, src: m.id, author: m.pubkey || null,
           protocol: r.protocol || null, channel: opts.channel || null, source: r.protocol === 'nvoy-task-carry-v1' ? sourceWireEvent(m) : null })
       }
     }
@@ -2897,7 +2899,10 @@ async function retryPendingCarries(opts = {}) {
     try {
       descriptor = item.protocol === 'nvoy-task-carry-v1'
         ? { template: 'return_task_carry', slots: { channel: item.channel, why: item.why, source: item.source } }
-        : { template: 'return_carry', slots: { mention: item.mention, why: item.why, body: item.body } }
+        // `item.author` is absent on anything queued before #352; the template renders that as an
+        // explicit "not recorded" rather than rejecting, so a pending carry does not become a dead
+        // letter over a field that did not exist when it was enqueued.
+        : { template: 'return_carry', slots: { mention: item.mention, why: item.why, body: item.body, author: item.author || null } }
     } catch (e) { err(`RETURN retry invalid: ${String(item.src).slice(0, 12)}…: ${e.message}`); rlPending.remove(key); continue }
     const accepted = await returnLaneSend(item.to, descriptor,
       { src: item.src, why: item.why, protocol: item.protocol || 'return-carry-v1', channel: item.channel || null, retry: n }, opts.publish)
