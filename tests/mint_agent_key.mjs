@@ -7,7 +7,7 @@
 //
 //   node tests/mint_agent_key.mjs
 
-import { generateSecretKey, getPublicKey } from 'nostr-tools/pure'
+import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
 import { nip19 } from 'nostr-tools'
 import { mintAgentKey, keyFileContents, keyFileName } from '../console/mint-agent-key.mjs'
 
@@ -41,6 +41,20 @@ const abandoned = mintAgentKey(primitives)
 ok('an untaken secret does not report itself taken', abandoned.secret.taken() === false)
 abandoned.secret.forget()
 ok('forget() makes the secret unrecoverable', abandoned.secret.take() === null && abandoned.secret.taken() === true)
+
+// sign() — USE the key without yielding it. This is what the relay-join step needs: a signature,
+// not the nsec. Routing that through take() would hand the key to code that only wanted a
+// signature AND destroy it before the operator could save it.
+const forSigning = mintAgentKey(primitives)
+const signed = forSigning.secret.sign({ kind: 27235, created_at: 1, tags: [], content: '' },
+  { decode: nip19.decode, finalize: finalizeEvent })
+ok('sign() returns an event signed by the minted key', signed.pubkey === forSigning.display.pubkeyHex)
+ok('…that verifies', verifyEvent(signed))
+ok('…and signing did NOT consume the secret — the operator can still save it', forSigning.secret.taken() === false)
+ok('…so take() still yields it afterwards', /^nsec1/.test(String(forSigning.secret.take())))
+ok('…and sign() returns null once the key is gone, rather than throwing',
+  forSigning.secret.sign({ kind: 1, created_at: 1, tags: [], content: '' },
+    { decode: nip19.decode, finalize: finalizeEvent }) === null)
 
 // Two mints must not collide. A generator wired to a constant would pass every assertion above.
 const second = mintAgentKey(primitives)

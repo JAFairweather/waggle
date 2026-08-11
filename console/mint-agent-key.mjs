@@ -40,6 +40,18 @@ export function mintAgentKey({ generateSecretKey, getPublicKey, nsecEncode, npub
       take() { const v = nsec; nsec = null; return v },
       taken() { return nsec === null },
       forget() { nsec = null },
+      // USE the key without yielding it. The agent has to sign its own relay-join request, and
+      // routing that through `take()` would mean the page hands the nsec out — to code that only
+      // needed a signature — and destroys it, so the operator can no longer save it.
+      //
+      // `decode` and `finalize` are injected for the same reason the mint primitives are: this
+      // module holds no import of its own that a bundler could resolve differently in the two
+      // places it runs. Returns null once the secret is gone, rather than throwing, because "the
+      // key was already saved and cleared" is an ordinary state the caller must handle.
+      sign(template, { decode, finalize }) {
+        if (nsec === null) return null
+        return finalize(template, decode(nsec).data)
+      },
     },
   }
 }
