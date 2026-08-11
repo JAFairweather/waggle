@@ -222,6 +222,26 @@
     <div class="status" id="reqst"></div>
   </div>
 
+  <div class="panel" id="mint-panel" style="display:none">
+    <h2>Make a key for a new agent</h2>
+    <div class="hint" style="margin-bottom:12px">
+      An agent needs a key before it can be given anything. This makes one here, on your machine.
+      You will see the private half <strong>once</strong> — save it, then seat it in the agent's
+      runtime yourself. Nothing sends it anywhere, and nothing here can show it to you again.
+    </div>
+    <button class="btn" id="mint-go">Make a key</button>
+    <div id="mint-out" style="display:none;margin-top:14px">
+      <label>Public half <span class="hint">this is what you give access to</span></label>
+      <pre id="mint-npub" style="background:var(--field);border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 12px;overflow-x:auto;font-family:var(--mono);font-size:12px;color:var(--text);margin:0 0 12px"></pre>
+      <div id="mint-secret-row">
+        <button class="btn" id="mint-save">Save the private half</button>
+        <span class="hint" id="mint-secret-note">Downloads one file, <code>agent.nsec</code>. Never paste it into a chat, an issue, or a log.</span>
+      </div>
+      <button class="btn ghost" id="mint-use" style="margin-top:12px">Use this key below</button>
+    </div>
+    <div class="status" id="mintst"></div>
+  </div>
+
   <div class="panel" id="issue-panel" style="display:none">
     <h2>Give someone access</h2>
     <div class="row">
@@ -305,11 +325,12 @@
 <script type="module">
 // Local vendored bundle, resolved through the importmap — no CDN. A page that verifies
 // signatures must not fetch its verifier from a third party at load time.
-import { verifyEvent, nip19 } from 'nostr-tools'
+import { verifyEvent, nip19, generateSecretKey, getPublicKey } from 'nostr-tools'
 import { verifyNvoyVisibility } from './nvoy-visibility.mjs'
 import { groupByGrantee, byLiveThenNewest, scopePhrase, givenOn } from './access-list.mjs'
 import { CAP_LABEL, capLabel, CAP_ENFORCER, capEnforcer, ISSUABLE, describeGrant } from './capability-vocabulary.mjs'
 import { scopeHash } from './scope-hash.mjs'
+import { mintAgentKey, keyFileContents, keyFileName } from './mint-agent-key.mjs'
 const { decode } = nip19
 
 const $ = (id) => document.getElementById(id)
@@ -533,6 +554,8 @@ function drawTitlebar(npub, kind) {
       signer = null; signerPk = null
       saveSession(null)   // and stay signed out across reloads — logout that a refresh undoes is not logout
       $('issue-panel').style.display = 'none'
+      $('mint-panel').style.display = 'none'
+      forgetMintedKey()   // a signed-out console must not still be holding an agent's secret
       $('confirm-panel').style.display = 'none'
       // Requests were decrypted with the key that just left. Drop both the panel and the parsed
       // copies — a list of who is asking must not outlive the session that could act on it.
@@ -575,6 +598,7 @@ async function adopt(s, label, remember = null) {
   $('local-row').style.display = 'none'
   drawTitlebar(nip19.npubEncode(signerPk), s.kind || label)
   $('issue-panel').style.display = ''
+  $('mint-panel').style.display = ''
   // Convenience only: the grantor field is what you sign as, so default it to the signed-in key.
   if (!$('grantor').value.trim()) { $('grantor').value = nip19.npubEncode(signerPk); $('go').click() }
   renderRows()
@@ -708,6 +732,69 @@ window.__revoke = (grantId, granteeShort) => {
     tags: [['e', grantId]], content: '',
   }, `This revokes the grant held by ${granteeShort}. It takes effect the next time any consumer reads the relays — no restart anywhere. It cannot be un-published, though you can always issue a new grant.`)
 }
+
+// Mint — an agent's identity, made here so that inviting one does not require a terminal.
+//
+// The page holds the private half for as long as it takes the operator to save it, and not one
+// action longer. `mint-agent-key.mjs` makes that a property rather than a promise: the secret is
+// take-once, and the object the DOM is fed has no field that could carry it. This code's whole job
+// is to not undo that — so the nsec never enters an element, a URL, a storage key or a log, and
+// every exit from the panel goes through forgetMintedKey().
+let minted = null
+function forgetMintedKey() {
+  if (minted) minted.secret.forget()
+  minted = null
+  $('mint-out').style.display = 'none'
+  $('mintst').className = 'status'; $('mintst').textContent = ''
+}
+$('mint-go').addEventListener('click', () => {
+  const st = $('mintst')
+  try {
+    forgetMintedKey()
+    minted = mintAgentKey({ generateSecretKey, getPublicKey, nsecEncode: nip19.nsecEncode, npubEncode: nip19.npubEncode })
+    $('mint-npub').textContent = minted.display.npub
+    $('mint-save').disabled = false
+    $('mint-save').textContent = 'Save the private half'
+    $('mint-secret-note').textContent = 'Downloads one file, agent.nsec. Never paste it into a chat, an issue, or a log.'
+    $('mint-out').style.display = ''
+    st.className = 'status'
+    st.textContent = 'Made. Save the private half before you leave this page — it cannot be shown again.'
+  } catch (e) { st.className = 'status err'; st.textContent = e.message }
+})
+$('mint-save').addEventListener('click', () => {
+  const st = $('mintst')
+  if (!minted) { st.className = 'status err'; st.textContent = 'Make a key first.'; return }
+  const nsec = minted.secret.take()
+  if (!nsec) { st.className = 'status err'; st.textContent = 'Already saved once. Make a new key if you did not keep that file.'; return }
+  // An object URL, revoked immediately. A data: URI would put the secret in an attribute that
+  // survives in the DOM, and both of those end up in a screenshot or an extension's page dump.
+  let url = null
+  try {
+    url = URL.createObjectURL(new Blob([keyFileContents(nsec)], { type: 'application/octet-stream' }))
+    const a = document.createElement('a')
+    a.href = url; a.download = keyFileName()
+    a.click()
+    st.className = 'status ok'
+    st.textContent = `Saved as ${keyFileName()}. That was the only time — this page no longer has it.`
+  } catch (e) { st.className = 'status err'; st.textContent = `Could not save the file (${e.message}). The key is gone; make another.` }
+  finally { if (url) URL.revokeObjectURL(url) }
+  $('mint-save').disabled = true
+  $('mint-save').textContent = 'Saved'
+  $('mint-secret-note').textContent = 'Seat that file in the agent, then give the public half access below.'
+})
+$('mint-use').addEventListener('click', () => {
+  if (!minted) return
+  // Only the public half crosses into the grant form. There is no field on `display` that could
+  // carry anything else, which is the point of it being a separate frozen object.
+  $('g-to').value = minted.display.npub
+  refreshCaps()
+  $('issue-panel').scrollIntoView({ behavior: 'smooth', block: 'center' })
+  const st = $('mintst')
+  if (!minted.secret.taken()) {
+    st.className = 'status err'
+    st.textContent = 'Filled in below — but you have not saved the private half yet. Without it nobody can act as this key.'
+  }
+})
 
 // Issue — a 440 binding a grantee to a subject, with a fresh salt so two grants into the same
 // subject cannot be linked by anyone watching.
