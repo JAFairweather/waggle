@@ -311,9 +311,11 @@ Then **verify by reading it back**, not by trusting the issuing tool:
 
 Three things, in the order they should be built:
 
-1. **The responder** — `tools/join-approve.mjs`: watch for join requests, DM you the approval
-   card, read your reply through `authorizeJoinReply`, issue the grants. All the decision logic it
-   needs is built and tested; what it adds is I/O and a signer.
+1. **The responder** — `tools/join-approve.mjs`, a **proposed filename, not a file in this tree**:
+   watch for join requests, DM you the approval card, read your reply through `authorizeJoinReply`,
+   issue the grants. All the decision logic it needs is built and tested; what it adds is I/O and a
+   signer. Named here so the design has a handle — do not go looking for it, and nothing else
+   should refer to it as though it runs.
 2. **Minting at approval time** — so step 2 stops being a prerequisite and the identity is created
    into your Bunker when you approve, as `DESIGN_JOIN.md` describes.
 3. **Pairing after approval** — so `tools/join.mjs` finishes the ceremony instead of waiting and

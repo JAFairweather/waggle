@@ -146,7 +146,7 @@ of attention. It is produced by the software.
 
 ### 1. The confirmation sentence is inverted for the whole task family
 
-`tools/attention.mjs` is the enforcement site. It builds the map of who may instruct this agent:
+`mcp/tools/attention.mjs`, **in the nvoy repo and not this one**, is the enforcement site. It builds the map of who may instruct this agent:
 
 ```js
 if (scope[1] !== scopeHash(ME, scope[2] || '')) continue // authorises tasking some other agent
