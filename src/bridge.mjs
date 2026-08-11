@@ -77,12 +77,18 @@ const SEEN_CAP = Number(process.env.SEEN_CAP || 100000)
 const RLSEEN_PATH = process.env.RLSEEN_PATH || resolve(ROOT, 'data', 'return-lane-seen.log')
 const MIRRORASKED_PATH = process.env.MIRRORASKED_PATH || resolve(ROOT, 'data', 'mirror-asked.log')
 const RLPENDING_PATH = process.env.RLPENDING_PATH || resolve(ROOT, 'data', 'return-lane-pending.log')
+// Unseats that FAILED and are still owed (#356 B3). Durable for the reason the whole finding
+// exists: `seated` is memory, so a restart used to lose the fact that a row was left behind, and
+// the only recovery on the safety-critical half was an operator reading a log line and doing it by
+// hand. A grant's row must not outlive the grant because a single remove-member call failed once.
+const UNSEATPENDING_PATH = process.env.UNSEATPENDING_PATH || resolve(ROOT, 'data', 'roster-unseat-pending.log')
 const RLREACTION_PATH = process.env.RLREACTION_PATH || resolve(ROOT, 'data', 'return-lane-reactions.log')
 const RLREACTIONSEEN_PATH = process.env.RLREACTIONSEEN_PATH || resolve(ROOT, 'data', 'return-lane-reactions-seen.log')
 // Bounded, or one permanently-unreachable recipient retries forever. On the ~4-minute scan poll
 // this is roughly two hours of outage before a carry is dead-lettered — long enough to ride out a
 // relay flap, short enough that a dead key is surfaced the same day.
 const RLPENDING_MAX_ATTEMPTS = Number(process.env.RLPENDING_MAX_ATTEMPTS || 30)
+const UNSEATPENDING_MAX_ATTEMPTS = Number(process.env.UNSEATPENDING_MAX_ATTEMPTS || 30)
 const RLREACTION_MAX_ATTEMPTS = Number(process.env.RLREACTION_MAX_ATTEMPTS || 30)
 const RLSEEN_CAP = Number(process.env.RLSEEN_CAP || 100000)
 // Relay-lane dedup store (DESIGN_RELAY_INGRESS §6): wraps addressed to waggle's OWN key that it
@@ -830,6 +836,11 @@ function activeReturnLane() {
 // and gates NIP-42 AUTH ahead of any channel processing (#344), so an outside key still cannot
 // subscribe. The return lane remains the read path.
 const seated = new Set()
+// #356 B3. Seating deliberately leaves `seated` unset on failure so the next grant replay retries;
+// unseating cleared it, so nothing re-drove it — the half that REMOVES access was fire-once while
+// the half that GRANTS it retried. That asymmetry runs the wrong way for something whose entire
+// claim is that the row cannot outlive the grant. Same durable-queue shape as an owed carry.
+const unseatPending = durableQueue({ path: UNSEATPENDING_PATH, cap: 1000, label: 'roster unseat' })
 function seatingChannel() {
   if (!PUB?.seatGrantees) return null
   // Boot resolves a configured channel NAME to a UUID. A name still sitting here means that
@@ -920,6 +931,10 @@ async function seatGrantee(pubkey, emitFn = emit, queryFn = query) {
   try {
     await emitFn({ template: 'member_seat', dest, pubkey: pk })
     seated.add(pk)
+    // A re-admission cancels an owed removal. Without this the retry would faithfully remove a key
+    // the owner has just granted again — the queue would be correct about the OLD grant and wrong
+    // about the world, which is the worse of the two failures here.
+    if (unseatPending.has(pk)) { unseatPending.remove(pk); log(`SEAT ok: ${pk.slice(0, 12)}… was re-admitted, so the owed removal is cancelled`) }
     log(`SEAT ok: ${pk.slice(0, 12)}… is now in the ${dest} roster — a crew member can name them`)
     return true
   } catch (e) {
@@ -937,14 +952,16 @@ async function unseatGrantee(pubkey, emitFn = emit) {
   try {
     await emitFn({ template: 'member_unseat', dest, pubkey: pk })
     seated.delete(pk)
+    unseatPending.remove(pk)
     log(`UNSEAT ok: ${pk.slice(0, 12)}… removed from the ${dest} roster`)
     return true
   } catch (e) {
-    // Deliberately still cleared: the grant is gone either way, and a stale `seated` entry would
-    // suppress the re-seat if the same key were admitted again. The row is the thing that may now
-    // be stale, and saying so is the point of this line.
+    // `seated` is still cleared: the grant is gone either way, and a stale entry would suppress the
+    // re-seat if the same key were admitted again. But the ROW may still be there, and that is owed
+    // work — not an operator instruction. Recorded durably so a restart does not lose it (#356 B3).
     seated.delete(pk)
-    err(`UNSEAT FAILED: ${pk.slice(0, 12)}… -> ${dest}: ${e.message} — the member row may still be there; remove it by hand`)
+    unseatPending.enqueue(pk, { dest, pubkey: pk, since: Math.floor(Date.now() / 1000) }, true)
+    err(`UNSEAT FAILED: ${pk.slice(0, 12)}… -> ${dest}: ${e.message} — the member row may still be there; queued for retry (${unseatPending.size()} owed)`)
     return false
   }
 }
@@ -3047,6 +3064,45 @@ async function scanReturnLane(msgs, opts = {}) {
 // same failure as the rejected cursor-hold, just quieter: work that never completes and never
 // stops. The bound converts it into a loud, dated, per-recipient report — and a dead-letter that
 // is logged and dropped, never a queue that grows forever.
+// #356 B3. Re-drives the removals that failed. Bounded and dead-lettered like an owed carry,
+// because an unbounded retry against a channel waggle can never act on is the other way to fail.
+//
+// It re-checks the GRANT, not just the queue: if the key has been admitted again since the failure,
+// the removal is cancelled rather than carried out. The queue records what was true at the moment
+// of the failure; `grantSet` records what is true now, and where they disagree the grant wins.
+async function retryPendingUnseats({ emitFn = emit } = {}) {
+  const dest = seatingChannel()
+  if (!dest) return
+  const owed = unseatPending.entries()
+  if (!owed.length) return
+  let removed = 0, dead = 0, cancelled = 0
+  for (const { key, item, attempts } of owed) {
+    const pk = String((item && item.pubkey) || key || '').toLowerCase()
+    if (!/^[0-9a-f]{64}$/.test(pk)) { unseatPending.remove(key); continue }   // unparseable: drop, do not loop
+    if (grantSet.has(pk)) {
+      unseatPending.remove(key); cancelled++
+      log(`UNSEAT cancelled: ${pk.slice(0, 12)}… holds a live grant again — the row is justified, so it stays`)
+      continue
+    }
+    if (attempts >= UNSEATPENDING_MAX_ATTEMPTS) {
+      // DEAD LETTER, and loud. This is the state the finding is about: a row in the roster with no
+      // grant behind it, which nothing here can now remove. It names the key and the channel
+      // because that is what an operator needs to type.
+      unseatPending.remove(key); dead++
+      err(`UNSEAT DEAD-LETTERED after ${attempts} attempts: ${pk} is still in the ${dest} roster with NO live grant. waggle cannot remove it; remove it by hand.`)
+      continue
+    }
+    const n = unseatPending.attempt(key)
+    try {
+      await emitFn({ template: 'member_unseat', dest, pubkey: pk })
+      unseatPending.remove(key); seated.delete(pk); removed++
+      log(`UNSEAT retry ok: ${pk.slice(0, 12)}… removed from the ${dest} roster on attempt ${n}`)
+    } catch (e) {
+      err(`UNSEAT retry failed (attempt ${n}/${UNSEATPENDING_MAX_ATTEMPTS}): ${pk.slice(0, 12)}… -> ${dest}: ${e.message}`)
+    }
+  }
+  if (removed || dead || cancelled) log(`roster unseat pending: ${removed} removed, ${cancelled} cancelled by a live grant, ${dead} dead-lettered, ${unseatPending.size()} still owed`)
+}
 async function retryPendingCarries(opts = {}) {
   const react = opts.react || (process.env.WB_NO_BOOT || FORWARD_MODE !== 'buzz' ? async event => event.id : submitRelayActionReaction)
   if (!PUB || !activeReturnLane().length || !hasBridgeKey()) return
@@ -3105,6 +3161,7 @@ async function pollCommands(now = Date.now()) {
     for (const m of msgs) { if ((m.created_at || 0) >= cmdCursor - 300) handleCommand(m).catch(er => err(`commands: ${er.message}`)) }
     scanReturnLane(msgs)
       .then(() => retryPendingCarries())                  // #117: owed carries, independent of the cursor
+      .then(() => retryPendingUnseats())                  // #356 B3: owed roster removals, same tick
       .then(() => retryPendingReactions())
       .catch(er => err(`return lane: staging carry failed: ${er.message}`))
     cmdCursor = Math.floor(Date.now() / 1000)
@@ -3220,6 +3277,7 @@ async function pollScanChannels() {
     try { await scanChannel(ch) } catch (e) { err(`scan: poll failed for ${String(ch).slice(0, 8)}…: ${e.message}`) }
   }
   await retryPendingCarries()
+  await retryPendingUnseats()
   await retryPendingReactions()
 }
 
@@ -3494,7 +3552,7 @@ export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, c
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, revokedGrants, activeReturnLane, seatGrantee, unseatGrantee, seated, seatingCoverageGap, rosterRole, isElevated, seatingAuthority, ELEVATED_ROLES, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, revokedGrants, activeReturnLane, seatGrantee, unseatGrantee, seated, seatingCoverageGap, unseatPending, retryPendingUnseats, UNSEATPENDING_MAX_ATTEMPTS, rosterRole, isElevated, seatingAuthority, ELEVATED_ROLES, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests,
   policyRequests, policyWriterInFlight, remotePolicyGatePublic, processRemotePolicyRequest,
   retryRemotePolicyRequests, __setPolicyWriterRunnerForTests, unframePolicyWriterResponse,
@@ -3508,6 +3566,7 @@ if (!process.env.WB_NO_BOOT) {
   loadRlSeen()
   mirrorAskedStore.load()   // §6: who we've already sent a consent-request DM (once per target)
   rlPending.load()
+  unseatPending.load()
   rlReactionPending.load()
   rlReactionSeenStore.load()
   loadRelaySeen()
