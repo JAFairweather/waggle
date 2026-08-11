@@ -31,7 +31,7 @@
 //                    records which of them nobody currently understands.
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { installState, renderState } from '../src/agent_install_state.mjs'
@@ -141,12 +141,28 @@ const DIRS = [
 ]
 const dirMissing = DIRS.filter(([d]) => !existsSync(join(HERE, d)))
 if (dirMissing.length && !CHECK) {
-  for (const [d, m] of DIRS) if (!existsSync(join(HERE, d))) { mkdirSync(join(HERE, d), { recursive: true, mode: m }); did.push(`created ${d}/ (${m.toString(8)})`) }
+  for (const [d, m] of DIRS) if (!existsSync(join(HERE, d))) {
+    mkdirSync(join(HERE, d), { recursive: true, mode: m })
+    // mkdir's mode is masked by the process umask, so the mode ASKED FOR is not the mode that
+    // lands: under `umask 077` a directory declared 710 arrives 700, and the two that are not 700
+    // are the privilege-separation boundaries this runtime's whole uid split rests on. chmod is
+    // not subject to the umask, so it is what makes the declared mode true. Found on a real run
+    // whose shell had set umask 077 for an unrelated command four lines earlier.
+    chmodSync(join(HERE, d), m)
+    did.push(`created ${d}/ (${m.toString(8)})`)
+  }
 }
 const dirsNow = DIRS.filter(([d]) => existsSync(join(HERE, d)))
-const modesRight = dirsNow.every(([d, m]) => (statSync(join(HERE, d)).mode & 0o777) === m)
-see('state-dirs', dirsNow.length === DIRS.length, dirsNow.length === DIRS.length && modesRight,
-  dirsNow.length === DIRS.length ? (modesRight ? `${DIRS.length} directories, modes as expected` : 'all present, but a mode differs') : `${DIRS.length - dirsNow.length} missing`)
+// Name the directories that differ, and what they should be. "a mode differs" is a report nobody
+// can act on: it does not say which of eight, and the reader's next move is to guess.
+const modeDrift = dirsNow
+  .map(([d, m]) => [d, m, statSync(join(HERE, d)).mode & 0o777])
+  .filter(([, want, got]) => want !== got)
+  .map(([d, want, got]) => `${d} is ${got.toString(8)}, should be ${want.toString(8)}`)
+see('state-dirs', dirsNow.length === DIRS.length, dirsNow.length === DIRS.length && !modeDrift.length,
+  dirsNow.length === DIRS.length
+    ? (modeDrift.length ? `all present, but ${modeDrift.join('; ')} — chmod them, or re-run in a shell whose umask is not masking them` : `${DIRS.length} directories, modes as expected`)
+    : `${DIRS.length - dirsNow.length} missing`)
 
 // ── Channel keypair ─────────────────────────────────────────────────────────────────────────
 const keyPath = join(HERE, 'mcp-channel', 'id_ed25519')
