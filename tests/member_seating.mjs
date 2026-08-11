@@ -42,7 +42,7 @@ process.env.BUZZ_PRIVATE_KEY = Buffer.from(bridgeSk).toString('hex')
 process.env.FORWARD_MODE = 'buzz'
 process.env.WB_NO_BOOT = '1'
 
-const { processGrantEvent, grantSet, seatGrantee, seated, PUB } = await import('../src/bridge.mjs')
+const { processGrantEvent, grantSet, seatGrantee, seated, seatingCoverageGap, PUB } = await import('../src/bridge.mjs')
 const { emit, __setTransportForTests } = await import('../src/egress.mjs')
 
 let fails = 0
@@ -175,6 +175,18 @@ PUB.seatGrantees = false
 ok('with seat_grantees off, an admitted key is NOT seated',
   (await seatGrantee(getPublicKey(generateSecretKey()), capture)) === false && drain().length === 0)
 PUB.seatGrantees = true
+
+// --- nameable is not the same as reachable ----------------------------------------------------
+// Seating writes the roster in `inbox`; carries come from `scan_channels`. Where they differ the
+// agent is nameable in a channel nothing watches, and the failure is invisible from every side:
+// the message lands, the at-word resolves, and the carry simply never happens.
+ok('a scan set that covers the roster channel is NOT flagged', seatingCoverageGap(CHAN, [CHAN]) === false)
+ok('…case-insensitively, since a UUID may arrive either way', seatingCoverageGap(CHAN.toUpperCase(), [CHAN]) === false)
+ok('…and still not flagged when other channels are watched too', seatingCoverageGap(CHAN, [OTHER_CHAN, CHAN]) === false)
+ok('a scan set that watches a DIFFERENT channel is flagged', seatingCoverageGap(CHAN, [OTHER_CHAN]) === true)
+ok('an empty scan set is flagged', seatingCoverageGap(CHAN, []) === true)
+ok('a missing scan set is flagged rather than throwing', seatingCoverageGap(CHAN, undefined) === true)
+ok('an empty roster channel is flagged — it cannot be covered by anything', seatingCoverageGap('', [CHAN]) === true)
 
 restore()
 console.log(fails ? `\nMEMBER SEATING FAIL — ${fails}` : '\nMEMBER SEATING PASS — the roster is a projection of the grant set, in both directions')
