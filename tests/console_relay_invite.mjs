@@ -307,6 +307,44 @@ const agrees = async () => ({ accepted: true, ageConfirmed: true })
     /v2\.some-other-token-entirely/.test(res.detail))
 }
 
+// --- the two leak paths on the ACCEPT-POLICY leg, which is also downstream of the code -----------
+// `accept-policy` POSTs `{code, policy_version, age_confirmed}`. It is unsigned and it carries the
+// bearer secret, so a relay error or a proxy on that leg echoes it exactly as the claim does. Five
+// paths in total, not three — the claim was simply the one that got noticed first.
+{
+  const { fetchFn } = harness([hasPolicy, okMint,
+    { status: 400, body: { error: `join_policy_not_accepted: no invite ${CODE}` } }])
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk,
+    fetchFn, acceptPolicy: agrees })
+  ok('a relay error on the ACCEPT leg does not repeat the code back',
+    res.ok === false && res.step === 'policy' && !JSON.stringify(res).includes(CODE))
+  // An error string carrying a code is not the bare `join_policy_not_accepted` that EXPLAIN knows,
+  // so it passes through verbatim — minus the secret. That is the intended pair of behaviours and
+  // this asserts both halves of it, not just the redaction.
+  ok('…and the rest of the unrecognised string survives, redacted rather than swallowed',
+    /join_policy_not_accepted/.test(res.detail) && /redacted/i.test(res.detail))
+}
+{
+  // The recognised bare code still becomes a sentence on this leg, so the scrub did not turn the
+  // whole path into pass-through.
+  const { fetchFn } = harness([hasPolicy, okMint, { status: 400, body: { error: 'join_policy_not_accepted' } }])
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk,
+    fetchFn, acceptPolicy: agrees })
+  ok('…while a bare recognised code on the same leg is still turned into a sentence',
+    res.ok === false && /reload/i.test(res.detail))
+}
+{
+  const fetchFn = async (url) => {
+    if (url.endsWith('/api/join-policy')) return { status: 200, text: async () => JSON.stringify(hasPolicy.body) }
+    if (url.endsWith('/api/invites')) return { status: 200, text: async () => JSON.stringify(okMint.body) }
+    throw new Error(`socket hang up while POSTing {"code":"${CODE}","policy_version":"v1"}`)
+  }
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk,
+    fetchFn, acceptPolicy: agrees })
+  ok('a fetch that dies on the ACCEPT leg carrying the body does not leak the code either',
+    res.ok === false && res.step === 'policy' && res.outcome === 'unreachable' && !JSON.stringify(res).includes(CODE))
+}
+
 // --- the duplicated signer: the failure that reports success -------------------------------------
 // Two signers arrive as two parameters, and on the bunker route both are read off the same object.
 // Hand the owner's signer to both halves and the claim succeeds — the owner IS a relay member — so

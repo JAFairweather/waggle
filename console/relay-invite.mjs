@@ -209,6 +209,10 @@ export async function letOntoRelay({ relayBase, ownerSign, agentSign, expectAgen
       detail: 'The relay accepted the request but returned no invitation. Check the relay before trying again — this may have created one.' }
   }
 
+  // Built HERE, not at the claim. `accept-policy` sends the code in its body too, so everything
+  // downstream of this line is a leak path — the claim was simply the one that got noticed first.
+  const scrub = scrubber(code)
+
   // Exchange the decision already taken for a receipt bound to THIS code. Nothing is asked of the
   // operator here — the question was put before the mint, and asking again after would be a second
   // acceptance they never gave.
@@ -218,11 +222,11 @@ export async function letOntoRelay({ relayBase, ownerSign, agentSign, expectAgen
     try {
       acc = await plainPost({ relayBase, path: ACCEPT_PATH, fetchFn,
         bodyObj: { code, policy_version: policy.version, age_confirmed: consent.ageConfirmed === true } })
-    } catch (e) { return { ok: false, step: 'policy', outcome: 'unreachable', detail: e.message } }
+    } catch (e) { return { ok: false, step: 'policy', outcome: 'unreachable', detail: scrub(e.message) } }
 
     if (acc.status < 200 || acc.status >= 300) {
       return { ok: false, step: 'policy', outcome: 'refused', status: acc.status,
-        detail: explain(acc.json?.error, acc.text.slice(0, 160)) }
+        detail: scrub(explain(acc.json?.error, acc.text.slice(0, 160))) }
     }
     receipt = acc.json?.receipt
     if (!receipt) {
@@ -230,8 +234,6 @@ export async function letOntoRelay({ relayBase, ownerSign, agentSign, expectAgen
         detail: 'The relay accepted the terms but returned no proof of it, so the join cannot be completed. An invitation may have been created — check the relay before trying again.' }
     }
   }
-
-  const scrub = scrubber(code)
 
   let claim
   try {
