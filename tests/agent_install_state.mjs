@@ -24,6 +24,9 @@ const check = (cond, label) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${la
 // visible to every session on the machine, so without this file "which identity is this session"
 // is a convention rather than a fact — measured 2026-08-11, a strict session saw 2 tools from 1
 // server and the same session without the flag saw 94 from 6.
+check(ARTIFACT_KEYS.includes('agent-brief'), 'the brief a session launches with is a tracked artifact')
+check(ARTIFACTS.find(a2 => a2.key === 'agent-brief')?.blocking === true,
+  '…and blocks, because a bound session that knows nothing about the community will guess')
 check(ARTIFACT_KEYS.includes('strict-launch-config'), 'the strict launch binding is a tracked artifact')
 check(ARTIFACTS.find(a2 => a2.key === 'strict-launch-config')?.blocking === true,
   '…and its absence blocks, because an unbound session can act as any identity registered on the box')

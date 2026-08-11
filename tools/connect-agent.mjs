@@ -33,7 +33,8 @@
 import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { installState, renderState } from '../src/agent_install_state.mjs'
 
 const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (process.argv[i + 1] || '') }
@@ -229,10 +230,50 @@ if (!existsSync(mcpConfigPath) && !CHECK) {
   }
 }
 const mcpConfigOk = existsSync(mcpConfigPath)
+
+// ── The brief. A bound session still knows NOTHING. ──────────────────────────────────────────
+// --strict-mcp-config decides which KEY a session signs with. It says nothing about what the
+// session understands, and a fresh session handed two terse tool descriptions does not know it is
+// in a walled community, that an unresolvable at-word destroys the whole message, that a public
+// note is permanent, or which lane is sealed. It will guess, confidently, and every one of those
+// guesses has already cost something here.
+//
+// So the launch carries the brief too. docs/AGENT_BRIEF.md is the shared half — written to be given
+// verbatim — and the header is the half only the operator can write: who this identity is and what
+// it is for. Seeded once and never overwritten, because the remit is theirs to edit.
+const briefPath = join(HERE, 'AGENT.md')
+if (!existsSync(briefPath) && !CHECK) {
+  const shared = join(dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'AGENT_BRIEF.md')
+  let body = ''
+  try { body = readFileSync(shared, 'utf8') } catch { body = '' }
+  if (body) {
+    const npub = pubkey && HEX64.test(pubkey) ? `\n- Your public key: \`${pubkey}\`` : ''
+    writeFileSync(briefPath,
+      `# You are ${name}\n\n`
+      + `You act as **your own key**, never as waggle and never as another agent. Everything you sign is\n`
+      + `signed by the identity this session was launched with, and there is no way to act as a different\n`
+      + `one from here — that is deliberate.${npub}\n\n`
+      + `## Your remit\n\n`
+      + `> **Edit this section.** Nothing generated it, and nothing will overwrite it. Say what this\n`
+      + `> identity is for: what it should do when mentioned, what it must not decide alone, and who to\n`
+      + `> ask. An agent with no remit answers every mention the same way.\n\n`
+      + `---\n\n${body}`,
+      { mode: 0o600, flag: 'wx' })
+    did.push(`wrote ${briefPath} — EDIT ITS REMIT SECTION before this identity speaks`)
+    warn.push(`${briefPath} carries a placeholder remit: this identity currently knows the community but not its own job`)
+  }
+}
+const briefOk = existsSync(briefPath)
+const launchCmd = `claude --mcp-config ${mcpConfigPath} --strict-mcp-config`
+  + (briefOk ? ` \\\n        --append-system-prompt-file ${briefPath}` : '')
 see('strict-launch-config', mcpConfigOk, false,
   mcpConfigOk
-    ? `${mcpConfigPath} — launch with:\n      claude --mcp-config ${mcpConfigPath} --strict-mcp-config`
+    ? `${mcpConfigPath} — launch with:\n      ${launchCmd}`
     : (launchNote || `absent: ${mcpConfigPath}`))
+see('agent-brief', briefOk, false,
+  briefOk
+    ? `${briefPath} — carried by --append-system-prompt-file; its remit section is the operator's to write`
+    : `absent: ${briefPath} — a bound session would launch knowing which key it holds and nothing about where it is`)
 
 // ── Report ──────────────────────────────────────────────────────────────────────────────────
 const report = installState(obs)
