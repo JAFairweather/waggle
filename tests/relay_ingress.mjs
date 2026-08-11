@@ -51,7 +51,7 @@ process.env.WB_STUB_SEND = '1'
 process.env.WB_NO_BOOT = '1'
 
 const bridge = await import('../src/bridge.mjs')
-const { handleRelayIngress, route, grantSet, relaySeen, addRelaySeen, dropRelaySeen, relayDropCounts, relayDropTotalPreAuth, resolveRelayDest, rateOk, relayRateOk, PUB } = bridge
+const { handleRelayIngress, route, grantSet, relaySeen, addRelaySeen, dropRelaySeen, relayDropCounts, relayDropTotalPreAuth, resolveRelayDest, rateOk, relayRateOk, notLaneCooldownOk, notLaneAcked, NOT_LANE_CAP, NOT_LANE_COOLDOWN_MS, PUB } = bridge
 const { flushLatency, readLatency, summarizeLatency } = await import('../src/latency.mjs')
 
 let fails = 0
@@ -269,6 +269,36 @@ ok('resolveRelayDest rejects empty', resolveRelayDest('') === null)
   const { wrap: again } = wrapFor(sk, { tags: [], body: 'again' })
   handleRelayIngress(again); await tick()
   ok('  a second message from the same sender is NOT acked again', !ack(delta()))
+}
+
+// --- the cooldown store's eviction, which is not what its name suggests ---------------------------
+// Found in review, and it is a whole-concept error rather than an off-by-one: a Map iterates in
+// INSERTION order and re-setting an existing key does not move it, so `set` alone would leave this
+// store in first-ever-seen order while the eviction reads it as least-recently-used. The victim
+// would always be the earliest sender ever tracked, however recently they were acked.
+{
+  const now = 1_000_000
+  notLaneAcked.clear()
+  const hex = n => String(n).padStart(64, '0')
+  for (let i = 0; i < NOT_LANE_CAP; i++) notLaneCooldownOk(hex(i), now)
+  ok('the cooldown store fills to its cap', notLaneAcked.size === NOT_LANE_CAP)
+
+  // Touch the OLDEST entry after its hour is up. It is now the most recently acked of all.
+  const oldest = hex(0)
+  ok('  the first-ever sender is due again after the cooldown',
+    notLaneCooldownOk(oldest, now + NOT_LANE_COOLDOWN_MS + 1))
+
+  // One more distinct sender pushes the store over the cap, forcing an eviction.
+  notLaneCooldownOk(hex(NOT_LANE_CAP), now + NOT_LANE_COOLDOWN_MS + 2)
+  ok('  eviction does NOT take the most recently acked sender', notLaneAcked.has(oldest))
+  ok('  it takes the least recently acked one instead', !notLaneAcked.has(hex(1)))
+  ok('  and the store stays bounded', notLaneAcked.size === NOT_LANE_CAP)
+
+  // BOTH DIRECTIONS: an evicted sender must genuinely lose its cooldown, or "bounded" would be
+  // satisfied by a store that evicts nothing and silently grows.
+  ok('  an evicted sender is due again immediately, because nothing remembers it',
+    notLaneCooldownOk(hex(1), now + NOT_LANE_COOLDOWN_MS + 3))
+  notLaneAcked.clear()
 }
 {
   // THE OTHER DIRECTION. Without this, "admitted senders are acked" is equally satisfied by acking
