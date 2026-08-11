@@ -948,6 +948,11 @@ $('mint-onto-relay').addEventListener('click', async () => {
       // Signs WITHOUT yielding the key. Routing this through take() would hand the nsec to code
       // that only needed a signature, and destroy it before the operator could save it.
       agentSign: (t) => agent.sign(t),
+      // Which key this whole thing is FOR, so the two signers above are checked rather than trusted
+      // to be different. Both of them come from `signer` on the bunker route until `currentAgent()`
+      // resolves, and a page that hands the same one to both halves reports a cheerful success
+      // about a key that never joined.
+      expectAgentPubkey: agent.pubkeyHex,
     })
     if (res.ok) {
       st.className = 'status ok'

@@ -55,7 +55,7 @@ const agrees = async () => ({ accepted: true, ageConfirmed: true })
 // --- the happy path, on a relay that asks nothing ------------------------------------------------
 {
   const { calls, fetchFn } = harness([noPolicy, okMint, { status: 200, body: { status: 'joined', role: 'member' } }])
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn })
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn })
 
   ok('it reports success', res.ok === true && res.outcome === 'joined')
   ok('…and does NOT claim the key has been proved to authenticate', res.proven === false)
@@ -93,7 +93,7 @@ const agrees = async () => ({ accepted: true, ageConfirmed: true })
 {
   const { calls, fetchFn } = harness([hasPolicy, okMint, okReceipt, { status: 200, body: { status: 'joined' } }])
   let shown = null
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn,
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn,
     acceptPolicy: async (p) => { shown = p; return { accepted: true, ageConfirmed: true } } })
 
   ok('a relay that asks for terms still gets the key on', res.ok === true && res.outcome === 'joined')
@@ -125,7 +125,7 @@ const agrees = async () => ({ accepted: true, ageConfirmed: true })
 {
   const { calls, fetchFn } = harness([hasPolicy])
   // No acceptPolicy passed at all — the shape a console has when somebody forgets to wire it.
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn })
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn })
   ok('with no consent surface wired, it REFUSES rather than accepting on the operator\'s behalf',
     res.ok === false && res.outcome === 'policy_declined')
   ok('…and nothing was created — no invitation is left lying on the relay', calls.length === 1)
@@ -133,14 +133,14 @@ const agrees = async () => ({ accepted: true, ageConfirmed: true })
 }
 {
   const { calls, fetchFn } = harness([hasPolicy])
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn,
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn,
     acceptPolicy: async () => ({ accepted: false }) })
   ok('an explicit decline is honoured, at the policy step', res.ok === false && res.step === 'policy' && res.outcome === 'policy_declined')
   ok('…and still mints nothing', calls.length === 1)
 }
 {
   const { calls, fetchFn } = harness([hasPolicy])
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn,
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn,
     acceptPolicy: async () => ({ accepted: true, ageConfirmed: false }) })
   ok('accepting the terms while declining the age attestation does NOT join',
     res.ok === false && res.outcome === 'age_not_confirmed')
@@ -150,14 +150,14 @@ const agrees = async () => ({ accepted: true, ageConfirmed: true })
   // …and the same fixture with the attestation given still joins, so the refusals above are
   // selective rather than a function that refuses whenever a policy exists.
   const { fetchFn } = harness([hasPolicy, okMint, okReceipt, { status: 200, body: { status: 'joined' } }])
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn, acceptPolicy: agrees })
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn, acceptPolicy: agrees })
   ok('a confirmed operator still gets through', res.ok === true)
 }
 {
   // A relay that does not require the attestation must not demand one.
   const relaxed = { status: 200, body: { policy: { version: 'v9', age_attestation_required: false } } }
   const { calls, fetchFn } = harness([relaxed, okMint, okReceipt, { status: 200, body: { status: 'joined' } }])
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn,
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn,
     acceptPolicy: async () => ({ accepted: true }) })
   ok('where no age attestation is asked for, none is demanded', res.ok === true)
   // The other direction. Without this, `age_confirmed: true` hard-coded passes every assertion
@@ -169,20 +169,20 @@ const agrees = async () => ({ accepted: true, ageConfirmed: true })
 // --- the live failure that sent us here ----------------------------------------------------------
 {
   const { fetchFn } = harness([noPolicy, okMint, { status: 403, body: { error: 'join_policy_required' } }])
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn, acceptPolicy: agrees })
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn, acceptPolicy: agrees })
   ok('a bare join_policy_required is turned into a sentence, not shown as a code',
     res.ok === false && /accept its terms/i.test(res.detail) && !/join_policy_required/.test(res.detail))
   ok('…and is attributed to the claim, which is where it came from', res.step === 'claim')
 }
 {
   const { fetchFn } = harness([hasPolicy, okMint, { status: 400, body: { error: 'join_policy_not_accepted' } }])
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn, acceptPolicy: agrees })
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn, acceptPolicy: agrees })
   ok('a stale policy version is reported at the POLICY step and says to reload',
     res.ok === false && res.step === 'policy' && res.outcome === 'refused' && /reload/i.test(res.detail))
 }
 {
   const { fetchFn } = harness([hasPolicy, okMint, { status: 200, body: { ok: true } }])   // 2xx, no receipt
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn, acceptPolicy: agrees })
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn, acceptPolicy: agrees })
   ok('a 2xx acceptance with no receipt is INCONCLUSIVE, and warns an invitation may exist',
     res.ok === false && res.step === 'policy' && res.outcome === 'inconclusive' && /may have been created/i.test(res.detail))
 }
@@ -190,14 +190,14 @@ const agrees = async () => ({ accepted: true, ageConfirmed: true })
   // An error string we did not anticipate is shown VERBATIM. A friendly paraphrase of something
   // unknown is a lie, and the raw code is the lead.
   const { fetchFn } = harness([noPolicy, okMint, { status: 403, body: { error: 'some_new_gate_v3' } }])
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn, acceptPolicy: agrees })
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn, acceptPolicy: agrees })
   ok('an unrecognised relay error is passed through untouched', res.detail === 'some_new_gate_v3')
 }
 
 // --- already a member: success, but a DIFFERENT fact --------------------------------------------
 {
   const { fetchFn } = harness([noPolicy, okMint, { status: 200, body: { status: 'already_member', role: 'member' } }])
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn })
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn })
   ok('an already-a-member claim is success, and says so distinctly',
     res.ok === true && res.outcome === 'already_a_member')
 }
@@ -205,7 +205,7 @@ const agrees = async () => ({ accepted: true, ageConfirmed: true })
 // --- the refusals. Each names its own step and reason -------------------------------------------
 {
   const { calls, fetchFn } = harness([noPolicy, { status: 403, body: { error: 'only relay owners and admins can create invites' } }])
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn })
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn })
   ok('a 403 on the mint is reported as a missing ROLE, at the mint step',
     res.ok === false && res.step === 'mint' && res.outcome === 'not_an_admin')
   ok('…in words an operator can act on, without protocol nouns',
@@ -214,20 +214,24 @@ const agrees = async () => ({ accepted: true, ageConfirmed: true })
 }
 {
   const { fetchFn } = harness([noPolicy, { status: 401, body: { error: 'NIP-98: invalid Schnorr signature' } }])
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn })
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn })
   ok('a 401 is reported as a signature problem, NOT as a missing role',
     res.ok === false && res.outcome === 'rejected_signature' && res.step === 'mint')
 }
 {
   const { fetchFn } = harness([noPolicy, { status: 200, body: { expires_at: 1 } }])   // 2xx, no code
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn })
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn })
   ok('a 2xx with no invitation is INCONCLUSIVE, not a failure and not a success',
     res.ok === false && res.outcome === 'inconclusive')
   ok('…and warns that one may have been created anyway', /may have created/.test(res.detail))
 }
 {
-  const { calls, fetchFn } = harness([noPolicy, okMint, { status: 403, body: { error: 'invite_expired' } }])
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn })
+  // The relay ECHOES THE CODE it refused — which real relays and proxies do, and which is the only
+  // fixture under which the leak assertion below can fail at all. With `{error:'invite_expired'}`
+  // there was no code in the response to leak, so the check passed on an input it never tested.
+  const { calls, fetchFn } = harness([noPolicy, okMint,
+    { status: 403, body: { error: 'invite_expired', code: CODE, detail: `invite ${CODE} expired at 1786470000` } }])
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn })
   ok('a refusal on the CLAIM is attributed to the claim step, not the mint',
     res.ok === false && res.step === 'claim' && res.outcome === 'refused' && res.status === 403)
   ok('…in a sentence that says what to do about it', /try again/i.test(res.detail))
@@ -236,7 +240,7 @@ const agrees = async () => ({ accepted: true, ageConfirmed: true })
 }
 {
   const boom = async () => { throw new Error('Failed to fetch') }
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn: boom })
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn: boom })
   ok('an unreachable relay is its own outcome, at the step that could not be reached',
     res.ok === false && res.step === 'policy' && res.outcome === 'unreachable')
 }
@@ -247,16 +251,125 @@ const agrees = async () => ({ accepted: true, ageConfirmed: true })
     if (++n === 1) return { status: 200, text: async () => '{}' }
     throw new Error('Failed to fetch')
   }
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn })
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn })
   ok('a relay that dies after the policy read is reported at the MINT step',
     res.ok === false && res.step === 'mint' && res.outcome === 'unreachable')
+}
+
+// --- the three routes the code escapes by, each driven with a response that carries it -----------
+// Everything after the mint has the code in scope, and every string on those paths came from
+// somewhere else: a relay naming what it rejected, a proxy echoing the request it blocked, a
+// rejected promise carrying the body. Each is asserted with a fixture that genuinely contains the
+// code, so a missing scrub fails rather than passing on an input that had nothing to find.
+{
+  const { fetchFn } = harness([noPolicy, okMint,
+    { status: 400, body: { error: `invite_invalid: no such invite ${CODE}` } }])
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn })
+  ok('a relay that names the code in its error does NOT get it repeated back',
+    res.ok === false && !JSON.stringify(res).includes(CODE))
+  ok('…and the operator is told something was removed rather than shown a truncated mess',
+    /redacted/i.test(res.detail))
+  ok('…while the part that was actually informative survives', /no such invite/.test(res.detail))
+}
+{
+  // A WAF or reverse proxy: not JSON at all, an HTML page quoting the request it blocked.
+  const html = `<html><body><h1>403 Forbidden</h1><p>Request blocked: {"code":"${CODE}"}</p></body></html>`
+  const fetchFn = async (url, init) => {
+    const n = (fetchFn.n = (fetchFn.n || 0) + 1)
+    if (n === 1) return { status: 200, text: async () => '{}' }
+    if (n === 2) return { status: 200, text: async () => JSON.stringify(okMint.body) }
+    return { status: 403, text: async () => html }
+  }
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn })
+  ok('a proxy echoing the request body as HTML does not leak the code either',
+    res.ok === false && !JSON.stringify(res).includes(CODE))
+  ok('…and the page is still shown, so the operator can see it was a proxy and not the relay',
+    /403 Forbidden/.test(res.detail))
+}
+{
+  // The caller's own fetch rejecting with the body in the message — a real axios/undici shape.
+  const fetchFn = async (url) => {
+    if (url.endsWith('/api/join-policy')) return { status: 200, text: async () => '{}' }
+    if (url.endsWith('/api/invites')) return { status: 200, text: async () => JSON.stringify(okMint.body) }
+    throw new Error(`request failed: POST /api/invites/claim {"code":"${CODE}"}`)
+  }
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn })
+  ok('a rejected fetch carrying the body in its message does not leak the code',
+    res.ok === false && res.outcome === 'unreachable' && !JSON.stringify(res).includes(CODE))
+}
+{
+  // NEGATIVE CONTROL for all three. The scrub only replaces THIS code — an unrelated secret-looking
+  // string in a relay error must still come through, or "nothing leaks" is just "nothing is shown".
+  const { fetchFn } = harness([noPolicy, okMint,
+    { status: 400, body: { error: 'rejected by rule v2.some-other-token-entirely' } }])
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn })
+  ok('NEGATIVE CONTROL — a string that is not the code is passed through untouched',
+    /v2\.some-other-token-entirely/.test(res.detail))
+}
+
+// --- the duplicated signer: the failure that reports success -------------------------------------
+// Two signers arrive as two parameters, and on the bunker route both are read off the same object.
+// Hand the owner's signer to both halves and the claim succeeds — the owner IS a relay member — so
+// the relay returns 200 and the result reads `already_a_member`, the outcome added to be reassuring
+// about a re-run. The agent never joined. No status code anywhere says so.
+{
+  const { calls, fetchFn } = harness([noPolicy, okMint, { status: 200, body: { status: 'already_member' } }])
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign: ownerSign,
+    expectAgentPubkey: agentPk, fetchFn })
+  ok('the owner\'s signer passed for BOTH halves is REFUSED, not reported as success',
+    res.ok === false && res.outcome === 'wrong_signer')
+  ok('…and it says plainly that nobody joined', /Nobody joined/i.test(res.detail))
+  ok('…and the claim was never sent, so the invitation was not spent on the wrong key',
+    calls.length === 2)
+  ok('…and it still leaks no code', !JSON.stringify(res).includes(CODE))
+}
+{
+  // The same relay answer, reached honestly: the AGENT's key really was already a member. Without
+  // this, the refusal above is indistinguishable from refusing `already_member` outright — and that
+  // outcome is a legitimate, common re-run.
+  const { fetchFn } = harness([noPolicy, okMint, { status: 200, body: { status: 'already_member' } }])
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn })
+  ok('the SAME already_member answer, signed by the agent, is still a success',
+    res.ok === true && res.outcome === 'already_a_member')
+  ok('…so the two are genuinely different results and not one blanket refusal',
+    res.ok === true)
+}
+{
+  // And the other direction on the mint: an agent cannot invite itself.
+  const { calls, fetchFn } = harness([noPolicy])
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign: agentSign, agentSign,
+    expectAgentPubkey: agentPk, fetchFn })
+  ok('the agent\'s own key minting its own invitation is refused at the MINT step',
+    res.ok === false && res.step === 'mint' && res.outcome === 'wrong_signer')
+  ok('…before anything is created', calls.length === 1)
+}
+{
+  // `already` must key on the relay's status FIELD, not a sweep of the serialised body. A detail
+  // line mentioning the word does not make this a re-run, and calling it one hides a real join.
+  const { fetchFn } = harness([noPolicy, okMint,
+    { status: 200, body: { status: 'joined', note: 'this key was already known to the directory' } }])
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn })
+  ok('the word "already" elsewhere in the body does NOT turn a real join into a re-run',
+    res.ok === true && res.outcome === 'joined')
+}
+
+// --- the key being invited is required, and named ------------------------------------------------
+{
+  let threw = null
+  try {
+    await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign,
+      fetchFn: async () => ({ status: 200, text: async () => '{}' }) })
+  } catch (e) { threw = e.message }
+  ok('omitting the key being invited is refused up front, not skipped as optional',
+    /expectAgentPubkey/.test(String(threw)))
+  ok('…and says what goes wrong without it', /looks like success/.test(String(threw)))
 }
 
 // --- and the same fixture minus the one defect still succeeds -----------------------------------
 // Without this, every refusal above is equally satisfied by the function refusing everything.
 {
   const { fetchFn } = harness([noPolicy, okMint, { status: 200, body: { status: 'joined' } }])
-  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, fetchFn })
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn })
   ok('a clean run still succeeds — the refusals above are selective', res.ok === true)
 }
 
@@ -275,11 +388,11 @@ const agrees = async () => ({ accepted: true, ageConfirmed: true })
 
 // --- the signers are required, and named ---------------------------------------------------------
 let refused = null
-try { await letOntoRelay({ relayBase: RELAY, agentSign, fetchFn: async () => ({ status: 200, text: async () => '{}' }) }) }
+try { await letOntoRelay({ relayBase: RELAY, agentSign, expectAgentPubkey: agentPk, fetchFn: async () => ({ status: 200, text: async () => '{}' }) }) }
 catch (e) { refused = e.message }
 ok('a missing owner signer is refused, and says the mint is the owner\'s', /ownerSign/.test(String(refused)) && /owner/.test(String(refused)))
 refused = null
-try { await letOntoRelay({ relayBase: RELAY, ownerSign, fetchFn: async () => ({ status: 200, text: async () => '{}' }) }) }
+try { await letOntoRelay({ relayBase: RELAY, ownerSign, expectAgentPubkey: agentPk, fetchFn: async () => ({ status: 200, text: async () => '{}' }) }) }
 catch (e) { refused = e.message }
 ok('a missing agent signer is refused, and says the claim is the agent\'s', /agentSign/.test(String(refused)) && /agent key itself/.test(String(refused)))
 

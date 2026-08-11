@@ -47,15 +47,35 @@ const EXPLAIN = {
 }
 const explain = (code, fallback) => EXPLAIN[String(code || '')] || code || fallback
 
+// THE ONE THING THAT MUST NOT ESCAPE. Once the code exists, every string this function hands back
+// has passed through a relay, a proxy or a caller-supplied `fetchFn`, and any of the three can echo
+// the request body. A WAF's HTML error page quotes what it blocked; a relay names the code it did
+// not recognise; a rejected promise's message can carry the whole body. None of that is our text,
+// so it cannot be reasoned about — it is scrubbed instead. Anyone holding the code can join this
+// relay, and a `detail` line ends up in a log or a screenshot.
+const scrubber = (code) => (s) => (code ? String(s ?? '').split(code).join('«invite code redacted»') : String(s ?? ''))
+
 // The default answer to "do you accept these terms?" is NO. Accepting terms is an act with legal
 // weight and it belongs to a person, so a caller that forgets to wire consent must fail closed —
 // never sail through on a default that says yes on the operator's behalf.
 const REFUSE_BY_DEFAULT = () => ({ accepted: false })
 
-async function signedPost({ relayBase, path, bodyObj, sign, fetchFn }) {
+async function signedPost({ relayBase, path, bodyObj, sign, fetchFn, expectPubkey = null, rejectPubkey = null }) {
   const url = expectedUrl(relayBase, path)
   const { template, body } = await nip98Template({ url, method: 'POST', body: JSON.stringify(bodyObj) })
   const signed = await sign(template)
+  const by = String(signed && signed.pubkey || '').toLowerCase()
+  // WHO SIGNED, checked before the request leaves rather than inferred from its answer. A claim
+  // signed by the owner succeeds — the owner is already a relay member — and returns
+  // `already_a_member`, the one outcome added to be reassuring about a re-run. The agent still
+  // cannot authenticate, its kind:0 still cannot be published, and no status code says so. The
+  // signing pubkey is in hand here at zero cost, so the assumption becomes a check.
+  if (expectPubkey && by !== String(expectPubkey).toLowerCase()) {
+    throw new Error(`SIGNER_MISMATCH: this request had to be signed by ${String(expectPubkey).slice(0, 12)}… and was signed by ${by.slice(0, 12) || 'nothing'}…`)
+  }
+  if (rejectPubkey && by === String(rejectPubkey).toLowerCase()) {
+    throw new Error(`SIGNER_MISMATCH: this request must NOT be signed by the joining key (${by.slice(0, 12)}…)`)
+  }
   // The SAME string that was hashed. Re-serialising here would sign one set of bytes and send
   // another, and the relay's refusal for that reads as a signing failure rather than this.
   const res = await fetchFn(url, {
@@ -116,9 +136,16 @@ export async function joinPolicy({ relayBase, fetchFn = fetch }) {
 ///
 /// `step` is always set, so a failure names which half broke — "mint" and "claim" fail for entirely
 /// different reasons and send the operator to different places.
-export async function letOntoRelay({ relayBase, ownerSign, agentSign, acceptPolicy = REFUSE_BY_DEFAULT, ttlSecs = 3600, fetchFn = fetch }) {
+export async function letOntoRelay({ relayBase, ownerSign, agentSign, expectAgentPubkey, acceptPolicy = REFUSE_BY_DEFAULT, ttlSecs = 3600, fetchFn = fetch }) {
   if (typeof ownerSign !== 'function') throw new Error('ownerSign must be a function — the mint is signed by the owner, through your signer')
   if (typeof agentSign !== 'function') throw new Error('agentSign must be a function — the claim is signed by the agent key itself')
+  // WHICH KEY WAS SUPPOSED TO JOIN. Without this the two signers are only distinguishable by the
+  // parameter they arrived in, and passing the owner's signer for both is a silent success: the
+  // owner is already a member, the claim returns 200, and the result says `already_a_member` — the
+  // reassuring outcome — about a key that never joined. Required, not optional: an optional check
+  // is not performed on the run that needed it.
+  const agentPk = String(expectAgentPubkey || '').toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(agentPk)) throw new Error('expectAgentPubkey must be the joining key\'s 64-character hex pubkey — without it, a claim signed by the wrong key looks like success')
 
   // Ask about the terms BEFORE anything is created. The receipt has to be bound to a code that does
   // not exist yet, but the human decision does not — and gathering it first means declining leaves
@@ -143,8 +170,15 @@ export async function letOntoRelay({ relayBase, ownerSign, agentSign, acceptPoli
 
   let mint
   try {
-    mint = await signedPost({ relayBase, path: MINT_PATH, bodyObj: { ttl_secs: ttlSecs, max_uses: 1 }, sign: ownerSign, fetchFn })
-  } catch (e) { return { ok: false, step: 'mint', outcome: 'unreachable', detail: e.message } }
+    mint = await signedPost({ relayBase, path: MINT_PATH, bodyObj: { ttl_secs: ttlSecs, max_uses: 1 },
+      sign: ownerSign, fetchFn, rejectPubkey: agentPk })
+  } catch (e) {
+    if (/^SIGNER_MISMATCH/.test(e.message)) {
+      return { ok: false, step: 'mint', outcome: 'wrong_signer',
+        detail: 'The invitation was signed by the agent\'s own key rather than by yours. An agent cannot invite itself — nothing was created.' }
+    }
+    return { ok: false, step: 'mint', outcome: 'unreachable', detail: e.message }
+  }
 
   if (mint.status === 403) {
     return { ok: false, step: 'mint', outcome: 'not_an_admin', status: 403,
@@ -189,20 +223,33 @@ export async function letOntoRelay({ relayBase, ownerSign, agentSign, acceptPoli
     }
   }
 
+  const scrub = scrubber(code)
+
   let claim
   try {
     const body = receipt ? { code, policy_receipt: receipt } : { code }
-    claim = await signedPost({ relayBase, path: CLAIM_PATH, bodyObj: body, sign: agentSign, fetchFn })
-  } catch (e) { return { ok: false, step: 'claim', outcome: 'unreachable', detail: e.message } }
+    claim = await signedPost({ relayBase, path: CLAIM_PATH, bodyObj: body, sign: agentSign, fetchFn,
+      expectPubkey: agentPk })
+  } catch (e) {
+    if (/^SIGNER_MISMATCH/.test(e.message)) {
+      // Caught before the request left, so the invitation is unclaimed rather than spent on the
+      // wrong key — but it exists, and it is a bearer secret with a live TTL.
+      return { ok: false, step: 'claim', outcome: 'wrong_signer',
+        detail: 'The join was signed by a different key from the one being invited, so it was not sent. Nobody joined. An unused invitation was created and will expire on its own.' }
+    }
+    return { ok: false, step: 'claim', outcome: 'unreachable', detail: scrub(e.message) }
+  }
 
   if (claim.status < 200 || claim.status >= 300) {
     return { ok: false, step: 'claim', outcome: 'refused', status: claim.status,
-      detail: explain(claim.json?.error, claim.text.slice(0, 160)) }
+      detail: scrub(explain(claim.json?.error, claim.text.slice(0, 160))) }
   }
 
   // "Joined" and "already a member" are both success and are DIFFERENT facts — one consumed the
-  // invitation, the other did not. Collapsing them hides a re-run.
-  const already = /already/i.test(JSON.stringify(claim.json || {}))
+  // invitation, the other did not. Collapsing them hides a re-run. Read from the field the relay
+  // puts it in, NOT from the serialised body: a substring sweep over the whole response calls it a
+  // re-run because some unrelated string happened to contain the word.
+  const already = /already/i.test(String(claim.json?.status ?? ''))
   return {
     ok: true, step: 'claim', status: claim.status,
     outcome: already ? 'already_a_member' : 'joined',
