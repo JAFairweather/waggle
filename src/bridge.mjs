@@ -2623,6 +2623,10 @@ async function postRelay(ev, sender, dest, wantCh, body) {
   }).catch(e => {
     // A channel waggle is not a member of fails HERE with a distinct RELAY[buzz] ERR — it can never
     // masquerade as a §7 drop, and it is NOT marked seen, so it retries rather than dropping.
+    // That promise is load-bearing and it is now pinned by `tests/relay_ingress.mjs` case (e),
+    // against the payload the live binary actually returns. An earlier version of the fix below
+    // broke it while this comment still claimed it held — and the comment is what the next reader
+    // trusts, so it is now the thing a test fails on.
     //
     // But not every refusal is worth retrying, and rolling back UNCONDITIONALLY was a defect. Buzz
     // returns its own verdict: `e.message` is the CLI's stderr (egress.mjs:369), JSON carrying an
@@ -2654,11 +2658,25 @@ async function postRelay(ev, sender, dest, wantCh, body) {
     // differ in what the SENDER is told, and that is the whole point of separating them. Anything
     // this cannot classify still stays retryable: being unable to read a refusal is not evidence
     // that it is permanent, and silently dropping a message that would have landed is worse.
+    //
+    // AND THE CATEGORY IS THE GATE, NOT THE FLAG. Reading `retryable === false` and treating
+    // everything that is not `delivery_unknown` as a definite refusal was still too coarse, because
+    // Buzz also returns it for `relay_error: restricted: not a channel member` — captured from the
+    // live binary, exit 2. That is the case the comment at the top of this handler promises will
+    // retry, and it is the most OPERATOR-FIXABLE refusal there is: waggle is simply not in the
+    // channel yet, and a minute later the same message would land. Dropping it permanently for a
+    // condition an operator is about to fix is the exact failure this whole handler exists to
+    // prevent, running in the opposite direction.
+    //
+    // So the classification is an ALLOWLIST. A category earns 'do not retry' by being understood;
+    // it does not earn it by carrying a flag. An unrecognised category — a `relay_error`, a
+    // `network_error`, one buzz-cli adds next year — falls through to retry, which is the safe
+    // direction and the one this handler already argues for everywhere else.
     const detail = String(e.message || '')
     let verdict = null
     try {
       const parsed = JSON.parse(detail)
-      if (parsed.retryable === false) verdict = parsed.error === 'delivery_unknown' ? 'unknown' : 'refused'
+      if (parsed.retryable === false) verdict = REFUSAL_CATEGORIES[parsed.error] ?? null
     } catch { verdict = null }
     if (verdict) {
       markRelaySeen(ev.id) // commit either way — a re-send risks a duplicate, not a rescue
@@ -2684,6 +2702,14 @@ async function postRelay(ev, sender, dest, wantCh, body) {
     err(`RELAY[buzz] ERR -> ${dest}: ${detail} — claim rolled back, will retry`)
   })
 }
+// The ONLY two `retryable:false` categories waggle claims to understand (buzz-cli `error.rs`).
+// Everything else — including `relay_error`, which covers "restricted: not a channel member" — is
+// deliberately absent, so it retries. Membership of this table is a claim that the category is
+// definitely terminal; absence is not a claim about anything.
+const REFUSAL_CATEGORIES = Object.freeze({
+  user_error: 'refused',        // Buzz looked at it and said no. Retrying replays a known loss.
+  delivery_unknown: 'unknown',  // Buzz never told us; the write PLAUSIBLY landed. Re-sending dups.
+})
 async function handleRelayIngress(ev, { openSealFn = openSeal, openRumorFn = openRumor, postRelayFn = postRelay,
   openedSeal = null, openedRumor = null, budgetCharged = false } = {}) {
   if (!hasBridgeKey() || !PUB) return
