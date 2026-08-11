@@ -19,12 +19,19 @@
 // between signing and sending produces a valid signature over the wrong bytes, which fails as
 // "payload tag SHA-256 mismatch" and reads like a signing bug rather than a serialisation one.
 
-// IT DOES NOT SIGN, and that is the egress ban's rule rather than a style choice: no module under
-// src/ may reach `finalizeEvent` except the two sanctioned signer modules. Signing lives with
-// whoever holds the key — here, `tools/relay-invite.mjs`. So this builds an UNSIGNED template and
-// the caller signs it. The guard caught this file on its first draft; the fix is to obey it, never
-// to widen it.
-import { createHash } from 'node:crypto'
+// IT DOES NOT SIGN. That started as the egress ban's rule — no module under src/ may reach
+// `finalizeEvent` except the two sanctioned signer modules — and it turns out to be the right shape
+// anyway: the console signs through the operator's own signer (an extension or a bunker, never a
+// key this page holds), and the CLI signs with a key from a file. Neither can be baked in here. So
+// this builds an UNSIGNED template and whoever holds the key signs it.
+//
+// IT LIVES IN console/ because the browser is one of its two callers and `tools/serve-console.mjs`
+// serves only this directory — a module under src/ is not reachable from the page at all. tests/
+// already import from console/ for exactly this reason. The alternative was two copies of a
+// security-relevant builder, which is how the two drift apart.
+//
+// Hashing goes through Web Crypto rather than `node:crypto`, so the same file runs in both places.
+// That makes the builder ASYNC, which is the one thing to notice when calling it.
 
 /// The URL the relay will compare against. It builds its own from the TENANT HOST — the Host
 /// header the request arrives on — not from any configured URL, so the `u` tag has to name the
@@ -44,11 +51,13 @@ export function expectedUrl(relayUrl, path) {
 /// Build the unsigned auth event, and return the exact body string it commits to. Returning the
 /// body is not convenience — it is what stops the caller sending different bytes from the ones
 /// that were hashed.
-export function nip98Template({ url, method = 'POST', body = '', now = Math.floor(Date.now() / 1000) }) {
+export async function nip98Template({ url, method = 'POST', body = '', now = Math.floor(Date.now() / 1000) }) {
   if (!url) throw new Error('nip98Template needs a url — the relay compares it against the tenant host')
   const m = String(method).toUpperCase()
   const bodyStr = typeof body === 'string' ? body : JSON.stringify(body)
-  const payload = createHash('sha256').update(Buffer.from(bodyStr, 'utf8')).digest('hex')
+  const bytes = new TextEncoder().encode(bodyStr)
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  const payload = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('')
   return {
     template: {
       kind: 27235,
@@ -66,5 +75,9 @@ export function nip98Template({ url, method = 'POST', body = '', now = Math.floo
 export function nip98Header(signedEvent) {
   const ev = signedEvent || {}
   if (!ev.sig || !ev.id || !ev.pubkey) throw new Error('nip98Header needs a SIGNED event — sign the template first')
-  return `Nostr ${Buffer.from(JSON.stringify(ev), 'utf8').toString('base64')}`
+  // btoa over the UTF-8 bytes, not over the string: a multi-byte character in any tag would make
+  // btoa throw on the raw string, and the only tag values here are a URL and hex — until somebody
+  // adds one that is not.
+  const json = new TextEncoder().encode(JSON.stringify(ev))
+  return `Nostr ${btoa(String.fromCharCode(...json))}`
 }
