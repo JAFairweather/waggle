@@ -366,7 +366,7 @@ import { CAP_LABEL, capLabel, CAP_ENFORCER, capEnforcer, ISSUABLE, describeGrant
 import { scopeHash } from './scope-hash.mjs'
 import { mintAgentKey, keyFileContents, keyFileName } from './mint-agent-key.mjs'
 import { letOntoRelay } from './relay-invite.mjs'
-import { publishProfile } from './publish-profile.mjs'
+import { publishProfile, publishDmInbox } from './publish-profile.mjs'
 import { SimplePool } from 'nostr-tools/pool'
 const { decode } = nip19
 
@@ -949,7 +949,25 @@ $('mint-name-go').addEventListener('click', async () => {
       st.className = 'status ok'
       // This one IS proof, and it is the only line in this panel that gets to say so: written, then
       // read back cold from a new connection and matched by id.
-      st.textContent = `Named “${res.name}” — published and read back cold from the relay. Save the key below.`
+      st.className = 'status'
+      st.textContent = `Named “${res.name}”. Now declaring where it should receive messages…`
+      // A name without an inbox is a reachable-looking dead end: waggle refuses to deliver to a key
+      // with no kind:10050 rather than picking relays on its behalf, and logs exactly that.
+      const box = await publishDmInbox({
+        dmRelays: NVOY_RELAYS,
+        pubkeyHex: minted.display.pubkeyHex,
+        openPool: freshPool,
+        nowSec: Math.floor(Date.now() / 1000),
+        sign: (t) => minted.secret.sign(t, { decode: nip19.decode, finalize: finalizeEvent }),
+      })
+      if (!box.ok) {
+        st.className = 'status err'
+        st.textContent = `Named “${res.name}”, but it cannot be reached: ${box.detail} [${box.step}: ${box.outcome}]`
+        btn.disabled = false
+        return
+      }
+      st.className = 'status ok'
+      st.textContent = `Named “${res.name}” and reachable — both published and read back cold. Save the key below.`
       btn.disabled = true; btn.textContent = 'Named'
     } else {
       st.className = 'status err'

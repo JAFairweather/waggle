@@ -151,5 +151,64 @@ try { await publishProfile({ relayUrl: RELAY, name: 'X', pubkeyHex: 'not-hex', s
 catch (e) { threw = e.message }
 ok('a bad pubkey is refused up front — the read-back is by author and cannot work without it', /hex pubkey/.test(String(threw)))
 
-console.log(fails ? `\nPUBLISH PROFILE FAIL — ${fails}` : '\nPUBLISH PROFILE PASS — a name is only named once it has been read back cold')
+
+// --- the inbox. A named agent with no kind:10050 is a reachable-looking dead end ------------------
+// waggle refuses to deliver to a key with no NIP-17 list rather than choosing relays on its behalf,
+// and it logged exactly that against a live agent: "RETURN not sent -> …: no valid kind:10050".
+import { publishDmInbox } from '../console/publish-profile.mjs'
+
+const DM = ['wss://nos.lol', 'wss://relay.primal.net']
+{
+  const { state, openPool } = pools()
+  const res = await publishDmInbox({ dmRelays: DM, pubkeyHex: pk, sign, openPool, nowSec: NOW })
+  ok('it reports the key as reachable', res.ok === true && res.outcome === 'reachable' && res.proven === true)
+  ok('the event is a kind:10050 signed by the AGENT', state.published[0].ev.kind === 10050 && state.published[0].ev.pubkey === pk)
+  ok('…listing every relay asked for, as relay tags',
+    JSON.stringify(state.published[0].ev.tags) === JSON.stringify([['relay', DM[0]], ['relay', DM[1]]]))
+  ok('…with empty content, because a delivery preference carries no message', state.published[0].ev.content === '')
+  ok('it is published to PUBLIC relays, not the community one — sealed mail travels over open Nostr',
+    JSON.stringify(state.published[0].urls) === JSON.stringify(DM))
+  ok('the read-back opens a second pool and filters by kind and author',
+    state.opened === 2 && state.lastFilter.kinds[0] === 10050 && state.lastFilter.authors[0] === pk)
+}
+{
+  const { openPool } = pools({ served: null })
+  const res = await publishDmInbox({ dmRelays: DM, pubkeyHex: pk, sign, openPool, nowSec: NOW })
+  ok('accepted-then-not-served leaves the key UNREACHABLE, and says so',
+    res.ok === false && res.outcome === 'not_served' && res.proven === false && /nothing can be delivered/i.test(res.detail))
+}
+{
+  const { openPool } = pools({ served: { id: 'older', tags: [] } })
+  const res = await publishDmInbox({ dmRelays: DM, pubkeyHex: pk, sign, openPool, nowSec: NOW })
+  ok('an older list served back is not proof', res.ok === false && res.outcome === 'stale' && res.proven === false)
+}
+{
+  const { state, openPool } = pools()
+  const res = await publishDmInbox({ dmRelays: DM, pubkeyHex: pk, openPool, nowSec: NOW, sign: () => null })
+  ok('a cleared key cannot declare its own inbox', res.ok === false && res.outcome === 'cannot_sign')
+  ok('…and nothing is published', state.published.length === 0)
+}
+{
+  // Publishing somewhere OTHER than the relays being declared is legitimate — waggle discovers the
+  // list on its own read relays — so the two lists are separate parameters and must stay separate.
+  const { state, openPool } = pools()
+  await publishDmInbox({ dmRelays: DM, publishTo: ['wss://elsewhere.example'], pubkeyHex: pk, sign, openPool, nowSec: NOW })
+  ok('the relays it is published TO and the relays it DECLARES are not conflated',
+    JSON.stringify(state.published[0].urls) === JSON.stringify(['wss://elsewhere.example']) &&
+    state.published[0].ev.tags.length === 2)
+}
+
+const inboxRefuses = async (dmRelays) => {
+  try { await publishDmInbox({ dmRelays, pubkeyHex: pk, sign, openPool: pools().openPool, nowSec: NOW }); return null }
+  catch (e) { return e.message }
+}
+ok('an empty relay list is refused, because it declares an inbox nobody can deliver to',
+  /at least one wss/.test(String(await inboxRefuses([]))))
+ok('a non-wss relay is dropped, and dropping them all is refused',
+  /at least one wss/.test(String(await inboxRefuses(['http://nope.example', 'not a url']))))
+// BOTH DIRECTIONS: the filter must keep the good ones rather than refusing everything.
+ok('…while a valid relay alongside a junk one still gets through', await inboxRefuses(['wss://ok.example', 'nonsense']) === null)
+ok('an ordinary list is accepted', await inboxRefuses(DM) === null)
+
+console.log(fails ? `\nPUBLISH PROFILE FAIL — ${fails}` : '\nPUBLISH PROFILE PASS — a name is read back cold, and a name without an inbox is not reachable')
 process.exit(fails ? 1 : 0)

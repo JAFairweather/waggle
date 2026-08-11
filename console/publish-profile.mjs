@@ -99,3 +99,62 @@ export async function publishProfile({ relayUrl, name, about = '', pubkeyHex, si
     detail: `Read back cold from the relay by id — this key now answers to that name.`,
   }
 }
+
+/// Declare where this key wants sealed mail delivered — NIP-17's kind:10050.
+///
+/// WITHOUT THIS, A NAMED AGENT IS STILL UNREACHABLE, and waggle says so rather than guessing:
+/// `RETURN not sent -> …: no valid kind:10050 recipient DM relay list (NIP-17)`. NIP-17 treats a
+/// missing list as "not ready for DMs", and waggle honours that instead of falling back to relays
+/// the recipient never asked for — a fallback would deliver somebody's private mail to a relay of
+/// the bridge's choosing.
+///
+/// This goes to PUBLIC relays, not the community one. Sealed mail travels over open Nostr; the
+/// community relay is where the name lives, and the two are not interchangeable.
+export async function publishDmInbox({ dmRelays, publishTo, pubkeyHex, sign, openPool, nowSec }) {
+  if (typeof sign !== 'function') throw new Error('sign must be a function — only this key can declare its own inbox')
+  const pk = String(pubkeyHex || '').toLowerCase()
+  if (!HEX64_RE.test(pk)) throw new Error('publishDmInbox needs the agent\'s 64-character hex pubkey, to read the list back by author')
+  const relays = (dmRelays || []).map(u => String(u).trim()).filter(u => /^wss:\/\//i.test(u))
+  if (!relays.length) throw new Error('a recipient relay list needs at least one wss:// relay — an empty list is worse than none, it declares an inbox nobody can deliver to')
+  const targets = (publishTo && publishTo.length) ? publishTo : relays
+
+  let signed
+  try {
+    signed = await sign({ kind: 10050, created_at: nowSec, tags: relays.map(u => ['relay', u]), content: '' })
+  } catch (e) { return { ok: false, step: 'sign', outcome: 'cannot_sign', proven: false, detail: e.message } }
+  if (!signed || !signed.id || !signed.sig) {
+    return { ok: false, step: 'sign', outcome: 'cannot_sign', proven: false,
+      detail: 'The agent key is no longer in this page, so it cannot declare its own inbox. Make a new key and do this before saving it.' }
+  }
+
+  const writePool = openPool()
+  try {
+    await writePool.publish(targets, signed, { onauth: sign })
+  } catch (e) {
+    return { ok: false, step: 'publish', outcome: 'refused', proven: false, detail: String(e && e.message || e) }
+  } finally { writePool.close(targets) }
+
+  // waggle looks for this on its own read relays, so proving it exists on ours is the closest this
+  // page can get. Cold, and from a second connection, for the same reason as everything else here.
+  const readPool = openPool()
+  let found = null
+  try {
+    found = await readPool.get(targets, { kinds: [10050], authors: [pk] }, { onauth: sign })
+  } catch (e) {
+    return { ok: false, step: 'readback', outcome: 'unreadable', proven: false,
+      detail: `The inbox was accepted but could not be read back: ${String(e && e.message || e)}` }
+  } finally { readPool.close(targets) }
+
+  if (!found) {
+    return { ok: false, step: 'readback', outcome: 'not_served', proven: false,
+      detail: 'The relays accepted the inbox declaration and then would not serve it back, so nothing can be delivered to this key yet.' }
+  }
+  if (found.id !== signed.id) {
+    return { ok: false, step: 'readback', outcome: 'stale', proven: false,
+      detail: 'An older inbox declaration was served back instead of the one just published.' }
+  }
+  return {
+    ok: true, step: 'readback', outcome: 'reachable', proven: true, relays,
+    detail: 'Inbox declared and read back cold — waggle can now deliver to this key.',
+  }
+}
