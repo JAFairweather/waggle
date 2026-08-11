@@ -12,7 +12,19 @@ entirely by hand — and then the first slice of the build.
 | `src/agent_install_state.mjs` | **built** — four-state reporting: present / unverified / missing / unknown |
 | `tools/connect-agent.mjs` | **built** — the machine-side half, idempotent, never overwrites |
 | NIP-05 registration | **not built** — the directory is not this repo's to write |
-| kind 0 publication | **not built** |
+| kind 0 publication | **not built, and now known to be the critical path** — see below |
+
+**The `kind:0` row is the whole remaining gap (#344).** It was listed here as one missing piece
+among several. It is not: it is the only thing standing between this design and a working
+experience. Buzz resolves an at-word against a `users` row's `display_name`, which only
+`handle_kind0_profile` writes, keyed on `event.pubkey` — and `event.rs` rejects any event whose
+pubkey differs from the authenticated identity, so **waggle cannot publish it on the agent's
+behalf**. The agent's own key must, and the community relay refuses to authenticate an outside key
+at NIP-42 time (`enforce_relay_membership`, ahead of channel membership, on both the websocket and
+HTTP paths). Proven with a live 2×2, not read off the source.
+
+So this row is **not a build task**. It is an infrastructure ask, and it is the one thing to raise
+rather than engineer around. Everything else in this design works without it.
 
 Three suites cover the new code — `capability_vocabulary`, `connect_plan`, `agent_install_state` —
 each with a negative control that fires. **None of it has run in production**, and a green suite is
@@ -181,7 +193,7 @@ grantee and subject together rather than from the capability alone:
 | cap | today | proposed |
 |---|---|---|
 | `admit` | Post into the channel | **‹grantee› may post into ‹channel›** |
-| `admit+read` | Post into the channel, and read it | **‹grantee› may post into and read ‹channel›** |
+| `admit+read` | Post into the channel, and read it | **‹grantee› may post into and read ‹channel›** — *not issuable; see below* |
 | `task` | Take tasks from you | **‹grantee› may send instructions to ‹agent›** |
 | `task+act` | Take tasks, and act on them | **‹grantee› may instruct ‹agent›, and ‹agent› may act on it** |
 | `task-relay` | Carry signed instructions | **‹grantee› may carry instructions addressed to ‹agent›** |
@@ -407,3 +419,27 @@ Plus the two that announced nothing: a **wrong-identity pairing** that worked pe
 ---
 
 Drafted with assistance from [Claude Code](https://claude.com/claude-code)
+
+---
+
+## What is settled, and must not be re-opened (#344)
+
+This document proposed the vocabulary in a "today / proposed" table. **The proposed column shipped**
+— `console/capability-vocabulary.mjs` carries it, and #348 extended plain verbs to the chrome around
+it, so the console no longer says "admit" or "grant" to a person at all. Read the table as a record
+of a decision already made, not as a plan.
+
+One row of it never will ship as written. `admit+read` is **not issuable**, for two independent
+reasons, and the first is settled by live evidence rather than by reasoning about the source:
+
+1. The community relay refuses an outside key at NIP-42 AUTH time. `enforce_relay_membership`
+   consults a **different table** from `channel_members` and fires before any channel is consulted,
+   on both the websocket and the HTTP `/events` path. `add-member` will accept any 32-byte key and
+   the roster will show it — and that row is **inert**, because the key still cannot authenticate.
+   An owner-minted NIP-OA auth tag does not admit it either.
+2. Conveying read for real would mean putting channel key material in a `30440`, which makes the
+   console key-touching and makes revoke a Concord rotation rather than an event signer.
+
+What an outside agent actually receives is the **return lane** — mentions carried back to it by
+waggle. That is the design. It is not a stopgap for missing read, and no work here should assume
+native read is coming.
