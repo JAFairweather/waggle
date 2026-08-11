@@ -442,9 +442,17 @@ const PUB = cfg.public ? {
   mirrorConsentTermsUrl: cfg.public.mirror_consent_terms_url || null,
   mirrorConsentUrl: cfg.public.mirror_consent_url || null,
   mirrorAskPerHour: Number(cfg.public.mirror_ask_per_hour != null ? cfg.public.mirror_ask_per_hour : 20),
+  // #355: seat an admitted agent in `inbox`'s roster, so a crew member can NAME it. Buzz refuses a
+  // whole message when an at-word does not resolve to a channel member, and `--mention <hex>` of a
+  // non-member is refused too — so membership is the gate on being nameable at all.
+  //
+  // OFF by default, and deliberately: this is the one verb that lets waggle mutate who is in a
+  // channel. It should be switched on by an owner who means it, not arrive with a deploy. Off, the
+  // grant still admits — the agent is a return-lane recipient either way; it is only unnameable.
+  seatGrantees: /^(1|true|yes|on)$/i.test(String(cfg.public.seat_grantees || '')),
   // #67: a signed state record enables a remote/read-only console. It is intentionally OFF until
   // an owner decides their follow list and consent state may be public relay metadata.
-  controlStatePublish: /^(1|true|yes|on)$/i.test(String(cfg.public.control_state_publish || '')),
+  controlStatePublish:/^(1|true|yes|on)$/i.test(String(cfg.public.control_state_publish || '')),
   controlStateRefreshSecs: Number(cfg.public.control_state_refresh_secs != null ? cfg.public.control_state_refresh_secs : 300),
   controlStateCommandAt: Number(cfg.public.control_state_command_at || 0),
   watchlistCommandAt: Number(cfg.public.watchlist_command_at || 0),
@@ -806,7 +814,67 @@ function activeReturnLane() {
   }
   return routes
 }
-function processGrantEvent(ev) {
+// #355: the channel roster is a PROJECTION of the grant set, never an authority of its own.
+//
+// A crew member cannot NAME an agent that is not in the roster. Buzz resolves every at-word in a
+// message against the channel's kind:39002 member list and refuses the WHOLE message if one fails
+// (#336), and `missing_members` has no carve-out for explicit mentions either — so `--mention
+// <hex>` of a non-member is refused as well. Admitted-but-unseated is admitted-and-unnameable.
+//
+// Which direction each half runs is what keeps the authority where it belongs. Seating CREATES
+// access, so it happens only downstream of a 440 this bridge has already verified as signed by a
+// configured grantor and scoped to its own channel. Unseating REDUCES access, so it is automated —
+// and it must be, or the row outlives the grant that was its only justification.
+//
+// This does NOT give the agent read. `is_relay_member` is a different table from `channel_members`
+// and gates NIP-42 AUTH ahead of any channel processing (#344), so an outside key still cannot
+// subscribe. The return lane remains the read path.
+const seated = new Set()
+function seatingChannel() {
+  if (!PUB?.seatGrantees) return null
+  // Boot resolves a configured channel NAME to a UUID. A name still sitting here means that
+  // resolution did not happen, and `--channel` takes a UUID — so this is a refusal, not a retry.
+  const ch = String(PUB.inbox || '')
+  return /^[0-9a-fA-F-]{36}$/.test(ch) ? ch : null
+}
+async function seatGrantee(pubkey, emitFn = emit) {
+  const dest = seatingChannel()
+  if (!dest) return false
+  const pk = String(pubkey || '').toLowerCase()
+  if (seated.has(pk)) return false            // idempotent within a process; the boot replay re-asserts once
+  if (FORWARD_MODE !== 'buzz') { log(`SEAT[dryrun] ${pk.slice(0, 12)}… -> ${dest}`); seated.add(pk); return true }
+  try {
+    await emitFn({ template: 'member_seat', dest, pubkey: pk })
+    seated.add(pk)
+    log(`SEAT ok: ${pk.slice(0, 12)}… is now in the ${dest} roster — a crew member can name them`)
+    return true
+  } catch (e) {
+    // NOT marked seated, so the next grant replay retries. Loud, because the visible symptom of a
+    // silent failure here is somebody's whole message being refused for naming this agent.
+    err(`SEAT FAILED: ${pk.slice(0, 12)}… -> ${dest}: ${e.message} — they are admitted but NOT nameable`)
+    return false
+  }
+}
+async function unseatGrantee(pubkey, emitFn = emit) {
+  const dest = seatingChannel()
+  if (!dest) return false
+  const pk = String(pubkey || '').toLowerCase()
+  if (FORWARD_MODE !== 'buzz') { log(`UNSEAT[dryrun] ${pk.slice(0, 12)}… -> ${dest}`); seated.delete(pk); return true }
+  try {
+    await emitFn({ template: 'member_unseat', dest, pubkey: pk })
+    seated.delete(pk)
+    log(`UNSEAT ok: ${pk.slice(0, 12)}… removed from the ${dest} roster`)
+    return true
+  } catch (e) {
+    // Deliberately still cleared: the grant is gone either way, and a stale `seated` entry would
+    // suppress the re-seat if the same key were admitted again. The row is the thing that may now
+    // be stale, and saying so is the point of this line.
+    seated.delete(pk)
+    err(`UNSEAT FAILED: ${pk.slice(0, 12)}… -> ${dest}: ${e.message} — the member row may still be there; remove it by hand`)
+    return false
+  }
+}
+function processGrantEvent(ev, { emitFn = emit } = {}) {
   if (!ev || !ev.id || !PUB) return
   const grantors = PUB.grantors
   if (!grantors.includes(String(ev.pubkey || '').toLowerCase())) return
@@ -818,6 +886,7 @@ function processGrantEvent(ev) {
     for (const [pk, g] of grantSet) if (g.grantId === target) {
       grantSet.delete(pk)
       log(`NIPDA revoked: grantee ${pk.slice(0, 12)}… (441 ${ev.id.slice(0, 12)}…)`)
+      unseatGrantee(pk, emitFn)   // the row loses its only justification the moment the grant does
     }
     return
   }
@@ -832,6 +901,7 @@ function processGrantEvent(ev) {
   if (cap !== 'admit' && cap !== 'admit+read') return
   grantSet.set(String(grantee).toLowerCase(), { grantId: ev.id, grantor: ev.pubkey })
   log(`NIPDA granted: ${String(grantee).slice(0, 12)}… admitted (${cap}, 440 ${ev.id.slice(0, 12)}…)`)
+  seatGrantee(String(grantee).toLowerCase(), emitFn)
 }
 
 // In-door consent (#131/#132, docs/CONSENT.md §8). A SEPARATE lane from grantSet by construction —
@@ -3410,7 +3480,7 @@ export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, c
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, seatGrantee, unseatGrantee, seated, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests,
   policyRequests, policyWriterInFlight, remotePolicyGatePublic, processRemotePolicyRequest,
   retryRemotePolicyRequests, __setPolicyWriterRunnerForTests, unframePolicyWriterResponse,
@@ -3485,6 +3555,11 @@ if (!process.env.WB_NO_BOOT) {
     }
     if (PUB.relayChannels.length && hasBridgeKey()) log(`  relay lane: ${PUB.relayChannels.length} allowlisted channel(s); decrypt budget ${PUB.relayDecryptBudget}/min, wrap cap ${PUB.relayMaxWrapBytes}B — a channel waggle has not joined fails as RELAY[buzz] ERR, never a silent §7 drop`)
     else if (PUB.relayChannels.length && !hasBridgeKey()) err('WARN: relay_channels configured but no BRIDGE key to open sealed requests — relay lane INERT.')
+    // State, not intent: "seating is on" and "seating can run" are different facts, and collapsing
+    // them is how an operator ends up believing an agent is nameable when the channel never resolved.
+    if (PUB.seatGrantees && seatingChannel()) log(`  seating: ON — an admitted agent is added to the ${PUB.inbox} roster, and removed on the 441. They become nameable in channel.`)
+    else if (PUB.seatGrantees) err(`  seating: CONFIGURED BUT INERT — public.inbox is ${JSON.stringify(String(PUB.inbox))}, not a resolved channel UUID. Admitted agents will NOT be nameable.`)
+    else log('  seating: off — an admitted agent is a return-lane recipient but is NOT in the roster, so nobody can name it (public.seat_grantees)')
     PUB.relays.forEach(connectPublic)
     if (PUB.controlStatePublish) {
       log('  owner control state: ON — signed follow/consent summary is published to public relays')
