@@ -19,7 +19,7 @@ const ok = (name, value) => { console.log(`${value ? 'ok  ' : 'FAIL'} — ${name
 // The view's model is deliberately dependency-free and DOM-free, so it can be IMPORTED
 // here rather than scraped out of the source. A real import is the stronger check: a
 // renamed export fails to resolve instead of quietly matching nothing.
-const { LANE_VIEW, DROP_VIEW, laneModel } = await import('../console/routing-model.mjs')
+const { LANE_VIEW, DROP_VIEW, laneModel, laneLabel } = await import('../console/routing-model.mjs')
 
 ok('the console declares a lane view for every lane, in the classifier\'s order',
   LANE_VIEW.length === LANE_IDS.length && LANE_VIEW.every((v, i) => v.id === LANE_IDS[i]))
@@ -64,10 +64,19 @@ ok('no consumer restates a lane name as a literal outside lanes.mjs',
 ok('the routing lede separates verification/gate refusals from classified destinations',
   /clears signature verification and the configured gates/.test(routingHtml) &&
   /separate refusal outcomes/.test(routingHtml) && !/Every public note that reaches this bridge lands/.test(routingHtml))
-ok('the 441 control is scoped only to granted-participant admission',
-  /granted participant → quarantine/.test(routingHtml) &&
+// The lane is named here through `laneLabel`, not as a literal (#348). Copy and lane id are now
+// separate fields, and a test that restates the display string would be the same duplication
+// line 62 exists to forbid — it would pass against a page whose wording had drifted from the
+// vocabulary source, and fail against one that was correctly renamed.
+const letInLane = laneLabel(LANE_VIEW[1])
+ok('the 441 control is scoped only to the lane for someone the owner let in',
+  routingHtml.includes(`${letInLane} → quarantine`) &&
   /A 441 does not remove a mirrored feed, vouch, or mute/.test(routingHtml) &&
   !/any lane → dropped/.test(routingHtml))
+// Negative control for the assertion above: it must be capable of failing. A label that appears
+// nowhere in the page has to be rejected, or the check proves only that a string was compared.
+ok('  and that check can fail — a lane label absent from the page is not accepted',
+  !routingHtml.includes('a lane label that is not on this page → quarantine'))
 
 // ── the view's honesty rules ───────────────────────────────────────────────────
 // `laneModel` is pure, so the two rules the routing page must never break are checked

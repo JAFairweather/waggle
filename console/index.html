@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>waggle — who has access</title>
-<meta name="description" content="Read-only view of a waggle bridge's live admissions. Reads signed grants off the relays and verifies them in the page. No server, no keys, no privileged access.">
+<meta name="description" content="Read-only view of who is in a waggle hive. Reads signed invitations off the relays and verifies them in the page. No server, no keys, no privileged access.">
 <script type="importmap">
 { "imports": {
     "nostr-tools": "./vendor/nostr-tools.mjs",
@@ -186,7 +186,7 @@
     <h2>Sign in</h2>
     <p style="margin:0 0 12px;color:var(--dim);font-size:13.5px;max-width:74ch">
       Reading needs no key at all — leave this alone and use the lookup below. Sign in only to
-      <b>act</b>: issue a grant, or revoke one. Your key never enters this page; it stays in your
+      <b>act</b>: let someone in, or remove them. Your key never enters this page; it stays in your
       signer, which is handed an unsigned event and returns a signature.
     </p>
     <button class="alby-bar" id="si-ext"><span class="alby-mark"><svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
@@ -216,7 +216,7 @@
   <div class="panel" id="req-panel" style="display:none">
     <h2>Waiting for you <span class="hint">sessions that have asked to be let in</span></h2>
     <div class="note">Nothing listed here has any access. A request is a stranger asking — anyone
-      can send one — and approving it is the only thing that admits them. Read the reason before
+      can send one — and approving it is the only thing that lets them in. Read the reason before
       you decide, and remember it was written by whoever is asking.</div>
     <div id="reqlist"></div>
     <div class="status" id="reqst"></div>
@@ -298,7 +298,7 @@
     revoke, your selected browser or Bunker signer signs the exact event; this page never receives
     the private key or host access. Authority moves as signed events. What is missing is never
     invented: if a relay refuses or fails, this says so rather than quietly showing a shorter list
-    and letting you read it as “nobody is admitted.”
+    and letting you read it as “nobody is in.”
   </div>
 </main>
 
@@ -745,7 +745,7 @@ function capWhy(cap, grantee, subject, subjRaw, isAgent) {
   const who = short(grantee), enforcer = capEnforcer(cap)
   const hidden = 'The subject is stored as a salted hash, so nobody watching can tell which one it is.'
   if (cap === 'admit') {
-    return `This admits ${who} to the channel ${subjRaw}. It conveys NO ability to read the channel — only to post into it. Checked by ${enforcer}. The channel id never rides publicly — it is stored as a salted hash that only someone who already knows the channel can match.`
+    return `This lets ${who} into the channel ${subjRaw}. It conveys NO ability to read the channel — only to post into it. Checked by ${enforcer}. The channel id never rides publicly — it is stored as a salted hash that only someone who already knows the channel can match.`
   }
   if (cap === 'task') {
     return `This authorises ${who} to TASK the agent ${short(subject)} — to wake it and be answered. It does NOT authorise the agent to take action on their word. Checked by ${enforcer}, not by this bridge. ${hidden}`
@@ -830,10 +830,10 @@ window.__admit = async (id) => {
   proposeSigning({
     kind: 440, created_at: Math.floor(Date.now() / 1000),
     tags: [['p', r.grantee], ['da-scope', hash, salt], ['da-cap', r.cap]], content: '',
-  }, `This admits ${short(r.grantee)} to the channel ${r.channel}. The channel id never rides `
+  }, `This lets ${short(r.grantee)} into the channel ${r.channel}. The channel id never rides `
    + `publicly — it is stored as a salted hash only someone who already knows the channel can match.`
    + (r.granteeIsSender ? ''
-      : ` — WARNING: the key being admitted is NOT the key that asked. ${short(r.from)} is asking on `
+      : ` — WARNING: the key being let in is NOT the key that asked. ${short(r.from)} is asking on `
       + `behalf of ${short(r.grantee)}. Admit only if you expected someone to request on another key's behalf.`))
 }
 
@@ -913,10 +913,10 @@ async function loadRequests() {
           <span class="who">${esc(r.channel)}</span></div>
         <div style="margin:7px 0;color:var(--dim)">&ldquo;${esc(r.purpose)}&rdquo;</div>
         ${r.granteeIsSender ? '' :
-          `<div><span class="pill warn">asked by ${esc(short(r.from))}, not the key being admitted</span></div>`}
+          `<div><span class="pill warn">asked by ${esc(short(r.from))}, not the key being let in</span></div>`}
         <div style="margin-top:9px">
           <button class="btn" style="margin:0;padding:5px 12px;font-size:12.5px"
-            onclick="__admit('${esc(r.id)}')">Admit</button>
+            onclick="__admit('${esc(r.id)}')">Let them in</button>
           <button class="btn ghost" style="margin:0 0 0 8px;padding:5px 12px;font-size:12.5px"
             onclick="__dismissReq('${esc(r.id)}')">Not now</button>
         </div>
@@ -981,7 +981,7 @@ $('go').addEventListener('click', async () => {
 
     if (!answered.length) {
       st.className = 'status err'
-      st.textContent = 'No relay answered. Nothing is shown because nothing could be verified — this is not the same as "nobody is admitted".'
+      st.textContent = 'No relay answered. Nothing is shown because nothing could be verified — this is not the same as "nobody is in".'
       // BOTH views, or the hidden one keeps a stale answer that becomes the visible one the
       // moment somebody clicks the toggle — a list nobody could verify, shown as if verified.
       rows.innerHTML = '<tr><td colspan="8" class="empty">Unverifiable — no relay answered.</td></tr>'
