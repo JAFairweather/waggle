@@ -109,11 +109,11 @@ const pools = ({ served = 'echo', publishError = null, getError = null, refuse =
     res.ok === false && res.outcome === 'unreadable' && res.proven === false)
 }
 {
-  // The key has already been saved and cleared. `secret.sign()` returns null for that, by design.
+  // The page has already let go of the key. `secret.sign()` returns null for that, by design.
   const { state, openPool } = pools()
   const res = await publishProfile({ relayUrl: RELAY, name: 'Oliver', pubkeyHex: pk, openPool, nowSec: NOW, sign: () => null })
   ok('a cleared key cannot name itself, and is told why',
-    res.ok === false && res.outcome === 'cannot_sign' && /before saving/i.test(res.detail))
+    res.ok === false && res.outcome === 'cannot_sign' && /connect its bunker/i.test(res.detail))
   ok('…and nothing is published', state.published.length === 0)
 }
 

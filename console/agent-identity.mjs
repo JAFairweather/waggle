@@ -11,7 +11,7 @@
 // function and a pubkey and does not care which of these produced them. So the whole difference is
 // resolved here, in one place, and the panel asks this module rather than inspecting either object.
 //
-// THE ONE RULE THAT MUST NOT BEND: a minted key that has been saved and cleared is NOT an identity
+// THE ONE RULE THAT MUST NOT BEND: a minted key the page has let go of is NOT an identity
 // this page can act for. It cannot sign, and the failure would otherwise surface three calls later
 // as an unexplained null. `agentIdentity` returns null for it, so the panel refuses up front.
 
@@ -47,7 +47,7 @@ export function agentIdentity({ minted = null, signer = null, signerPubkey = nul
         const signed = minted.secret.sign(template, { decode, finalize })
         // Between the check above and this call the operator may have hit save. Fail loudly rather
         // than handing null to a publisher that will report it as some other kind of refusal.
-        if (!signed) throw new Error('the key is no longer in this page — it was saved and cleared, so it can no longer sign for itself')
+        if (!signed) throw new Error('the key is no longer in this page — it was handed to a bunker and cleared, so it can no longer sign for itself from here')
         return signed
       },
     }
@@ -62,8 +62,8 @@ export function whyNoIdentity({ minted = null, signer = null } = {}) {
   if (signer) return 'That signer did not report a usable public key, so nothing can be signed for it.'
   if (!minted) return 'Make a key first, or connect the signer of a key that already exists.'
   if (minted.secret.taken()) {
-    return 'That key has already been saved and cleared from this page, so it can no longer sign for itself. '
-      + 'Make a new one and do these steps before saving it — or connect its signer, if it has one.'
+    return 'That key is in a bunker now and no longer in this page, so it cannot sign from here. '
+      + 'Connect that bunker above — these steps will then sign through it.'
   }
   return 'No key in hand.'
 }

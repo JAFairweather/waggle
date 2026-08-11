@@ -65,7 +65,7 @@ export async function publishProfile({ relayUrl, name, about = '', pubkeyHex, si
   } catch (e) { return { ok: false, step: 'sign', outcome: 'cannot_sign', proven: false, detail: e.message } }
   if (!signed || !signed.id || !signed.sig) {
     return { ok: false, step: 'sign', outcome: 'cannot_sign', proven: false,
-      detail: 'The agent key is no longer in this page, so it cannot sign its own profile. Make a new key and do this step before saving it.' }
+      detail: 'The agent key is no longer in this page, so it cannot sign its own profile. Connect its bunker above, then try again.' }
   }
 
   const writePool = openPool()
@@ -158,7 +158,7 @@ export async function publishDmInbox({ dmRelays, publishTo, pubkeyHex, sign, ope
   } catch (e) { return { ok: false, step: 'sign', outcome: 'cannot_sign', proven: false, detail: e.message } }
   if (!signed || !signed.id || !signed.sig) {
     return { ok: false, step: 'sign', outcome: 'cannot_sign', proven: false,
-      detail: 'The agent key is no longer in this page, so it cannot declare its own inbox. Make a new key and do this before saving it.' }
+      detail: 'The agent key is no longer in this page, so it cannot declare its own inbox. Connect its bunker above, then try again.' }
   }
 
   const writePool = openPool()

@@ -5,7 +5,7 @@
 // follow — join the relay, publish a name, declare an inbox — are identical for both, so the whole
 // difference is resolved in one module, and this suite guards the two ways it can go wrong:
 //
-//   * acting for a minted key that has already been saved and cleared, which cannot sign
+//   * acting for a minted key the page has already let go of, which cannot sign
 //   * acting for a stale minted key when the operator has deliberately connected a signer
 //
 // Both produce something that looks entirely correct and signs as the wrong agent, or not at all.
@@ -74,11 +74,14 @@ const bunker = () => ({ signEvent: async (t) => ({ ...t, sig: 'bunker', by: 'rem
 // --- the one that cannot sign at all --------------------------------------------------------------
 {
   const id = agentIdentity({ minted: mintedKey({ taken: true }), crypto: CRYPTO })
-  ok('a minted key that was saved and cleared is NOT an identity', id === null)
-  ok('…and the reason names the save, not a missing key',
-    /already been saved/.test(whyNoIdentity({ minted: mintedKey({ taken: true }) })))
-  ok('…and points at the signer route as the alternative',
-    /connect its signer/.test(whyNoIdentity({ minted: mintedKey({ taken: true }) })))
+  ok('a minted key the page has let go of is NOT an identity', id === null)
+  // The reason is the whole point of this branch: "no key" and "the key went to a bunker" send the
+  // operator to completely different places, and the second is the only one with a way forward.
+  const gone = whyNoIdentity({ minted: mintedKey({ taken: true }) })
+  ok('…and the reason names where the key went, not a missing key',
+    /in a bunker now/.test(gone) && !/Make a key first/.test(gone))
+  ok('…and points at connecting that bunker as the way forward',
+    /connect that bunker/i.test(gone))
 }
 {
   // Saved BETWEEN the check and the signature: the window that would otherwise surface as a null

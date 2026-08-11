@@ -9,7 +9,8 @@
 
 import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
 import { nip19 } from 'nostr-tools'
-import { mintAgentKey, keyFileContents, keyFileName } from '../console/mint-agent-key.mjs'
+import { mintAgentKey } from '../console/mint-agent-key.mjs'
+const mintedModuleKeys = Object.keys(await import('../console/mint-agent-key.mjs'))
 
 let fails = 0
 const ok = (n, c) => { console.log(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) fails++ }
@@ -28,6 +29,14 @@ ok('the display half has exactly the two public fields',
   JSON.stringify(Object.keys(minted.display).sort()) === JSON.stringify(['npub', 'pubkeyHex']))
 ok('the display half is frozen, so a caller cannot staple the secret onto it',
   Object.isFrozen(minted.display))
+
+// PEEK BEFORE TAKE (#367). The key now goes to a bunker, and the page must prove the bunker has it
+// before letting go — a proof that can fail, and must therefore be retryable. So reading the secret
+// for enrolment must NOT spend it. Spending it on an attempt rather than an outcome was the whole
+// defect in the download flow: a blocked download destroyed the only copy and reported success.
+ok('peek() yields the secret', /^nsec1[0-9a-z]{20,90}$/.test(String(minted.secret.peek())))
+ok('…twice, identically — reading it does not spend it', minted.secret.peek() === minted.secret.peek())
+ok('…and the secret is still NOT taken after peeking', minted.secret.taken() === false)
 
 const nsec = minted.secret.take()
 ok('the private half is an nsec', /^nsec1[0-9a-z]{20,90}$/.test(String(nsec)))
@@ -60,16 +69,13 @@ ok('…and sign() returns null once the key is gone, rather than throwing',
 const second = mintAgentKey(primitives)
 ok('NEGATIVE CONTROL — two mints produce different identities', second.display.pubkeyHex !== minted.display.pubkeyHex)
 
-// The file is one nsec and a newline. Anything else is a file someone pastes somewhere whole.
-ok('the key file is exactly the nsec and a newline', keyFileContents(nsec) === `${nsec}\n`)
-ok('the file name does not carry the identity', !keyFileName().includes('npub') && keyFileName() === 'agent.nsec')
+// There is deliberately no key-FILE helper any more. A file on disk is the thing that gets lost,
+// and under cooperative relay revocation a lost key is a relay member nobody can ever remove
+// (#367). Pinned as an absence, because a helpful re-addition would quietly restore the flow.
+ok('the module exposes no key-file helper — the download path is gone, not merely unused',
+  mintedModuleKeys.every(k => !/^keyFile/.test(k)))
 
 let refused = null
-try { keyFileContents(minted.display.npub) } catch (e) { refused = e.message }
-ok('building a key file from an npub is refused — and says it is not an nsec', /not an nsec/.test(String(refused)))
-refused = null
-try { keyFileContents('') } catch (e) { refused = e.message }
-ok('building a key file from nothing is refused', /not an nsec/.test(String(refused)))
 
 // Both directions on the mint guards: a primitive that returns the wrong shape must be refused,
 // and the same call with sound primitives must still succeed — otherwise "refuses the bad thing"
