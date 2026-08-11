@@ -21,7 +21,7 @@ const NOW = 1786470000
 
 // A pool stand-in. `served` is what a fresh read-back will return; `opened` counts pools, because
 // reusing one would let the write connection answer its own read.
-const pools = ({ served = 'echo', publishError = null, getError = null } = {}) => {
+const pools = ({ served = 'echo', publishError = null, getError = null, refuse = [] } = {}) => {
   const state = { opened: 0, published: [], authOn: [], closed: 0 }
   const openPool = () => {
     state.opened++
@@ -30,6 +30,10 @@ const pools = ({ served = 'echo', publishError = null, getError = null } = {}) =
       publish: async (urls, ev, opts) => {
         state.published.push({ urls, ev })
         state.authOn.push(opts && typeof opts.onauth === 'function')
+        // A named relay that refuses THIS publish while others accept — nos.lol's 28-bit NIP-13
+        // demand is exactly this shape, and it is permanent rather than transient.
+        const no = (urls || []).find(u => refuse.includes(u))
+        if (no) throw new Error(`pow: 28 bits needed (${no})`)
         if (publishError) throw new Error(publishError)
         mine = ev
         state.stored = ev
@@ -209,6 +213,74 @@ ok('a non-wss relay is dropped, and dropping them all is refused',
 // BOTH DIRECTIONS: the filter must keep the good ones rather than refusing everything.
 ok('…while a valid relay alongside a junk one still gets through', await inboxRefuses(['wss://ok.example', 'nonsense']) === null)
 ok('an ordinary list is accepted', await inboxRefuses(DM) === null)
+
+// --- the same name, carried out to the public relays as well -------------------------------------
+// The community relay is where `@Name` resolves. The public ones are where the identity is legible
+// to anyone outside the wall. A key that answers to a name inside and is anonymous outside is half
+// an identity — but the two are not equal, and the asymmetry is what these assert.
+const PUBA = 'wss://relay.primal.net', PUBB = 'wss://nos.lol'
+{
+  const { state, openPool } = pools()
+  const res = await publishProfile({ relayUrl: RELAY, name: 'My Dude', pubkeyHex: pk, sign, openPool,
+    nowSec: NOW, alsoTo: [PUBA, PUBB] })
+
+  ok('the name still proves on the community relay', res.proven === true && res.outcome === 'named')
+  ok('…and reaches both public relays', res.alsoLanded.length === 2 && res.alsoFailed.length === 0)
+
+  // The SAME event, not a re-signed one. Re-signing puts a different id on the public copy and
+  // "the same profile" stops being checkable by id.
+  const community = state.published.find(p => p.urls.includes(RELAY))
+  const outward = state.published.filter(p => p.urls.includes(PUBA) || p.urls.includes(PUBB))
+  ok('…carrying the identical signed event, by id',
+    outward.length === 2 && outward.every(p => p.ev.id === community.ev.id))
+  ok('…one relay at a time, so one refusal cannot mask another',
+    outward.every(p => p.urls.length === 1))
+  ok('…and the community relay is written BEFORE any public one',
+    state.published.findIndex(p => p.urls.includes(RELAY)) === 0)
+}
+{
+  // nos.lol refuses every one of these for want of 28 bits of proof-of-work. Permanent, expected,
+  // and it must not read as a failure to publish — the name resolves where it counts regardless.
+  const { openPool } = pools({ refuse: [PUBB] })
+  const res = await publishProfile({ relayUrl: RELAY, name: 'My Dude', pubkeyHex: pk, sign, openPool,
+    nowSec: NOW, alsoTo: [PUBA, PUBB] })
+
+  ok('a public relay refusing does NOT unprove the name', res.ok === true && res.proven === true)
+  ok('…the one that took it is reported as landed', res.alsoLanded.length === 1 && res.alsoLanded[0] === PUBA)
+  ok('…the one that refused is named, with its reason', res.alsoFailed.length === 1
+    && res.alsoFailed[0].relay === PUBB && /pow/i.test(res.alsoFailed[0].reason))
+  ok('…and the operator is told the name still resolves anyway',
+    /still resolves in the community/.test(res.detail))
+}
+{
+  // The direction that matters most: public success can never rescue a community failure.
+  const { state, openPool } = pools({ getError: 'connection reset' })
+  const res = await publishProfile({ relayUrl: RELAY, name: 'My Dude', pubkeyHex: pk, sign, openPool,
+    nowSec: NOW, alsoTo: [PUBA, PUBB] })
+  ok('a community relay that cannot be read back is NOT proven, whatever the public relays did',
+    res.ok === false && res.proven === false && res.outcome === 'unreadable')
+  ok('…and no public relay is written at all, so nothing is published under an unproven name',
+    !state.published.some(p => p.urls.includes(PUBA) || p.urls.includes(PUBB)))
+}
+{
+  // NEGATIVE CONTROL for the whole feature: omitting alsoTo must leave the old behaviour untouched,
+  // wording included. A caller that never asked for public relays should not be able to tell.
+  const { state, openPool } = pools()
+  const res = await publishProfile({ relayUrl: RELAY, name: 'My Dude', pubkeyHex: pk, sign, openPool, nowSec: NOW })
+  ok('NEGATIVE CONTROL — with no public relays asked for, none are written',
+    state.published.length === 1 && state.published[0].urls.includes(RELAY))
+  ok('…and the sentence is unchanged, with nothing appended about relays that were never involved',
+    res.detail === 'Read back cold from the relay by id — this key now answers to that name.')
+  ok('…and it still proves', res.proven === true)
+}
+{
+  // Junk in alsoTo is dropped rather than attempted — an http:// or empty entry is a config typo.
+  const { state, openPool } = pools()
+  const res = await publishProfile({ relayUrl: RELAY, name: 'My Dude', pubkeyHex: pk, sign, openPool,
+    nowSec: NOW, alsoTo: [PUBA, 'http://not-a-relay.test', '  '] })
+  ok('non-wss entries in the public list are dropped, not dialled',
+    res.alsoLanded.length === 1 && !state.published.some(p => String(p.urls).includes('not-a-relay')))
+}
 
 console.log(fails ? `\nPUBLISH PROFILE FAIL — ${fails}` : '\nPUBLISH PROFILE PASS — a name is read back cold, and a name without an inbox is not reachable')
 process.exit(fails ? 1 : 0)

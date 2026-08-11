@@ -274,7 +274,7 @@ const agrees = async () => ({ accepted: true, ageConfirmed: true })
 {
   // A WAF or reverse proxy: not JSON at all, an HTML page quoting the request it blocked.
   const html = `<html><body><h1>403 Forbidden</h1><p>Request blocked: {"code":"${CODE}"}</p></body></html>`
-  const fetchFn = async (url, init) => {
+  const fetchFn = async () => {
     const n = (fetchFn.n = (fetchFn.n || 0) + 1)
     if (n === 1) return { status: 200, text: async () => '{}' }
     if (n === 2) return { status: 200, text: async () => JSON.stringify(okMint.body) }

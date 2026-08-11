@@ -43,7 +43,18 @@ export function profileTemplate({ name, about = '', nowSec }) {
 ///
 /// `openPool` is called TWICE and must return a NEW pool each time — the read-back is worthless if
 /// it can be answered out of the connection that did the writing.
-export async function publishProfile({ relayUrl, name, about = '', pubkeyHex, sign, openPool, nowSec }) {
+///
+/// `alsoTo` are PUBLIC relays to carry the same profile to. The community relay is where the name
+/// has to be for `@Name` to resolve in Buzz; the public ones are where the identity is legible to
+/// anyone outside the community — a key that answers to a name inside the wall and is anonymous
+/// outside it is half an identity.
+///
+/// THE TWO ARE NOT EQUAL AND THE ASYMMETRY IS DELIBERATE. `proven` means one thing only: the
+/// community relay served this exact event back on a cold connection. A public relay accepting it
+/// cannot contribute to that, and a public relay refusing it cannot take it away — the name still
+/// resolves where it counts. So public failures are REPORTED, never fatal, and they can never make
+/// a failed community publish look like a success.
+export async function publishProfile({ relayUrl, name, about = '', pubkeyHex, sign, openPool, nowSec, alsoTo = [] }) {
   if (typeof sign !== 'function') throw new Error('sign must be a function — the agent key signs both its own profile and the relay AUTH')
   const pk = String(pubkeyHex || '').toLowerCase()
   if (!HEX64_RE.test(pk)) throw new Error('publishProfile needs the agent\'s 64-character hex pubkey, to read the profile back by author')
@@ -94,9 +105,32 @@ export async function publishProfile({ relayUrl, name, about = '', pubkeyHex, si
 
   let served = null
   try { served = JSON.parse(found.content).display_name } catch { served = null }
+
+  // Only now, with the name proven where it must be. The SAME signed event — re-signing would put a
+  // different id on the public copy, and "the same profile" would stop being checkable by id.
+  const publicRelays = (alsoTo || []).map(u => String(u).trim()).filter(u => /^wss:\/\//i.test(u))
+  const alsoLanded = [], alsoFailed = []
+  for (const url of publicRelays) {
+    // One at a time, so one refusing relay cannot mask another. `nos.lol` demands 28 bits of NIP-13
+    // proof-of-work and we send none, so it refuses this every time — a real, permanent, expected
+    // refusal that must not read as a general failure to publish.
+    const pool = openPool()
+    try {
+      await pool.publish([url], signed, { onauth: sign })
+      alsoLanded.push(url)
+    } catch (e) {
+      alsoFailed.push({ relay: url, reason: String(e && e.message || e) })
+    } finally { try { pool.close([url]) } catch {} }
+  }
+
   return {
     ok: true, step: 'readback', outcome: 'named', proven: true, name: served,
-    detail: `Read back cold from the relay by id — this key now answers to that name.`,
+    alsoLanded, alsoFailed,
+    detail: `Read back cold from the relay by id — this key now answers to that name.`
+      + (publicRelays.length
+        ? ` Also carried to ${alsoLanded.length}/${publicRelays.length} public relay(s)`
+          + (alsoFailed.length ? `; ${alsoFailed.map(f => `${f.relay} refused`).join(', ')} — the name still resolves in the community regardless.` : '.')
+        : ''),
   }
 }
 

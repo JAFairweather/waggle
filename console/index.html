@@ -1006,6 +1006,12 @@ $('mint-name-go').addEventListener('click', async () => {
       // One signer for both the profile and the relay AUTH, because they must be the same key —
       // the relay drops any event whose author is not the identity that authenticated.
       sign: (t) => agent.sign(t),
+      // The same name, carried out to the open relays as well. The community relay is what makes
+      // `@Name` resolve in Buzz and is the only one `proven` speaks for; these are what make the
+      // identity legible to anyone outside the wall. A key that answers to a name inside and is
+      // anonymous outside is half an identity. Failures here are reported and never fatal —
+      // nos.lol refuses for want of proof-of-work every time, and the name resolves regardless.
+      alsoTo: RELAYS,
     })
     if (res.ok) {
       st.className = 'status ok'
