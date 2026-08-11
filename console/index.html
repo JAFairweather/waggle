@@ -230,6 +230,17 @@
       runtime yourself. Nothing sends it anywhere, and nothing here can show it to you again.
     </div>
     <button class="btn" id="mint-go">Make a key</button>
+    <!-- The other half of the panel. A standing agent (MC Claude, DJ Codex) already HAS a key, and
+         its secret has never been in a browser — connecting its own signer is how it acts here
+         without that changing. Everything below then works identically for either. -->
+    <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+      <label for="agent-bunker">…or use a key that already exists <span class="hint">paste its bunker URI — the key stays in the signer</span></label>
+      <div class="row">
+        <input id="agent-bunker" placeholder="bunker://… belonging to the AGENT, not to you" autocomplete="off" spellcheck="false">
+        <button class="btn" id="agent-bunker-go" style="flex:0 0 auto">Connect</button>
+      </div>
+      <div class="status" id="agent-signerst"></div>
+    </div>
     <div id="mint-out" style="display:none;margin-top:14px">
       <label>Public half <span class="hint">this is what you give access to</span></label>
       <pre id="mint-npub" style="background:var(--field);border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 12px;overflow-x:auto;font-family:var(--mono);font-size:12px;color:var(--text);margin:0 0 12px"></pre>
@@ -367,6 +378,7 @@ import { scopeHash } from './scope-hash.mjs'
 import { mintAgentKey, keyFileContents, keyFileName } from './mint-agent-key.mjs'
 import { letOntoRelay } from './relay-invite.mjs'
 import { publishProfile, publishDmInbox } from './publish-profile.mjs'
+import { agentIdentity, whyNoIdentity } from './agent-identity.mjs'
 import { SimplePool } from 'nostr-tools/pool'
 const { decode } = nip19
 
@@ -778,6 +790,63 @@ window.__revoke = (grantId, granteeShort) => {
 // is to not undo that — so the nsec never enters an element, a URL, a storage key or a log, and
 // every exit from the panel goes through forgetMintedKey().
 let minted = null
+let agentSigner = null, agentSignerPk = null
+
+// The three steps below act for whichever identity is in hand, and stopped caring which kind it is
+// when agent-identity.mjs took the decision. A connected signer WINS over a minted key: an operator
+// who deliberately paired a standing identity's bunker has said which key they mean, and quietly
+// signing with a leftover minted one would be correct in every visible way and wrong.
+const currentAgent = () => agentIdentity({
+  minted, signer: agentSigner, signerPubkey: agentSignerPk,
+  crypto: { decode: nip19.decode, finalize: finalizeEvent, npubEncode: nip19.npubEncode },
+})
+const noAgent = () => whyNoIdentity({ minted, signer: agentSigner })
+
+// Showing the relay/name steps is the same act for both kinds, so it is one function. The secret
+// row is the ONLY thing that differs, and it is hidden for a signer rather than disabled: there is
+// nothing to save, and a greyed-out "Save the private half" invites the question of how to enable it.
+function showAgentSteps({ npub, holdsSecret }) {
+  $('mint-npub').textContent = npub || ''
+  $('mint-secret-row').style.display = holdsSecret ? '' : 'none'
+  $('mint-use').style.display = ''
+  $('mint-onto-relay').disabled = false
+  $('mint-onto-relay').textContent = 'Let them onto the relay'
+  $('mint-relayst').className = 'status'; $('mint-relayst').textContent = ''
+  $('mint-name').style.display = holdsSecret ? 'none' : ''
+  $('mint-name-go').disabled = false
+  $('mint-name-go').textContent = 'Give it this name'
+  $('mint-name-input').value = ''
+  $('mint-namest').className = 'status'; $('mint-namest').textContent = ''
+  $('mint-policy').style.display = 'none'
+  $('mint-out').style.display = ''
+}
+
+$('agent-bunker-go').addEventListener('click', async () => {
+  const st = $('agent-signerst')
+  const uri = $('agent-bunker').value.trim()
+  if (!uri) { st.className = 'status err'; st.textContent = 'Paste the agent\'s bunker URI.'; return }
+  st.className = 'status'; st.textContent = 'Connecting — approve the request in the agent\'s signer…'
+  try {
+    const { nip46Signer } = await nc()
+    const s = await nip46Signer(uri)
+    const pk = String(await s.getPublicKey()).toLowerCase()
+    $('agent-bunker').value = ''        // do not leave the pairing token sitting in the DOM
+    // A minted key still in the page would now be shadowed, and shadowing it silently is how an
+    // operator loses one they had not saved. Say it, and let them decide.
+    if (minted && !minted.secret.taken()) {
+      forgetMintedKey()
+      st.className = 'status'
+      st.textContent = 'Connected — the unsaved key made earlier has been discarded, since only one identity can be acted for at a time. '
+    } else { st.textContent = '' }
+    agentSigner = s; agentSignerPk = pk
+    const id = currentAgent()
+    if (!id) { st.className = 'status err'; st.textContent = noAgent(); agentSigner = null; agentSignerPk = null; return }
+    showAgentSteps(id)
+    st.className = 'status ok'
+    st.textContent += `Connected as ${id.npub}. Its key stays in the signer — there is nothing here to save.`
+  } catch (e) { agentSigner = null; agentSignerPk = null; st.className = 'status err'; st.textContent = e.message }
+})
+
 function forgetMintedKey() {
   if (minted) minted.secret.forget()
   minted = null
@@ -788,18 +857,16 @@ $('mint-go').addEventListener('click', () => {
   const st = $('mintst')
   try {
     forgetMintedKey()
+    // Minting means "act for this new key", so a connected signer stops being the answer. Dropping
+    // it here is what keeps currentAgent() from returning the signer for a key the operator just
+    // replaced — the signer deliberately wins, so it has to be let go deliberately too.
+    agentSigner = null; agentSignerPk = null
+    $('agent-signerst').className = 'status'; $('agent-signerst').textContent = ''
     minted = mintAgentKey({ generateSecretKey, getPublicKey, nsecEncode: nip19.nsecEncode, npubEncode: nip19.npubEncode })
-    $('mint-npub').textContent = minted.display.npub
     $('mint-save').disabled = false
     $('mint-save').textContent = 'Save the private half'
-    $('mint-onto-relay').disabled = false
-    $('mint-onto-relay').textContent = 'Let them onto the relay'
-    $('mint-relayst').className = 'status'; $('mint-relayst').textContent = ''
-    $('mint-name').style.display = 'none'
-    $('mint-name-input').value = ''
-    $('mint-namest').className = 'status'; $('mint-namest').textContent = ''
     $('mint-secret-note').textContent = 'Downloads one file, agent.nsec. Never paste it into a chat, an issue, or a log.'
-    $('mint-out').style.display = ''
+    showAgentSteps(currentAgent())
     st.className = 'status'
     st.textContent = 'Made. Save the private half before you leave this page — it cannot be shown again.'
   } catch (e) { st.className = 'status err'; st.textContent = e.message }
@@ -836,14 +903,12 @@ $('mint-onto-relay').addEventListener('click', async () => {
   const st = $('mint-relayst')
   const btn = $('mint-onto-relay')
   const relayBase = $('mint-relay-url').value.trim()
-  if (!minted) { st.className = 'status err'; st.textContent = 'Make a key first.'; return }
+  const agent = currentAgent()
+  if (!agent) { st.className = 'status err'; st.textContent = noAgent(); return }
   if (!relayBase) { st.className = 'status err'; st.textContent = 'Enter the address your community runs at.'; return }
+  // Two DIFFERENT keys, and they must stay different: the invitation is minted by an owner or admin
+  // through the signer you are logged in with, and claimed by the agent proving control of itself.
   if (!signer) { st.className = 'status err'; st.textContent = 'Sign in first — creating an invitation is a signing act.'; return }
-  if (minted.secret.taken()) {
-    st.className = 'status err'
-    st.textContent = 'That key has already been saved and cleared from this page, so it can no longer sign for itself. Make a new one and do this step first.'
-    return
-  }
   localStorage.setItem('waggle-relay-base', relayBase)
   btn.disabled = true
   st.className = 'status'; st.textContent = 'Checking what this community asks of a new key…'
@@ -882,11 +947,7 @@ $('mint-onto-relay').addEventListener('click', async () => {
       ownerSign: (t) => signer.signEvent(t),
       // Signs WITHOUT yielding the key. Routing this through take() would hand the nsec to code
       // that only needed a signature, and destroy it before the operator could save it.
-      agentSign: (t) => {
-        const signed = minted.secret.sign(t, { decode: nip19.decode, finalize: finalizeEvent })
-        if (!signed) throw new Error('the key is no longer in this page')
-        return signed
-      },
+      agentSign: (t) => agent.sign(t),
     })
     if (res.ok) {
       st.className = 'status ok'
@@ -926,24 +987,20 @@ $('mint-name-go').addEventListener('click', async () => {
   const st = $('mint-namest')
   const btn = $('mint-name-go')
   const relayUrl = $('mint-relay-url').value.trim()
-  if (!minted) { st.className = 'status err'; st.textContent = 'Make a key first.'; return }
-  if (minted.secret.taken()) {
-    st.className = 'status err'
-    st.textContent = 'That key has already been saved and cleared from this page, so it can no longer publish its own name. Make a new one and name it before saving.'
-    return
-  }
+  const agent = currentAgent()
+  if (!agent) { st.className = 'status err'; st.textContent = noAgent(); return }
   btn.disabled = true
   st.className = 'status'; st.textContent = 'Signing in to the community relay as this key, and publishing its name…'
   try {
     const res = await publishProfile({
       relayUrl,
       name: $('mint-name-input').value,
-      pubkeyHex: minted.display.pubkeyHex,
+      pubkeyHex: agent.pubkeyHex,
       openPool: freshPool,
       nowSec: Math.floor(Date.now() / 1000),
       // One signer for both the profile and the relay AUTH, because they must be the same key —
       // the relay drops any event whose author is not the identity that authenticated.
-      sign: (t) => minted.secret.sign(t, { decode: nip19.decode, finalize: finalizeEvent }),
+      sign: (t) => agent.sign(t),
     })
     if (res.ok) {
       st.className = 'status ok'
@@ -955,10 +1012,10 @@ $('mint-name-go').addEventListener('click', async () => {
       // with no kind:10050 rather than picking relays on its behalf, and logs exactly that.
       const box = await publishDmInbox({
         dmRelays: NVOY_RELAYS,
-        pubkeyHex: minted.display.pubkeyHex,
+        pubkeyHex: agent.pubkeyHex,
         openPool: freshPool,
         nowSec: Math.floor(Date.now() / 1000),
-        sign: (t) => minted.secret.sign(t, { decode: nip19.decode, finalize: finalizeEvent }),
+        sign: (t) => agent.sign(t),
       })
       if (!box.ok) {
         st.className = 'status err'
@@ -980,14 +1037,16 @@ $('mint-name-go').addEventListener('click', async () => {
 })
 
 $('mint-use').addEventListener('click', () => {
-  if (!minted) return
-  // Only the public half crosses into the grant form. There is no field on `display` that could
-  // carry anything else, which is the point of it being a separate frozen object.
-  $('g-to').value = minted.display.npub
+  const agent = currentAgent()
+  if (!agent) { const st0 = $('mintst'); st0.className = 'status err'; st0.textContent = noAgent(); return }
+  // Only the public half crosses into the grant form. A minted identity carries it on a separate
+  // frozen object with no field that could hold anything else; a signer-backed one never had the
+  // secret to begin with.
+  $('g-to').value = agent.npub
   refreshCaps()
   $('issue-panel').scrollIntoView({ behavior: 'smooth', block: 'center' })
   const st = $('mintst')
-  if (!minted.secret.taken()) {
+  if (agent.holdsSecret) {
     st.className = 'status err'
     st.textContent = 'Filled in below — but you have not saved the private half yet. Without it nobody can act as this key.'
   }
