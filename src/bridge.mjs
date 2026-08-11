@@ -840,6 +840,17 @@ function seatingChannel() {
   const ch = String(PUB.inbox || '')
   return /^[0-9a-fA-F-]{36}$/.test(ch) ? ch : null
 }
+// Nameable and reachable are two different facts, and seating only supplies the first. The roster
+// seating writes into is `inbox`; the channels whose mentions actually get CARRIED are
+// `scan_channels`. Where those differ, an agent is perfectly nameable in a channel nothing
+// watches — the crew member's message lands, the at-word resolves, and the carry never happens,
+// which reads to everyone involved as the agent ignoring them. Extracted from the boot line so the
+// property is testable: a log line nobody asserts is a check nobody runs.
+function seatingCoverageGap(inbox, scanChannels) {
+  const target = String(inbox || '').toLowerCase()
+  if (!target) return true
+  return !(scanChannels || []).some(c => String(c || '').toLowerCase() === target)
+}
 async function seatGrantee(pubkey, emitFn = emit) {
   const dest = seatingChannel()
   if (!dest) return false
@@ -3538,7 +3549,7 @@ export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, c
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, seatGrantee, unseatGrantee, seated, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, relayRefusals, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, seatGrantee, unseatGrantee, seated, seatingCoverageGap, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, relayRefusals, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests,
   policyRequests, policyWriterInFlight, remotePolicyGatePublic, processRemotePolicyRequest,
   retryRemotePolicyRequests, __setPolicyWriterRunnerForTests, unframePolicyWriterResponse,
@@ -3619,7 +3630,16 @@ if (!process.env.WB_NO_BOOT) {
     else if (PUB.relayChannels.length && !hasBridgeKey()) err('WARN: relay_channels configured but no BRIDGE key to open sealed requests — relay lane INERT.')
     // State, not intent: "seating is on" and "seating can run" are different facts, and collapsing
     // them is how an operator ends up believing an agent is nameable when the channel never resolved.
-    if (PUB.seatGrantees && seatingChannel()) log(`  seating: ON — an admitted agent is added to the ${PUB.inbox} roster, and removed on the 441. They become nameable in channel.`)
+    if (PUB.seatGrantees && seatingChannel()) {
+      log(`  seating: ON — an admitted agent is added to the ${PUB.inbox} roster, and removed on the 441. They become nameable in channel.`)
+      // Nameable and reachable are two facts, and seating only supplies the first. The roster is
+      // `inbox`; the mentions that get CARRIED are the ones found in `scan_channels`. Where those
+      // differ, an agent is perfectly nameable in a channel nothing watches — the crew member's
+      // message lands, resolves, and is never carried, which reads to everyone involved as the
+      // agent ignoring them. They coincide in today's config; nothing enforces that they must.
+      if (seatingCoverageGap(PUB.inbox, PUB.scanChannels))
+        err(`  seating: NAMEABLE BUT UNWATCHED — the roster is ${PUB.inbox}, which is not in scan_channels (${(PUB.scanChannels || []).join(', ') || 'none'}). A mention there will land and never be carried.`)
+    }
     else if (PUB.seatGrantees) err(`  seating: CONFIGURED BUT INERT — public.inbox is ${JSON.stringify(String(PUB.inbox))}, not a resolved channel UUID. Admitted agents will NOT be nameable.`)
     else log('  seating: off — an admitted agent is a return-lane recipient but is NOT in the roster, so nobody can name it (public.seat_grantees)')
     PUB.relays.forEach(connectPublic)
