@@ -29,7 +29,10 @@ import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { createInterface } from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
+import { homedir } from 'node:os'
 import * as nip19 from 'nostr-tools/nip19'
+import { buildInstallReceipt, createInstallState, INSTALL_STEPS, loadInstallState,
+  saveInstallState, transitionInstallStep } from '../src/install_state.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CONFIG = process.env.CONFIG_PATH || resolve(ROOT, 'config.json')
@@ -37,6 +40,9 @@ const EXAMPLE = resolve(ROOT, 'config.example.json')
 const CHECK_ONLY = process.argv.includes('--check')
 const ENABLE_MIRROR_CONSENT = process.argv.includes('--enable-mirror-consent')
 const AGENT_LAUNCH = process.argv.includes('--agent-launch')
+const RECEIPT = process.argv.includes('--receipt')
+const arg = (name, fallback) => { const i = process.argv.indexOf(name); return i < 0 ? fallback : process.argv[i + 1] }
+const STATE_PATH = resolve(arg('--state', process.env.WAGGLE_INSTALL_STATE_PATH || resolve(homedir(), '.waggle', 'install-state.json')))
 
 const c = { dim: '\x1b[2m', b: '\x1b[1m', ok: '\x1b[32m', warn: '\x1b[33m', bad: '\x1b[31m', off: '\x1b[0m' }
 const say = (s = '') => console.log(s)
@@ -77,6 +83,10 @@ function printAgentLaunch() {
 }
 
 if (AGENT_LAUNCH) printAgentLaunch()
+if (RECEIPT) {
+  try { console.log(JSON.stringify(buildInstallReceipt(loadInstallState(STATE_PATH)), null, 2)); process.exit(0) }
+  catch (error) { console.error(error.message); process.exit(1) }
+}
 
 // --- read what exists ------------------------------------------------------------------------
 let cfg = null, cfgExists = existsSync(CONFIG)
@@ -126,6 +136,7 @@ const checks = [
   ['public.relays', Array.isArray(P.relays) && P.relays.length, 'which public relays to read and write'],
   ['public.inbox', P.inbox && !isPlaceholder(P.inbox), 'the channel bridged messages land in — the knob operators ask about first'],
   ['public.staging_inbox', P.staging_inbox && !isPlaceholder(P.staging_inbox), 'where quarantined arrivals wait; may equal inbox for a single-channel lifecycle'],
+  ['public.owner_pubkey', P.owner_pubkey && !isPlaceholder(P.owner_pubkey), 'the human identity that owns this hive; not the bridge or an approver inferred by position'],
   ['public.approvers', Array.isArray(P.approvers) && P.approvers.length && !isPlaceholder(P.approvers[0]), 'who may approve, follow, mute or reject in-channel'],
   ['public.grantors', Array.isArray(P.grantors) && P.grantors.length && !isPlaceholder(P.grantors[0]), 'whose signed grants admit an outside participant'],
   ['public.watch_events', Array.isArray(P.watch_events) && P.watch_events.length && !isPlaceholder(P.watch_events[0]), 'notes whose replies you want to receive'],
@@ -208,6 +219,14 @@ if (!CHECK_ONLY && (gaps || !cfgExists || ENABLE_MIRROR_CONSENT)) {
     const v = await ask('approver npub or hex')
     if (v) { try { cfg.public.approvers = [toHex(v)] } catch (e) { bad(e.message) } }
   }
+  if (!P.owner_pubkey || isPlaceholder(P.owner_pubkey)) {
+    say('')
+    say('    Which human Nostr identity owns this hive?')
+    say(`    ${c.dim}This is not inferred from the first approver: one owner may delegate moderation,${c.off}`)
+    say(`    ${c.dim}operate several hives, and keep bridge/agent identities separate.${c.off}`)
+    const v = await ask('owner npub or hex')
+    if (v) { try { cfg.public.owner_pubkey = toHex(v) } catch (e) { bad(e.message) } }
+  }
   if (!P.grantors?.length || isPlaceholder(P.grantors?.[0])) {
     const dflt = cfg.public.approvers?.[0]
     say('')
@@ -269,6 +288,76 @@ note('npm test rehearses both controls offline; the live drill is still worth do
 todo('Publish the agent relay list:        node tools/publish_relay_list.mjs')
 todo('Admit a participant, if you want one: sh tools/grant-setup.sh')
 
+// --- shared resumable state --------------------------------------------------------------------
+// This is the contract Console Setup and the host bootstrap consume. It contains public facts and
+// proof evidence only; identities are public keys, never credentials. Existing state is never
+// regenerated, so the installation id survives reruns, disconnects, and reboots.
+head('Installation state')
+let installState = null
+const current = (() => { try { return JSON.parse(readFileSync(CONFIG, 'utf8')) } catch { return null } })()
+const currentPublic = current?.public || {}
+try {
+  if (existsSync(STATE_PATH)) {
+    installState = loadInstallState(STATE_PATH)
+    good(`resuming ${installState.installation_id}`)
+  } else if (CHECK_ONLY) {
+    todo(`no installation state yet — run without --check to create ${STATE_PATH}`)
+  } else if (currentPublic.relays?.length && currentPublic.inbox && currentPublic.owner_pubkey) {
+    installState = createInstallState({
+      owner_pubkey: currentPublic.owner_pubkey,
+      hive: { id: currentPublic.mirror_consent_hive_id || null, name: currentPublic.mirror_consent_hive_name || null,
+        handle: currentPublic.mirror_consent_hive_handle || null },
+      topology: { console_host: null, runtime_host: null, console_separate: true },
+      channels: { inbox: currentPublic.inbox, staging: currentPublic.staging_inbox || currentPublic.inbox },
+      relays: currentPublic.relays,
+      features: { consent: Boolean(currentPublic.mirror_require_consent), following: true, tripwire: true, codex: false, claude: false },
+    })
+    good(`created ${installState.installation_id}`)
+  } else {
+    todo('installation state waits for a valid owner, relay list, and inbox UUID')
+  }
+
+  if (installState) {
+    const preflightEvidence = [`node ${process.versions.node}`, existsSync(resolve(ROOT, 'node_modules')) ? 'dependencies installed' : 'dependencies missing',
+      hasBuzz ? 'buzz CLI available' : 'buzz CLI unavailable']
+    installState = transitionInstallStep(installState, 'local_preflight', {
+      status: blocking ? 'failed' : 'passed', evidence: preflightEvidence,
+      action: blocking ? 'Resolve the failed local prerequisites, then rerun waggle-init.' : null,
+    })
+    const mismatches = []
+    if (currentPublic.inbox !== installState.channels.inbox) mismatches.push('inbox differs from the stable manifest')
+    if ((currentPublic.staging_inbox || currentPublic.inbox) !== installState.channels.staging) mismatches.push('staging channel differs from the stable manifest')
+    if (currentPublic.owner_pubkey !== installState.owner.pubkey) mismatches.push('owner differs from the stable manifest')
+    const configEvidence = mismatches.length ? mismatches : [`config ${CONFIG}`, `inbox ${installState.channels.inbox}`, `owner ${installState.owner.pubkey}`]
+    installState = transitionInstallStep(installState, 'public_config', {
+      status: mismatches.length ? 'failed' : 'passed', evidence: configEvidence,
+      action: mismatches.length ? 'Resolve the manifest mismatch explicitly; do not overwrite an identity or channel in place.' : null,
+    })
+    // The host bootstrap is a separate act on a separate machine, so the wizard only points at it —
+    // it never claims a host it cannot see. And it never re-opens a step the runner already proved:
+    // overwriting recorded evidence with a fresh "waiting" is how a done step becomes undone.
+    if (!['passed', 'failed'].includes(installState.steps.host_bootstrap.status)) {
+      installState = transitionInstallStep(installState, 'host_bootstrap', {
+        status: 'waiting',
+        evidence: ['not attempted from here — the host is a different machine'],
+        action: `On the runtime host: node tools/waggle-host-bootstrap.mjs --state ${STATE_PATH}  (add --apply once the plan reads right)`,
+      })
+    }
+    if (!CHECK_ONLY) saveInstallState(STATE_PATH, installState)
+    for (const id of INSTALL_STEPS) {
+      const step = installState.steps[id]
+      const mark = step.status === 'passed' ? `${c.ok}✓${c.off}` : step.status === 'failed' ? `${c.bad}✗${c.off}` : `${c.warn}•${c.off}`
+      say(`    ${mark} ${id.replaceAll('_', ' ')} — ${step.status}`)
+      if (step.action) note(step.action)
+    }
+    note(`${CHECK_ONLY ? 'read from' : 'saved to'} ${STATE_PATH}`)
+    note(`export a secret-free receipt: node tools/waggle-init.mjs --state ${STATE_PATH} --receipt`)
+  }
+} catch (error) {
+  bad(error.message)
+  blocking++
+}
+
 // --- verdict --------------------------------------------------------------------------------------
 head('Readiness')
 let ready = true
@@ -276,7 +365,7 @@ if (blocking) { bad(`${blocking} blocking environment problem(s) above`); ready 
 try {
   const now = JSON.parse(readFileSync(CONFIG, 'utf8'))
   const p = now.public || {}
-  const missing = ['inbox', 'approvers', 'grantors'].filter(k => !p[k] || (Array.isArray(p[k]) ? !p[k].length || isPlaceholder(p[k][0]) : isPlaceholder(p[k])))
+  const missing = ['inbox', 'owner_pubkey', 'approvers', 'grantors'].filter(k => !p[k] || (Array.isArray(p[k]) ? !p[k].length || isPlaceholder(p[k][0]) : isPlaceholder(p[k])))
   if (p.mirror_require_consent) missing.push(...consentFields.filter(k => !p[k] || isPlaceholder(p[k])))
   if (missing.length) { todo(`config still needs: ${missing.join(', ')}`); ready = false } else good('config has the values the bridge refuses to start without')
 } catch { todo('no config yet'); ready = false }

@@ -45,7 +45,7 @@ const eventId = v => {
 let activeBridge = null, activeState = null
 const setModeration = enabled => { for (const button of document.querySelectorAll('.moderation')) button.disabled = !enabled }
 
-import { LANE_VIEW, DROP_VIEW, laneModel } from './routing-model.mjs'
+import { LANE_VIEW, DROP_VIEW, laneModel, laneLabel } from './routing-model.mjs'
 
 // ── relay read ────────────────────────────────────────────────────────────────
 function query(url, filter, ms = 8000) {
@@ -91,7 +91,7 @@ function laneHtml(view, tier, { count, chips = [], rows = [], inert = null }) {
   const title = count === null ? 'not published in the signed state' : ''
   return `<div class="lane t${tier}${inert ? ' off' : ''}">
     <div class="top"><span class="fill">${view.fill}</span>
-      <span class="name">${esc(view.id)}</span>
+      <span class="name">${esc(laneLabel(view))}</span>
       <span class="dest">${esc(view.dest)}</span>
       <span class="count" title="${esc(title)}">${shown}</span></div>
     <p class="why">${esc(view.why)}</p>

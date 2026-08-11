@@ -67,6 +67,25 @@ not in the source you edited.
 - **A granted participant *posts in* as a first-class member.** The write half is exact. The read
   half is not: the community relay will not serve an external key, so what reaches an outside
   agent is the return lane — **mentions only**. Do not claim read.
+
+  **This is settled by live evidence — stop re-deriving it (#344).** It has been re-opened twice
+  on the theory that the wall is channel membership and could be walked around. It is not. The
+  gate is `enforce_relay_membership` (`buzz-relay/src/api/mod.rs`), it consults a **different
+  table** from `channel_members`, and it fires at NIP-42 AUTH time — before any channel is
+  consulted, on **both** the websocket and the HTTP `/events` path. A live 2×2 on a throwaway
+  channel proved each leg: `add-member` accepts any 32-byte key and the roster shows it, and that
+  row is **inert**, because the key still cannot authenticate. An owner-minted NIP-OA auth tag
+  does not admit it either.
+
+  Two corollaries worth having in front of you, because each one cost a day:
+  - **A name is what actually matters, and a name needs a `kind:0`.** Buzz resolves an at-word
+    against a `users` row's `display_name`, written only by `handle_kind0_profile`, keyed on
+    `event.pubkey`. `event.rs` rejects any event whose pubkey differs from the authenticated
+    identity, so **waggle cannot publish that profile on an agent's behalf.** The key must do it
+    itself — which needs the very authentication it is refused. That single `kind:0` is the whole
+    remaining gap, and it is an infrastructure ask, not something to engineer around.
+  - **The return lane is the design, not a shortfall.** Do not describe it as a workaround for
+    missing read, and do not plan work that assumes native read is coming.
 - **You act as your OWN participant key, never as the bridge.** The designed onboarding (#141) is
   that a session mints an *ephemeral* key, requests a maintainer grant, acts, and burns it — no
   persistent key held. That reinforces this repo's core rule, it does not bend it: signing as
@@ -137,6 +156,22 @@ that merely ran.** The suite was green through all of them.
 - **Syntax valid ≠ works.** `node --check` has passed on code whose identifiers did not exist.
 - **`$?` after a pipeline** reports the last command in the pipe, not your script.
 - **Assert anchors before a scripted edit** — a replace that matches nothing prints success.
+- **A mutation that does not apply is indistinguishable from one that is not detected.** Both look
+  like a suite that stayed green, and the second is the conclusion you will draw. Print
+  `ANCHOR MISS` and treat it as a failed run — 2026-08-09, a mutation proved nothing because the
+  anchor held a literal NUL byte that `grep` could not carry.
+- **Never put an invisible character literally in source — use `\uXXXX`.** A NUL as a probe key and
+  a non-breaking space inside a character class each broke tooling that reads the file, and a class
+  nobody can read is a class nobody can check: a reviewer had to sweep U+0000–U+FFFF to prove that
+  a `-` between two invisible characters was not an accidental range.
+- **A probe that loses its own input has told you nothing.** A shell heredoc silently dropped the
+  non-breaking space a check was written to exercise, so it reported a pass for a case it never
+  ran. Confirm the input is what you think it is before believing the output.
+- **Assert the reason, not only the refusal**, wherever the message is the thing someone acts on.
+  `!ok` cannot distinguish a correct refusal from a correct refusal with a misleading explanation.
+  2026-08-09: a new guard made three existing fixtures refuse for a stated reason that sent the
+  owner hunting for an invisible character in a message whose fault was a visible extra line. Every
+  assertion still passed, because every one of them asserted only that it refused.
 - **Put a size floor on fetched input** — a scan of an empty file once reported everything clean.
 - **Being unable to check is not the same as being fine.** Tools here exit **3 = INCONCLUSIVE**
   rather than 0 when they could not see enough to judge (`tripwire.mjs`, `verify-firewall.sh`).
@@ -145,14 +180,14 @@ that merely ran.** The suite was green through all of them.
 
 ## Tests
 
-`npm test` — 53 suites, against the real exported functions with synthetic events. No sockets,
+`npm test` — 71 suites, against the real exported functions with synthetic events. No sockets,
 no production state, no writes outside a temp dir.
 
-boot · suite roster · off-box policy protocol · standing trusted-reply policy · policy receipt verification · derive-only shadow client · shadow-mode gate · policy journal · policy-owned Buzz artifacts · off-box policy service · policy request queue · remote-only policy gate · forced-command policy runner · policy-host deployment · Nostr remote signer · read resilience · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant
+boot · install state · config example coverage · host bootstrap · host facts · suite roster · off-box policy protocol · standing trusted-reply policy · policy receipt verification · derive-only shadow client · shadow-mode gate · policy journal · policy-owned Buzz artifacts · off-box policy service · policy request queue · remote-only policy gate · forced-command policy runner · policy-host deployment · Nostr remote signer · read resilience · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant
 admission · admission return-lane lifecycle · message rendering · deployed-build verification · routing-policy snapshot · latency trace · return lane · return-lane scan · typed channel task carry ·
-return-lane no-miss · return-lane pending · relay ingress · tripwire union · tripwire detection drill · tripwire setup · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · recipient DM relays · DM relay-list publisher · watchlist hot-reload · signed owner control state · signed trust tiers · trust-gradient lane vocabulary · capability issue paths
+return-lane no-miss · return-lane pending · relay ingress · tripwire setup · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · recipient DM relays · DM relay-list publisher · watchlist hot-reload · signed owner control state · signed trust tiers · trust-gradient lane vocabulary · agent lifecycle catalogue · agent lifecycle lane · capability issue paths · agent challenge gate · console importmap coverage · console access list · capability vocabulary · challenge registry · join request · join approval · mint identity · connect plan · agent install state · scope hash · console vocabulary
 
-CI runs them on push and PR. **If a run reports fewer than 53, the branch is on a stale base.**
+CI runs them on push and PR. **If a run reports fewer than 71, the branch is on a stale base.**
 The count of record is the `test` script in `package.json`; a prose count that disagrees with it
 is the prose being wrong.
 

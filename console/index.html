@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>waggle — who has access</title>
-<meta name="description" content="Read-only view of a waggle bridge's live admissions. Reads signed grants off the relays and verifies them in the page. No server, no keys, no privileged access.">
+<meta name="description" content="Read-only view of who is in a waggle hive. Reads signed invitations off the relays and verifies them in the page. No server, no keys, no privileged access.">
 <script type="importmap">
 { "imports": {
     "nostr-tools": "./vendor/nostr-tools.mjs",
@@ -36,6 +36,12 @@
     --good:#4f7a34; --warn:#9a6a12; --critical:#a2482f; }
 
   *{box-sizing:border-box}
+  /* The `hidden` ATTRIBUTE only carries a UA `display:none`, so any rule that sets `display` on
+     the same element silently beats it. `.cards{display:grid}` did exactly that: switching to
+     Details un-hid the table without hiding the cards, and the page showed BOTH views of the
+     same data at once. Nothing in CI can see this — it is a cascade outcome, not markup or
+     script. Stated once, at the top, so it holds for every element on the page. */
+  [hidden]{display:none !important}
   html,body{margin:0;background:var(--ground);color:var(--text);font-family:var(--sans);line-height:1.55}
   main{max-width:1000px;margin:0 auto;padding:0 20px 60px}
   a{color:var(--accent-bright)}
@@ -106,6 +112,39 @@
   .pill.warn{color:var(--warn);border-color:var(--warn)}
   .tablewrap{overflow-x:auto}
   .empty{color:var(--faint);font-size:14px;padding:14px 0}
+
+  /* ── The readable access list ────────────────────────────────────────────────────────────
+     One card per KEY, not one row per grant. An agent holding three approvals used to appear
+     as three unrelated rows in relay order, so the question this page exists to answer —
+     "what does waggle have, and where?" — could only be read by grouping in your head. The
+     table is still here, behind Details, because the ids and the exact protocol vocabulary
+     are what you want when you are reconciling against a signed record rather than deciding
+     whether to revoke. */
+  .listhead{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+  .viewtoggle{display:inline-flex;border:1px solid var(--line);border-radius:999px;overflow:hidden;margin:0 0 12px}
+  .viewtoggle button{background:transparent;border:none;color:var(--dim);font-family:var(--mono);
+    font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;padding:5px 13px;cursor:pointer}
+  .viewtoggle button[aria-pressed="true"]{background:var(--panel-2);color:var(--text)}
+  .viewtoggle button:hover{color:var(--accent-bright)}
+  .cards{display:grid;gap:12px}
+  .agentcard{border:1px solid var(--line);border-radius:var(--r-md);background:var(--panel-2);overflow:hidden}
+  .agentcard-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
+    padding:13px 16px;border-bottom:1px solid var(--line)}
+  .agentcard-count{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+  .agentcard-count b{color:var(--good);font-weight:600}
+  .agentcard-count.none b{color:var(--faint)}
+  .grants{list-style:none;margin:0;padding:0}
+  .grantline{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;
+    padding:12px 16px;border-top:1px solid var(--line)}
+  .grants > .grantline:first-child{border-top:none}
+  .grant-what{font-size:14.5px;color:var(--text);font-weight:600}
+  /* A removed approval is history, not a live control. It stays visible — an owner needs to see
+     that something WAS granted — but it must not read as something still in force. */
+  .grantline.gone .grant-what{color:var(--dim);font-weight:400}
+  .grant-meta{color:var(--dim);font-size:12.5px;margin-top:3px;line-height:1.5}
+  .grant-meta .u{border-bottom:1px dotted var(--line-strong);cursor:help}
+  .grant-act{flex:none}
+
   .rel{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin-top:12px;line-height:1.8}
   .rel b{color:var(--dim);font-weight:600}
   .note{border:1px dashed var(--line-strong);border-radius:var(--r-md);padding:14px 16px;
@@ -137,7 +176,7 @@
 <div id="titlebar" style="max-width:1000px;margin:0 auto;padding:0 20px"></div>
 
 <main>
-  <nav class="console-tabs" aria-label="Waggle console"><a class="active" href="/console/">Access</a><a href="/console/following.html">Following</a><a href="/console/routing.html">Routing</a><a href="/console/config.html">Config</a><a href="/console/setup.html">Setup</a></nav>
+  <nav class="console-tabs" aria-label="waggle console"><a class="active" href="/console/">Access</a><a href="/console/connect.html">Connect</a><a href="/console/following.html">Following</a><a href="/console/agents.html">Agents</a><a href="/console/routing.html">Routing</a><a href="/console/config.html">Config</a><a href="/console/setup.html">Setup</a></nav>
   <p class="sub" style="margin-top:26px">This page shows everyone who has been given access to your community, and who approved them.
   <b>It checks every approval here, in your browser</b> — nothing is taken on trust from a server.
   It needs no connection to your bridge and no password: an approval is a public, signed record, so
@@ -147,7 +186,7 @@
     <h2>Sign in</h2>
     <p style="margin:0 0 12px;color:var(--dim);font-size:13.5px;max-width:74ch">
       Reading needs no key at all — leave this alone and use the lookup below. Sign in only to
-      <b>act</b>: issue a grant, or revoke one. Your key never enters this page; it stays in your
+      <b>act</b>: let someone in, or remove them. Your key never enters this page; it stays in your
       signer, which is handed an unsigned event and returns a signature.
     </p>
     <button class="alby-bar" id="si-ext"><span class="alby-mark"><svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
@@ -177,7 +216,7 @@
   <div class="panel" id="req-panel" style="display:none">
     <h2>Waiting for you <span class="hint">sessions that have asked to be let in</span></h2>
     <div class="note">Nothing listed here has any access. A request is a stranger asking — anyone
-      can send one — and approving it is the only thing that admits them. Read the reason before
+      can send one — and approving it is the only thing that lets them in. Read the reason before
       you decide, and remember it was written by whoever is asking.</div>
     <div id="reqlist"></div>
     <div class="status" id="reqst"></div>
@@ -233,26 +272,33 @@
   </div>
 
   <div class="panel">
-    <h2>Access list</h2>
-    <div class="tablewrap"><table id="tbl">
-      <thead><tr><th>Who</th><th>Status</th><th>What they can do</th><th>Where</th><th>Given</th><th>Record</th><th></th></tr></thead>
-      <tbody id="rows"><tr><td colspan="7" class="empty">Sign in — or paste a key above — to see who has access.</td></tr></tbody>
+    <div class="listhead">
+      <h2>Access list</h2>
+      <div class="viewtoggle" role="group" aria-label="How to show the access list">
+        <button id="view-plain" aria-pressed="true">Plain</button>
+        <button id="view-pro" aria-pressed="false">Details</button>
+      </div>
+    </div>
+    <div class="cards" id="cards"><div class="empty">Sign in — or paste a key above — to see who has access.</div></div>
+    <div class="tablewrap" id="prowrap" hidden><table id="tbl">
+      <thead><tr><th>Who</th><th>Status</th><th>Capability</th><th>Scope</th><th>Enforced by</th><th>Given</th><th>Record</th><th></th></tr></thead>
+      <tbody id="rows"><tr><td colspan="8" class="empty">Sign in — or paste a key above — to see who has access.</td></tr></tbody>
     </table></div>
   </div>
 
   <div class="note">
-    <b>Why “Where” often says Hidden.</b> Each approval records the channel it is for as a
-    scrambled fingerprint rather than a name. Anyone can see that you approved someone; nobody can
-    see <i>into what</i> — and two approvals into the same channel cannot be matched up by an
-    onlooker. If you already know the channel, type it in the box above and the matching rows fill
-    in. <b>Hidden is the privacy working, not something failing to load.</b>
+    <b>Why it says “a channel this record does not name”.</b> Each approval records what it is
+    for as a scrambled fingerprint rather than a name. Anyone can see that you approved someone;
+    nobody can see <i>into what</i> — and two approvals into the same channel cannot be matched up
+    by an onlooker. If you already know the channel or the agent, type it in the box above and the
+    matching approvals resolve. <b>That is the privacy working, not something failing to load.</b>
   </div>
   <div class="note">
     <b>Keys stay with your signer.</b> Reading needs no key and no bridge access. When you issue or
     revoke, your selected browser or Bunker signer signs the exact event; this page never receives
     the private key or host access. Authority moves as signed events. What is missing is never
     invented: if a relay refuses or fails, this says so rather than quietly showing a shorter list
-    and letting you read it as “nobody is admitted.”
+    and letting you read it as “nobody is in.”
   </div>
 </main>
 
@@ -261,6 +307,9 @@
 // signatures must not fetch its verifier from a third party at load time.
 import { verifyEvent, nip19 } from 'nostr-tools'
 import { verifyNvoyVisibility } from './nvoy-visibility.mjs'
+import { groupByGrantee, byLiveThenNewest, scopePhrase, givenOn } from './access-list.mjs'
+import { CAP_LABEL, capLabel, CAP_ENFORCER, capEnforcer, ISSUABLE, describeGrant } from './capability-vocabulary.mjs'
+import { scopeHash } from './scope-hash.mjs'
 const { decode } = nip19
 
 const $ = (id) => document.getElementById(id)
@@ -276,17 +325,9 @@ const hexToBytes = (h) => Uint8Array.from(h.match(/.{1,2}/g).map(b => parseInt(b
 const bytesToHex = (u) => [...u].map(b => b.toString(16).padStart(2, '0')).join('')
 const enc = new TextEncoder()
 
-// Same construction the issuer and the bridge use. If this drifts, grants stop resolving here
-// while remaining perfectly valid — so it is deliberately written to mirror them literally.
-async function scopeHash(subject, saltHex) {
-  const salt = saltHex ? hexToBytes(saltHex) : new Uint8Array(0)
-  const prefix = enc.encode('waggle/da-scope/v1')
-  const subj = enc.encode(String(subject))
-  const buf = new Uint8Array(prefix.length + 1 + subj.length + salt.length)
-  buf.set(prefix, 0); buf[prefix.length] = 0
-  buf.set(subj, prefix.length + 1); buf.set(salt, prefix.length + 1 + subj.length)
-  return bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', buf)))
-}
+// The construction is shared with the issuer and every other reader — console/scope-hash.mjs.
+// It used to be written out here as well; two hand-written copies of a hash construction fail
+// silently in both directions and produce a hash either way.
 
 const toHex = (v) => {
   const s = String(v || '').trim()
@@ -327,52 +368,7 @@ function query(url, filter, ms = 9000) {
 
 // Rendering is separate from reading so signing in can re-draw the same data with actions
 // attached, without re-querying the relays.
-// Protocol vocabulary -> what the person actually gets. `admit` and `task` are meaningful
-// inside NIP-DA and meaningless to an administrator deciding whether to click Remove.
-const CAP_LABEL = {
-  'admit': 'Post into the channel',
-  'admit+read': 'Post into the channel, and read it',
-  'task': 'Take tasks from you',
-  'task+act': 'Take tasks, and act on them',
-  'task-relay': 'Carry signed instructions',
-  'mirror': 'Mirror their public posts',
-}
-const capLabel = (c) => CAP_LABEL[c] || c
-
-// WHO ENFORCES WHAT. The operator signs every one of these here, but this bridge only
-// consumes two of them (see processGrantEvent: `cap !== 'admit' && cap !== 'admit+read'`).
-// The task family is enforced on the AGENT side, by the runtime's own invocation policy.
-// A surface that let you sign a grant without saying who checks it would be recording
-// intent and implying enforcement — the same defect as a routing board rendering a lane
-// nothing delivers to.
-const CAP_ENFORCER = {
-  'admit': 'this bridge',
-  'admit+read': 'this bridge',
-  'task': "the agent's runtime",
-  'task+act': "the agent's runtime",
-  'task-relay': "the agent's runtime",
-  'mirror': 'this bridge (authored by the participant, not by you)',
-}
-
-// The caps this console may ISSUE, per subject shape. Two deliberate exclusions:
-//   admit+read — conveying the read cap means putting Concord channel key material in a
-//     30440, which makes this page key-touching and makes REVOKE a Concord rotation
-//     client rather than an event signer (SPEC_EXTERNAL §4.1.1). Offered, disabled, with
-//     the reason: a greyed option with a reason teaches; a missing one confuses.
-//   mirror — authored by the participant about themselves, never by the operator. It is
-//     not the operator's to grant, so it is not in this list at all.
-const ISSUABLE = {
-  channel: [
-    { cap: 'admit', ok: true },
-    { cap: 'admit+read', ok: false,
-      reason: 'not issuable here — it conveys channel key material, which would make this page hold a key and make revoke a Concord rotation, not just a 441' },
-  ],
-  agent: [
-    { cap: 'task', ok: true },
-    { cap: 'task+act', ok: true },
-    { cap: 'task-relay', ok: true },
-  ],
-}
+// The capability vocabulary is shared — see console/capability-vocabulary.mjs for why.
 
 let lastGrants = null, lastSubjectNote = '', lastGrantor = null
 // Profiles are a presentation layer, never access policy. Kind:0 metadata is signed, but its
@@ -392,6 +388,18 @@ const profilePicture = (pubkey) => {
     const u = new URL(picture)
     return /^https?:$/.test(u.protocol) ? u.href : null
   } catch { return null }
+}
+// A grant rendered as a sentence with BOTH parties in it. The card used to show `capLabel(cap)`
+// alone — "Take tasks from you" — which named neither party and, for the task family, described
+// the wrong one as the recipient of orders. A reader auditing what is live has no way to check a
+// capability phrase that does not say who is doing what to whom. Both inputs are escaped here,
+// because describeGrant() composes plain text and does no escaping of its own.
+function grantSentence(g) {
+  const grantee = esc(profileName(g.grantee))
+  const subject = g.scopeLabel === 'opaque'
+    ? 'a subject only you can identify'
+    : esc(g.scopeLabel)
+  return describeGrant({ cap: g.cap, grantee, subject })
 }
 function identityCell(pubkey) {
   const name = profileName(pubkey)
@@ -425,34 +433,78 @@ async function loadProfiles(pubkeys) {
   }
   renderRows()
 }
+// Arrangement lives in access-list.mjs so it can be asserted without a browser. See its header.
+const scopeCell = (g) => {
+  const { text, title } = scopePhrase(g)
+  return title ? `<span class="u" title="${esc(title)}">${esc(text)}</span>` : esc(text)
+}
+const canRevoke = () => signer && signerPk === lastGrantor
+const revokeButton = (g) => canRevoke() && g.live
+  ? `<button class="btn ghost" style="margin:0;padding:5px 12px;font-size:12.5px" onclick="__revoke('${esc(g.id)}','${esc(short(g.grantee))}')">Revoke</button>`
+  : ''
+
 function renderRows() {
-  const rows = $('rows')
+  const cards = $('cards'), rows = $('rows')
   if (lastGrants === null) return              // never read yet — leave the "sign in to see" prompt
   if (!lastGrants.length) {
-    rows.innerHTML = `<tr><td colspan="7" class="empty">Nobody has been given access by this key${lastSubjectNote}.</td></tr>`
+    const none = `Nobody has been given access by this key${lastSubjectNote}.`
+    cards.innerHTML = `<div class="empty">${esc(none)}</div>`
+    rows.innerHTML = `<tr><td colspan="8" class="empty">${esc(none)}</td></tr>`
     return
   }
-  rows.innerHTML = lastGrants.map(g => `
+
+  cards.innerHTML = groupByGrantee(lastGrants).map(group => `
+      <section class="agentcard">
+        <div class="agentcard-head">
+          ${identityCell(group.grantee)}
+          <span class="agentcard-count${group.live ? '' : ' none'}">${group.live
+            ? `<b>${group.live}</b> active`
+            : `<b>no</b> access`}</span>
+        </div>
+        <ul class="grants">${group.grants.map(g => `
+          <li class="grantline${g.live ? '' : ' gone'}">
+            <div>
+              <div class="grant-what">${g.live ? '' : 'Removed — '}${grantSentence(g)}</div>
+              <div class="grant-meta">${scopeCell(g)} · checked by ${esc(capEnforcer(g.cap))}
+                · given ${esc(givenOn(g.at))}</div>
+            </div>
+            <div class="grant-act">${revokeButton(g)}</div>
+          </li>`).join('')}</ul>
+      </section>`).join('')
+
+  rows.innerHTML = [...lastGrants].sort(byLiveThenNewest).map(g => `
       <tr>
         <td class="who">${identityCell(g.grantee)}</td>
         <td><span class="pill ${g.live ? 'live' : 'revoked'}">${g.live ? 'Active' : 'Removed'}</span></td>
-        <td>${esc(capLabel(g.cap))}</td>
+        <td>${esc(g.cap)}</td>
         <td>${g.scopeLabel === 'opaque'
-              ? `<span title="This approval names its channel as a salted hash, so a passer-by cannot tell which one it is. Enter the channel above and it will resolve.">Hidden</span>`
-              : g.scopeLabel}</td>
+              ? `<span title="This approval names its subject as a salted hash, so a passer-by cannot tell which one it is. Enter it above and it will resolve.">Hidden</span>`
+              : esc(g.scopeLabel)}</td>
+        <td>${esc(capEnforcer(g.cap))}</td>
         <td>${new Date(g.at * 1000).toISOString().slice(0, 16).replace('T', ' ')}</td>
         <td class="record">${short(g.id)}</td>
-        <td>${g.live && signer && signerPk === lastGrantor
-            ? `<button class="btn ghost" style="margin:0;padding:5px 12px;font-size:12.5px" onclick="__revoke('${esc(g.id)}','${esc(short(g.grantee))}')">Revoke</button>`
-            : ''}</td>
+        <td>${revokeButton(g)}</td>
       </tr>`).join('')
 }
+
+// The toggle swaps which of the two already-rendered views is visible; it never re-reads and
+// never re-renders, so switching cannot change what you are looking at.
+function setView(pro) {
+  $('cards').hidden = pro
+  $('prowrap').hidden = !pro
+  $('view-plain').setAttribute('aria-pressed', String(!pro))
+  $('view-pro').setAttribute('aria-pressed', String(pro))
+  try { localStorage.setItem('waggle.accesslist.view', pro ? 'pro' : 'plain') } catch { /* private mode */ }
+}
+$('view-plain').onclick = () => setView(false)
+$('view-pro').onclick = () => setView(true)
+try { if (localStorage.getItem('waggle.accesslist.view') === 'pro') setView(true) } catch { /* private mode */ }
 
 // ── The shared identity bar ─────────────────────────────────────────────────────────────────
 // Vendored from the estate's component rather than hand-rolled: one sign-in across the fleet,
 // promoted rather than levelled down. The bar owns the signed-in/signed-out presentation and
 // the npub pill; this page only supplies the callbacks.
-import { renderTitlebar, updateTitlebar } from './vendor/nave-titlebar.mjs'
+import { renderTitlebar, updateTitlebar, NAVE_PLANES } from './vendor/nave-titlebar.mjs'
 
 const TB = $('titlebar')
 const WAGGLE_SEAL = `<svg viewBox="0 0 100 100" fill="none" aria-hidden="true">
@@ -467,6 +519,10 @@ function drawTitlebar(npub, kind) {
     appName: 'waggle console',
     tagline: 'who has access to your community',
     sealSvg: WAGGLE_SEAL,
+    // activePlane null — waggle is an APP, not a third plane. AD-12 declines
+    // "application plane": these are one grant plane seen at two scopes, and a slice
+    // highlighting itself as a plane would reintroduce the vocabulary the ruling removed.
+    planes: NAVE_PLANES, activePlane: null,
     npub: npub || null,
     kind: kind || null,
     onSignIn: npub ? undefined : () => { $('auth').style.display = ''; $('auth').scrollIntoView({ behavior: 'smooth', block: 'center' }) },
@@ -686,10 +742,10 @@ $('g-preview').addEventListener('click', async () => {
 // it, and what it does not convey — the last part being where a reader is most likely to
 // assume more than was signed.
 function capWhy(cap, grantee, subject, subjRaw, isAgent) {
-  const who = short(grantee), enforcer = CAP_ENFORCER[cap] || 'an unknown consumer'
+  const who = short(grantee), enforcer = capEnforcer(cap)
   const hidden = 'The subject is stored as a salted hash, so nobody watching can tell which one it is.'
   if (cap === 'admit') {
-    return `This admits ${who} to the channel ${subjRaw}. It conveys NO ability to read the channel — only to post into it. Checked by ${enforcer}. The channel id never rides publicly — it is stored as a salted hash that only someone who already knows the channel can match.`
+    return `This lets ${who} into the channel ${subjRaw}. It conveys NO ability to read the channel — only to post into it. Checked by ${enforcer}. The channel id never rides publicly — it is stored as a salted hash that only someone who already knows the channel can match.`
   }
   if (cap === 'task') {
     return `This authorises ${who} to TASK the agent ${short(subject)} — to wake it and be answered. It does NOT authorise the agent to take action on their word. Checked by ${enforcer}, not by this bridge. ${hidden}`
@@ -700,7 +756,10 @@ function capWhy(cap, grantee, subject, subjRaw, isAgent) {
   if (cap === 'task-relay') {
     return `This authorises ${who} to CARRY signed instructions to the agent ${short(subject)} — as transport, never as the author. It grants no authority to instruct: a carried message is only actionable if its original signer separately holds a task grant. Checked by ${enforcer}, not by this bridge. ${hidden}`
   }
-  return `This grants ${capLabel(cap)} to ${who} over ${short(subject)}. Checked by ${enforcer}. ${hidden}`
+  // Anything without a bespoke paragraph above still gets a sentence naming BOTH parties. The
+  // previous fallback read "This grants «label» to «grantee» over «subject»", which put a
+  // directionless phrase in the middle of a sentence that looked like it had a direction.
+  return `${describeGrant({ cap, grantee: who, subject: short(subject) })}. Checked by ${enforcer}. ${hidden}`
 }
 
 // Offer only the capabilities that are valid for the subject in the box, and disable the
@@ -717,7 +776,7 @@ function refreshCaps() {
   const chosen = opts.find(o => o.cap === sel.value)
   const blocked = opts.filter(o => !o.ok)
   $('g-cap-note').innerHTML = [
-    chosen ? `Checked by <b>${CAP_ENFORCER[chosen.cap]}</b>.` : '',
+    chosen ? `Checked by <b>${capEnforcer(chosen.cap)}</b>.` : '',
     ...blocked.map(o => `<b>${capLabel(o.cap)}</b> is ${o.reason}.`),
   ].filter(Boolean).join('<br>')
 }
@@ -771,10 +830,10 @@ window.__admit = async (id) => {
   proposeSigning({
     kind: 440, created_at: Math.floor(Date.now() / 1000),
     tags: [['p', r.grantee], ['da-scope', hash, salt], ['da-cap', r.cap]], content: '',
-  }, `This admits ${short(r.grantee)} to the channel ${r.channel}. The channel id never rides `
+  }, `This lets ${short(r.grantee)} into the channel ${r.channel}. The channel id never rides `
    + `publicly — it is stored as a salted hash only someone who already knows the channel can match.`
    + (r.granteeIsSender ? ''
-      : ` — WARNING: the key being admitted is NOT the key that asked. ${short(r.from)} is asking on `
+      : ` — WARNING: the key being let in is NOT the key that asked. ${short(r.from)} is asking on `
       + `behalf of ${short(r.grantee)}. Admit only if you expected someone to request on another key's behalf.`))
 }
 
@@ -854,10 +913,10 @@ async function loadRequests() {
           <span class="who">${esc(r.channel)}</span></div>
         <div style="margin:7px 0;color:var(--dim)">&ldquo;${esc(r.purpose)}&rdquo;</div>
         ${r.granteeIsSender ? '' :
-          `<div><span class="pill warn">asked by ${esc(short(r.from))}, not the key being admitted</span></div>`}
+          `<div><span class="pill warn">asked by ${esc(short(r.from))}, not the key being let in</span></div>`}
         <div style="margin-top:9px">
           <button class="btn" style="margin:0;padding:5px 12px;font-size:12.5px"
-            onclick="__admit('${esc(r.id)}')">Admit</button>
+            onclick="__admit('${esc(r.id)}')">Let them in</button>
           <button class="btn ghost" style="margin:0 0 0 8px;padding:5px 12px;font-size:12.5px"
             onclick="__dismissReq('${esc(r.id)}')">Not now</button>
         </div>
@@ -922,8 +981,12 @@ $('go').addEventListener('click', async () => {
 
     if (!answered.length) {
       st.className = 'status err'
-      st.textContent = 'No relay answered. Nothing is shown because nothing could be verified — this is not the same as "nobody is admitted".'
-      rows.innerHTML = '<tr><td colspan="7" class="empty">Unverifiable — no relay answered.</td></tr>'
+      st.textContent = 'No relay answered. Nothing is shown because nothing could be verified — this is not the same as "nobody is in".'
+      // BOTH views, or the hidden one keeps a stale answer that becomes the visible one the
+      // moment somebody clicks the toggle — a list nobody could verify, shown as if verified.
+      rows.innerHTML = '<tr><td colspan="8" class="empty">Unverifiable — no relay answered.</td></tr>'
+      $('cards').innerHTML = '<div class="empty">Unverifiable — no relay answered.</div>'
+      lastGrants = null
       return
     }
     lastGrants = out
@@ -934,10 +997,19 @@ $('go').addEventListener('click', async () => {
     // then enrich each key with its latest signed kind:0 identity when the profile reads return.
     void loadProfiles(out.map(g => g.grantee))
 
-    st.className = 'status ok'
-    st.textContent = `${out.filter(g => g.live).length} live · ${out.filter(g => !g.live).length} revoked · `
-      + `${answered.length}/${RELAYS.length} relays answered`
-      + (forged ? ` · ${forged} event(s) failed signature verification and were discarded` : '')
+    // Say it the way the person reading it would. The relay count stays, because it is the
+    // evidence that separates "nobody is admitted" from "we could not see" — and a failed
+    // signature stays loud, because a discarded forgery is the one thing here worth alarming on.
+    const live = out.filter(g => g.live).length
+    const gone = out.length - live
+    const holders = new Set(out.filter(g => g.live).map(g => g.grantee)).size
+    st.className = forged ? 'status err' : 'status ok'
+    st.textContent =
+      (live ? `${holders} ${holders === 1 ? 'key has' : 'keys have'} access — ${live} ${live === 1 ? 'approval' : 'approvals'} in force`
+            : 'Nothing is in force')
+      + (gone ? `, ${gone} removed` : '')
+      + `. Read back from ${answered.length} of ${RELAYS.length} relays.`
+      + (forged ? ` ${forged} event(s) FAILED signature verification and were discarded — they are not shown.` : '')
   } catch (e) {
     st.className = 'status err'
     st.textContent = e.message

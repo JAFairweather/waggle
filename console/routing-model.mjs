@@ -14,18 +14,27 @@
 // ── the display copy for src/lanes.mjs ────────────────────────────────────────
 // `id` MUST equal the lane id in src/lanes.mjs, in the same order. tests/lanes.mjs
 // asserts it. Everything else here is presentation the bridge has no business carrying.
+//
+// `label` is what a PERSON reads; `id` is what the classifier matches on (#348). They are
+// separate fields because a lane id is structure — `src/lanes.mjs`, `LANE_IDS` and the
+// destructure at `src/bridge.mjs:1453` all key off it — so renaming an id to improve the copy
+// would be a protocol change wearing a copy change's clothes. A lane with no `label` renders
+// its raw id rather than inventing one.
 export const LANE_VIEW = [
-  { id: 'mirrored feed', fill: '▓▓', dest: 'straight to the channel',
+  { id: 'mirrored feed', label: 'mirrored feed', fill: '▓▓', dest: 'straight to the channel',
     why: 'Authors you chose to mirror. Not questioned.', from: 'the signed follow list' },
-  { id: 'granted participant', fill: '▓▓', dest: 'straight to the channel · + live @mentions',
-    why: 'Holds an admission you signed. Revocable by you, any time.', from: 'a 440 you signed' },
-  { id: 'standing follow', fill: '▒▒', dest: 'no queue',
+  { id: 'granted participant', label: 'someone you let in', fill: '▓▓', dest: 'straight to the channel · + live @mentions',
+    why: 'You signed them in. Removable by you, any time.', from: 'a 440 you signed' },
+  { id: 'standing follow', label: 'standing follow', fill: '▒▒', dest: 'no queue',
     why: 'Vouched to reply without review. Cannot start a thread.', from: 'trusted_repliers' },
-  { id: 'reply to our note', fill: '░░', dest: 'quarantine — held for you',
+  { id: 'reply to our note', label: 'reply to our note', fill: '░░', dest: 'quarantine — held for you',
     why: 'A stranger replying to something of ours. Nobody sees it until you do.', from: 'anyone replying to a watched note' },
 ]
-export const DROP_VIEW = { id: 'no match', fill: '··', dest: 'dropped, silently',
-  why: 'Not mirrored, not admitted, not vouched, not a reply to a watched note. It never reaches the channel and is not held for review. Nothing is counted here — a drop leaves no record by design.' }
+export const DROP_VIEW = { id: 'no match', label: 'no match', fill: '··', dest: 'dropped, silently',
+  why: 'Not mirrored, not let in, not vouched, not a reply to a watched note. It never reaches the channel and is not held for review. Nothing is counted here — a drop leaves no record by design.' }
+// One place that resolves a lane to its human label, so a second surface cannot grow a third
+// spelling of the same lane.
+export const laneLabel = (lane) => (lane && lane.label) || (lane && lane.id) || 'unknown lane'
 
 // ── the model ─────────────────────────────────────────────────────────────────
 // Pure: signed state in, per-lane facts out. Separated from rendering so the two rules
