@@ -61,6 +61,7 @@ import { PolicyRequestQueue } from './policy_request_queue.mjs'
 import { defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased } from './render.mjs'
 import { hex as concordHex, publicChannel, openChannelWrap } from './concord_lib.mjs'
 import { thinRelaySet } from './relays.mjs'
+import { refusalLedger } from './relay_refusals.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
@@ -2011,21 +2012,38 @@ function rlDropOnce(id) {
 // chosen accept-count with no socket — the same shape #5's scanChannel(fetchPage) uses. WB_STUB_SEND
 // keeps the socket-free tests honest: it means "assume it landed on every configured relay", so the
 // crypto still runs but the count is positive, never a spurious 0/N.
+// The ledger for #374. `err`, not `log`: a relay refusing our writes is a fault, and it belongs
+// wherever the operator is already looking for faults. One line the first time, then counted.
+const relayRefusals = refusalLedger({ log: err })
+
 function publishWrapToRelayList(wrap, relays, mkSocket) {
   if (process.env.WB_STUB_SEND) return Promise.resolve(relays.length || 1)
   // All-settled-with-a-count: per-relay OK-true is the ONLY landing signal. A relay that opens but
   // never OKs is bounded by the budget, and an explicit ["OK", id, false] rejection must not read
   // as an accept — counting any inbound frame was finding #2.
+  //
+  // m[3] is the relay's own message, and until #374 it was dropped on the floor. The count still
+  // comes back as a plain number — every caller does arithmetic on it — but the REASON now lands in
+  // the ledger, which logs a relay's first refusal, counts the identical repeats, and speaks up
+  // again if the reason changes. Nothing here reacts to a refusal; that is #346, and it cannot be
+  // built on a message nobody reads.
   let accepted = 0
   return fanout(relays || [], {
     timeoutMs: 10000,
     mkSocket,
-    each: (ws, done) => {
+    each: (ws, done, _settleNow, url) => {
       ws.on('open', () => ws.send(JSON.stringify(['EVENT', wrap])))
       ws.on('message', d => {
         try {
           const m = JSON.parse(d.toString())
-          if (m[0] === 'OK' && m[1] === wrap.id) { if (m[2]) accepted++; done() }
+          if (m[0] === 'OK' && m[1] === wrap.id) {
+            if (m[2]) accepted++
+            // A message on a TRUE frame is not a refusal — `["OK", id, true, "duplicate: have this
+            // event"]` is the healthiest answer a relay gives, and reading it as one would report
+            // the working relays as the broken ones. The boolean decides; the message explains.
+            relayRefusals.record({ relay: url, accepted: !!m[2], reason: m[3] })
+            done()
+          }
         } catch { /* non-OK frame */ }
       })
       ws.on('error', done)
@@ -2569,7 +2587,11 @@ async function returnLaneSend(toHex, descriptor, meta, publish = publishWrapToRe
     if (accepted < 1)
       err(`RETURN 0/${relays} -> ${toHex.slice(0, 12)}…: seal reached NO relay — NOT marked sent, will re-carry (wrap ${wrap.id.slice(0, 12)}…)`)
     else
-      log(`RETURN ${accepted}/${relays} -> ${toHex.slice(0, 12)}…: sealed ${bytes}B (wrap ${wrap.id.slice(0, 12)}…)`)
+      // A short ratio is the moment somebody asks which relay and why, so the answer goes on the
+      // same line rather than in a separate one they would have to correlate by timestamp. Only
+      // when it IS short: appending "all relays fine" to every send is noise, and noise is what
+      // stops the short ones being noticed.
+      log(`RETURN ${accepted}/${relays} -> ${toHex.slice(0, 12)}…: sealed ${bytes}B (wrap ${wrap.id.slice(0, 12)}…)` + (accepted < relays && relayRefusals.summary() ? ` — ${relayRefusals.summary()}` : ''))
     return accepted
   } catch (e) { err(`return lane: seal/send failed: ${e.message}`); return 0 }
 }
@@ -3446,7 +3468,7 @@ export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, c
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, relayRefusals, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests,
   policyRequests, policyWriterInFlight, remotePolicyGatePublic, processRemotePolicyRequest,
   retryRemotePolicyRequests, __setPolicyWriterRunnerForTests, unframePolicyWriterResponse,

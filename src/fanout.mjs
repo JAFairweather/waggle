@@ -14,8 +14,12 @@ import WebSocket from 'ws'
 //
 // What is NOT shared is the settle RULE, because the three genuinely differ (first-match,
 // all-settled-with-a-count, best-effort-with-a-default) and flattening that would change behaviour.
-// `each(ws, done, settleNow)` wires one socket: call `done()` when that socket has nothing more to
-// give, or `settleNow()` to end the whole fan-out early. `collect()` returns the accumulated result.
+// `each(ws, done, settleNow, url)` wires one socket: call `done()` when that socket has nothing more
+// to give, or `settleNow()` to end the whole fan-out early. `collect()` returns the accumulated
+// result. `url` is the relay this socket is for — added by #374, because a relay's refusal is
+// worthless without knowing which relay said it, and there is no other way to find out: `each` is
+// defined once, outside the loop, so it cannot close over the URL. Purely additive; the three
+// existing callbacks take three parameters and are unaffected.
 //
 // `mkSocket` is injectable so the settle rules are drivable with no network — the same seam shape
 // scanChannel(fetchPage) and returnLaneSend(publish) already use.
@@ -40,7 +44,7 @@ function fanout(relays, { timeoutMs, each, collect, mkSocket = (url) => new WebS
       const done = () => { if (spent) return; spent = true; if (--pending <= 0) finish() }
       try { ws = mkSocket(url) } catch { done(); continue }
       socks.push(ws)
-      try { each(ws, done, finish) } catch { done() }
+      try { each(ws, done, finish, url) } catch { done() }
     }
   })
 }
