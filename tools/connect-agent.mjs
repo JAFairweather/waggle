@@ -257,6 +257,42 @@ if (!existsSync(briefPath) && !CHECK) {
       + `> **Edit this section.** Nothing generated it, and nothing will overwrite it. Say what this\n`
       + `> identity is for: what it should do when mentioned, what it must not decide alone, and who to\n`
       + `> ask. An agent with no remit answers every mention the same way.\n\n`
+      // The shared brief explains that a pull path exists and that credentials are what make a tool
+      // yours. It cannot state the commands, because it lives in a public repo and these are paths on
+      // one machine. This file is the right place for them: it is generated per identity, it is not
+      // in the repo, and it already knows this runtime's root. Without it, an agent is told a pull
+      // path exists and left to reconstruct it from an example written for somebody else — which is
+      // exactly how a live agent concluded the read tool belonged to another runtime and stopped.
+      + `## How to read your own mail\n\n`
+      + `Your credentials, your key, your signer. The tools are shared; pointing them at the paths\n`
+      + `below is what makes the call yours. Never substitute another identity's credential paths.\n\n`
+      + '```bash\n'
+      + `cd ~/Projects/nvoy/mcp && \\\n`
+      + `  NVOY_BUNKER_URI_FILE="${join(HERE, 'credentials', 'bunker-uri')}" \\\n`
+      + `  NVOY_NIP46_CLIENT_FILE="${join(HERE, 'credentials', 'bunker-client')}" \\\n`
+      + `  node tools/inbox.mjs --since-min 240\n`
+      + '```\n\n'
+      + `If that prints nothing, it has told you nothing — say you could not look, never that there\n`
+      + `is no mail.\n\n`
+      + `## How to speak into the community\n\n`
+      + `You do not post to the channel yourself; waggle carries for you, sealed, and renders it as\n`
+      + `you. Body on stdin so nothing sensitive reaches argv or shell history.\n\n`
+      + '```bash\n'
+      + `echo "@Name — your message, @mentions and all" | \\\n`
+      + `  NVOY_BUNKER_URI_FILE="${join(HERE, 'credentials', 'bunker-uri')}" \\\n`
+      + `  NVOY_NIP46_CLIENT_FILE="${join(HERE, 'credentials', 'bunker-client')}" \\\n`
+      + `  node ~/Projects/nvoy/mcp/tools/relay-send.mjs\n`
+      + '```\n\n'
+      + `\`accepted by 1/2 relay(s)\` is normal — one public relay demands proof-of-work we do not\n`
+      + `send. **A relay OK is not delivery.** Delivery is the bridge's own journal naming your wrap\n`
+      + `id; until you have seen that, say it was accepted, not that it arrived.\n\n`
+      + `## When to shell out, and when to use the MCP\n\n`
+      + `- **MCP \`nvoy_channel_read\`** — you were handed a 64-hex envelope marker and want that one\n`
+      + `  message. It cannot list or poll, so it can only answer about a marker you already hold.\n`
+      + `- **MCP \`nvoy_channel_reply\`** — replying to a message you read that way, on its envelope.\n`
+      + `- **Shell \`inbox.mjs\`** — anything else about your own mail: what arrived, whether the path\n`
+      + `  works at all, catching up after a gap. This is your only way to DISCOVER mail.\n`
+      + `- **Shell \`relay-send.mjs\`** — speaking unprompted, rather than replying to something.\n\n`
       + `---\n\n${body}`,
       { mode: 0o600, flag: 'wx' })
     did.push(`wrote ${briefPath} — EDIT ITS REMIT SECTION before this identity speaks`)
@@ -264,6 +300,15 @@ if (!existsSync(briefPath) && !CHECK) {
   }
 }
 const briefOk = existsSync(briefPath)
+// A brief written before the operational sections existed is WORSE than none, because it reads as
+// complete. The agent is told a pull path exists and given no command for it, which is exactly how
+// LukeDog concluded the read tool belonged to another runtime and stopped. `wx` means this file is
+// never overwritten — the remit inside it is the operator's — so a stale one has to be REPORTED,
+// not silently tolerated. Keyed on the heading rather than a version stamp: the heading is the
+// thing an agent actually looks for, so its absence is the defect itself and not a proxy for it.
+const briefHasOps = briefOk && (() => {
+  try { return /^## How to read your own mail$/m.test(readFileSync(briefPath, 'utf8')) } catch { return false }
+})()
 const launchCmd = `claude --mcp-config ${mcpConfigPath} --strict-mcp-config`
   + (briefOk ? ` \\\n        --append-system-prompt-file ${briefPath}` : '')
 see('strict-launch-config', mcpConfigOk, false,
@@ -271,9 +316,13 @@ see('strict-launch-config', mcpConfigOk, false,
     ? `${mcpConfigPath} — launch with:\n      ${launchCmd}`
     : (launchNote || `absent: ${mcpConfigPath}`))
 see('agent-brief', briefOk, false,
-  briefOk
-    ? `${briefPath} — carried by --append-system-prompt-file; its remit section is the operator's to write`
-    : `absent: ${briefPath} — a bound session would launch knowing which key it holds and nothing about where it is`)
+  !briefOk
+    ? `absent: ${briefPath} — a bound session would launch knowing which key it holds and nothing about where it is`
+    : briefHasOps
+      ? `${briefPath} — carried by --append-system-prompt-file; its remit section is the operator's to write`
+      : `${briefPath} PREDATES the operational sections — it has no "How to read your own mail" and this identity`
+        + ` does not know how to reach its own inbox. Delete it and re-run to regenerate, keeping a copy of`
+        + ` its remit section first: that half is yours and will not be rebuilt.`)
 
 // ── Report ──────────────────────────────────────────────────────────────────────────────────
 const report = installState(obs)
