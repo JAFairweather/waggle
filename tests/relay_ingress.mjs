@@ -249,6 +249,47 @@ ok('resolveRelayDest rejects empty', resolveRelayDest('') === null)
   restore()
   ok('an explicit retryable:true still retries', !relaySeen.has(wC.wrap.id))
 
+  // (d) AMBIGUOUS — `retryable:false` is necessary but not sufficient to call something a refusal.
+  // buzz-cli returns `delivery_unknown` (error.rs:127) for a timeout / body loss / 502-504 that
+  // happened AFTER the POST, so the write may already have landed. It shares `retryable:false`
+  // with a definite user_error, and a first version of this fix read only that boolean — so it
+  // recorded a possibly-delivered message as an undelivered loss and acked the sender "refused".
+  // Telling a sender to ask again about a post that landed is how a duplicate gets written.
+  //
+  // The retry decision is the SAME as (a) — commit, do not re-send, because a re-send is what
+  // would duplicate. What must differ is everything the sender and the operator are told. Both
+  // halves are asserted, because a test that only checked "not retried" cannot tell this case
+  // apart from (a) at all — which is exactly how the defect survived being written.
+  const skD = generateSecretKey(); const wD = wrapFor(skD, { body: 'a post whose fate buzz never reported' })
+  admit(wD.senderPk); delta()
+  const saidD = []
+  restore = __setTransportForTests(async () => {
+    throw new Error(JSON.stringify({
+      error: 'delivery_unknown',
+      message: 'relay may have stored the event; response body lost after POST',
+      retryable: false,
+    }))
+  })
+  const realErrD = console.error, realLogD = console.log
+  console.error = (...a) => { saidD.push(a.join(' ')); realErrD(...a) }
+  console.log = (...a) => { saidD.push(a.join(' ')); realLogD(...a) }
+  await handleRelayIngress(wD.wrap); await new Promise(r => setTimeout(r, 100))
+  console.error = realErrD; console.log = realLogD
+  restore()
+  ok('delivery_unknown is NOT retried — a re-send would risk a duplicate, not a rescue',
+    relaySeen.has(wD.wrap.id))
+  ok('  but it is NOT recorded as an undelivered loss — it may well have landed',
+    !undelivered().some(r => r.id === wD.wrap.id))
+  ok('  and the sender is NOT told "refused" about a message that may have posted',
+    !saidD.some(l => l.includes('RELAY[buzz] REFUSED')))
+  ok('  the journal says plainly that the outcome is unknown, not that it failed',
+    saidD.some(l => l.includes('RELAY[buzz] UNCONFIRMED')))
+  // The two retryable:false cases must be TOLD APART, not merely both handled. Pinning (a) again
+  // here is what makes that a real distinction rather than two assertions that would pass if the
+  // code collapsed both back into one branch.
+  ok('  and a definite user_error is still recorded as a loss — the two are not one bucket',
+    undelivered().some(r => r.id === wA.wrap.id) && !undelivered().some(r => r.id === wD.wrap.id))
+
   if (stub) process.env.WB_STUB_SEND = stub
 }
 

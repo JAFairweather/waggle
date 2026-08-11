@@ -2633,11 +2633,42 @@ async function postRelay(ev, sender, dest, wantCh, body) {
     // Honour the flag, and honour it in ONE direction only: anything we cannot classify stays
     // retryable. Being unable to read a refusal is not evidence that it is permanent, and silently
     // dropping a message that would have landed is the worse of the two failures.
+    // THREE outcomes, not two. `retryable:false` is necessary but NOT sufficient to call something
+    // a refusal, because Buzz uses it for two different things (buzz-cli `error.rs:72`,
+    // `is_retryable_error`):
+    //
+    //   user_error       — Buzz looked at it and said no. Definite. Retrying replays a known loss.
+    //   delivery_unknown — Buzz never told us. `submit_stored_event` returns this on a timeout,
+    //                      body loss or 502-504 that happened AFTER the POST, so the write
+    //                      PLAUSIBLY LANDED. Its own doc comment: "the operation may already have
+    //                      executed... a blind re-run can duplicate the mutation."
+    //
+    // Both are `retryable:false` and the first version of this fix read only that boolean, so it
+    // treated an ambiguous outcome as a definite refusal: it recorded the message as undelivered
+    // and acked the sender "refused by buzz" for something that may well be sitting in the channel.
+    // A sender told "refused, ask again" about a message that posted is how you get a duplicate —
+    // the same failure class as the dup-on-crash residual noted above, via a different trigger.
+    // Found in review by the crew, against buzz-cli source rather than against this diff.
+    //
+    // For the retry decision the two behave identically — commit the claim, do not re-send. They
+    // differ in what the SENDER is told, and that is the whole point of separating them. Anything
+    // this cannot classify still stays retryable: being unable to read a refusal is not evidence
+    // that it is permanent, and silently dropping a message that would have landed is worse.
     const detail = String(e.message || '')
-    let permanent = false
-    try { permanent = JSON.parse(detail).retryable === false } catch { permanent = false }
-    if (permanent) {
-      markRelaySeen(ev.id)
+    let verdict = null
+    try {
+      const parsed = JSON.parse(detail)
+      if (parsed.retryable === false) verdict = parsed.error === 'delivery_unknown' ? 'unknown' : 'refused'
+    } catch { verdict = null }
+    if (verdict) {
+      markRelaySeen(ev.id) // commit either way — a re-send risks a duplicate, not a rescue
+      if (verdict === 'unknown') {
+        // Deliberately NOT recorded as undelivered: the undelivered log is where an operator looks
+        // for messages that did not land, and an entry that may have landed makes every other entry
+        // less trustworthy. The journal carries it instead, said plainly.
+        err(`RELAY[buzz] UNCONFIRMED -> ${dest}: ${detail} — buzz did not say whether this landed; NOT retried (a re-send would risk a duplicate) and NOT recorded as undelivered`)
+        return
+      }
       recordUndelivered({ lane: 'relay', dest, recipient: null, id: ev.id, author: sender, reason: detail })
       // The ack `reason` is a CLOSED set on purpose (nostr_egress.mjs:335) — Buzz's own message is
       // platform free text and does not go on the wire. It goes to the journal and the undelivered
