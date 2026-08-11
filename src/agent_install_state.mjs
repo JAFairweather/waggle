@@ -61,6 +61,8 @@ export const ARTIFACTS = [
     why: 'The MCP channel transport.' },
   { key: 'mcp-registration', title: 'Registered as an MCP server', blocking: true,
     why: 'How a new session becomes this agent. Needs the instance root set explicitly; the default path does not exist here.' },
+  { key: 'strict-launch-config', title: 'Bound to one identity at launch', blocking: true,
+    why: 'Registration makes a toolset visible to EVERY session on the machine, so which identity a session acts as is otherwise a convention it is trusted to keep. `--strict-mcp-config` with this file is what makes it a fact.' },
   { key: 'channel-answers', title: 'Channel server answers', blocking: true,
     why: 'Registered is not running. Proven by initialize + tools/list, not by the registration existing.' },
 ]

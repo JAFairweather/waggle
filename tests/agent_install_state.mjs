@@ -20,6 +20,17 @@ import { installState, renderState, ARTIFACTS, ARTIFACT_KEYS, PRESENT, UNVERIFIE
 let pass = true
 const check = (cond, label) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${label}`); if (!cond) pass = false }
 
+// The launch binding is an ARTIFACT, not a note in a runbook. Registration alone makes a toolset
+// visible to every session on the machine, so without this file "which identity is this session"
+// is a convention rather than a fact — measured 2026-08-11, a strict session saw 2 tools from 1
+// server and the same session without the flag saw 94 from 6.
+check(ARTIFACT_KEYS.includes('strict-launch-config'), 'the strict launch binding is a tracked artifact')
+check(ARTIFACTS.find(a2 => a2.key === 'strict-launch-config')?.blocking === true,
+  '…and its absence blocks, because an unbound session can act as any identity registered on the box')
+// Ordering is meaning here: the binding is useless before the server it points at exists.
+check(ARTIFACT_KEYS.indexOf('strict-launch-config') > ARTIFACT_KEYS.indexOf('mcp-registration'),
+  '…and is reported after the registration it depends on')
+
 const all = (shape) => Object.fromEntries(ARTIFACT_KEYS.map(k => [k, shape]))
 const complete = all({ found: true, verified: true })
 

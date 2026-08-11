@@ -187,6 +187,53 @@ try {
 see('mcp-registration', registered, false, regNote)
 see('channel-answers', registered === true ? true : null, false, 'registered is not running — prove with an initialize + tools/list handshake')
 
+// ── The strict launch config. THIS is what binds a session to one identity. ──────────────────
+// Registering at user scope makes a toolset visible to EVERY session on the machine, so which
+// identity a session acts as becomes a convention it is trusted to follow rather than something
+// the runtime enforces — and "one identity, one runtime" does not survive being a convention.
+// `claude --mcp-config <this file> --strict-mcp-config` is the enforcement: measured on 2026-08-11,
+// a strict session saw 2 tools from 1 server and the same session without the flag saw 94 from 6.
+//
+// Written, not just described, because the operator assembling this JSON by hand is the step where
+// one identity's env quietly ends up in another's file.
+const mcpConfigPath = join(HERE, 'mcp.json')
+let launchNote = ''
+if (!existsSync(mcpConfigPath) && !CHECK) {
+  // The server definition is READ from the registration that already exists, never invented: the
+  // node binary and the binder path are machine facts this repo cannot derive, and guessing them
+  // produces a config that launches nothing.
+  let src = null, mirrored = null
+  try {
+    const cc = JSON.parse(readFileSync(join(homedir(), '.claude.json'), 'utf8'))
+    const servers = cc.mcpServers || {}
+    if (servers[`nvoy-${name}`]) src = servers[`nvoy-${name}`]
+    else if (from && servers[`nvoy-${from}`]) { src = servers[`nvoy-${from}`]; mirrored = from }
+  } catch { src = null }
+  if (src) {
+    const server = mirrored
+      ? {
+        ...src,
+        // Substituting one identity's instance into another's launch line is the same
+        // copied-without-understanding move as the manifest, and it is worse here: get it wrong
+        // and the session signs as the wrong agent while looking entirely correct.
+        args: (src.args || []).map(a2 => (a2 === mirrored ? name : a2)),
+        env: Object.fromEntries(Object.entries(src.env || {}).map(([k, v]) =>
+          [k, String(v).split(`/${mirrored}/`).join(`/${name}/`)])),
+      }
+      : src
+    writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers: { [`nvoy-${name}`]: server } }, null, 2) + '\n', { mode: 0o600, flag: 'wx' })
+    did.push(`wrote ${mcpConfigPath}`)
+    if (mirrored) warn.push(`mcp.json was derived from nvoy-${mirrored} by substituting the instance name — read it before launching, a wrong substitution signs as the wrong agent`)
+  } else {
+    launchNote = `no registration to derive it from — register nvoy-${name} first, then re-run`
+  }
+}
+const mcpConfigOk = existsSync(mcpConfigPath)
+see('strict-launch-config', mcpConfigOk, false,
+  mcpConfigOk
+    ? `${mcpConfigPath} — launch with:\n      claude --mcp-config ${mcpConfigPath} --strict-mcp-config`
+    : (launchNote || `absent: ${mcpConfigPath}`))
+
 // ── Report ──────────────────────────────────────────────────────────────────────────────────
 const report = installState(obs)
 if (did.length) { console.log(`\nchanged:`); for (const d of did) console.log(`  + ${d}`) }
