@@ -63,6 +63,15 @@ const SLOT_TYPES = {
     if (!/^(npub1[0-9a-z]{20,90}|[0-9a-f]{64})$/i.test(s)) reject('npub', `not an npub or pubkey: ${JSON.stringify(s.slice(0, 24))}`)
     return s
   },
+  // A 64-char hex pubkey destined for ARGV, never for prose. `npub` is the wrong type here: it
+  // also accepts bech32, and `buzz channels add-member --pubkey` takes hex only — so an npub would
+  // sail through `npub` and fail at the CLI, where the failure is a stderr string rather than a
+  // typed refusal at the chokepoint.
+  pubkey_hex: (v) => {
+    const s = String(v == null ? '' : v).toLowerCase()
+    if (!/^[0-9a-f]{64}$/.test(s)) reject('pubkey_hex', `not a 64-char hex pubkey: ${JSON.stringify(String(v == null ? '' : v).slice(0, 24))}`)
+    return s
+  },
   // A resolved channel handle or UUID. Never a caller-composed label.
   channel: (v) => {
     const s = String(v == null ? '' : v)
@@ -293,6 +302,25 @@ const CATALOGUE = {
     slots: {},
     render: () => null,
   },
+
+  // Sites 8 and 9 — seat and unseat a channel member (#355). No content at all: the whole
+  // operation is a channel and a pubkey in argv, which is why both declare `slots: {}` and render
+  // null. Nothing here is composable and nothing reaches a reader, so there is no prose to guard.
+  //
+  // The guard that matters for these two is upstream, in the caller: membership is a PROJECTION of
+  // an owner-signed 440, so waggle seats nobody it does not hold a live grant for and unseats on
+  // the 441. That authority check cannot live in the catalogue — the catalogue's job is that a
+  // caller cannot say something it has no word for, and "add this pubkey" has no words at all.
+  member_seat: {
+    action: 'add_member',
+    slots: {},
+    render: () => null,
+  },
+  member_unseat: {
+    action: 'remove_member',
+    slots: {},
+    render: () => null,
+  },
 }
 
 export const TEMPLATE_NAMES = Object.freeze(Object.keys(CATALOGUE))
@@ -480,6 +508,11 @@ function argvFor(spec, descriptor, content) {
     case 'edit':   return ['messages', 'edit', '--event', SLOT_TYPES.id(descriptor.targetId), '--content', content]
     case 'delete': return ['messages', 'delete', '--event', SLOT_TYPES.id(descriptor.targetId), '--reason-code', 'nip09', '--public-reason', 'withdrawn by author (NIP-09)']
     case 'reaction': return ['reactions', 'add', '--event', SLOT_TYPES.id(descriptor.targetId), '--emoji', '👍']
+    // `member` and not `guest`: the cap being projected is `admit`, which means "posts in as a
+    // first-class member", and the row should say the same thing the grant does. Both verbs are
+    // idempotent server-side, which is what lets the boot replay re-assert every live grant.
+    case 'add_member':    return ['channels', 'add-member', '--channel', SLOT_TYPES.channel(descriptor.dest), '--pubkey', SLOT_TYPES.pubkey_hex(descriptor.pubkey), '--role', 'member']
+    case 'remove_member': return ['channels', 'remove-member', '--channel', SLOT_TYPES.channel(descriptor.dest), '--pubkey', SLOT_TYPES.pubkey_hex(descriptor.pubkey)]
     default:       return reject('action', `unknown action ${JSON.stringify(spec.action)}`)
   }
 }
