@@ -42,7 +42,7 @@ process.env.BUZZ_PRIVATE_KEY = Buffer.from(bridgeSk).toString('hex')
 process.env.FORWARD_MODE = 'buzz'
 process.env.WB_NO_BOOT = '1'
 
-const { processGrantEvent, grantSet, seatGrantee, seated, seatingCoverageGap, PUB } = await import('../src/bridge.mjs')
+const { processGrantEvent, grantSet, revokedGrants, seatGrantee, seated, seatingCoverageGap, PUB } = await import('../src/bridge.mjs')
 const { emit, __setTransportForTests } = await import('../src/egress.mjs')
 
 let fails = 0
@@ -187,6 +187,61 @@ ok('a scan set that watches a DIFFERENT channel is flagged', seatingCoverageGap(
 ok('an empty scan set is flagged', seatingCoverageGap(CHAN, []) === true)
 ok('a missing scan set is flagged rather than throwing', seatingCoverageGap(CHAN, undefined) === true)
 ok('an empty roster channel is flagged — it cannot be covered by anything', seatingCoverageGap('', [CHAN]) === true)
+
+// --- REPLAY ORDER. The case this suite never had, and the one that broke. ------------------------
+// `pg` subscribes with `limit: 200` across both kinds, every relay replays independently, and
+// nothing sorts by created_at. NIP-01 promises no delivery order at all, so a 441 arriving before
+// its own 440 is the ordinary case on reconnect, not an exotic one. Fed that way the revocation
+// loop matched an empty grantSet, removed nothing, and the 440 then admitted the key.
+{
+  const thirdSk = generateSecretKey(), thirdPk = getPublicKey(thirdSk)
+  const g = grantEvent(grantorSk, { grantee: thirdPk })
+  const r = revokeEvent(grantorSk, g.id)
+
+  // Revocation FIRST — the order a relay is entirely free to choose.
+  processGrantEvent(r, { emitFn: capture })
+  ok('a 441 whose grant has not arrived yet removes nobody, because there is nobody to remove',
+    !grantSet.has(thirdPk) && drain().length === 0)
+
+  processGrantEvent(g, { emitFn: capture })
+  ok('…and the 440 it revokes is REFUSED when it arrives, not admitted',
+    !grantSet.has(thirdPk))
+  ok('…so nothing is seated in the roster for a key whose grant was already revoked',
+    drain().length === 0)
+}
+{
+  // BOTH DIRECTIONS. Without this, the refusal above is equally satisfied by a bridge that has
+  // stopped admitting anyone — and that failure would look identical on every assertion so far.
+  const fourthSk = generateSecretKey(), fourthPk = getPublicKey(fourthSk)
+  const g = grantEvent(grantorSk, { grantee: fourthPk })
+  processGrantEvent(g, { emitFn: capture })
+  ok('a grant that was NEVER revoked still admits, in the same run',
+    grantSet.has(fourthPk))
+  ok('…and still seats', drain().length === 1)
+}
+{
+  // Oldest-first, the order everything used to assume. Must still work.
+  const fifthSk = generateSecretKey(), fifthPk = getPublicKey(fifthSk)
+  const g = grantEvent(grantorSk, { grantee: fifthPk })
+  processGrantEvent(g, { emitFn: capture })
+  const seatedOk = drain().length === 1 && grantSet.has(fifthPk)
+  processGrantEvent(revokeEvent(grantorSk, g.id), { emitFn: capture })
+  ok('in-order 440 then 441 still admits then removes', seatedOk && !grantSet.has(fifthPk))
+  ok('…and unseats exactly once', drain().length === 1)
+}
+{
+  // A revocation naming a grant id that is not ours must not poison an unrelated grant.
+  const sixthSk = generateSecretKey(), sixthPk = getPublicKey(sixthSk)
+  const other = grantEvent(grantorSk, { grantee: getPublicKey(generateSecretKey()) })
+  processGrantEvent(revokeEvent(grantorSk, other.id), { emitFn: capture })
+  drain()
+  const mine = grantEvent(grantorSk, { grantee: sixthPk })
+  processGrantEvent(mine, { emitFn: capture })
+  ok('a revocation for a DIFFERENT grant does not block this one', grantSet.has(sixthPk))
+  ok('…and it is seated normally', drain().length === 1)
+  ok('the revoked-id set records the revocation it actually saw',
+    revokedGrants.has(other.id) && !revokedGrants.has(mine.id))
+}
 
 restore()
 console.log(fails ? `\nMEMBER SEATING FAIL — ${fails}` : '\nMEMBER SEATING PASS — the roster is a projection of the grant set, in both directions')
