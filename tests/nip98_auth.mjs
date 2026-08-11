@@ -11,11 +11,12 @@
 
 import { createHash } from 'node:crypto'
 import { generateSecretKey, getPublicKey, verifyEvent, finalizeEvent } from 'nostr-tools/pure'
-import { nip98Template, nip98Header, expectedUrl } from '../src/nip98.mjs'
+import { nip98Template, nip98Header, expectedUrl } from '../console/nip98.mjs'
 
-// src/nip98.mjs does not sign — the egress ban keeps finalizeEvent out of src/, so the key stays
-// with the caller. The test signs exactly as tools/relay-invite.mjs does.
-const build = (opts) => { const { template, body } = nip98Template(opts); return { event: finalizeEvent(template, opts.secretKey), body } }
+// console/nip98.mjs does not sign — the key stays with the caller, which is the console's signer
+// in one case and a key file in the other. The test signs exactly as tools/relay-invite.mjs does.
+// It is async because the builder hashes through Web Crypto, so the same file runs in the browser.
+const build = async (opts) => { const { template, body } = await nip98Template(opts); return { event: finalizeEvent(template, opts.secretKey), body } }
 
 let fails = 0
 const ok = (n, c) => { console.log(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) fails++ }
@@ -42,7 +43,7 @@ ok('a path without a leading slash is refused', /start with a slash/.test(String
 // --- the event itself ---------------------------------------------------------------------------
 const url = expectedUrl('wss://relay.example.test', '/api/invites')
 const bodyObj = { ttl_secs: 3600, max_uses: 1 }
-const built = build({ secretKey: sk, url, method: 'POST', body: JSON.stringify(bodyObj) })
+const built = await build({ secretKey: sk, url, method: 'POST', body: JSON.stringify(bodyObj) })
 const ev = built.event
 
 ok('kind is 27235', ev.kind === 27235)
@@ -50,7 +51,7 @@ ok('it is signed by the key given, and verifies', ev.pubkey === pk && verifyEven
 ok('the u tag is the expected URL', tag(ev, 'u') === url)
 ok('the method tag is upper-cased', tag(ev, 'method') === 'POST')
 ok('a lower-case method is still sent upper-cased',
-  tag(build({ secretKey: sk, url, method: 'post', body: '{}' }).event, 'method') === 'POST')
+  tag((await build({ secretKey: sk, url, method: 'post', body: '{}' })).event, 'method') === 'POST')
 ok('content is empty — nothing about the request rides in it', ev.content === '')
 
 // The payload tag is verified with require_payload=true on both invite routes, so its absence is
@@ -60,7 +61,7 @@ ok('the payload tag is the hex SHA-256 of the body', tag(ev, 'payload') === expe
 ok('…and it is present at all — require_payload is true on these routes', !!tag(ev, 'payload'))
 
 // The other direction. Without this, a payload tag hard-coded to a constant passes everything above.
-const other = build({ secretKey: sk, url, method: 'POST', body: JSON.stringify({ ttl_secs: 3601, max_uses: 1 }) })
+const other = await build({ secretKey: sk, url, method: 'POST', body: JSON.stringify({ ttl_secs: 3601, max_uses: 1 }) })
 ok('NEGATIVE CONTROL — a body differing by one character produces a different payload hash',
   tag(other.event, 'payload') !== tag(ev, 'payload'))
 ok('…and the hash follows the body, not the key', tag(other.event, 'payload') ===
@@ -77,7 +78,7 @@ ok('…and hashing what was handed back reproduces the tag',
 const now = Math.floor(Date.now() / 1000)
 ok('created_at defaults to now', Math.abs(ev.created_at - now) <= 2)
 ok('an explicit created_at is honoured — so a clock-skew case can be reproduced',
-  build({ secretKey: sk, url, body: '{}', now: 1700000000 }).event.created_at === 1700000000)
+  (await build({ secretKey: sk, url, body: '{}', now: 1700000000 })).event.created_at === 1700000000)
 
 // The header is what actually goes on the wire.
 const header = nip98Header(ev)
@@ -89,10 +90,10 @@ ok('…and base64-decodes to the same signed event, which still verifies',
 // An UNSIGNED template in the header fails at the relay as "invalid Schnorr signature", which
 // sends the operator looking at their key rather than at the missing signing step. Refuse it here.
 refused = null
-try { nip98Header(nip98Template({ url, body: '{}' }).template) } catch (e) { refused = e.message }
+try { nip98Header((await nip98Template({ url, body: '{}' })).template) } catch (e) { refused = e.message }
 ok('an unsigned template is refused as a header, and says to sign it first', /SIGNED/.test(String(refused)))
 refused = null
-try { nip98Template({ body: '{}' }) } catch (e) { refused = e.message }
+try { await nip98Template({ body: '{}' }) } catch (e) { refused = e.message }
 ok('building without a url is refused, naming why the url matters', /tenant host/.test(String(refused)))
 
 console.log(fails ? `\nNIP-98 AUTH FAIL — ${fails}` : '\nNIP-98 AUTH PASS — the envelope matches what buzz-auth verifies')
