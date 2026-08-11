@@ -22,7 +22,8 @@
 //     ["da-scope", <hash>, <salt>]     a salted hash of the SUBJECT the capability is over
 //
 // For the task family the subject is the agent BEING INSTRUCTED and the grantee is the party who
-// MAY INSTRUCT IT. `tools/attention.mjs` is the enforcement site and settles it:
+// MAY INSTRUCT IT. nvoy's `mcp/tools/attention.mjs` — not a file in this repo — is the
+// enforcement site, and settles it:
 //
 //     if (scope[1] !== scopeHash(ME, scope[2] || '')) continue  // authorises tasking some other agent
 //     putGrant(String(grantee).toLowerCase(), { grantId: ev.id, grantor: ev.pubkey, cap })

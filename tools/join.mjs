@@ -11,8 +11,14 @@
 //
 // WHAT IT DOES NOT DO, and must not be described as doing. It does not mint the persistent agent
 // identity — that is minted into the OWNER's Bunker when they approve, and this session never
-// holds it. It does not pair. It does not post to the channel. Those steps need the responder
-// (tools/join-approve.mjs) and a Bunker; see docs/JOIN_RUNBOOK.md.
+// holds it. It does not pair. It does not post to the channel. Those steps need a Bunker and a
+// responder; see docs/JOIN_RUNBOOK.md.
+//
+// THE RESPONDER IS NOT BUILT. `tools/join-approve.mjs` is a design, not a file — JOIN_RUNBOOK §6
+// lists it first under "what is missing for the unattended loop". Until it exists the owner reads
+// the request and issues the grants by hand from the console (§4 and §5). This comment and the
+// output below both used to name that tool as though it existed, which sent an owner looking for
+// a file that has never been in the tree.
 //
 // The request key is written to a 0600 file in a temp dir for the lifetime of the wait, because a
 // reply sealed to it arrives after this process has been running for a while and a key held only
@@ -130,11 +136,10 @@ console.log()
 console.log('Request id (the owner needs this to approve):')
 console.log(`  ${request.id}`)
 console.log()
-console.log('Now the owner approves. They will receive a DM and reply with exactly:')
-console.log(`  APPROVE ${request.id}`)
-console.log()
-console.log('See docs/JOIN_RUNBOOK.md — the owner runs tools/join-approve.mjs, which reads that')
-console.log('reply and issues the grants. This session holds no key and never will.')
+console.log('Now the owner approves — BY HAND. There is no responder yet: nothing watches for this')
+console.log('request, nothing will DM them, and no reply of theirs will be parsed. They read the')
+console.log('request, decide, and issue the grants from the console (docs/JOIN_RUNBOOK.md §4 and §5).')
+console.log('Send them the request id above. This session holds no key and never will.')
 console.log()
 console.log(`join: waiting up to ${waitSecs}s for the decision, then burning the request key…`)
 
