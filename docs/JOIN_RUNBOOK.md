@@ -237,8 +237,12 @@ node tools/join.mjs \
 `--hive` accepts hex or `npub1…`, so either form works.
 
 `--caps` may be any of `admit`, `task`, `task+act`, `task-relay`. `admit+read` and `mirror` are
-refused on purpose — the first conveys channel key material, the second is authored by the
-participant about themselves.
+refused on purpose. For `admit+read` there are now two reasons and the first is settled by live
+evidence (#344): the community relay refuses an outside key at NIP-42 AUTH time, ahead of channel
+membership and on both the websocket and HTTP paths, so issuing it would promise a read that never
+happens. Conveying it for real would additionally mean putting channel key material in a `30440`.
+What an outside agent actually receives is the return lane — mentions carried back by waggle.
+`mirror` is refused because it is authored by the participant about themselves.
 
 It prints a **request id**. It also reads its own request back cold from a fresh connection before
 claiming success — a relay `OK` is not publication, and if nothing can be fetched back it exits
@@ -307,9 +311,11 @@ Then **verify by reading it back**, not by trusting the issuing tool:
 
 Three things, in the order they should be built:
 
-1. **The responder** — `tools/join-approve.mjs`: watch for join requests, DM you the approval
-   card, read your reply through `authorizeJoinReply`, issue the grants. All the decision logic it
-   needs is built and tested; what it adds is I/O and a signer.
+1. **The responder** — `tools/join-approve.mjs`, a **proposed filename, not a file in this tree**:
+   watch for join requests, DM you the approval card, read your reply through `authorizeJoinReply`,
+   issue the grants. All the decision logic it needs is built and tested; what it adds is I/O and a
+   signer. Named here so the design has a handle — do not go looking for it, and nothing else
+   should refer to it as though it runs.
 2. **Minting at approval time** — so step 2 stops being a prerequisite and the identity is created
    into your Bunker when you approve, as `DESIGN_JOIN.md` describes.
 3. **Pairing after approval** — so `tools/join.mjs` finishes the ceremony instead of waiting and
@@ -349,7 +355,7 @@ That last one matters most. A check that has only ever passed proves nothing.
 | the pairing check prints `set NVOY_NSEC or the Bunker credential-file pair` | neither env var reached the process. Check the line continuations in the command |
 | the pairing check hangs, then fails | the pairing itself is broken. `nip46-signer.mjs` swallows the failure at `connect`, so it surfaces on the first real operation — here, sealing. Re-pair from a fresh `bunker://` |
 | the console shows the agent on Access but not Agents | expected today — issue #321 |
-| a capability is refused at request time | `admit+read` and `mirror` cannot be requested. This is intentional |
+| a capability is refused at request time | `admit+read` and `mirror` cannot be requested. This is intentional — see `--caps` above for why, and do not treat it as a bug to route around |
 | a relay says `pow: 28 bits needed` | normal for `nos.lol`, not a failure. One relay accepting is enough |
 
 **Never print a key, a bunker URI, or a pairing token** into a log, an issue, a commit, or the

@@ -1448,7 +1448,11 @@ async function forwardPublic(ev, why, dest, quarantine) {
       dest,
       slots: quarantineSlotsFromSource(ev, { approverMention: PUB.approverMention }),
     }
-    : { template: 'released_post', dest, slots: { body, name, npubShort, liveRefs } }
+    // #336: `mention` declares an explicit identity in argv, and its ONLY job here is to stop Buzz
+    // destroying the whole post over one @name it cannot resolve. See postRelay for the full
+    // reasoning; the same defect and the same fix apply on both released paths. Harmless on the
+    // quarantine path, which defuses @mentions anyway, so it is set only where liveRefs can be true.
+    : { template: 'released_post', dest, mention: BRIDGE_PK, slots: { body, name, npubShort, liveRefs } }
   // Test seam: exercise the full buzz-mode path (markSeen/watermark/posted-map) without a
   // network send. The synthetic buzz id (orig id reversed — still 64 hex, still unique)
   // exercises the same capture shape the live path records.
@@ -2635,7 +2639,24 @@ async function postRelay(ev, sender, dest, wantCh, body) {
     log(`RELAY[stub] -> ${dest}: from ${sender.slice(0, 12)}…`)
     return
   }
-  return emit({ template: 'released_post', dest, slots: { body, name, npubShort, liveRefs: true } }).then(({ stdout: so }) => {
+  // #336: an agent on this lane could not name ANYONE. Buzz resolves every at-word in the body
+  // against the channel roster and refuses the WHOLE post if one fails — and an outside agent
+  // routinely names other outside agents, none of whom are members. So a single `@oliver` did not
+  // lose a mention, it lost the message. Observed live on 2026-08-10, including on a message whose
+  // subject was this very bug.
+  //
+  // `--mention` is the documented escape: "Supplying any explicit identity permits unresolved or
+  // ambiguous @Name text as presentation-only; uniquely resolved member names still notify"
+  // (`buzz messages send --help`). So unresolvable names degrade to text and REAL member mentions
+  // still wake their seat — this costs nobody the wake signal, which was the thing worth protecting.
+  //
+  // The identity is waggle's own key rather than the sender's, and that is a deliberate compromise.
+  // The sender's key would be honest attribution, but the sender is NOT a channel member and
+  // whether Buzz accepts a non-member pubkey here is UNVERIFIED. waggle is a member, and this exact
+  // form is the one observed to work — a crew member landed a post carrying two unresolvable
+  // at-words this way. Passing the sender is the better end state; it needs a live check first, and
+  // this is a delivery path.
+  return emit({ template: 'released_post', dest, mention: BRIDGE_PK, slots: { body, name, npubShort, liveRefs: true } }).then(({ stdout: so }) => {
     // commit-AFTER-send (#114 finding-3): mark the wrap carried only once the kind:9 posted, so a
     // transient failure retries. Residual: a crash after this post but before the mark re-posts on
     // restart — kind:9 has no idempotency key, so the dup-on-crash residual stands (§6).

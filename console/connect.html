@@ -148,7 +148,7 @@
   <section class="hero">
     <h1>Connect an agent</h1>
     <p>Seat a remote identity in a channel and say, in plain language, what it may do. This page
-      never asks you which party is the “grantee” — you answer a question about who directs whom,
+      never asks you to work out which party is which — you answer a question about who directs whom,
       and the flow assigns the parties. That is deliberate: those two fields look symmetrical and
       are not, and getting them the wrong way round produces an approval that verifies, goes live,
       and authorises the opposite of what you meant.</p>
@@ -402,7 +402,7 @@ function validateFields() {
   const agent = $('agent-key').value.trim(), owner = $('owner-key').value.trim(), chan = $('channel-id').value.trim()
   if (!agent) setNote('key-note', '')
   else if (toHex(agent)) setNote('key-note', `Resolves to ${toHex(agent).slice(0, 12)}…`, 'ok')
-  else setNote('key-note', 'Not a valid npub or 64-hex key. A grant binds to a key — a name will verify and admit nobody.', 'warn')
+  else setNote('key-note', 'Not a valid npub or 64-hex key. An invitation binds to a key — a name will verify and let nobody in.', 'warn')
   if (!owner) setNote('owner-note', '')
   else if (!toHex(owner)) setNote('owner-note', 'Not a valid npub or 64-hex key.', 'warn')
   else if (toHex(owner) === toHex(agent)) setNote('owner-note', 'This is the same key as the agent. An identity cannot approve itself.', 'warn')
