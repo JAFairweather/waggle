@@ -59,6 +59,7 @@ import { comparePolicyShadow, validateShadowClientConfig } from './buzz_policy_s
 import { PolicyRequestQueue } from './policy_request_queue.mjs'
 import { defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased } from './render.mjs'
 import { hex as concordHex, publicChannel, openChannelWrap } from './concord_lib.mjs'
+import { thinRelaySet } from './relays.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
@@ -3468,6 +3469,10 @@ if (!process.env.WB_NO_BOOT) {
   }
   if (PUB) {
     if (!PUB.relays.length) err('WARN: public read lane configured but cfg.public.relays is empty — nothing to listen on')
+    // #345: this set is BOTH what we listen on and what sealed wraps fan out to. Two relays read
+    // as fine right up until one of them starts refusing, and then the only visible symptom is a
+    // ratio in the journal that nobody is watching for. Say it once, at boot, where it is read.
+    else { const thin = thinRelaySet(PUB.relays); if (thin) err(`WARN: public relay set is thin — ${thin}`) }
     resolveChannels(() => {
     log(`public read lane -> inbox ${PUB.inbox}: ${PUB.relays.length} relay(s), ${PUB.authors.length} watched author(s), ${PUB.events.length} watched note(s), pub-since=${PUB.since} (${PUB_SINCE_SECS}s), watermark=${pubWatermark || 'none'}`)
     log(`  gates: staging=${PUB.staging || 'HOLD (none)'} · backfill<=${PUB.backfillLimit} · maxContent=${PUB.maxContentBytes}B · rate ${PUB.replierPerMin}/replier/min ${PUB.channelPerMin}/chan/min ${PUB.lanePerHour}/lane/h · deletes ${PUB.deletesPerHour}/h (A7)`)
