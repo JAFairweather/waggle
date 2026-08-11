@@ -238,6 +238,24 @@
         <input id="mint-relay-url" placeholder="https://…" spellcheck="false">
         <button class="btn" id="mint-onto-relay">Let them onto the relay</button>
         <div class="hint" style="margin-top:8px">Do this <strong>before</strong> saving the key below — it has to sign for itself, and saving clears it from this page. Without this step nobody can type this agent's name in the community.</div>
+        <!-- Consent, and it is the operator's to give. The relay serves both documents as real
+             pages; this panel links to them rather than re-rendering them, so what is read is what
+             the relay is asking to be accepted. Nothing is created until "Accept and continue". -->
+        <div id="mint-policy" style="display:none;margin-top:14px;padding:14px;border:1px solid var(--line-strong);border-radius:var(--r-sm);background:var(--panel-2)">
+          <div style="font-weight:600;margin-bottom:6px">This community asks you to accept its terms first</div>
+          <div class="hint" style="margin-bottom:10px">You are inviting this key, so this is yours to agree to. The links open the relay's own documents — nothing here re-writes them.</div>
+          <div style="display:flex;gap:18px;margin-bottom:12px">
+            <a id="mp-terms" href="#" target="_blank" rel="noopener noreferrer">Terms of Service</a>
+            <a id="mp-privacy" href="#" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+          </div>
+          <label style="display:block;margin-bottom:8px;cursor:pointer"><input type="checkbox" id="mp-accept"> I accept these terms.</label>
+          <label id="mp-age-row" style="display:none;margin-bottom:8px;cursor:pointer"><input type="checkbox" id="mp-age"> I am 18 or older.
+            <span class="hint">The terms say an admin may not invite anyone under 18 — you are the admin here.</span></label>
+          <div style="display:flex;gap:10px;margin-top:12px">
+            <button class="btn" id="mp-go">Accept and continue</button>
+            <button class="btn ghost" id="mp-cancel">Cancel</button>
+          </div>
+        </div>
         <div class="status" id="mint-relayst"></div>
       </div>
       <div id="mint-secret-row" style="margin-top:16px">
@@ -814,10 +832,39 @@ $('mint-onto-relay').addEventListener('click', async () => {
   }
   localStorage.setItem('waggle-relay-base', relayBase)
   btn.disabled = true
-  st.className = 'status'; st.textContent = 'Asking your signer to authorise an invitation…'
+  st.className = 'status'; st.textContent = 'Checking what this community asks of a new key…'
   try {
     const res = await letOntoRelay({
       relayBase,
+      // The question is put to a person, and this is the only place that can put it. It resolves
+      // when they answer, not before — and a Cancel resolves it as a refusal rather than leaving
+      // the promise hanging, so the flow always ends somewhere the operator can see.
+      acceptPolicy: (policy) => new Promise((resolve) => {
+        $('mp-terms').href = policy.termsUrl
+        $('mp-privacy').href = policy.privacyUrl
+        $('mp-accept').checked = false
+        $('mp-age').checked = false
+        $('mp-age-row').style.display = policy.ageAttestationRequired ? '' : 'none'
+        $('mint-policy').style.display = ''
+        st.className = 'status'; st.textContent = 'Nothing has been created yet — read the terms and decide.'
+        const done = (answer) => {
+          $('mint-policy').style.display = 'none'
+          $('mp-go').onclick = null
+          $('mp-cancel').onclick = null
+          resolve(answer)
+        }
+        $('mp-go').onclick = () => {
+          if (!$('mp-accept').checked) {
+            st.className = 'status err'; st.textContent = 'Tick the box to accept, or cancel.'
+            return
+          }
+          st.className = 'status'; st.textContent = 'Asking your signer to authorise an invitation…'
+          // ageConfirmed reports what was ticked, never what is convenient. A relay that does not
+          // ask still receives the honest answer.
+          done({ accepted: true, ageConfirmed: $('mp-age').checked === true })
+        }
+        $('mp-cancel').onclick = () => done({ accepted: false })
+      }),
       ownerSign: (t) => signer.signEvent(t),
       // Signs WITHOUT yielding the key. Routing this through take() would hand the nsec to code
       // that only needed a signature, and destroy it before the operator could save it.
@@ -838,7 +885,10 @@ $('mint-onto-relay').addEventListener('click', async () => {
       btn.textContent = 'Done'
     } else {
       st.className = 'status err'
-      st.textContent = res.detail || `${res.step} failed (${res.outcome})`
+      // Always name the step and the outcome, even when the sentence reads perfectly well without
+      // them. A screenshot of this line is how a failure gets reported, and a bare `join_policy_
+      // required` with no step cost a round trip working out which of three calls had produced it.
+      st.textContent = `${res.detail || 'Refused.'} [${res.step}: ${res.outcome}${res.status ? ` ${res.status}` : ''}]`
       btn.disabled = false
     }
   } catch (e) {
