@@ -12,7 +12,7 @@
     .hero{position:relative;min-height:505px;border-radius:28px;overflow:hidden;background:#eaf0dc;box-shadow:0 12px 38px #4d3a1617;display:flex;align-items:center}
     .hero img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center}.veil{position:absolute;inset:0;background:linear-gradient(90deg,rgba(255,253,246,.98) 0%,rgba(255,253,246,.88) 34%,rgba(255,253,246,.15) 64%,transparent 100%)}
     .copy{position:relative;max-width:520px;padding:52px}.eyebrow{text-transform:uppercase;letter-spacing:.14em;font-size:11px;font-weight:800;color:var(--leaf)}h1{font:700 clamp(38px,5vw,64px)/.98 Georgia,serif;letter-spacing:-.045em;margin:12px 0 20px}.copy p{max-width:43ch;color:#48443a;font-size:18px}.actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:28px}.button{display:inline-block;padding:11px 16px;border:1px solid #9a6918;border-radius:999px;background:#9a6918;color:white;font-weight:750}.button.alt{background:#fffdf6;color:#795411;border-color:#d7b970}
-    .steps{margin-top:45px}.steps h2{font:700 30px/1.1 Georgia,serif;letter-spacing:-.03em;margin:0 0 18px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.step{border:1px solid var(--line);border-radius:17px;background:#fffefa;padding:20px}.n{font:800 12px/1 ui-monospace,monospace;color:var(--honey)}.step h3{font-size:17px;margin:10px 0 5px}.step p{margin:0;color:var(--muted);font-size:14px}.foot{margin-top:22px;color:var(--muted);font-size:14px}@media(max-width:760px){main{padding:20px 15px 50px}.hero{min-height:590px;align-items:flex-start}.hero img{object-position:70% center}.veil{background:linear-gradient(180deg,rgba(255,253,246,.98),rgba(255,253,246,.78) 58%,rgba(255,253,246,.25))}.copy{padding:34px 26px}.grid{grid-template-columns:1fr}}
+    .steps{margin-top:45px}.steps h2{font:700 30px/1.1 Georgia,serif;letter-spacing:-.03em;margin:0 0 18px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.step{border:1px solid var(--line);border-radius:17px;background:#fffefa;padding:20px}.n{font:800 12px/1 ui-monospace,monospace;color:var(--honey)}.step h3{font-size:17px;margin:10px 0 5px}.step p{margin:0;color:var(--muted);font-size:14px}.foot{margin-top:22px;color:var(--muted);font-size:14px}.state{margin-top:34px;border:1px solid var(--line);border-radius:20px;background:#fffefa;padding:24px}.state h2{font:700 26px/1.1 Georgia,serif;margin:0 0 8px}.state p{margin:0;color:var(--muted);font-size:14px}.state-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:18px}.state-step{border:1px solid var(--line);border-radius:13px;padding:13px;background:#fffdf6}.state-step strong{display:block;font-size:13px}.state-step small{display:block;margin-top:6px;color:var(--muted);font:12px ui-monospace,monospace}.state-step.passed{border-color:#78a86d}.state-step.waiting,.state-step.pending{border-color:#d7b970}.state-step.failed{border-color:#c87559}@media(max-width:760px){main{padding:20px 15px 50px}.hero{min-height:590px;align-items:flex-start}.hero img{object-position:70% center}.veil{background:linear-gradient(180deg,rgba(255,253,246,.98),rgba(255,253,246,.78) 58%,rgba(255,253,246,.25))}.copy{padding:34px 26px}.grid,.state-grid{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
@@ -33,13 +33,39 @@
       <div class="grid">
         <article class="step"><div class="n">01</div><h3>Name your hive</h3><p>Its stable identity, human name, and handle become the boundary an author can understand and consent to.</p></article>
         <article class="step"><div class="n">02</div><h3>Connect the bridge</h3><p>Keep one lean bridge identity on the host. The owner seats it; the setup guide proves the lane is live.</p></article>
-        <article class="step"><div class="n">03</div><h3>Invite collaborators</h3><p>People and coding agents mint their own keys, request a narrow seat, and are admitted only by your signed grant.</p></article>
-        <article class="step"><div class="n">04</div><h3>Choose a few voices</h3><p>Your following list is an editorial choice. It is not a grant, and it never needs a root shell.</p></article>
+        <article class="step"><div class="n">03</div><h3>Invite collaborators</h3><p>People and coding agents mint their own keys, request a narrow seat, and are let in only by your signed invitation.</p></article>
+        <article class="step"><div class="n">04</div><h3>Choose a few voices</h3><p>Your following list is an editorial choice. It is not an invitation, and it never needs a root shell.</p></article>
         <article class="step"><div class="n">05</div><h3>Ask before mirroring</h3><p>Each author receives a kind, clear invitation. Silence is a no; consent is one hive at a time and revocable.</p></article>
         <article class="step"><div class="n">06</div><h3>See the dance</h3><p>Every readiness step ends in live evidence: a signature, a receipt, a cold read-back—not a reassuring checkbox.</p></article>
       </div>
       <p class="foot">The setup wizard is intentionally local: the page that explains a signing action should be served by the person who will sign it.</p>
     </section>
+    <section class="state" aria-live="polite">
+      <h2>Installation progress</h2>
+      <p id="state-message">Looking for this hive's verified, secret-free installation receipt…</p>
+      <div id="state-grid" class="state-grid" hidden></div>
+    </section>
   </main>
+  <script>
+    (() => {
+      const names = ['local_preflight','public_config','host_bootstrap','identity_custody','buzz_nvoy_grants','agent_runtimes','live_proofs','installation_receipt']
+      const labels = {local_preflight:'Local preflight',public_config:'Public configuration',host_bootstrap:'Host bootstrap',identity_custody:'Identity custody',buzz_nvoy_grants:'Buzz & Nvoy access',agent_runtimes:'Agent runtimes',live_proofs:'Live proofs',installation_receipt:'Installation receipt'}
+      const statuses = new Set(['pending','waiting','passed','failed'])
+      const message = document.getElementById('state-message'), grid = document.getElementById('state-grid')
+      const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
+      fetch('/console/install-receipt.json', {cache:'no-store'}).then(response => {
+        if (!response.ok) throw new Error('receipt unavailable')
+        return response.json()
+      }).then(receipt => {
+        if (receipt?.schema !== 'waggle-installation-receipt' || receipt.version !== 1 || !/^waggle-[0-9a-f]{24}$/.test(receipt.installation_id || '') || !receipt.proofs || Object.keys(receipt.proofs).sort().join(',') !== [...names].sort().join(',')) throw new Error('invalid receipt')
+        grid.innerHTML = names.map(name => {
+          const status = statuses.has(receipt.proofs[name]?.status) ? receipt.proofs[name].status : 'failed'
+          return `<div class="state-step ${status}"><strong>${esc(labels[name])}</strong><small>${esc(status)}</small></div>`
+        }).join('')
+        grid.hidden = false
+        message.textContent = `${receipt.installation_id} · ${receipt.complete ? 'installation proved complete' : 'resume the owner wizard to finish the remaining proofs'}`
+      }).catch(() => { message.textContent = 'No valid public receipt is available yet. The owner can publish one without exposing installation state or credentials.' })
+    })()
+  </script>
 </body>
 </html>

@@ -140,6 +140,44 @@ ok('resolveRelayDest rejects empty', resolveRelayDest('') === null)
   ok('after rollback the same wrap carries exactly once', delta().filter(e => e.kind === 9 && e.lane === 'relay').length === 1)
 }
 
+// --- #336: the lane declares an explicit mention identity, so an agent can name people ---------
+//
+// The bug: Buzz resolves every at-word in the body against the channel roster and refuses the
+// WHOLE post if one fails. An outside agent naming another outside agent therefore lost the
+// message, not the mention. `--mention` switches Buzz to presentation-only for unresolved names
+// while real member mentions still notify.
+//
+// This asserts ARGV, because that is the only place the fix exists — the body is deliberately
+// unchanged, so a test that only inspected the rendered text would pass either way.
+{
+  const { __setTransportForTests } = await import('../src/egress.mjs')
+  const stub = process.env.WB_STUB_SEND
+  delete process.env.WB_STUB_SEND    // the stub short-circuits before emit; we need the real argv
+  const HEX64 = /^[0-9a-f]{64}$/
+
+  let argv = null
+  const restore = __setTransportForTests(async (a) => { argv = a; return JSON.stringify({ event_id: 'c'.repeat(64) }) })
+  const sk = generateSecretKey()
+  const { wrap, senderPk } = wrapFor(sk, { body: 'ping @oliver and @claude — neither is a Buzz member' })
+  admit(senderPk); delta()
+  await handleRelayIngress(wrap); await tick()
+  restore()
+  if (stub) process.env.WB_STUB_SEND = stub
+
+  const at = argv ? argv.indexOf('--mention') : -1
+  ok('the relay lane passes --mention, so an unresolvable @name cannot destroy the post', at !== -1)
+  ok('  the declared identity is a real pubkey, not a name or a placeholder',
+    at !== -1 && HEX64.test(String(argv[at + 1] || '')))
+  // WHICH key matters: it must be one Buzz will accept, and the sender is not a channel member.
+  ok('  it is the bridge\'s own key — a channel member — not the external sender\'s',
+    at !== -1 && argv[at + 1] === bridgePk && argv[at + 1] !== senderPk)
+  // The fix must not touch the message. If it rewrote or stripped the at-words, the agent's words
+  // would arrive altered — a different bug wearing this fix's clothes.
+  const ci = argv ? argv.indexOf('--content') : -1
+  ok('  the body is carried through UNCHANGED — at-words intact, not stripped or rewritten',
+    ci !== -1 && argv[ci + 1].includes('@oliver') && argv[ci + 1].includes('@claude'))
+}
+
 // --- route() dispatches the branch ------------------------------------------
 {
   // A real read lane has owner approvers as well as relay ingress. Prove the encrypted control

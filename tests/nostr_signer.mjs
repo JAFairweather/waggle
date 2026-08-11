@@ -67,7 +67,11 @@ try {
   const alarmKey = generateSecretKey(), recipientKey = generateSecretKey(), recipient = getPublicKey(recipientKey)
   const alarmSigner = makeLocalSigner(Buffer.from(alarmKey).toString('hex'), 'TEST_ALARM_NSEC')
   const wrap = await buildTripwireAlarmWrap('drill', recipient, alarmSigner, { now: () => 100, backdated: () => 90 })
-  ok('tripwire builds a valid gift wrap addressed only to the operator', verifyEvent(wrap) && wrap.kind === 1059 &&
+  // Verify the WIRE form. `buildTripwireAlarmWrap` returns the finalizeEvent result directly, and
+  // nostr-tools stamps `verifiedSymbol` on what it finalizes — `verifyEvent` short-circuits on that
+  // marker, so verifying the object itself asserts nothing about the signature. Confirmed: without
+  // the roundtrip, `{...wrap, sig: '0'.repeat(128)}` also passes. Same pattern as line 35.
+  ok('tripwire builds a valid gift wrap addressed only to the operator', verifyEvent(JSON.parse(JSON.stringify(wrap))) && wrap.kind === 1059 &&
     JSON.stringify(wrap.tags) === JSON.stringify([['p', recipient]]))
   const alarmSeal = JSON.parse(nip44.decrypt(wrap.content, nip44.getConversationKey(recipientKey, wrap.pubkey)))
   ok('tripwire seal is signed by the dedicated alarm identity', verifyEvent(alarmSeal) && alarmSeal.pubkey === alarmSigner.pubkey && alarmSeal.kind === 13)
