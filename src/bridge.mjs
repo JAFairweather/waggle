@@ -848,12 +848,75 @@ function seatingCoverageGap(inbox, scanChannels) {
   if (!target) return true
   return !(scanChannels || []).some(c => String(c || '').toLowerCase() === target)
 }
-async function seatGrantee(pubkey, emitFn = emit) {
+// Both member verbs are gated on a channel privilege this code never used to state (#356 B2), and
+// each way it resolves is a defect:
+//
+//   waggle NOT elevated -> every unseat fails ("only owners/admins … may remove other members"),
+//                          so a revoked grant's row survives, permanently.
+//   waggle elevated     -> unseat works, and so does a DEMOTION: a 440 naming a key that currently
+//                          holds owner or admin turns `--role member` into a role change, and it is
+//                          authorised. Projecting `admit` onto someone who holds more than `admit`
+//                          can only take authority away.
+//
+// So the role is a precondition, not a detail. Kept as pure functions over the roster JSON: the
+// property is "reads the role correctly", and a guard that can only be exercised through the CLI is
+// a guard nobody tests.
+const ELEVATED_ROLES = new Set(['owner', 'admin'])
+function rosterRole(rosterJson, pubkey) {
+  const pk = String(pubkey || '').toLowerCase()
+  if (!pk) return null
+  let rows
+  try { rows = JSON.parse(String(rosterJson || '')) } catch { return null }
+  if (!Array.isArray(rows)) return null
+  for (const r of rows) {
+    if (String(r?.pubkey || '').toLowerCase() !== pk) continue
+    // Buzz defaults an empty role tag to 'member' on its side; mirror that rather than inventing a
+    // third state, so an unroled row reads the same here as it does there.
+    return String(r?.role || 'member').toLowerCase()
+  }
+  return null                                  // not in the roster at all — distinct from 'member'
+}
+const isElevated = (role) => ELEVATED_ROLES.has(String(role || '').toLowerCase())
+async function channelRoster(dest, queryFn = query) {
+  return queryFn('channel_members', { channel: dest })
+}
+// The boot line's third state was a SHAPE check — "inbox resolved to a UUID". That is necessary and
+// not sufficient: seating can be configured, resolved, and still unable to write a single row.
+// This makes it a real precondition by reading waggle's OWN role. Four outcomes, because collapsing
+// "cannot read" into "not elevated" would report a definite failure from an inconclusive probe.
+async function seatingAuthority(dest, bridgePk, queryFn = query) {
+  let roster
+  try { roster = await channelRoster(dest, queryFn) }
+  catch (e) { return { state: 'unreadable', role: null, why: e.message } }
+  const role = rosterRole(roster, bridgePk)
+  if (role === null) return { state: 'absent', role: null, why: 'waggle is not in this roster at all' }
+  if (!isElevated(role)) return { state: 'not-elevated', role, why: `waggle holds '${role}'` }
+  return { state: 'elevated', role, why: `waggle holds '${role}'` }
+}
+async function seatGrantee(pubkey, emitFn = emit, queryFn = query) {
   const dest = seatingChannel()
   if (!dest) return false
   const pk = String(pubkey || '').toLowerCase()
   if (seated.has(pk)) return false            // idempotent within a process; the boot replay re-asserts once
   if (FORWARD_MODE !== 'buzz') { log(`SEAT[dryrun] ${pk.slice(0, 12)}… -> ${dest}`); seated.add(pk); return true }
+  // FAIL CLOSED, deliberately. `--role member` against a key that currently holds owner or admin is
+  // a demotion, and we cannot tell one from the other without the roster. An unreadable roster is
+  // therefore a refusal, not a default-to-safe-looking 'member' — `seated` stays unset, so the next
+  // grant replay retries once the read works again.
+  let roster
+  try { roster = await channelRoster(dest, queryFn) }
+  catch (e) {
+    err(`SEAT REFUSED[roster unreadable]: ${pk.slice(0, 12)}… -> ${dest}: ${e.message} — cannot prove this key is not already an owner or admin, and seating them at 'member' would DEMOTE them. Not seated; will retry.`)
+    return false
+  }
+  const current = rosterRole(roster, pk)
+  if (isElevated(current)) {
+    // Not retried and not an error the operator must clear: the grant is honoured (the agent is a
+    // return-lane recipient regardless), and the row already says MORE than the grant does.
+    seated.add(pk)
+    log(`SEAT skipped[already ${current}]: ${pk.slice(0, 12)}… already holds ${current} in ${dest} — seating at 'member' would be a demotion, so the roster is left alone. They are nameable already.`)
+    return false
+  }
   try {
     await emitFn({ template: 'member_seat', dest, pubkey: pk })
     seated.add(pk)
@@ -902,7 +965,7 @@ async function unseatGrantee(pubkey, emitFn = emit) {
 // traffic.
 const revokedGrants = new Set()
 
-function processGrantEvent(ev, { emitFn = emit } = {}) {
+function processGrantEvent(ev, { emitFn = emit, queryFn = query } = {}) {
   if (!ev || !ev.id || !PUB) return
   const grantors = PUB.grantors
   if (!grantors.includes(String(ev.pubkey || '').toLowerCase())) return
@@ -940,7 +1003,7 @@ function processGrantEvent(ev, { emitFn = emit } = {}) {
   }
   grantSet.set(String(grantee).toLowerCase(), { grantId: ev.id, grantor: ev.pubkey })
   log(`NIPDA granted: ${String(grantee).slice(0, 12)}… admitted (${cap}, 440 ${ev.id.slice(0, 12)}…)`)
-  seatGrantee(String(grantee).toLowerCase(), emitFn)
+  seatGrantee(String(grantee).toLowerCase(), emitFn, queryFn)
 }
 
 // In-door consent (#131/#132, docs/CONSENT.md §8). A SEPARATE lane from grantSet by construction —
@@ -3519,7 +3582,7 @@ export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, c
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, revokedGrants, activeReturnLane, seatGrantee, unseatGrantee, seated, seatingCoverageGap, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, revokedGrants, activeReturnLane, seatGrantee, unseatGrantee, seated, seatingCoverageGap, rosterRole, isElevated, seatingAuthority, ELEVATED_ROLES, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests,
   policyRequests, policyWriterInFlight, remotePolicyGatePublic, processRemotePolicyRequest,
   retryRemotePolicyRequests, __setPolicyWriterRunnerForTests, unframePolicyWriterResponse,
@@ -3605,6 +3668,19 @@ if (!process.env.WB_NO_BOOT) {
       // agent ignoring them. They coincide in today's config; nothing enforces that they must.
       if (seatingCoverageGap(PUB.inbox, PUB.scanChannels))
         err(`  seating: NAMEABLE BUT UNWATCHED — the roster is ${PUB.inbox}, which is not in scan_channels (${(PUB.scanChannels || []).join(', ') || 'none'}). A mention there will land and never be carried.`)
+      // Configured and resolved is still not "can act": BOTH member verbs are gated on waggle's own
+      // role in this channel (#356 B2). Asked here, at boot, because the alternative is finding out
+      // at the first revocation — the one case where failing means a row outliving its grant.
+      if (FORWARD_MODE === 'buzz') {
+        seatingAuthority(seatingChannel(), bridgePubkey()).then(({ state, why }) => {
+          if (state === 'elevated')
+            log(`  seating: CAN ACT — ${why} in ${PUB.inbox}, so both add-member and remove-member are permitted.`)
+          else if (state === 'unreadable')
+            err(`  seating: AUTHORITY UNKNOWN — could not read the ${PUB.inbox} roster (${why}). Whether waggle may seat or unseat is UNVERIFIED; this is inconclusive, not a pass.`)
+          else
+            err(`  seating: CONFIGURED BUT CANNOT ACT — ${why} in ${PUB.inbox}, not owner/admin. Buzz refuses a non-elevated actor removing another member, so every UNSEAT will fail and a revoked grant's row will survive. Grant waggle admin on that channel, or turn public.seat_grantees off.`)
+        }).catch(() => {})
+      }
     }
     else if (PUB.seatGrantees) err(`  seating: CONFIGURED BUT INERT — public.inbox is ${JSON.stringify(String(PUB.inbox))}, not a resolved channel UUID. Admitted agents will NOT be nameable.`)
     else log('  seating: off — an admitted agent is a return-lane recipient but is NOT in the roster, so nobody can name it (public.seat_grantees)')
