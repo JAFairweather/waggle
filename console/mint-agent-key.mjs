@@ -14,8 +14,16 @@
 //   2. The private half is take-once. `secret.take()` yields the nsec exactly once and then
 //      yields null forever. "Shown once" stops being a convention that the next edit can break.
 //
-// Nothing here writes to storage, to a URL, or to a log. The caller is expected to hand the nsec
-// straight to a download and then call `secret.forget()`.
+// PEEK VS TAKE, and why both exist (#367). The key now goes into a BUNKER, and the page must prove
+// the bunker has it before letting go — a proof that can fail, and must therefore be retryable.
+// `peek()` is what the enrolment step uses: it shows the secret without spending it. `take()` is
+// called exactly once, on a PROVEN custody check. An earlier flow called take() at the moment of
+// download, which meant a blocked or discarded download destroyed the only copy while reporting
+// success. Spending the secret on an ATTEMPT rather than on an OUTCOME was the whole defect.
+//
+// Nothing here writes to storage, to a URL, or to a log. There is deliberately no longer a
+// key-file helper: a file on disk is the thing that gets lost, and under cooperative relay
+// revocation a lost key is a relay member nobody can ever remove.
 
 const NSEC_RE = /^nsec1[0-9a-z]{20,90}$/
 const HEX64_RE = /^[0-9a-f]{64}$/
@@ -38,23 +46,12 @@ export function mintAgentKey({ generateSecretKey, getPublicKey, nsecEncode, npub
       // Take-once. A second caller gets null, not a copy — which is what makes "you are shown this
       // once" a property of the object rather than a promise made in the copy on screen.
       take() { const v = nsec; nsec = null; return v },
+      // Read WITHOUT spending. The enrolment step needs the secret on screen while the custody
+      // proof runs, because a proof that fails has to leave something to retry with.
+      peek() { return nsec },
       taken() { return nsec === null },
       forget() { nsec = null },
     },
   }
 }
 
-/// The bytes of the key file the operator downloads. Deliberately identical in shape to what
-/// tools/mint-identity.mjs writes — one nsec, one newline, nothing else. A file that also carried
-/// the npub or a comment would be a file somebody pastes somewhere whole.
-export function keyFileContents(nsec) {
-  if (!NSEC_RE.test(String(nsec || ''))) throw new Error('refusing to build a key file from something that is not an nsec')
-  return `${nsec}\n`
-}
-
-/// A filename that says what the file is without saying whose it is. The npub is not in it: a
-/// downloaded file's name survives in shells, backups and screen shares long after the file has
-/// been moved, and it should not be the thing that links an identity to a machine.
-export function keyFileName() {
-  return 'agent.nsec'
-}
