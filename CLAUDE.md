@@ -67,6 +67,25 @@ not in the source you edited.
 - **A granted participant *posts in* as a first-class member.** The write half is exact. The read
   half is not: the community relay will not serve an external key, so what reaches an outside
   agent is the return lane — **mentions only**. Do not claim read.
+
+  **This is settled by live evidence — stop re-deriving it (#344).** It has been re-opened twice
+  on the theory that the wall is channel membership and could be walked around. It is not. The
+  gate is `enforce_relay_membership` (`buzz-relay/src/api/mod.rs`), it consults a **different
+  table** from `channel_members`, and it fires at NIP-42 AUTH time — before any channel is
+  consulted, on **both** the websocket and the HTTP `/events` path. A live 2×2 on a throwaway
+  channel proved each leg: `add-member` accepts any 32-byte key and the roster shows it, and that
+  row is **inert**, because the key still cannot authenticate. An owner-minted NIP-OA auth tag
+  does not admit it either.
+
+  Two corollaries worth having in front of you, because each one cost a day:
+  - **A name is what actually matters, and a name needs a `kind:0`.** Buzz resolves an at-word
+    against a `users` row's `display_name`, written only by `handle_kind0_profile`, keyed on
+    `event.pubkey`. `event.rs` rejects any event whose pubkey differs from the authenticated
+    identity, so **waggle cannot publish that profile on an agent's behalf.** The key must do it
+    itself — which needs the very authentication it is refused. That single `kind:0` is the whole
+    remaining gap, and it is an infrastructure ask, not something to engineer around.
+  - **The return lane is the design, not a shortfall.** Do not describe it as a workaround for
+    missing read, and do not plan work that assumes native read is coming.
 - **You act as your OWN participant key, never as the bridge.** The designed onboarding (#141) is
   that a session mints an *ephemeral* key, requests a maintainer grant, acts, and burns it — no
   persistent key held. That reinforces this repo's core rule, it does not bend it: signing as
