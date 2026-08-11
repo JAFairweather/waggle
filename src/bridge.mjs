@@ -885,6 +885,23 @@ async function unseatGrantee(pubkey, emitFn = emit) {
     return false
   }
 }
+// Grant ids known to have been revoked, whether or not the grant itself has been seen yet.
+//
+// THE ORDERING BUG THIS EXISTS FOR. `pg` subscribes with `limit: 200` across both kinds and each
+// relay replays independently, so a 441 routinely arrives BEFORE the 440 it revokes. Fed in that
+// order the revocation loop matched an empty grantSet, removed nothing, and the 440 that followed
+// admitted the key and seated it in the roster. A revoked key, admitted on replay.
+//
+// Sorting the backfill by created_at would make that unlikely. This makes it IRRELEVANT: the 440
+// carries its own id and the 441 names that id, so the two can be reconciled in either order. A
+// 441 seen first is remembered; the 440 it names is then refused on sight, forever, no matter
+// which relay serves it or when.
+//
+// Naturally bounded by what the subscription replays — a set of ids for grants the maintainer
+// actually signed and then revoked, capped by `limit: 200` per relay rather than growing with
+// traffic.
+const revokedGrants = new Set()
+
 function processGrantEvent(ev, { emitFn = emit } = {}) {
   if (!ev || !ev.id || !PUB) return
   const grantors = PUB.grantors
@@ -894,6 +911,10 @@ function processGrantEvent(ev, { emitFn = emit } = {}) {
   if (!ok) { err(`NIPDA drop[bad-signature]: kind${ev.kind} ${String(ev.id).slice(0, 12)}…`); return }
   if (ev.kind === NIPDA.revocation) {
     const target = (ev.tags || []).filter(t => t[0] === 'e').map(t => t[1])[0]
+    // Recorded BEFORE the loop, because the common case on replay is that the loop matches nothing
+    // — the grant it revokes has not arrived yet. A 441 carries only an `e` tag, never a `p`, so
+    // this is the only thing that can be known about it in isolation.
+    if (target) revokedGrants.add(String(target).toLowerCase())
     for (const [pk, g] of grantSet) if (g.grantId === target) {
       grantSet.delete(pk)
       log(`NIPDA revoked: grantee ${pk.slice(0, 12)}… (441 ${ev.id.slice(0, 12)}…)`)
@@ -910,6 +931,13 @@ function processGrantEvent(ev, { emitFn = emit } = {}) {
   // the bridge knows its own channel id, so it recomputes and compares.
   if (scope[1] !== scopeHash(PUB.inbox, scope[2] || '')) return // scoped to some other channel — not ours
   if (cap !== 'admit' && cap !== 'admit+read') return
+  // Already revoked, and we simply saw the two events in the order the relay chose to serve them.
+  // Refused loudly rather than silently: admitting here is what seated a revoked key in the roster,
+  // and #356 makes that a durable row no restart clears.
+  if (revokedGrants.has(String(ev.id).toLowerCase())) {
+    err(`NIPDA drop[revoked]: 440 ${ev.id.slice(0, 12)}… for ${String(grantee).slice(0, 12)}… arrived after its own 441 — not admitted`)
+    return
+  }
   grantSet.set(String(grantee).toLowerCase(), { grantId: ev.id, grantor: ev.pubkey })
   log(`NIPDA granted: ${String(grantee).slice(0, 12)}… admitted (${cap}, 440 ${ev.id.slice(0, 12)}…)`)
   seatGrantee(String(grantee).toLowerCase(), emitFn)
@@ -3491,7 +3519,7 @@ export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, c
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, activeReturnLane, seatGrantee, unseatGrantee, seated, seatingCoverageGap, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, revokedGrants, activeReturnLane, seatGrantee, unseatGrantee, seated, seatingCoverageGap, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests,
   policyRequests, policyWriterInFlight, remotePolicyGatePublic, processRemotePolicyRequest,
   retryRemotePolicyRequests, __setPolicyWriterRunnerForTests, unframePolicyWriterResponse,
