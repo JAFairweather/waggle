@@ -470,6 +470,12 @@ export function runPolicyWriterSsh(requestRaw, {
 // the ban stays absolute and therefore meaningful.
 const READS = {
   channels_list: () => ['channels', 'list'],
+  // The roster, as [{pubkey, role}] — Buzz builds it from the kind:39002 p-tags, which carry the
+  // role at index 3 (`["p", <hex>, "", <role>]`, side_effects.rs). Seating needs this because BOTH
+  // member verbs are gated on the ACTOR's role and add-member's idempotence is gated on the
+  // TARGET's: re-adding at the role someone already holds is unguarded, but `--role member` against
+  // a key that currently holds owner/admin is a role CHANGE, i.e. a demotion (#356 B2).
+  channel_members: ({ channel }) => ['channels', 'members', '--channel', SLOT_TYPES.channel(channel)],
   messages_get: ({ channel, limit, since, before }) => {
     const a = ['messages', 'get', '--channel', SLOT_TYPES.channel(channel), '--limit', SLOT_TYPES.count(limit)]
     if (since !== undefined && since !== null) a.push('--since', SLOT_TYPES.ts(since))
