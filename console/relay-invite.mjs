@@ -25,6 +25,7 @@
 // key proves control of itself. Passing one where the other belongs produces a request that is
 // perfectly valid and does the wrong thing, so they are separate parameters with separate names.
 
+import { verifyEvent } from 'nostr-tools'
 import { nip98Template, nip98Header, expectedUrl } from './nip98.mjs'
 
 const MINT_PATH = '/api/invites'
@@ -65,6 +66,13 @@ async function signedPost({ relayBase, path, bodyObj, sign, fetchFn, expectPubke
   const { template, body } = await nip98Template({ url, method: 'POST', body: JSON.stringify(bodyObj) })
   const signed = await sign(template)
   const by = String(signed && signed.pubkey || '').toLowerCase()
+  // VERIFY, do not read. `signed.pubkey` is a field the signer filled in, and comparing it to the
+  // key we expect asks the signer to confirm its own claim. A NIP-46 bunker that reports one key and
+  // signs with another passes that comparison; the relay would then 401, which reads as a signing
+  // fault rather than as the wrong identity. Checking the signature makes the pubkey below a fact.
+  if ((expectPubkey || rejectPubkey) && !verifyEvent(signed)) {
+    throw new Error('SIGNER_MISMATCH: the signer returned an event whose signature does not verify, so there is no way to tell which key it came from')
+  }
   // WHO SIGNED, checked before the request leaves rather than inferred from its answer. A claim
   // signed by the owner succeeds — the owner is already a relay member — and returns
   // `already_a_member`, the one outcome added to be reassuring about a re-run. The agent still

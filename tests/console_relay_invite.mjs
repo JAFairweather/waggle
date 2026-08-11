@@ -353,6 +353,28 @@ const agrees = async () => ({ accepted: true, ageConfirmed: true })
     res.ok === true && res.outcome === 'joined')
 }
 
+// --- a signer that lies about which key it is ----------------------------------------------------
+// `signed.pubkey` is a field the signer filled in. Comparing it to the key we expect asks the
+// signer to confirm its own claim, which a bunker reporting one key and signing with another
+// passes. Then the relay 401s and it reads as a signing fault rather than as the wrong identity.
+{
+  const liar = async (t) => ({ ...(await finalizeEvent(t, ownerSk)), pubkey: agentPk })
+  const { calls, fetchFn } = harness([noPolicy, okMint, { status: 200, body: { status: 'joined' } }])
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign: liar,
+    expectAgentPubkey: agentPk, fetchFn })
+  ok('a signer that REPORTS the right key but signed with another is caught here, not at the relay',
+    res.ok === false && res.outcome === 'wrong_signer')
+  ok('…and the reason names the signature, not a missing role or a network fault',
+    /signature does not verify/.test(res.detail) || /different key/.test(res.detail))
+  ok('…and the invitation is not spent on it', calls.length === 2)
+}
+{
+  // NEGATIVE CONTROL: an honestly signed event by the same key still passes the same check.
+  const { fetchFn } = harness([noPolicy, okMint, { status: 200, body: { status: 'joined' } }])
+  const res = await letOntoRelay({ relayBase: RELAY, ownerSign, agentSign, expectAgentPubkey: agentPk, fetchFn })
+  ok('NEGATIVE CONTROL — a genuinely signed claim by that key still gets through', res.ok === true)
+}
+
 // --- the key being invited is required, and named ------------------------------------------------
 {
   let threw = null
