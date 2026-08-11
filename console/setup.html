@@ -33,8 +33,8 @@
       <div class="grid">
         <article class="step"><div class="n">01</div><h3>Name your hive</h3><p>Its stable identity, human name, and handle become the boundary an author can understand and consent to.</p></article>
         <article class="step"><div class="n">02</div><h3>Connect the bridge</h3><p>Keep one lean bridge identity on the host. The owner seats it; the setup guide proves the lane is live.</p></article>
-        <article class="step"><div class="n">03</div><h3>Invite collaborators</h3><p>People and coding agents mint their own keys, request a narrow seat, and are admitted only by your signed grant.</p></article>
-        <article class="step"><div class="n">04</div><h3>Choose a few voices</h3><p>Your following list is an editorial choice. It is not a grant, and it never needs a root shell.</p></article>
+        <article class="step"><div class="n">03</div><h3>Invite collaborators</h3><p>People and coding agents mint their own keys, request a narrow seat, and are let in only by your signed invitation.</p></article>
+        <article class="step"><div class="n">04</div><h3>Choose a few voices</h3><p>Your following list is an editorial choice. It is not an invitation, and it never needs a root shell.</p></article>
         <article class="step"><div class="n">05</div><h3>Ask before mirroring</h3><p>Each author receives a kind, clear invitation. Silence is a no; consent is one hive at a time and revocable.</p></article>
         <article class="step"><div class="n">06</div><h3>See the dance</h3><p>Every readiness step ends in live evidence: a signature, a receipt, a cold read-back—not a reassuring checkbox.</p></article>
       </div>
@@ -49,7 +49,7 @@
   <script>
     (() => {
       const names = ['local_preflight','public_config','host_bootstrap','identity_custody','buzz_nvoy_grants','agent_runtimes','live_proofs','installation_receipt']
-      const labels = {local_preflight:'Local preflight',public_config:'Public configuration',host_bootstrap:'Host bootstrap',identity_custody:'Identity custody',buzz_nvoy_grants:'Buzz & Nvoy grants',agent_runtimes:'Agent runtimes',live_proofs:'Live proofs',installation_receipt:'Installation receipt'}
+      const labels = {local_preflight:'Local preflight',public_config:'Public configuration',host_bootstrap:'Host bootstrap',identity_custody:'Identity custody',buzz_nvoy_grants:'Buzz & Nvoy access',agent_runtimes:'Agent runtimes',live_proofs:'Live proofs',installation_receipt:'Installation receipt'}
       const statuses = new Set(['pending','waiting','passed','failed'])
       const message = document.getElementById('state-message'), grid = document.getElementById('state-grid')
       const esc = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))

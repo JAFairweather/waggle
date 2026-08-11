@@ -138,29 +138,36 @@ export const PLANE_COPY = {
     title: 'The door',
     question: 'Who is allowed in?',
     enforcedBy: 'this bridge',
-    caution: 'Revoking this stops them posting, on the next grant re-read.',
+    caution: 'Removing them stops them posting, on the next re-read of what you have signed.',
   },
   orders: {
     title: 'Orders',
     question: 'Who may tell this agent what to do?',
     enforcedBy: "the agent's own runtime",
-    caution: 'This bridge does not check it. If that runtime is not reading grants, nothing here is enforced.',
+    caution: 'This bridge does not check it. If that runtime is not reading what you signed, nothing here is enforced.',
   },
 }
 export const capPlane = (c) => PLANE[c] || 'unknown'
 
 // The caps a console surface may ISSUE, per subject shape. Two deliberate exclusions:
-//   admit+read — conveying the read cap means putting Concord channel key material in a 30440,
-//     which makes the page key-touching and makes REVOKE a Concord rotation client rather than
-//     an event signer (SPEC_EXTERNAL §4.1.1). Offered, disabled, with the reason: a greyed
-//     option with a reason teaches; a missing one confuses.
+//   admit+read — two independent reasons, and the FIRST one is now settled by live evidence.
+//     (1) The community relay refuses an external key at NIP-42 time — `enforce_relay_membership`
+//         gates read AND write, on both the websocket and HTTP paths, ahead of channel
+//         membership. Proven with a live 2x2 in #344: an external key with a real channel_members
+//         row is still refused. So issuing this would promise a read that does not happen.
+//     (2) Conveying it for real would mean putting Concord channel key material in a 30440, which
+//         makes this page key-touching and makes REVOKE a Concord rotation client rather than an
+//         event signer (SPEC_EXTERNAL §4.1.1).
+//     Offered, disabled, with the reason: a greyed option with a reason teaches; a missing one
+//     confuses. What an outside agent actually receives is the return lane — mentions carried back
+//     to it by waggle. That is the design, not a shortfall.
 //   mirror — authored by the participant about themselves, never by the operator. It is not the
-//     operator's to grant, so it is not in this list at all.
+//     operator's to issue, so it is not in this list at all.
 export const ISSUABLE = {
   channel: [
     { cap: 'admit', ok: true },
     { cap: 'admit+read', ok: false,
-      reason: 'not issuable here — it conveys channel key material, which would make this page hold a key and make revoke a Concord rotation, not just a 441' },
+      reason: 'not available — the community relay will not serve an outside key, so this would promise a read that never happens. waggle carries mentions back to them instead' },
   ],
   agent: [
     { cap: 'task', ok: true },
