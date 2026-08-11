@@ -80,7 +80,7 @@ check(capEnforcer(UNKNOWN).trim() !== '',
 
 // ── DIRECTION ───────────────────────────────────────────────────────────────────────────────
 // The defect this section exists for: `task` was labelled "Take tasks from you", which describes
-// the GRANTEE as the task-taker. tools/attention.mjs enforces the opposite — the grantee is the
+// the GRANTEE as the task-taker. nvoy's mcp/tools/attention.mjs (NOT in this repo) enforces the opposite — the grantee is the
 // party permitted to SEND instructions, and the scope subject is the agent receiving them. An
 // operator read the inverted sentence and signed a grant authorising the reverse of their intent.
 // It verified, it was live, and no surface could show it; it was found by recomputing salted

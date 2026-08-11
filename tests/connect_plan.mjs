@@ -1,7 +1,8 @@
 // connect_plan.mjs — the one place intent becomes direction, held to the direction that is
 // actually enforced.
 //
-// tools/attention.mjs is the enforcement site for the task family:
+// nvoy's mcp/tools/attention.mjs is the enforcement site for the task family. It is NOT in this
+// repo — looking for waggle/tools/attention.mjs finds nothing, which reads as a missing guard.
 //
 //     if (scope[1] !== scopeHash(ME, scope[2] || '')) continue  // authorises tasking some other agent
 //     putGrant(String(grantee).toLowerCase(), …)

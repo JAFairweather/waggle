@@ -16,7 +16,7 @@
 // So this module takes INTENTS — sentences about who does what to whom — and assigns the parties
 // itself. The operator never chooses a grantee. There is exactly one place in the codebase where
 // intent becomes direction, it is this file, and tests/connect_plan.mjs holds it to the direction
-// tools/attention.mjs actually enforces.
+// nvoy's mcp/tools/attention.mjs actually enforces (that file is in nvoy, not in this repo).
 //
 //   node tests/connect_plan.mjs
 
