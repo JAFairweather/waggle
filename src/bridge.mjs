@@ -1198,6 +1198,19 @@ function relayRateOk(sender, dest, nowMs) {
 // well-formed DM to waggle that simply isn't a relay request is not an attack signal.
 const relayDecWin = []
 const relayDropCounts = { budget: 0, size: 0, decrypt: 0, verify: 0, mismatch: 0, notRelay: 0 }
+// One explanation per sender per hour. Without a cooldown the ack is an amplifier: every DM to
+// waggle from an admitted key would earn a sealed reply, and being admitted is not the same as
+// being incapable of a loop. Bounded like every other in-memory store here.
+const notLaneAcked = new Map()   // pubkey -> ts(ms)
+const NOT_LANE_COOLDOWN_MS = 3600_000
+const NOT_LANE_CAP = 500
+function notLaneCooldownOk(sender, nowMs) {
+  const last = notLaneAcked.get(sender)
+  if (last && nowMs - last < NOT_LANE_COOLDOWN_MS) return false
+  notLaneAcked.set(sender, nowMs)
+  if (notLaneAcked.size > NOT_LANE_CAP) notLaneAcked.delete(notLaneAcked.keys().next().value)
+  return true
+}
 function relayDropTotalPreAuth() {
   return relayDropCounts.budget + relayDropCounts.size + relayDropCounts.decrypt + relayDropCounts.verify + relayDropCounts.mismatch
 }
@@ -2729,7 +2742,24 @@ async function handleRelayIngress(ev, { openSealFn = openSeal, openRumorFn = ope
     // Routing discriminator: kind:14 + a well-formed `relay` tag IS this lane. Its absence is not an
     // error — it is a real DM to waggle, which has no handler here; leave it silent, do not ack it as
     // a failed relay request, and do not count it as a flood signal.
-    if (rumor.kind !== 14 || !relayTag) { relayDropCounts.notRelay++; markRelaySeen(ev.id); return }
+    if (rumor.kind !== 14 || !relayTag) {
+      relayDropCounts.notRelay++
+      markRelaySeen(ev.id)
+      // The sender is PROVEN by this point (seal verified, rumor bound to it). Silence to a proven,
+      // admitted party is the failure this project keeps repeating: it is indistinguishable from
+      // success, and a human replying from a phone client has no way to tell which happened. So an
+      // admitted sender gets told once. A stranger still gets nothing — acking unauthenticated
+      // traffic is the flood surface §7 exists to close, and being in grantSet is what separates
+      // "somebody we let in" from "anybody".
+      if (grantSet.has(sender) && notLaneCooldownOk(sender, nowMs)) {
+        err(`RELAY not-this-lane: sender ${sender.slice(0, 12)}… — admitted, acked (wrap ${String(ev.id).slice(0, 12)}…)`)
+        returnLaneSend(sender, {
+          template: 'relay_not_this_lane',
+          slots: { channels: PUB.relayChannels || [], ts: Math.floor(nowMs / 1000) },
+        }, { lane: 'relay-ack' })
+      }
+      return
+    }
     const wantCh = String(relayTag[1])
     const dest = resolveRelayDest(wantCh)
     if (!dest) return relayReject(sender, ev.id, 'channel not allowlisted', wantCh)
@@ -2784,7 +2814,11 @@ function sourceWireRejectReason(message) {
 
 function carryDescriptor(recipient, message, why, channel) {
   if (recipient.protocol !== 'nvoy-task-carry-v1') {
-    return { template: 'return_carry', slots: { mention: recipient.mention, why, body: String(message.content || '') } }
+    // The channel goes in so the notice can say how to answer. Only a real relay-lane channel
+    // qualifies: naming one the lane does not carry would print instructions that cannot work.
+    const carryCh = String(channel || '').toLowerCase()
+    const named = resolveRelayDest(carryCh) ? carryCh : null
+    return { template: 'return_carry', slots: { mention: recipient.mention, why, body: String(message.content || ''), channel: named } }
   }
   const ch = String(channel || '').toLowerCase()
   const source = sourceWireEvent(message)
@@ -2967,7 +3001,8 @@ async function retryPendingCarries(opts = {}) {
     try {
       descriptor = item.protocol === 'nvoy-task-carry-v1'
         ? { template: 'return_task_carry', slots: { channel: item.channel, why: item.why, source: item.source } }
-        : { template: 'return_carry', slots: { mention: item.mention, why: item.why, body: item.body } }
+        : { template: 'return_carry', slots: { mention: item.mention, why: item.why, body: item.body,
+            channel: resolveRelayDest(String(item.channel || '').toLowerCase()) ? String(item.channel).toLowerCase() : null } }
     } catch (e) { err(`RETURN retry invalid: ${String(item.src).slice(0, 12)}…: ${e.message}`); rlPending.remove(key); continue }
     const accepted = await returnLaneSend(item.to, descriptor,
       { src: item.src, why: item.why, protocol: item.protocol || 'return-carry-v1', channel: item.channel || null, retry: n }, opts.publish)

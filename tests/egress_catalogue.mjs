@@ -268,6 +268,45 @@ console.log('\n-- The Nostr transport catalogue (§2.5) --')
       buildBody('return_carry', { mention: 'claude', why, body }) === expected)
   }
 
+  // With a channel, the notice becomes actionable. "Replying reaches nobody" is true and useless —
+  // it does not say what WOULD work, and a recipient who has not read DESIGN_RELAY_INGRESS has no
+  // way to know a `relay` tag is the answer, let alone which channel to name.
+  {
+    const CH = '3f2b9c14-7d0e-4a58-9b61-c8ee4a70d215'
+    const withCh = buildBody('return_carry', { mention: 'My Dude', why: 'mention', body: 'hi', channel: CH })
+    ok('return_carry: given a channel, the notice names it', withCh.includes(CH))
+    ok('…and says what actually reaches the community', /relay` tag/.test(withCh))
+    ok('…without claiming a plain reply works', /plain reply reaches nobody/.test(withCh))
+    // A name with a space, because the one that only ever saw single words shipped an outage.
+    ok('…and still renders a handle with a space', withCh.includes('**My Dude**'))
+    // BOTH DIRECTIONS: omitting the channel must not silently produce a worse notice than before.
+    ok('return_carry: with no channel, the wording is unchanged from the pre-A3 wire',
+      buildBody('return_carry', { mention: 'claude', why: 'mention', body: 'hi' })
+        .endsWith('Replying to this message reaches nobody; post from your own key and the bridge brings it back in._'))
+    ok('…and a null channel is treated as absent, not as a channel called "null"',
+      !buildBody('return_carry', { mention: 'claude', why: 'mention', body: 'hi', channel: null }).includes('null`'))
+    threw('NEGATIVE CONTROL — a carry channel that is not a UUID is refused',
+      () => buildBody('return_carry', { mention: 'claude', why: 'mention', body: 'hi', channel: 'general' }))
+  }
+
+  // The lane that used to say nothing at all.
+  {
+    const A = '3f2b9c14-7d0e-4a58-9b61-c8ee4a70d215', B = 'a1c7e930-55b2-4f6d-8e04-2d9f7b1c6a83'
+    const told = buildBody('relay_not_this_lane', { channels: [A, B], ts: 1786470000 })
+    ok('relay_not_this_lane: says plainly that nothing was carried', /did not carry it/.test(told))
+    ok('…names every channel a reply could go to', told.includes(A) && told.includes(B))
+    ok('…explains WHY guessing is not an option, not merely that it refused',
+      /never named/.test(told))
+    ok('…and does not leave the sender thinking the community lost something',
+      /nothing has been lost/.test(told))
+    ok('a bridge carrying no channels says there is nowhere to reply, rather than printing an empty list',
+      /nowhere for a reply to go/.test(buildBody('relay_not_this_lane', { channels: [], ts: 1 })))
+    threw('NEGATIVE CONTROL — a non-UUID channel in the explanation is refused',
+      () => buildBody('relay_not_this_lane', { channels: ['general'], ts: 1 }))
+    threw('NEGATIVE CONTROL — a non-numeric timestamp is refused',
+      () => buildBody('relay_not_this_lane', { channels: [A], ts: 'now' }))
+  }
+
   const carry = buildBody('return_carry', { mention: 'claude', why: 'mention', body: HOSTILE })
   ok('return_carry: the community body is quoted, never waggle\'s own voice',
     carry.split('\n').filter(l => l.startsWith('> ')).length >= 4)

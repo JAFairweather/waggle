@@ -115,6 +115,9 @@ export const CONTROL_STATE_KIND = 30078
 // a future caller putting a sentence in an ack, and a second signer path is exactly how the Buzz
 // side got into this state.
 const reject = (why) => { throw new Error(`nostr-egress: ${why}`) }
+// One spelling of a channel id, used by every template that names one. A channel is always a
+// lowercase UUID by the time it reaches here; anything else is a caller bug, not input to coerce.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 const hex64 = (v, what) => {
   const s = String(v == null ? '' : v).toLowerCase()
@@ -361,12 +364,49 @@ const CATALOGUE = {
   // relay will not serve. The prose is here; the caller supplies who, why, and the body.
   return_carry: {
     whys: ['mention', 'reply'],
-    build: ({ mention, why, body }, spec) => {
+    // `channel` is OPTIONAL and, when given, is the difference between a notice you can act on and
+    // one you cannot. "Replying reaches nobody" is true and useless: it does not say what would
+    // work. A reply needs a `relay` tag naming a channel, and a recipient who has not read
+    // DESIGN_RELAY_INGRESS has no way to know which. They already receive this channel's traffic,
+    // so naming it discloses nothing new — `relay_ack_ok` returns the same id to the same party.
+    build: ({ mention, why, body, channel = null }, spec) => {
       if (!spec.whys.includes(why)) reject(`carry reason not in {${spec.whys.join('|')}}: ${JSON.stringify(why)}`)
-      return `📥 **${handle(mention)}** — you were ${why === 'reply' ? 'replied to' : 'mentioned'} in the community.\n\n> ` +
-        carried(body).replace(/\r/g, '').split('\n').join('\n> ') +
-        `\n\n_carried out by waggle's return lane. Replying to this message reaches nobody; ` +
-        `post from your own key and the bridge brings it back in._`
+      const ch = channel == null ? null : String(channel).toLowerCase()
+      if (ch !== null && !UUID_RE.test(ch)) reject(`carry channel is not a UUID: ${JSON.stringify(channel)}`)
+      const head = `📥 **${handle(mention)}** — you were ${why === 'reply' ? 'replied to' : 'mentioned'} in the community.\n\n> ` +
+        carried(body).replace(/\r/g, '').split('\n').join('\n> ')
+      // Without a channel the wording stays byte-identical to what the lane has always sent: a
+      // caller that cannot supply one must not get a worse notice than before.
+      if (!ch) {
+        return head + `\n\n_carried out by waggle's return lane. Replying to this message reaches nobody; ` +
+          `post from your own key and the bridge brings it back in._`
+      }
+      return head + `\n\n_carried out by waggle's return lane. A plain reply reaches nobody — to answer, seal a ` +
+        `message to this key carrying a \`relay\` tag of \`${ch}\`, or post from your own key and the bridge ` +
+        `brings it back in._`
+    },
+  },
+  // A grantee sent waggle an ordinary DM — no `relay` tag, so not a request to carry anything. The
+  // routing rule is right (guessing a channel would publish private mail into a room nobody named),
+  // but the SILENCE was not: by the time this is reachable the sender is proven and admitted, and
+  // this project's recurring defect is a known party getting silence that is indistinguishable from
+  // success. Deliberately NOT `relay_ack_err`: that type says "your relay request failed", and a
+  // client parsing it would be told a request it never made was refused.
+  relay_not_this_lane: {
+    build: ({ channels, ts }) => {
+      const list = (Array.isArray(channels) ? channels : []).map(c => String(c).toLowerCase())
+      for (const c of list) if (!UUID_RE.test(c)) reject(`not-this-lane channel is not a UUID: ${JSON.stringify(c)}`)
+      num(ts, 'ts')
+      const how = list.length
+        ? `Seal a message to this key carrying a \`relay\` tag naming the channel:\n\n` +
+          list.map(c => `- \`${c}\``).join('\n')
+        : `This bridge is not carrying any channel on that lane right now, so there is nowhere for a reply to go.`
+      return `📭 **waggle received your message, and did not carry it.**\n\n` +
+        `The return lane is one way: it brings the community out to you. A plain reply comes back to this key ` +
+        `and stops there, because nothing in it says which channel it is for — and guessing would publish your ` +
+        `message into a room you never named.\n\n${how}\n\n` +
+        `Your key is admitted, so a message tagged that way is posted as you. Nothing you sent has been carried, ` +
+        `and nothing has been lost on the community's side.`
     },
   },
   // Machine-readable carrier contract for a grant-aware Nvoy runtime. The original kind:9 is
@@ -376,7 +416,7 @@ const CATALOGUE = {
     whys: ['mention', 'reply'],
     build: ({ channel, why, source }, spec) => {
       const ch = String(channel || '').toLowerCase()
-      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(ch)) reject('task carry channel is not a UUID')
+      if (!UUID_RE.test(ch)) reject('task carry channel is not a UUID')
       if (!spec.whys.includes(why)) reject(`task carry reason not in {${spec.whys.join('|')}}: ${JSON.stringify(why)}`)
       const ev = source && typeof source === 'object' && !Array.isArray(source) ? JSON.parse(JSON.stringify(source)) : reject('task carry source is not an event')
       if (Object.keys(ev).sort().join(',') !== 'content,created_at,id,kind,pubkey,sig,tags' || ev.kind !== 9) reject('task carry source is not an exact kind:9 wire event')

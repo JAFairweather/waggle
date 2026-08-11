@@ -249,15 +249,34 @@ ok('resolveRelayDest rejects empty', resolveRelayDest('') === null)
 }
 
 // --- routing discriminator: a well-formed DM to waggle with NO relay tag -----
+// The ROUTING rule does not bend: no relay tag means nothing is posted, because guessing a channel
+// would publish private mail into a room nobody named. What changed is that an ADMITTED sender is
+// told, since by this point they are proven, and silence to a proven party is indistinguishable
+// from success. A stranger is still met with silence — acking unauthenticated traffic is the flood
+// surface §7 exists to close.
 {
   const sk = generateSecretKey(); const { wrap, senderPk } = wrapFor(sk, { tags: [] }) // kind:14, no relay tag
   admit(senderPk)
   const beforeNR = relayDropCounts.notRelay; const beforeTotal = relayDropTotalPreAuth()
   handleRelayIngress(wrap); await tick()
   const d = delta()
-  ok('kind:14 without a relay tag → left silent (real DM), NO post, NO ack', !relayPost(d) && !ack(d))
+  ok('kind:14 without a relay tag → still NO post; the routing rule is unchanged', !relayPost(d))
+  ok('  an ADMITTED sender is told rather than met with silence', !!ack(d))
   ok('  notRelay counter bumped', relayDropCounts.notRelay === beforeNR + 1)
   ok('  but notRelay is EXCLUDED from the pre-auth flood total', relayDropTotalPreAuth() === beforeTotal)
+
+  // Once per hour, or the explanation is an amplifier.
+  const { wrap: again } = wrapFor(sk, { tags: [], body: 'again' })
+  handleRelayIngress(again); await tick()
+  ok('  a second message from the same sender is NOT acked again', !ack(delta()))
+}
+{
+  // THE OTHER DIRECTION. Without this, "admitted senders are acked" is equally satisfied by acking
+  // everybody, which is the flood surface.
+  const sk = generateSecretKey(); const { wrap } = wrapFor(sk, { tags: [] })   // deliberately NOT admitted
+  handleRelayIngress(wrap); await tick()
+  const d = delta()
+  ok('an UNADMITTED sender with no relay tag gets nothing at all', !relayPost(d) && !ack(d))
 }
 
 // --- §7 hard wrap-size cap drops pre-auth -----------------------------------
