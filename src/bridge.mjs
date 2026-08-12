@@ -801,7 +801,16 @@ const scopeHash = (channelId, saltHex) =>
   createHash('sha256').update(Buffer.concat([
     Buffer.from('waggle/da-scope/v1'), Buffer.from([0]), Buffer.from(String(channelId)), Buffer.from(saltHex, 'hex'),
   ])).digest('hex')
-const grantSet = new Map() // grantee pubkey -> { grantId, grantor }
+// grantee pubkey -> Map(grantId -> grantor). A SET of grants, not one, and that is the whole of
+// #364: a grantee may legitimately hold several — one per channel, per capability, or simply
+// re-issued. This map used to hold the last one written, so revoking THAT id de-admitted a key
+// that still held live grants, and revoking any of the others matched nothing and said nothing.
+//
+// The rule the shape enforces: ADMITTED WHILE ANY HELD GRANT IS UNREVOKED. Membership of the
+// outer map is therefore the admission answer, which is why every consumer below can keep using
+// `.has()`, `.keys()` and `.size` unchanged — an entry exists only while its inner map is
+// non-empty, and it is deleted the moment the last grant goes.
+const grantSet = new Map()
 // An admission grant is also the recipient's return address. Keeping the dynamic
 // portion derived from grantSet (rather than writing it into config) makes a 441
 // remove reachability as well as authority. A configured entry can add the ergonomic
@@ -998,11 +1007,26 @@ function processGrantEvent(ev, { emitFn = emit, queryFn = query } = {}) {
     // — the grant it revokes has not arrived yet. A 441 carries only an `e` tag, never a `p`, so
     // this is the only thing that can be known about it in isolation.
     if (target) revokedGrants.add(String(target).toLowerCase())
-    for (const [pk, g] of grantSet) if (g.grantId === target) {
+    // Remove THIS grant, then ask whether the grantee still holds another. Deleting the grantee
+    // outright was #364: it removed a key that still had a live, unrevoked grant, and did it
+    // silently from the operator's side — the relay lane, live @mention refs, the GRANTED bypass
+    // and activeReturnLane() all simply stopped working for them.
+    let matched = false
+    for (const [pk, grants] of grantSet) {
+      if (!grants.delete(target)) continue
+      matched = true
+      if (grants.size) {
+        log(`NIPDA revoked one of several: grantee ${pk.slice(0, 12)}… keeps ${grants.size} live grant(s), still admitted (441 ${ev.id.slice(0, 12)}…)`)
+        continue                  // the row still has a justification, so it is left alone
+      }
       grantSet.delete(pk)
-      log(`NIPDA revoked: grantee ${pk.slice(0, 12)}… (441 ${ev.id.slice(0, 12)}…)`)
-      unseatGrantee(pk, emitFn)   // the row loses its only justification the moment the grant does
+      log(`NIPDA revoked: grantee ${pk.slice(0, 12)}… held no other grant, no longer admitted (441 ${ev.id.slice(0, 12)}…)`)
+      unseatGrantee(pk, emitFn)   // the row loses its only justification the moment the LAST grant does
     }
+    // Silence here was the other half of #364. A 441 matching nothing is ordinary — the 440 has
+    // usually not arrived yet, and `revokedGrants` above is what makes that safe — but "recorded,
+    // matched nothing" and "revoked someone" must not look the same in the journal.
+    if (!matched) log(`NIPDA revocation recorded: 441 ${ev.id.slice(0, 12)}… targets ${String(target || 'nothing').slice(0, 12)}…, which no admitted grantee is holding — its 440 will be refused if it arrives`)
     return
   }
   if (ev.kind !== NIPDA.grant) return
@@ -1021,9 +1045,15 @@ function processGrantEvent(ev, { emitFn = emit, queryFn = query } = {}) {
     err(`NIPDA drop[revoked]: 440 ${ev.id.slice(0, 12)}… for ${String(grantee).slice(0, 12)}… arrived after its own 441 — not admitted`)
     return
   }
-  grantSet.set(String(grantee).toLowerCase(), { grantId: ev.id, grantor: ev.pubkey })
-  log(`NIPDA granted: ${String(grantee).slice(0, 12)}… admitted (${cap}, 440 ${ev.id.slice(0, 12)}…)`)
-  seatGrantee(String(grantee).toLowerCase(), emitFn, queryFn)
+  const pk = String(grantee).toLowerCase()
+  // ADD, never overwrite. The overwrite is what made revocation depend on which grant happened to
+  // be stored last, i.e. on relay delivery order (#364).
+  const grants = grantSet.get(pk) || new Map()
+  const already = grants.has(ev.id)
+  grants.set(ev.id, ev.pubkey)
+  grantSet.set(pk, grants)
+  if (!already) log(`NIPDA granted: ${pk.slice(0, 12)}… admitted (${cap}, 440 ${ev.id.slice(0, 12)}…${grants.size > 1 ? `, ${grants.size} live grants` : ''})`)
+  seatGrantee(pk, emitFn, queryFn)
 }
 
 // In-door consent (#131/#132, docs/CONSENT.md §8). A SEPARATE lane from grantSet by construction —
