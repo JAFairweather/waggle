@@ -85,6 +85,35 @@ catch {
   process.exit(3)
 }
 
+// #378: DEPLOYED_SHA is the watermark a tick writes only when it is satisfied, so every read of
+// it below is a read of a file a REFUSING tick deliberately did not write. A bare readFileSync
+// turns that refusal into an uncaught ENOENT: the suite dies on the spot, printing a stack trace
+// with no check name, no `N check(s) failed` summary, and none of the runner's own output — so
+// the one thing a red run must say, WHY the tick refused, is the one thing it does not say. The
+// remaining cases never run either, including the NEGATIVE CONTROL that is the only check able to
+// tell a working no-op gate from a runner that skips everything.
+//
+// Report the absence instead, carrying the tick's output, and return a value no sha and no
+// content regex can match. The assertion is unchanged and absence is still a failure — it is now
+// a legible one, and the checks after it still run.
+const readOrReport = (path, tick) => {
+  if (existsSync(path)) return readFileSync(path, 'utf8')
+  console.error(`  ↳ ${path} does not exist. The runner tick that should have written it said:`)
+  console.error(((tick && tick.out) || '(no output captured)').replace(/^/gm, '      '))
+  return ''
+}
+
+// That reporter only ever fires on a red run, so prove both of its directions on every run: it
+// must hand back real content when the file is there, and must not merely swallow the absence.
+const probe = mkdtempSync(join(tmpdir(), 'wb-runner-probe-'))
+writeFileSync(join(probe, 'present'), 'a-sha\n')
+check(readOrReport(join(probe, 'present'), { out: '' }).trim() === 'a-sha',
+  'watermark reader returns file content when the file is there')
+console.log('  (the next two lines are this suite exercising its own absence reporter — not a failure)')
+check(readOrReport(join(probe, 'absent'), { out: 'stub tick output' }) === '',
+  'watermark reader reports an absent file instead of throwing ENOENT and killing the suite')
+rmSync(probe, { recursive: true, force: true })
+
 const work = mkdtempSync(join(tmpdir(), 'wb-runner-'))
 // One hub clone shared across cases (the runner only reads + detaches within it).
 const hub = join(work, 'hub')
@@ -290,7 +319,7 @@ try {
   check(docsTick.code === 0, 'docs-only commit -> exit 0')
   check(!existsSync(nm), 'docs-only commit -> lane NOT restarted')
   check(/no shipped files changed/.test(docsTick.out), 'docs-only -> says why it skipped, never silently')
-  check(readFileSync(join(nt, 'DEPLOYED_SHA'), 'utf8').trim() === DOCS_SHA,
+  check(readOrReport(join(nt, 'DEPLOYED_SHA'), docsTick).trim() === DOCS_SHA,
     'docs-only -> SHA still recorded, so the next tick is not re-evaluated')
   check(/verified/.test(docsTick.out), 'docs-only -> tree still VERIFIED, not merely assumed')
 
@@ -304,7 +333,7 @@ try {
   const policyDocs = tick(policyTree, DOCS_SHA, policyMarker, { WB_CONFIG_VERIFY_CMD: 'false' })
   check(policyDocs.code === 1, 'docs-only with incomplete policy -> exit 1')
   check(/policy is incomplete/.test(policyDocs.out), 'docs-only incomplete policy -> loud alarm')
-  check(readFileSync(join(policyTree, 'DEPLOYED_SHA'), 'utf8').trim() === TARGET,
+  check(readOrReport(join(policyTree, 'DEPLOYED_SHA'), policyDocs).trim() === TARGET,
     'docs-only incomplete policy -> old DEPLOYED_SHA retained for retry')
 
   // NEGATIVE CONTROL. The checks above pass just as happily if the gate skipped everything
@@ -315,7 +344,7 @@ try {
   check(codeTick.code === 0, 'NEGATIVE CONTROL — shipped-file change -> exit 0')
   check(existsSync(nm), 'NEGATIVE CONTROL — shipped-file change DOES restart the lane')
   check(!/no shipped files changed/.test(codeTick.out), 'NEGATIVE CONTROL — did not take the no-op path')
-  check(/\/\/ shipped change/.test(readFileSync(join(nt, 'src', 'log.mjs'), 'utf8')),
+  check(/\/\/ shipped change/.test(readOrReport(join(nt, 'src', 'log.mjs'), codeTick)),
     'NEGATIVE CONTROL — the new code actually reached the tree')
 
   // #104: "already current" is also a live health check. A box-side routing-policy
@@ -327,7 +356,7 @@ try {
   check(currentBadPolicy.code === 1, 'already-current with incomplete policy -> exit 1')
   check(/policy is incomplete/.test(currentBadPolicy.out), 'already-current incomplete policy -> loud alarm')
   check(!existsSync(nm), 'already-current incomplete policy -> lane NOT restarted')
-  check(readFileSync(join(nt, 'DEPLOYED_SHA'), 'utf8').trim() === CODE_SHA,
+  check(readOrReport(join(nt, 'DEPLOYED_SHA'), currentBadPolicy).trim() === CODE_SHA,
     'already-current incomplete policy -> last verified SHA is retained')
   const currentBadPolicyAgain = tick(nt, CODE_SHA, nm, { WB_CONFIG_VERIFY_CMD: 'false' })
   check(currentBadPolicyAgain.code === 1 && /will re-alarm next tick/.test(currentBadPolicyAgain.out),
