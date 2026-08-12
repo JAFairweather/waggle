@@ -453,6 +453,74 @@ ok('isElevated is true for exactly owner and admin',
     saidD.some(l => l.includes('UNSEAT DEAD-LETTERED') && l.includes(pk) && l.includes(CHAN) && /remove it by hand/.test(l)))
 }
 
+// --- #356 B4: the off switch is not symmetric --------------------------------------------------
+// Gating removal on the same flag that gates seating meant flipping seat_grantees OFF stranded
+// every row already written — the row outlives the grant, which is the one thing this feature
+// claims cannot happen. Both directions matter and neither alone is worth anything: "removal
+// survives the flip" alone cannot tell a correct fix from one that removes unconditionally, and
+// "a bridge that never seated stays quiet" alone is passed by removal being broken outright.
+{
+  const flipped = getPublicKey(generateSecretKey())
+  const never = getPublicKey(generateSecretKey())
+  const realInbox2 = PUB.inbox
+
+  // Seat it for real while the switch is ON, so the row below is one waggle actually wrote.
+  PUB.seatGrantees = true
+  drain()
+  await seatGrantee(flipped, capture, rosterQuery)
+  await settle()
+  ok('B4 precondition: the key is seated while seating is on', seated.has(flipped) && drain().length === 1)
+
+  // The operator flips the switch off. The row is still there.
+  PUB.seatGrantees = false
+
+  const removed = await unseatGrantee(flipped, capture)
+  await settle()
+  const emitted = drain()
+  ok('B4 a row written while seating was on is STILL removed after the switch is flipped off',
+    removed === true && emitted.length === 1 && emitted[0].template === 'member_unseat')
+  ok('B4 …and it removes the right key, from the roster channel',
+    emitted[0]?.pubkey === flipped && emitted[0]?.dest === realInbox2)
+
+  // The other direction. A bridge that has never seated must not START writing rosters because a
+  // grant was revoked — that would be a new outbound write on a delivery path for a default-OFF
+  // feature, which is a worse defect than the one being fixed.
+  drain()
+  const neverRemoved = await unseatGrantee(never, capture)
+  await settle()
+  ok('B4 …but a key this bridge never seated is NOT removed while seating is off',
+    neverRemoved === false && drain().length === 0)
+
+  // Restart case: `seated` is memory and does not survive one. The durable queue is what carries
+  // the fact across, so removal must key off it too or a restart re-opens the same hole.
+  seated.delete(flipped)
+  unseatPending.enqueue(flipped, { dest: realInbox2, pubkey: flipped, since: 1 }, true)
+  drain()
+  const afterRestart = await unseatGrantee(flipped, capture)
+  await settle()
+  ok('B4 …and an owed removal survives a restart with seating off — durable, not just in memory',
+    afterRestart === true && drain().length === 1)
+
+  // The retry drain is the other path gated on the flag, and it has the same failure.
+  unseatPending.enqueue(never, { dest: realInbox2, pubkey: never, since: 1 }, true)
+  drain()
+  await retryPendingUnseats({ emitFn: capture })
+  await settle()
+  ok('B4 …and retryPendingUnseats still drains owed removals while seating is off',
+    drain().length === 1 && !unseatPending.has(never))
+
+  // Refusal still refuses: no resolvable roster channel means no removal, switch or no switch.
+  PUB.inbox = 'waggle'
+  seated.add(flipped)
+  drain()
+  const noChannel = await unseatGrantee(flipped, capture)
+  ok('B4 …and an unresolved inbox still refuses removal rather than guessing a channel',
+    noChannel === false && drain().length === 0)
+  PUB.inbox = realInbox2
+  seated.delete(flipped)
+  PUB.seatGrantees = true
+}
+
 restore()
 console.log(fails ? `\nMEMBER SEATING FAIL — ${fails}` : '\nMEMBER SEATING PASS — the roster is a projection of the grant set, in both directions')
 process.exit(fails ? 1 : 0)
