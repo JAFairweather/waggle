@@ -1,9 +1,11 @@
 // consent.mjs — verify a participant's in-door consent (design: docs/CONSENT.md, #131/#132).
 //
-// REFERENCE IMPLEMENTATION of the recommended mechanism, pure and standalone — NOT wired into the
-// bridge. It exists to make the design concrete for review; if the crew picks the purpose-built
-// consent-event alternative over the participant-issued 440, this is discarded. It mirrors
-// nvoy console/capgrants.mjs: read events, verify, classify, resolve revocation — no I/O, no state.
+// LIVE. `src/bridge.mjs` imports verifyConsent and calls it on every candidate 440, and
+// mirror_require_consent is ON in production — so this file decides whether a watched author's posts
+// cross. This header claimed the opposite long after it stopped being true (#331); a stale comment on
+// a live gate is how a reviewer talks themselves out of reading it.
+// Still pure and standalone by design, mirroring nvoy console/capgrants.mjs: read events, verify,
+// classify, resolve revocation — no I/O, no state.
 //
 // THE INVERSION IS THE WHOLE POINT. Every other grant in the estate is authored by the AUTHORITY
 // (the maintainer admits a participant). A consent record is authored by the DATA SUBJECT — the
