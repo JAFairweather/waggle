@@ -85,5 +85,81 @@ for (const rel of ['CLAUDE.md', 'README.md']) {
   ok(`${rel}: roster lists ${N} suites`, items.length === N, `roster has ${items.length}`)
 }
 
+// --- resolving the merge conflict this count creates (#387) -----------------------------------
+// The count is load-bearing, and the thing that makes it drift most is the MERGE. Every suite-
+// adding PR touches this same line, so any two of them conflict — and the obvious resolution is
+// wrong in a way nothing downstream catches.
+//
+// Fixtures below are the three real merges from one session. In all three, neither side was a
+// superset; in two, both sides declared the SAME COUNT while holding different suites.
+console.log('\nsuite union (#387)')
+{
+  const { parseSuites, renderSuites, unionSuites, checkSuites, unionReport } =
+    await import('../src/suite_union.mjs')
+
+  const script = (...names) => names.map(n => `node tests/${n}.mjs`).join(' && ')
+
+  // The real #301 ← main case: 71 vs 71, one suite each way.
+  const ours = parseSuites(script('suite_count', 'boot', 'policy_sealed_direct', 'render_states'))
+  const theirs = parseSuites(script('suite_count', 'boot', 'tripwire_setup', 'render_states'))
+  const merged = unionSuites(ours, theirs)
+
+  ok('a suite only OURS has survives the merge', merged.includes('tests/policy_sealed_direct.mjs'))
+  ok('a suite only THEIRS has survives the merge', merged.includes('tests/tripwire_setup.mjs'))
+  ok('the union is larger than either side — equal counts hid a missing suite',
+    merged.length === 5 && ours.length === 4 && theirs.length === 4)
+  ok('the spine keeps THEIRS order, so suite_count still runs first', merged[0] === 'tests/suite_count.mjs')
+  ok('an ours-only suite lands after its own predecessor, not dumped at the end',
+    merged.indexOf('tests/policy_sealed_direct.mjs') === merged.indexOf('tests/boot.mjs') + 1)
+
+  const report = unionReport(ours, theirs)
+  ok('the report names what each side alone would have lost',
+    report.onlyOurs.length === 1 && report.onlyTheirs.length === 1)
+  ok('and flags the trap explicitly: equal counts, different sets',
+    report.equalCountsDifferentSets === true && report.supersetExists === false)
+
+  // NEGATIVE CONTROL. A take-theirs resolver is what a person does by hand, and it passes every
+  // count check afterwards — the number is right and a suite is gone. State it, so the union
+  // assertions above are demonstrably not vacuous.
+  ok('NEGATIVE CONTROL — take-theirs DROPS a suite while leaving a plausible count',
+    !theirs.includes('tests/policy_sealed_direct.mjs') && theirs.length === ours.length)
+
+  // BOTH DIRECTIONS: when one side really is a superset, the union must not invent anything.
+  const sub = parseSuites(script('suite_count', 'boot'))
+  const sup = parseSuites(script('suite_count', 'boot', 'render_states'))
+  ok('a genuine superset merges to exactly itself — no phantom additions',
+    renderSuites(unionSuites(sub, sup)) === renderSuites(sup))
+  ok('and unionReport says a superset existed, so the two cases are told apart',
+    unionReport(sub, sup).supersetExists === true)
+
+  // The checks that make the resolution safe, each reachable and distinct.
+  const disk = ['suite_count.mjs', 'boot.mjs', 'policy_sealed_direct.mjs', 'tripwire_setup.mjs', 'render_states.mjs']
+  ok('a correct union passes every safety check', checkSuites(merged, disk).ok)
+  ok('a DROPPED suite is caught as an orphan — the property that matters',
+    /never invoked/.test(checkSuites(theirs, disk).problems.join(' ')))
+  ok('a suite invoked but absent from disk is caught, and named',
+    checkSuites([...merged, 'tests/ghost.mjs'], disk).missing.join() === 'tests/ghost.mjs')
+  ok('a duplicate invocation is caught', checkSuites([...merged, merged[0]], disk).duplicates.length === 1)
+  // Assert the REASON, not only the refusal: three different faults must be told apart, or the
+  // resolver reports "something is wrong" and the operator guesses which.
+  ok('the three faults produce three DIFFERENT messages',
+    new Set([
+      checkSuites(theirs, disk).problems.join(),
+      checkSuites([...merged, 'tests/ghost.mjs'], disk).problems.join(),
+      checkSuites([...merged, merged[0]], disk).problems.join(),
+    ]).size === 3)
+  // Distinct is not enough — three unhelpful-but-different strings pass that. Each message must
+  // NAME the suite at fault, because the name is the whole actionable content. Caught by mutation:
+  // degrading one message to a bare "problem" left all three distinct and the check still passed.
+  ok('each fault message names the suite at fault',
+    checkSuites(theirs, disk).problems.join().includes('policy_sealed_direct') &&
+    checkSuites([...merged, 'tests/ghost.mjs'], disk).problems.join().includes('ghost') &&
+    checkSuites([...merged, merged[0]], disk).problems.join().includes('suite_count'))
+
+  // And this repo's own list must satisfy the same checks it is asserting about.
+  ok('waggle’s real suite list passes checkSuites', checkSuites(invoked, onDisk).ok,
+    checkSuites(invoked, onDisk).problems.join('; '))
+}
+
 console.log(fails ? `\nsuite_count: ${fails} check(s) failed` : '\nall checks passed')
 process.exit(fails ? 1 : 0)
