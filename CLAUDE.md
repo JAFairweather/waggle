@@ -137,6 +137,23 @@ not in the source you edited.
   them shipping code and restarting production, and the incident was found in the middle of it.
   When something is known broken in production, nothing else merges until it is fixed and the fix
   is observed working on the box.
+- **A review request `@mentions` its reviewers, or it reaches nobody.** The relay accepting a
+  message is not delivery — a body with no `@name` is queued to no agent and sits unread. Usage is
+  `echo "@My Dude @Dennis — <body>" | … relay-send.mjs`. This has cost us twice: an admitted agent
+  once reached nobody for want of a mention (#118), and on 2026-08-12 four review requests went out
+  unmentioned and had to be re-routed by hand. Pick by remit — **mydude** coordinates and is the
+  default for a PR review, **dennis** research, **kerouac** prose, **neil** infra. Do not broadcast
+  to all four.
+- **Write like a senior engineer, not an essayist.** PR bodies, issue text, commit messages and
+  review requests are read by the crew, and whatever register they are in becomes the house voice.
+  Lead with the answer. Cut "the headline is", "worth saying plainly", "two things worth knowing",
+  stacked em-dash asides, and tables used for tidiness rather than data. State the failure, the
+  fix, and the evidence, then stop. Three real examples of what not to do: *"Let me check the
+  actual convention rather than invent a fix"* (narrating method — just check it), *"and it's
+  earned that five times today"* (keeping score), *"it's worth saying plainly — X is a statement
+  about the search, not the system"* (aphorism and moral bolted onto a one-clause fact). Say what
+  happened; do not extract the lesson unless asked. This constrains length and ornament only — the
+  verification discipline below does not relax. Terse and precise, never terse and vague.
 - **Issues-first.** Every item becomes a GitHub issue before code.
 - **Check open PRs before starting an issue.** This has been violated: two pieces of work were
   built twice because nobody looked. `gh pr list --state open` costs nothing.
