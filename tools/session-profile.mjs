@@ -28,14 +28,14 @@
 import WebSocket from 'ws'
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
+import { relaySet } from '../src/relays.mjs'
 
 const args = process.argv.slice(2)
 const flag = (n) => { const i = args.indexOf(n); return i === -1 ? null : args[i + 1] }
 const has = (n) => args.includes(n)
 const die = (m) => { console.error(`session-profile: ${m}`); process.exit(1) }
 
-const RELAYS = (process.env.RELAY_RELAYS || 'wss://nos.lol,wss://relay.primal.net')
-  .split(',').map(s => s.trim()).filter(Boolean)
+const RELAYS = relaySet(process.env.RELAY_RELAYS)
 
 // The shared face. A URL, not embedded data: one asset, changed in one place for every session.
 const PICTURE = process.env.SESSION_PICTURE || 'https://nave.pub/assets/avatars/claude.png'

@@ -86,11 +86,28 @@ not in the source you edited.
     remaining gap, and it is an infrastructure ask, not something to engineer around.
   - **The return lane is the design, not a shortfall.** Do not describe it as a workaround for
     missing read, and do not plan work that assumes native read is coming.
-- **You act as your OWN participant key, never as the bridge.** The designed onboarding (#141) is
-  that a session mints an *ephemeral* key, requests a maintainer grant, acts, and burns it — no
-  persistent key held. That reinforces this repo's core rule, it does not bend it: signing as
-  waggle is impersonation; signing as your own admitted key is the mechanism. (Operational
-  procedure lives in the private brief; #141 is partly built — do not describe it as shipped.)
+- **You act as your OWN participant key, never as the bridge.** Signing as waggle is
+  impersonation; signing as your own admitted key is the mechanism.
+
+  **What is disposable is the connection, not the identity (#141, closed 2026-08-04).** The
+  resolution is **two keys doing two different jobs** (`docs/DESIGN_JOIN.md`):
+
+  - **R, the request key** — minted in the session, signs the join request, receives the sealed
+    pairing token, then **burned**. Never granted anything, never in the roster. Its only job is
+    to be an address the owner can reply to, once.
+  - **A, the agent identity** — minted into the owner's **Bunker** at approval time and never held
+    by the session at all. The session holds a NIP-46 *pairing*, not a key.
+
+  Persistence follows from where A lives: a restart, a compaction or a new instance re-pairs to
+  the same A. **The session holding no key is the mechanism, not a limitation worked around.**
+
+  ⚠ **Do not describe "mint an ephemeral key, act, burn it" as the design.** Burning R is correct;
+  burning the *identity* is the shape #141 weighed and set aside — a fresh npub per session is not
+  admitted, is not in `return_lane`, and has no continuity, so it trades the whole
+  first-class-participant model for disposability. This paragraph previously stated exactly that
+  and misled a review (#371). Distinct from the **short-lived burner** in
+  `docs/GETTING_STARTED.md`, which is a deliberately different path for a throwaway agent and is
+  not this. Operational procedure lives in the private brief.
 - **Shipped is never blurred with designed.** If a thing is landed-but-undeployed, say so.
 - **`waggle` is always lowercase.** Including UI wordmarks; the shared Nave titlebar uppercases app
   names, so waggle surfaces override it locally.
@@ -180,14 +197,14 @@ that merely ran.** The suite was green through all of them.
 
 ## Tests
 
-`npm test` — 72 suites, against the real exported functions with synthetic events. No sockets,
+`npm test` — 73 suites, against the real exported functions with synthetic events. No sockets,
 no production state, no writes outside a temp dir.
 
-boot · install state · config example coverage · host bootstrap · host facts · suite roster · wordmark · off-box policy protocol · standing trusted-reply policy · policy receipt verification · derive-only shadow client · shadow-mode gate · policy journal · policy-owned Buzz artifacts · off-box policy service · policy request queue · remote-only policy gate · forced-command policy runner · policy-host deployment · Nostr remote signer · read resilience · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant
+boot · install state · config example coverage · host bootstrap · host facts · suite roster · wordmark · off-box policy protocol · standing trusted-reply policy · policy receipt verification · derive-only shadow client · shadow-mode gate · policy journal · policy-owned Buzz artifacts · off-box policy service · policy request queue · remote-only policy gate · forced-command policy runner · policy-host deployment · Nostr remote signer · read resilience · egress catalogue · egress ban · durable dedup store · relay fan-out · outbound relay set · quarantine gating · deletion propagation · sealed-lane rate caps · grant
 admission · admission return-lane lifecycle · message rendering · deployed-build verification · routing-policy snapshot · latency trace · return lane · return-lane scan · typed channel task carry ·
 return-lane no-miss · return-lane pending · relay ingress · tripwire setup · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · recipient DM relays · DM relay-list publisher · watchlist hot-reload · signed owner control state · signed trust tiers · trust-gradient lane vocabulary · agent lifecycle catalogue · agent lifecycle lane · capability issue paths · agent challenge gate · console importmap coverage · console access list · capability vocabulary · challenge registry · join request · join approval · mint identity · connect plan · agent install state · scope hash · console vocabulary
 
-CI runs them on push and PR. **If a run reports fewer than 72, the branch is on a stale base.**
+CI runs them on push and PR. **If a run reports fewer than 73, the branch is on a stale base.**
 The count of record is the `test` script in `package.json`; a prose count that disagrees with it
 is the prose being wrong.
 

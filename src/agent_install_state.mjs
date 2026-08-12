@@ -61,6 +61,8 @@ export const ARTIFACTS = [
     why: 'The MCP channel transport.' },
   { key: 'mcp-registration', title: 'Registered as an MCP server', blocking: true,
     why: 'How a new session becomes this agent. Needs the instance root set explicitly; the default path does not exist here.' },
+  { key: 'mcp-exclusive', title: 'No other nvoy server registered', blocking: true,
+    why: 'Registered is not sole. A generically-named server alongside carries the tools that sign, bound to somebody else.' },
   { key: 'channel-answers', title: 'Channel server answers', blocking: true,
     why: 'Registered is not running. Proven by initialize + tools/list, not by the registration existing.' },
 ]
@@ -127,6 +129,38 @@ export function installState(observations = {}) {
     unverified: unverified.map(r => r.key),
     unknown: unknown.map(r => r.key),
   }
+}
+
+// Which OTHER nvoy MCP servers is this session carrying? (#380)
+//
+// The failure in #338 was not a missing server. It was a present one: alongside the correctly
+// instance-bound `nvoy-<name>` sat a generically-named `nvoy`, hard-wired to one identity's
+// credential files — and that is the server holding every tool that SIGNS. The instance-bound
+// path cannot act; the acting path is not instance-bound. No server is both, so the
+// default-looking choice is the unsafe one and an agent passes Bind while holding fifteen tools
+// pointed at a teammate.
+//
+// Checking that `nvoy-<name>` exists cannot catch that, because it was there. The question is
+// whether anything ELSE named nvoy is also there.
+//
+// Pure by design, like the rest of this module: it takes the text `claude mcp list` printed and
+// returns names. Passing `null` — the tool could not be run — must reach the UNKNOWN path, never
+// an empty array, because "nothing conflicting" and "I could not look" are the two things this
+// whole module exists to keep apart.
+export function foreignNvoyServers(listOutput, name) {
+  if (typeof listOutput !== 'string') return null
+  const mine = `nvoy-${String(name).toLowerCase()}`
+  const found = []
+  for (const line of listOutput.split('\n')) {
+    // `claude mcp list` prints `<server>: <command…> - <status>`. Take only the name.
+    const m = /^([A-Za-z0-9._-]+):/.exec(line.trim())
+    if (!m) continue
+    const server = m[1].toLowerCase()
+    if (server !== 'nvoy' && !server.startsWith('nvoy-')) continue
+    if (server === mine) continue
+    if (!found.includes(server)) found.push(server)
+  }
+  return found
 }
 
 // Render for a terminal. Kept here rather than in the CLI so the suite can assert that an

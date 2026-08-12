@@ -3,7 +3,7 @@
 // The console must never read config.json. This drives the real bridge-derived payload through
 // the bridge-key signer, checks its wire signature, and proves the consent lifecycle is rendered
 // as owner-observable state without creating a free-form public publishing capability.
-import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, rmdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, unlinkSync, mkdirSync, rmdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { generateSecretKey, getEventHash, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
@@ -98,7 +98,7 @@ const body = JSON.parse(signed.content)
 t('state contains only the declared owner-visible fields',
   Object.keys(body).sort().join(',') === 'agents,bridge,follows,hive,observed_at,operations,publishing,v' &&
   Object.keys(body.follows[0]).sort().join(',') === 'consent,pubkey' &&
-  Object.keys(body.operations).sort().join(',') === 'drops,gates,lanes,trust' &&
+  Object.keys(body.operations).sort().join(',') === 'consent_asks,drops,gates,lanes,trust' &&
   Object.keys(body.operations.drops).sort().join(',') === 'relay_not_relay,relay_preauth')
 
 // ---- agents must survive to the SIGNED artifact, not merely to buildControlState ------------------
@@ -539,6 +539,210 @@ t('the Routing console signs only an exact bridge-addressed moderation command',
   /\['d', 'waggle-moderation'\], \['p', opened\.bridge\]/.test(routingScript) &&
   /JSON\.stringify\(\{ v: 1, action, target \}\)/.test(routingScript) &&
   !/fetch\([^)]*config\.json/.test(routingScript) && !/\/config\.json/.test(routingScript))
+
+// ---- one word per author, and it has to be TRUE (#389, blocks #331) ----------------------------
+// The record used to publish `pending` for four different realities — grandfathered, muted,
+// never-asked and gated-held — and a grandfathered author is CARRIED. Driving the REAL projection
+// here, not just the pure helper: the helper being right and the bridge calling it with the wrong
+// arguments are independent failures, and only one of them is visible from the pure function.
+const { consentState, CONSENT_STATES } = await import('../src/consent_state.mjs')
+const { CONSENT_STATES: CONSOLE_STATES, CONSENT_LABEL, CONSENT_IS_CARRYING } =
+  await import('../console/consent-vocabulary.mjs')
+
+// The four legacy words must still mean what they meant. Negative control on the whole change: if
+// this block were the only thing asserted, "adds three states" would be indistinguishable from
+// "renames everything and breaks every published record".
+t('#389 legacy: an unasked author with the gate off is still pending',
+  consentState({ gated: false }) === 'pending')
+t('#389 legacy: asked, active and revoked are unchanged',
+  consentState({ asked: true }) === 'asked' &&
+  consentState({ consented: true }) === 'active' &&
+  consentState({ revoked: true }) === 'revoked')
+
+// The defect itself, through the live bridge, on a CLEAN author — `watched` reads `revoked` by now,
+// and the first draft asserted `!== 'pending'` against it, which is true of `revoked` whatever the
+// gate does. It passed with the gate branch mutated flat to `pending`. Assert the word.
+const gatedOnly = getPublicKey(generateSecretKey())
+PUB.authors.push(gatedOnly)
+const gatedRow = () => buildControlState().follows.find(f => f.pubkey === gatedOnly)?.consent
+t('#389 with the gate OFF an un-consented author is pending — carried, ungated', gatedRow() === 'pending')
+PUB.mirrorRequireConsent = true
+t('#389 with the gate ON the same author reads held — every post dropped, and the word says so',
+  gatedRow() === 'held')
+t('#389 …so the meaning no longer depends on operations.gates, a field the schema treats as optional',
+  consentState({ gated: true }) === 'held' && consentState({ gated: false }) === 'pending')
+PUB.authors.pop()
+
+// Grandfathering. This is the row that was lying in the worst direction: carried on a permanent
+// exemption, published with the same word as an author whose every post is being held.
+PUB.mirrorGrandfathered.push(watched)
+const grandRow = () => buildControlState().follows.find(f => f.pubkey === watched)?.consent
+t('#389 a grandfathered author reads grandfathered, not pending', grandRow() === 'grandfathered')
+t('#389 grandfathering BEATS a withdrawal, because the gate carries them either way',
+  mirrorRevoked.has(watched) && grandRow() === 'grandfathered')
+t('#389 …and the label says it is a carry, so nobody reads consent into an exemption',
+  /carried/i.test(CONSENT_LABEL.grandfathered) && CONSENT_IS_CARRYING.grandfathered === true)
+PUB.mirrorGrandfathered.pop()
+
+// Muted — the APPROVER's rejection. maybeAskConsent refuses a muted target permanently, so
+// "waiting on them" would describe a wait that cannot end. A SECOND author, because `watched` has
+// withdrawn by now and a withdrawal outranks a mute — the first draft of this check used `watched`
+// and failed, which is the live projection proving it applies the precedence rather than the pure
+// helper being asserted against itself.
+const mutedOnly = getPublicKey(generateSecretKey())
+PUB.authors.push(mutedOnly)
+PUB.muted.push(mutedOnly)
+t('#389 a muted author reads muted', buildControlState().follows.find(f => f.pubkey === mutedOnly)?.consent === 'muted')
+t('#389 …and the other author is unaffected — the projection is per-author, not global',
+  buildControlState().follows.find(f => f.pubkey === watched)?.consent === 'revoked')
+t('#389 the muted label names the APPROVER as the refuser, not the author',
+  /by you/i.test(CONSENT_LABEL.muted) && !/declined/i.test(CONSENT_LABEL.muted))
+PUB.muted.pop(); PUB.authors.pop()
+PUB.mirrorRequireConsent = false
+
+// Precedence is copied from routePublic's gate, so assert the pairs that could plausibly be ordered
+// the other way — each of these is a case where the obvious order publishes a false label.
+t('#389 consent beats grandfathering — "they agreed" is not "we exempted them"',
+  consentState({ consented: true, grandfathered: true }) === 'active')
+t('#389 muted beats asked — an ask that will never be sent is not a wait',
+  consentState({ muted: true, asked: true }) === 'muted')
+t('#389 a withdrawal beats the approver’s mute — the subject’s own act outranks the label',
+  consentState({ revoked: true, muted: true }) === 'revoked')
+
+// Every state must survive SIGNING. The schema sits beside the key and used to restate the four
+// words itself; a word the projection emits and the schema rejects fails closed after signing, on a
+// record nobody looks at until the console renders blank.
+let signedAll = 0
+for (const consentWord of CONSENT_STATES) {
+  try {
+    const ev = await signControlState({ ...buildControlState(), follows: [{ pubkey: watched, consent: consentWord }] })
+    if (JSON.parse(ev.content).follows[0].consent === consentWord) signedAll++
+  } catch { /* counted by the shortfall */ }
+}
+t(`#389 all ${CONSENT_STATES.length} states survive the signing schema`, signedAll === CONSENT_STATES.length)
+// NEGATIVE CONTROL: the schema is still closed. A loop that signs everything would pass the line
+// above just as well as a correct one.
+let refusedInvented = false
+try { await signControlState({ ...buildControlState(), follows: [{ pubkey: watched, consent: 'carrying' }] }) }
+catch { refusedInvented = true }
+t('#389 NEGATIVE CONTROL — a plausible but undefined word is still refused', refusedInvented)
+
+// The console keeps its own copy because nothing under src/ is served to a browser. A copy nobody
+// checks is a copy that drifts — and drift here does not mis-render one row, it makes
+// config-operations.mjs reject the whole signed state and show the owner nothing.
+t('#389 the console vocabulary matches src/ word for word, and in the same order',
+  CONSOLE_STATES.join(',') === CONSENT_STATES.join(','))
+t('#389 every state has an owner-facing label and a carrying answer',
+  CONSENT_STATES.every(s => typeof CONSENT_LABEL[s] === 'string' && CONSENT_LABEL[s].length > 0 &&
+    typeof CONSENT_IS_CARRYING[s] === 'boolean'))
+// NOT an instance check — a property one. Three separate files restated the four words, and each
+// one rejects the ENTIRE signed state on a word it does not know, so a missed copy does not degrade
+// a row: it blanks the page. Fixing the three I found would leave the fourth to be found in
+// production, so assert that no file anywhere restates the list. Caught console/routing.mjs and
+// console/following.html, both missed on the first pass of this very change.
+{
+  const roots = ['console', 'src', 'tools']
+  const offenders = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(new URL(`../${dir}/`, import.meta.url), { withFileTypes: true })) {
+      const rel = `${dir}/${entry.name}`
+      if (entry.isDirectory()) { if (entry.name !== 'vendor' && entry.name !== 'assets') walk(rel); continue }
+      if (!/\.(mjs|html)$/.test(entry.name)) continue
+      if (rel === 'src/consent_state.mjs' || rel === 'console/consent-vocabulary.mjs') continue   // the definitions
+      const text = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8')
+      // Any literal list holding 'active' and 'revoked' together is this vocabulary being restated.
+      if (/\[[^\]\n]*'active'[^\]\n]*'revoked'[^\]\n]*\]|\[[^\]\n]*'revoked'[^\]\n]*'active'[^\]\n]*\]/.test(text)) offenders.push(rel)
+    }
+  }
+  roots.forEach(walk)
+  t('#389 no file restates the consent vocabulary — one missed copy blanks a whole page',
+    offenders.length === 0)
+  if (offenders.length) console.log(`     restated in: ${offenders.join(', ')}`)
+}
+t('#389 the two console pages that verify signed state read the shared list',
+  [ '../console/routing.mjs', '../console/following.html' ].every(f =>
+    /CONSENT_STATES\.includes\(f\.consent\)/.test(readFileSync(new URL(f, import.meta.url), 'utf8'))))
+t('#389 the Following page names grandfathered as a CARRY, not as a pending consent',
+  /carried, with no consent record/i.test(readFileSync(new URL('../console/following.html', import.meta.url), 'utf8')))
+t('#389 config-operations accepts the vocabulary from the shared list, not a restated one',
+  /CONSENT_STATES\.includes\(follow\.consent\)/.test(readFileSync(new URL('../console/config-operations.mjs', import.meta.url), 'utf8')) &&
+  !/'pending', 'asked', 'active', 'revoked'/.test(readFileSync(new URL('../console/config-operations.mjs', import.meta.url), 'utf8')))
+
+// ---- the consent-ask budget, not just its cap (#331) -------------------------------------------
+// #331: "The rate cap needs a visible budget. A silent refusal at the cap is indistinguishable from
+// a broken send." The record published the cap and nothing else, so an owner at the cap saw asks
+// stop with no way to tell that from a bug.
+const { askBudget } = await import('../src/bridge.mjs')
+{
+  const hour = 3600_000
+  const b0 = askBudget(hour * 10)
+  t('#331 with no window open the budget is full and there is nothing to wait for',
+    b0.used_this_window === 0 && b0.remaining === b0.per_hour && b0.window_resets_in === 0)
+  t('#331 the budget always adds up — used + remaining is the cap',
+    b0.used_this_window + b0.remaining === b0.per_hour)
+
+  // Spend one, through the real ask path, so there is an OPEN window to reason about. The first
+  // draft asserted only against a never-opened window, where the elapsed branch is true either way —
+  // it passed with the reset mutated out, which is the one direction that matters: reporting a spent
+  // window as still spent would tell the owner they are capped when the next ask would go through.
+  const { sendConsentRequest } = await import('../src/bridge.mjs')
+  PUB.mirrorConsentUrl = PUB.mirrorConsentUrl || 'https://example.com/consent'
+  await sendConsentRequest('e'.repeat(64), async () => 1)
+  const open = askBudget()
+  t('#331 a spent ask shows in the budget and opens a window',
+    open.used_this_window === 1 && open.remaining === open.per_hour - 1 && open.window_resets_in > 0)
+  const later = askBudget(Date.now() + 3600_000 + 1000)
+  t('#331 an ELAPSED window reports the budget it will actually have, not the stale counter',
+    later.used_this_window === 0 && later.remaining === later.per_hour && later.window_resets_in === 0)
+
+  // It must survive SIGNING, which is where the agents field died once.
+  const signedOps = JSON.parse((await signControlState(buildControlState())).content).operations
+  t('#331 consent_asks survives the closed egress schema into the signed content',
+    signedOps.consent_asks &&
+    Object.keys(signedOps.consent_asks).sort().join(',') === 'per_hour,remaining,used_this_window,window_resets_in')
+  t('#331 …and carries the real cap, not a default',
+    signedOps.consent_asks.per_hour === PUB.mirrorAskPerHour && PUB.mirrorAskPerHour > 0)
+
+  // A budget that does not add up is WORSE than none: it tells the owner asks are available when
+  // the next one will be refused. Refuse to sign it. Assert the reason, not just the refusal.
+  const bad = async (consent_asks) => {
+    try { await signControlState({ ...buildControlState(), operations: { ...buildControlState().operations, consent_asks } }); return null }
+    catch (e) { return e.message }
+  }
+  const base = { per_hour: 20, used_this_window: 5, remaining: 15, window_resets_in: 900 }
+  t('#331 a good budget signs', (await bad(base)) === null)
+  t('#331 a budget that does not add up is REFUSED, and says so',
+    /does not add up/.test(await bad({ ...base, remaining: 19 }) || ''))
+  t('#331 used above the cap is refused', (await bad({ ...base, used_this_window: 25, remaining: 0 })) !== null)
+  t('#331 a missing field is refused rather than defaulted',
+    /unexpected fields/.test(await bad({ per_hour: 20, used_this_window: 5, remaining: 15 }) || ''))
+
+  // BOTH DIRECTIONS on the optionality: an older bridge omits the field entirely and its record must
+  // still sign, or this change bricks every deployment that has not restarted yet.
+  const { consent_asks: _omitted, ...withoutAsks } = buildControlState().operations
+  let legacySigned = null
+  try { legacySigned = JSON.parse((await signControlState({ ...buildControlState(), operations: withoutAsks })).content) } catch { /* null */ }
+  t('#331 a record signed WITHOUT the budget is still valid — the field is additive',
+    legacySigned !== null && legacySigned.operations.consent_asks === undefined)
+}
+
+// The two things #331 says the surface must not get wrong, on screen before the button.
+{
+  const followingPage = readFileSync(new URL('../console/following.html', import.meta.url), 'utf8')
+  const opsModule = readFileSync(new URL('../console/config-operations.mjs', import.meta.url), 'utf8')
+  const askIdx = followingPage.indexOf('asks each writer once, ever')
+  const btnIdx = followingPage.indexOf('id="mirror"')
+  t('#331 "asked once, ever" appears BEFORE the ask button, not after it',
+    askIdx > 0 && btnIdx > 0 && askIdx < btnIdx)
+  t('#331 …and says silence is the answer, so a non-response is not read as a failed send',
+    /silence is a no/i.test(followingPage) && /not a failed send/i.test(followingPage))
+  t('#331 the remaining ask budget is rendered, not only the cap',
+    /consent_asks\.remaining/.test(opsModule) && /Consent asks left this hour/.test(opsModule))
+  t('#331 …and names a cap refusal as a refusal rather than a failure',
+    /not a failed send/i.test(opsModule))
+  t('#331 consent.mjs no longer claims to be unwired — bridge.mjs imports it and the gate is live',
+    !/NOT wired into the bridge/.test(readFileSync(new URL('../src/consent.mjs', import.meta.url), 'utf8')))
+}
 
 console.log(`\n${pass}/${n} passed`)
 process.exit(pass === n ? 0 : 1)

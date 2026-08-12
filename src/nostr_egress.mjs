@@ -17,6 +17,7 @@
 import { finalizeEvent, generateSecretKey, getEventHash, verifyEvent } from 'nostr-tools/pure'
 import * as nip44 from 'nostr-tools/nip44'
 import { loadNostrSigner } from './nostr_signer.mjs'
+import { isConsentState } from './consent_state.mjs'   // the one consent vocabulary (#389)
 import { createHash, randomBytes } from 'node:crypto'
 
 // --- The key, held here and nowhere else ------------------------------------------------------
@@ -167,7 +168,9 @@ const controlState = (v) => {
   if (!hiveHandle) reject('control state hive.handle empty')
   const follows = Array.isArray(s.follows) ? s.follows : reject('control state follows is not an array')
   if (follows.length > 1000) reject('control state has too many follows')
-  const statuses = new Set(['pending', 'asked', 'active', 'revoked'])
+  // The vocabulary is IMPORTED, not restated (#389). A word the projection can emit and this schema
+  // rejects fails closed after signing, on a record nobody looks at until the console renders blank —
+  // and the two lists sat far enough apart that a fifth state would have been added to one of them.
   const seen = new Set()
   const cleaned = follows.map((f) => {
     if (!f || typeof f !== 'object') reject('control state follow is not an object')
@@ -175,7 +178,7 @@ const controlState = (v) => {
     if (seen.has(pubkey)) reject('control state has duplicate follow')
     seen.add(pubkey)
     const consent = String(f.consent || '')
-    if (!statuses.has(consent)) reject('control state follow.consent is invalid')
+    if (!isConsentState(consent)) reject('control state follow.consent is invalid')
     return { pubkey, consent }
   }).sort((a, b) => a.pubkey.localeCompare(b.pubkey))
   if (typeof s.publishing !== 'boolean') reject('control state publishing is not boolean')
@@ -228,7 +231,11 @@ const controlState = (v) => {
   const operations = (typeof s.operations === 'object') ? s.operations : reject('control state operations is invalid')
   const exact = (obj, keys, label) => { if (Object.keys(obj).sort().join(',') !== keys.slice().sort().join(',')) reject(`${label} has unexpected fields`) }
   const count = (value, label) => { const n = Math.floor(num(value, label)); if (n < 0 || n > 1000000) reject(`${label} out of bounds`); return n }
-  exact(operations, ['trust', 'lanes', 'gates', 'drops'], 'control state operations')
+  // `consent_asks` is OPTIONAL, exactly like `agents` above: a bridge that has not been updated
+  // signs without it, and that record must stay valid rather than being rejected by a newer console.
+  exact(operations, operations.consent_asks == null
+    ? ['trust', 'lanes', 'gates', 'drops']
+    : ['trust', 'lanes', 'gates', 'drops', 'consent_asks'], 'control state operations')
   const trust = (operations.trust && typeof operations.trust === 'object') ? operations.trust : reject('control state trust is missing')
   exact(trust, ['trusted_repliers', 'muted_authors', 'watched_notes'], 'control state trust')
   const lanes = (operations.lanes && typeof operations.lanes === 'object') ? operations.lanes : reject('control state lanes is missing')
@@ -239,10 +246,25 @@ const controlState = (v) => {
   if (typeof gates.consent_required !== 'boolean') reject('control state consent_required is not boolean')
   const drops = (operations.drops && typeof operations.drops === 'object') ? operations.drops : reject('control state drops is missing')
   exact(drops, ['relay_preauth', 'relay_not_relay'], 'control state drops')
+  // The consent-ask budget (#331). Bounded counters, rebuilt field by field like everything else
+  // here — the owner acts on this number, so a caller cannot smuggle prose through it.
+  let consentAsks = null
+  if (operations.consent_asks != null) {
+    const a = (typeof operations.consent_asks === 'object') ? operations.consent_asks : reject('control state consent_asks is invalid')
+    exact(a, ['per_hour', 'used_this_window', 'remaining', 'window_resets_in'], 'control state consent_asks')
+    const perHour = count(a.per_hour, 'consent_asks.per_hour')
+    const used = count(a.used_this_window, 'consent_asks.used_this_window')
+    const remaining = count(a.remaining, 'consent_asks.remaining')
+    // A budget that does not add up is worse than none: it would tell the owner asks are available
+    // when the next one will be refused. Refuse to sign it rather than publish a number that lies.
+    if (used > perHour || remaining > perHour || used + remaining !== perHour) reject('control state consent_asks does not add up')
+    consentAsks = { per_hour: perHour, used_this_window: used, remaining, window_resets_in: count(a.window_resets_in, 'consent_asks.window_resets_in') }
+  }
   return { v: 1, observed_at: observedAt, hive: { id: hiveId, name: hiveName, handle: hiveHandle }, bridge: hex64(s.bridge, 'control state bridge'), publishing: s.publishing, follows: cleaned, ...withAgents,
     operations: { trust: { trusted_repliers: count(trust.trusted_repliers, 'trusted_repliers'), muted_authors: count(trust.muted_authors, 'muted_authors'), watched_notes: count(trust.watched_notes, 'watched_notes') }, lanes,
       gates: { consent_required: gates.consent_required, ask_per_hour: count(gates.ask_per_hour, 'ask_per_hour'), public_content_bytes: count(gates.public_content_bytes, 'public_content_bytes'), public_replier_per_min: count(gates.public_replier_per_min, 'public_replier_per_min'), public_channel_per_min: count(gates.public_channel_per_min, 'public_channel_per_min'), public_lane_per_hour: count(gates.public_lane_per_hour, 'public_lane_per_hour') },
-      drops: { relay_preauth: count(drops.relay_preauth, 'relay_preauth'), relay_not_relay: count(drops.relay_not_relay, 'relay_not_relay') } } }
+      drops: { relay_preauth: count(drops.relay_preauth, 'relay_preauth'), relay_not_relay: count(drops.relay_not_relay, 'relay_not_relay') },
+      ...(consentAsks ? { consent_asks: consentAsks } : {}) } }
 }
 
 // The sole public-event capability held by bridge.mjs.  The body and tags are fixed by the

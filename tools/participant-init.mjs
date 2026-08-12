@@ -27,6 +27,7 @@ import WebSocket from 'ws'
 import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import { normalizeDmRelayList, recipientDmRelays } from '../src/dm_relays.mjs'
+import { relaySet } from '../src/relays.mjs'
 
 const args = process.argv.slice(2)
 const cmd = args[0]
@@ -34,8 +35,7 @@ const flag = (n, d) => { const i = args.indexOf(n); return i === -1 ? d : args[i
 const die = (m) => { console.error(`participant-init: ${m}`); process.exit(1) }
 const say = (s = '') => console.log(s)
 
-const RELAYS = (process.env.RELAYS?.split(',') || ['wss://nos.lol', 'wss://relay.primal.net'])
-  .map(s => s.trim()).filter(Boolean)
+const RELAYS = relaySet(process.env.RELAYS)
 const dmRelayArg = flag('--dm-relays', process.env.DM_RELAYS || RELAYS.join(','))
 const DM_RELAYS = normalizeDmRelayList(String(dmRelayArg || '').split(','))
 const toHex = (v) => {
