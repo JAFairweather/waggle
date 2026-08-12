@@ -18,7 +18,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs'
-import { parseSuites, renderSuites, unionSuites, checkSuites, unionReport } from '../src/suite_union.mjs'
+import { parseSuites, renderSuites, checkSuites, unionReport } from '../src/suite_union.mjs'
 
 const CHECK = process.argv.includes('--check')
 const DOCS = ['CLAUDE.md', 'README.md', 'docs/GETTING_STARTED.md']
