@@ -222,6 +222,42 @@
     <div class="status" id="reqst"></div>
   </div>
 
+  <div class="panel" id="mint-panel" style="display:none">
+    <h2>Make a key for a new agent</h2>
+    <div class="hint" style="margin-bottom:12px">
+      An agent needs a key before it can be given anything. This makes one here, on your machine,
+      and then hands it to <strong>your bunker</strong> to hold. This page keeps it only until the
+      bunker has proved it can sign with it — <strong>not one action longer</strong>, and not one
+      action less. A key nobody can sign with later is a relay member nobody can ever remove.
+    </div>
+    <button class="btn" id="mint-go">Make a key</button>
+    <div id="mint-out" style="display:none;margin-top:14px">
+      <label>Public half <span class="hint">this is what you give access to</span></label>
+      <pre id="mint-npub" style="background:var(--field);border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 12px;overflow-x:auto;font-family:var(--mono);font-size:12px;color:var(--text);margin:0 0 12px"></pre>
+      <div id="mint-secret-row">
+        <button class="btn" id="mint-save">Show it, to enrol in a bunker</button>
+        <span class="hint" id="mint-secret-note">Shown once, for one purpose: putting it in your bunker. Not a file to keep. Never paste it into a chat, an issue, or a log.</span>
+      </div>
+      <pre id="mint-secret" style="display:none;background:var(--field);border:1px solid var(--warn,#b7791f);border-radius:var(--r-sm);padding:10px 12px;overflow-x:auto;font-family:var(--mono);font-size:12px;color:var(--text);margin:12px 0 0"></pre>
+
+      <div id="mint-custody" style="display:none;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+        <label>Prove the bunker took it <span class="hint">paste the bunker:// URI your bunker gave you for THIS key</span></label>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+          <input id="mint-bunker" placeholder="bunker://… for the key above" autocomplete="off" spellcheck="false" style="flex:1 1 auto">
+          <button class="btn" id="mint-prove" style="flex:0 0 auto">Prove custody</button>
+        </div>
+        <div class="hint" style="margin-top:8px">
+          This asks that bunker to sign one throwaway challenge and checks the signature came from
+          <em>this exact key</em>. Nothing is published. Until it passes, this page still holds the
+          key — so a failure here costs nothing but another try.
+        </div>
+      </div>
+
+      <button class="btn ghost" id="mint-use" style="margin-top:12px">Use this key below</button>
+    </div>
+    <div class="status" id="mintst"></div>
+  </div>
+
   <div class="panel" id="issue-panel" style="display:none">
     <h2>Give someone access</h2>
     <div class="row">
@@ -305,11 +341,13 @@
 <script type="module">
 // Local vendored bundle, resolved through the importmap — no CDN. A page that verifies
 // signatures must not fetch its verifier from a third party at load time.
-import { verifyEvent, nip19 } from 'nostr-tools'
+import { verifyEvent, nip19, generateSecretKey, getPublicKey } from 'nostr-tools'
 import { verifyNvoyVisibility } from './nvoy-visibility.mjs'
 import { groupByGrantee, byLiveThenNewest, scopePhrase, givenOn } from './access-list.mjs'
 import { CAP_LABEL, capLabel, CAP_ENFORCER, capEnforcer, ISSUABLE, describeGrant } from './capability-vocabulary.mjs'
 import { scopeHash } from './scope-hash.mjs'
+import { mintAgentKey } from './mint-agent-key.mjs'
+import { proveCustody, custodyNonce } from './bunker-custody.mjs'
 const { decode } = nip19
 
 const $ = (id) => document.getElementById(id)
@@ -533,6 +571,8 @@ function drawTitlebar(npub, kind) {
       signer = null; signerPk = null
       saveSession(null)   // and stay signed out across reloads — logout that a refresh undoes is not logout
       $('issue-panel').style.display = 'none'
+      $('mint-panel').style.display = 'none'
+      forgetMintedKey()   // a signed-out console must not still be holding an agent's secret
       $('confirm-panel').style.display = 'none'
       // Requests were decrypted with the key that just left. Drop both the panel and the parsed
       // copies — a list of who is asking must not outlive the session that could act on it.
@@ -575,6 +615,7 @@ async function adopt(s, label, remember = null) {
   $('local-row').style.display = 'none'
   drawTitlebar(nip19.npubEncode(signerPk), s.kind || label)
   $('issue-panel').style.display = ''
+  $('mint-panel').style.display = ''
   // Convenience only: the grantor field is what you sign as, so default it to the signed-in key.
   if (!$('grantor').value.trim()) { $('grantor').value = nip19.npubEncode(signerPk); $('go').click() }
   renderRows()
@@ -708,6 +749,121 @@ window.__revoke = (grantId, granteeShort) => {
     tags: [['e', grantId]], content: '',
   }, `This revokes the grant held by ${granteeShort}. It takes effect the next time any consumer reads the relays — no restart anywhere. It cannot be un-published, though you can always issue a new grant.`)
 }
+
+// Mint — an agent's identity, made here so that inviting one does not require a terminal.
+//
+// CUSTODY IS THE WHOLE DESIGN (#367). Relay revocation is cooperative: a leave request must be
+// signed by the leaving key and cannot be pre-signed, so a key nobody can sign with later is a
+// relay member nobody can ever remove. That reclassifies "the operator lost the download" from bad
+// UX into permanent unremovable state on production infrastructure. So the page does not hand over
+// a file and hope. It holds the key until a bunker has DEMONSTRABLY taken it, then lets go.
+//
+// The evidence is a signature from the place the key now lives — cold proof, not an
+// acknowledgement, which is this repo's rule everywhere else. The old flow's evidence was "the
+// download did not throw", and a blocked or discarded download throws nothing at all.
+//
+// ORDER MATTERS AND IT IS THE POINT. The proof runs while the page STILL HOLDS the key, so every
+// failure is recoverable: fix the pairing, try again. The previous flow had already destroyed its
+// copy by the time anything could go wrong.
+let minted = null
+function forgetMintedKey() {
+  if (minted) minted.secret.forget()
+  minted = null
+  $('mint-out').style.display = 'none'
+  $('mint-custody').style.display = 'none'
+  $('mint-secret').style.display = 'none'; $('mint-secret').textContent = ''
+  $('mint-bunker').value = ''
+  $('mintst').className = 'status'; $('mintst').textContent = ''
+}
+$('mint-go').addEventListener('click', () => {
+  const st = $('mintst')
+  try {
+    forgetMintedKey()
+    minted = mintAgentKey({ generateSecretKey, getPublicKey, nsecEncode: nip19.nsecEncode, npubEncode: nip19.npubEncode })
+    $('mint-npub').textContent = minted.display.npub
+    $('mint-save').disabled = false
+    $('mint-save').textContent = 'Show it, to enrol in a bunker'
+    $('mint-secret').style.display = 'none'; $('mint-secret').textContent = ''
+    $('mint-custody').style.display = 'none'
+    $('mint-out').style.display = ''
+    st.className = 'status'
+    st.textContent = 'Made. Next: put it in a bunker, then prove the bunker has it. This page holds it until then.'
+  } catch (e) { st.className = 'status err'; st.textContent = e.message }
+})
+// Reveal, for ONE purpose: enrolling the key in a bunker. Deliberately not a download any more —
+// a file on disk is the thing that gets lost, and losing it is what strands an unremovable relay
+// member. `peek()` rather than `take()`: the page must still hold the key while the proof runs,
+// because a proof that fails has to be retryable. `take()` is called exactly once, on success.
+$('mint-save').addEventListener('click', () => {
+  const st = $('mintst')
+  if (!minted) { st.className = 'status err'; st.textContent = 'Make a key first.'; return }
+  const nsec = minted.secret.peek()
+  if (!nsec) { st.className = 'status err'; st.textContent = 'This key has already been handed to a bunker. Make a new one if you need another.'; return }
+  // Into a <pre>'s text, never an attribute, a URL or a storage key — those survive in the DOM and
+  // in an extension's page dump long after the element is hidden.
+  $('mint-secret').textContent = nsec
+  $('mint-secret').style.display = ''
+  $('mint-custody').style.display = ''
+  $('mint-save').disabled = true
+  $('mint-save').textContent = 'Shown'
+  $('mint-secret-note').textContent = 'Put this in your bunker now, then prove it below. It leaves this page the moment that proof passes.'
+  st.className = 'status'
+  st.textContent = 'Enrol it in your bunker, then paste that bunker URI below and prove custody.'
+})
+
+// The gate. Nothing clears the page's copy except a signature from the bunker, over a fresh
+// challenge, verified, and matching THIS pubkey.
+$('mint-prove').addEventListener('click', async () => {
+  const st = $('mintst')
+  if (!minted) { st.className = 'status err'; st.textContent = 'Make a key first.'; return }
+  const uri = $('mint-bunker').value.trim()
+  if (!uri) { st.className = 'status err'; st.textContent = 'Paste the bunker:// URI your bunker gave you for this key.'; return }
+  st.className = 'status'; st.textContent = 'Asking that bunker to sign a challenge — approve it there if it asks…'
+  let verdict
+  try {
+    const { nip46Signer } = await nc()
+    const signer = await nip46Signer(uri)
+    verdict = await proveCustody({
+      expectedPubkeyHex: minted.display.pubkeyHex,
+      sign: (event) => signer.signEvent(event),
+      verifyEvent,
+      nonce: custodyNonce(b => crypto.getRandomValues(b)),
+    })
+  } catch (e) {
+    // A URI that will not even parse never reaches proveCustody, so it gets its own line rather
+    // than being reported as the bunker refusing.
+    st.className = 'status err'
+    st.textContent = `Could not reach that bunker (${e.message}). The key is still in this page — nothing has been lost.`
+    return
+  }
+  if (!verdict.proven) {
+    st.className = 'status err'
+    st.textContent = `${verdict.code}: ${verdict.reason}`
+    return
+  }
+  // PROVEN. Only now does the page let go — and only now is `take()` called, which is what makes
+  // "this page no longer has it" true rather than promised.
+  minted.secret.take()
+  $('mint-secret').textContent = ''
+  $('mint-secret').style.display = 'none'
+  $('mint-custody').style.display = 'none'
+  $('mint-secret-note').textContent = 'The bunker has it. This page does not. Give the public half access below.'
+  st.className = 'status ok'
+  st.textContent = `Custody proved — ${verdict.reason} This page has now cleared its copy.`
+})
+$('mint-use').addEventListener('click', () => {
+  if (!minted) return
+  // Only the public half crosses into the grant form. There is no field on `display` that could
+  // carry anything else, which is the point of it being a separate frozen object.
+  $('g-to').value = minted.display.npub
+  refreshCaps()
+  $('issue-panel').scrollIntoView({ behavior: 'smooth', block: 'center' })
+  const st = $('mintst')
+  if (!minted.secret.taken()) {
+    st.className = 'status err'
+    st.textContent = 'Filled in below — but you have not saved the private half yet. Without it nobody can act as this key.'
+  }
+})
 
 // Issue — a 440 binding a grantee to a subject, with a fresh salt so two grants into the same
 // subject cannot be linked by anyone watching.
