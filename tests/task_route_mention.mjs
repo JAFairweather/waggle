@@ -25,7 +25,8 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { getPublicKey, generateSecretKey, finalizeEvent } from 'nostr-tools/pure'
 
-import { taskRouteMentionProblem, taskRouteMention, taskRouteMentionKey, TASK_ROUTE_MENTION_MAX }
+import { taskRouteMentionProblem, taskRouteMention, taskRouteMentionKey, TASK_ROUTE_MENTION_MAX,
+  taskRouteMentioned, taskRouteMentionMatcher }
   from '../src/task_route_mention.mjs'
 
 let fails = 0
@@ -241,5 +242,93 @@ to = await carriedBy('@mydude what do you think')
 ok('the old slug form of the name does not route — the display name is the handle',
   to.length === 0, to.join('|'))
 
-console.log(fails ? `\nTASK ROUTE MENTION FAIL — ${fails}` : '\nTASK ROUTE MENTION PASS — grammar, reasons, console join, end-to-end carry')
+// ---------------------------------------------------------------------------------------------
+// 5. The word boundary, which must be the mention alphabet minus the separator (#408).
+// ---------------------------------------------------------------------------------------------
+// `(?![\w-])` was correct only while the grammar WAS the slug alphabet: every admissible character
+// was in `\w` or was `-`, so the boundary class and the grammar were the same set. #404 widened the
+// grammar and left the boundary alone, and a route named `Dr` began receiving `@Dr. Watson` while
+// the real `Dr. Watson` received nothing. Two classes that must agree cannot be two literals, so
+// the matcher now derives from MENTION_ALPHABET — and this table is what says so.
+//
+// Both directions in ONE table, deliberately: a boundary that only ever suppresses cannot be told
+// from one that suppresses everything, and that is the exact failure mode this repo keeps paying
+// for. `carry: false` rows are the fix; `carry: true` rows are the proof it did not overreach.
+console.log('\nboundary — the alphabet minus the separator, both directions')
+
+const BOUNDARY = [
+  // [mention, body, must it carry?, why this row exists]
+  ['Dr',        '@Dr. Watson — please look',   false, 'the #408 defect itself: `.` is not in \\w, so the old boundary ended the name'],
+  ['Dan',       "@Dan'ielle can you check",    false, "`'` is not in \\w either"],
+  ['Jos',       '@José replied',               false, 'a non-ASCII letter is not in \\w — \\w is ASCII-only'],
+  ['My Dude',   '@My Dudeé said no',           false, 'the same hole one word later'],
+  ['My Dude',   "@My Dude's Assistant will",   false, "a possessive is a different name, not this one"],
+  ['every',     '@everyone gather round',      false, 'the direction the OLD boundary got right — must stay right'],
+  ['chan',      '@channel wide notice',        false, 'ditto: the class must keep \\w\'s ASCII letters'],
+  ['Dr. Watson', '@Dr. Watson — please look',  true,  'the real recipient, who received nothing before'],
+  ['My Dude',   '@My Dude — please look',      true,  'the ordinary case must survive the fix'],
+  ['My Dude',   '@my dude — please look',      true,  'still case-insensitive'],
+  ['My Dude',   '@My Dude! urgent',            true,  'ordinary punctuation still ends the name'],
+  ['My Dude',   '@My Dude, and also',          true,  'a comma is not part of a name'],
+  ["O'Brien",   "@O'Brien please review",      true,  'an apostrophe INSIDE the name still matches'],
+  ['codex',     '@Codex please look',          true,  'a single-token name — this always worked, and must keep working'],
+  ['MC Claude', '@MC Claude — please look',    true,  'a space is interior and must not terminate'],
+  ['MC',        '@MC Claude — please look',    true,  'NOT fixed here and deliberately so — see #409, the ambiguity is a design call'],
+]
+for (const [mention, body, want, why] of BOUNDARY) {
+  ok(`${want ? 'carries' : 'suppresses'} ${JSON.stringify(mention)} in ${JSON.stringify(body)} — ${why}`,
+    taskRouteMentioned(body, mention) === want)
+}
+
+// A table of literals proves the table. This proves the RULE the table is drawn from, so a future
+// widening of the grammar cannot pass by leaving the boundary behind — which is the whole defect.
+{
+  const interior = [...'\u00e9A9_.\'-']            // one character from each part of the alphabet
+  const missed = interior.filter(ch => taskRouteMentioned(`@Ann${ch}x`, 'Ann'))
+  ok('every non-separator character in the alphabet terminates a shorter route',
+    missed.length === 0, `leaked: ${JSON.stringify(missed)}`)
+  ok('  …and the separator does NOT, because a space may be interior to a name',
+    taskRouteMentioned('@Ann Boleyn', 'Ann'))
+}
+
+// Size floor and a live matcher, so an empty or broken input cannot report clean.
+ok('the matcher is a real RegExp with the unicode flag', taskRouteMentionMatcher('My Dude') instanceof RegExp &&
+  taskRouteMentionMatcher('My Dude').flags.includes('u'))
+ok('an empty mention yields no matcher rather than one that matches everything',
+  taskRouteMentionMatcher('') === null && taskRouteMentioned('@anything', '') === false)
+ok('the boundary table is not empty', BOUNDARY.length >= 16, `${BOUNDARY.length} rows`)
+ok('and holds both verdicts', BOUNDARY.some(r => r[2]) && BOUNDARY.some(r => !r[2]))
+
+// Every admitted codepoint, in an interior position: the matcher must build and must find its own
+// at-word. Adding the `u` flag changes escape semantics, so this is checked rather than assumed.
+{
+  let built = 0, threw = 0, missedSelf = 0
+  for (let cp = 0x20; cp <= 0x2FFF; cp++) {
+    const ch = String.fromCodePoint(cp)
+    if (taskRouteMentionProblem(`A${ch}B`) !== null) continue
+    built++
+    try { if (!taskRouteMentioned(`@A${ch}B stop`, `A${ch}B`)) missedSelf++ } catch { threw++ }
+  }
+  ok(`every admitted codepoint builds a matcher that finds its own at-word (${built} admitted)`,
+    built > 1000 && threw === 0 && missedSelf === 0, `threw=${threw} missedSelf=${missedSelf}`)
+}
+
+// ---------------------------------------------------------------------------------------------
+// 6. The boundary defect, end to end through the real scanReturnLane (#408).
+// ---------------------------------------------------------------------------------------------
+// The table above drives the matcher directly. bridge.mjs imports that exact function, but "the
+// module is right" and "the lane uses it" are different claims, and only the second one is the
+// thing that broke. These two bodies both carried to My Dude before this fix.
+to = await carriedBy("@My Dude's Assistant will handle it")
+ok('a possessive does NOT carry to the agent whose name it starts with', to.length === 0, to.join('|'))
+
+to = await carriedBy('@MC Claudeé is someone else entirely')
+ok('a non-ASCII letter continuing the name does NOT carry — \\w could not see it',
+  to.length === 0, to.join('|'))
+
+to = await carriedBy('@My Dude — still here after all that')
+ok('  …and the legitimate carry still lands, so the fix suppresses rather than blocks',
+  to.length === 1 && to[0] === short(myDude), to.join('|'))
+
+console.log(fails ? `\nTASK ROUTE MENTION FAIL — ${fails}` : '\nTASK ROUTE MENTION PASS — grammar, reasons, console join, boundary, end-to-end carry')
 process.exit(fails ? 1 : 0)
