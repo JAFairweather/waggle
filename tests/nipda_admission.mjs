@@ -95,5 +95,83 @@ processGrantEvent(rev)
 check(!grantSet.has(strangerPk), 'valid 441 revokes the grant')
 check(/-> STAGING/.test(routeOf(reply(strangerSk, strangerPk))), 'revoked participant reply -> back to quarantine')
 
-console.info(pass ? '\nNIPDA PASS — admission tier holds' : '\nNIPDA FAIL')
+// ── #364: a grantee may hold SEVERAL grants, and revocation is per-grant ─────────────────────
+//
+// Everything above uses one grant, which is exactly why this went unnoticed: with a single grant
+// the old last-write-wins map behaves identically. The two assertions immediately above are the
+// negative control for this whole block — one grant in, one 441 out, still works — so "removes the
+// right thing" cannot be satisfied here by "removes everything".
+//
+// The measured behaviour before this fix (issue #364, re-measured on this branch):
+//   revoke the grant the map was NOT holding  -> silent, no line at all
+//   revoke the grant it WAS holding           -> de-admitted, while another grant was still live
+{
+  const multiSk = generateSecretKey()
+  const multiPk = getPublicKey(multiSk)
+  const g1 = grant(grantorSk, multiPk, CHAN)
+  const g2 = grant(grantorSk, multiPk, CHAN)
+  const kill = (id) => wire(finalizeEvent({ kind: 441, created_at: now(), tags: [['e', id]], content: '' }, grantorSk))
+  const logOf = (fn) => { const before = buf.length; fn(); return buf.slice(before) }
+
+  logOf(() => { processGrantEvent(g1); processGrantEvent(g2) })
+  check(grantSet.has(multiPk), 'two grants for one grantee: admitted')
+
+  // Revoking either one must leave them admitted. Deliberately revoke g2 — the one the OLD code
+  // stored — because that is the case that used to de-admit a key holding a live grant.
+  const outOne = logOf(() => processGrantEvent(kill(g2.id)))
+  check(grantSet.has(multiPk), 'revoking ONE of two grants leaves the grantee admitted — the other is still live (#364)')
+  check(/keeps 1 live grant/.test(outOne),
+    '…and says so, naming how many remain — the old code was silent here, which is what made it undiagnosable')
+  check(/-> inbox/.test(routeOf(reply(multiSk, multiPk))), '…and the routing agrees: still past quarantine')
+
+  const outAll = logOf(() => processGrantEvent(kill(g1.id)))
+  check(!grantSet.has(multiPk), 'revoking the LAST grant removes the grantee')
+  check(/held no other grant/.test(outAll), '…and the line distinguishes that from revoking one of several')
+  check(/-> STAGING/.test(routeOf(reply(multiSk, multiPk))), '…and the routing agrees: back to quarantine')
+
+  // The relay serves both 440s forever, so every reconnect replays them.
+  const outReplay = logOf(() => { processGrantEvent(g1); processGrantEvent(g2) })
+  check(!grantSet.has(multiPk), 'a reconnect replaying BOTH 440s does not re-admit a fully revoked grantee')
+  check((outReplay.match(/drop\[revoked\]/g) || []).length === 2, '…and both are refused by id, loudly, not merely ignored')
+
+  // A 441 for something nobody holds is ORDINARY — the 440 usually has not arrived yet — but it
+  // must not look the same in the journal as a revocation that removed someone.
+  //
+  // Fired while a DIFFERENT grantee is admitted, deliberately. With an empty grantSet the loop body
+  // never runs, so a version that deleted the target from every grantee rather than only from the
+  // one holding it would pass unnoticed — it did, until this bystander was added.
+  const bystanderSk = generateSecretKey(), bystanderPk = getPublicKey(bystanderSk)
+  const gBystanderReplay = grant(grantorSk, bystanderPk, CHAN)
+  processGrantEvent(gBystanderReplay)
+  check(grantSet.has(bystanderPk), 'a bystander grantee is admitted')
+  const unheld = logOf(() => processGrantEvent(kill('9'.repeat(64))))
+  check(/revocation recorded/.test(unheld) && /no admitted grantee is holding/.test(unheld),
+    'a 441 for a grant nobody holds is RECORDED and logged, not silently dropped')
+  check(!/NIPDA revoked/.test(unheld), '…and is not reported as having revoked anybody')
+  check(grantSet.has(bystanderPk) && !unheld.includes(bystanderPk.slice(0, 12)),
+    '…and it does not touch, or even name, a grantee who was never holding that grant')
+
+  // Replays happen on every reconnect. A 440 we already hold must not re-announce itself, or the
+  // journal fills with admissions that did not happen.
+  const quiet = logOf(() => processGrantEvent(grant(grantorSk, bystanderPk, CHAN)))
+  check(/NIPDA granted/.test(quiet), 'a genuinely NEW grant for an already-admitted grantee is announced')
+  const again = logOf(() => processGrantEvent(gBystanderReplay))
+  check(!/NIPDA granted/.test(again),
+    'but replaying a 440 already held says nothing — every reconnect replays, and re-announcing is journal flood')
+
+  // Order-independence, re-pinned here because it is now the same model doing the work.
+  const lateSk = generateSecretKey(), latePk = getPublicKey(lateSk)
+  const gl = grant(grantorSk, latePk, CHAN)
+  processGrantEvent(kill(gl.id))          // the 441 arrives FIRST, as most relays serve it
+  processGrantEvent(gl)
+  check(!grantSet.has(latePk), 'a 441 delivered before its own 440 still keeps the key out (#361/#368)')
+
+  // …and the control for THAT: a grant with no revocation still admits, so the guard above is not
+  // simply refusing every 440 that arrives late.
+  const okSk = generateSecretKey(), okPk = getPublicKey(okSk)
+  processGrantEvent(grant(grantorSk, okPk, CHAN))
+  check(grantSet.has(okPk), 'an unrevoked grant arriving at the same point still admits')
+}
+
+console.info(pass ? '\nNIPDA PASS — admission tier holds, and a grantee may hold more than one grant' : '\nNIPDA FAIL')
 process.exit(pass ? 0 : 1)
