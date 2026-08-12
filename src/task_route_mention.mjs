@@ -6,11 +6,13 @@
 // src/lanes.mjs ↔ console/routing-model.mjs.
 //
 // What it replaces, and why. Both halves used to require /^[a-z0-9][a-z0-9_-]{0,31}$/ and
-// lowercase the value before storing it. The matcher (bridge.mjs, scanReturnLane) builds
-// `new RegExp('@' + mention + '(?![\\w-])', 'i')` and runs it against the raw channel body, and
-// Buzz writes the at-word from the member's `display_name` — so the body holds `@MC Claude` or
-// `@My Dude`, with a space and a capital. Every value that grammar accepted failed to match, and
-// every value that would have matched was refused. There was no working input.
+// lowercase the value before storing it. The matcher (bridge.mjs, scanReturnLane) runs against the
+// raw channel body, and Buzz writes the at-word from the member's `display_name` — so the body
+// holds `@MC Claude` or `@My Dude`, with a space and a capital. A SPACED name was therefore
+// unreachable: the grammar refused it at the form, and no value the grammar accepted could contain
+// the space needed to match. (A single-token name such as `codex` or `Dennis` did work under the
+// old grammar — the original framing in #404 overstated this as "no working input existed", which
+// is corrected here because `docs/` inherits this header.)
 //
 // `return_lane` never had the restriction and has always held spaced names, so the widening here
 // is the two halves agreeing with the mechanism, not a new capability.
@@ -26,12 +28,25 @@ export const TASK_ROUTE_MENTION_MAX = 32
 // which is a fan-out, not a route. Compared case-folded.
 const RESERVED = new Set(['everyone', 'here', 'channel', 'all'])
 
+// THE ALPHABET, written once (#408). Everything below derives from this string, and so does the
+// matcher's word boundary in scanReturnLane. That is the whole point of hoisting it: the boundary
+// `(?![\w-])` used to be correct only because the grammar was the slug alphabet `[a-z0-9_-]`, so
+// every admissible character was already in `\w` or was `-` — the boundary class and the grammar
+// were THE SAME SET. #404 widened the grammar and left the boundary alone, and the invariant broke
+// silently: a route named `Dr` was carried `@Dr. Watson`, because `.` ends `\w` and so looked like
+// the end of the name. Two classes that must agree must not be two literals.
+//
+// The separator is deliberately NOT in here — it is added for the allowlist and withheld from the
+// boundary, which is the one real difference between the two. A space may appear INSIDE a mention
+// and must not terminate it; every other admissible character must.
+const MENTION_ALPHABET = "\\p{L}\\p{N}_.'\\-"
+
 // Allowlist, one character at a time — the whole point is that nothing has to be enumerated as
 // dangerous. A control character, a newline, a NBSP, a zero-width space and a second `@` are all
 // refused because none of them is a letter, a number, or one of `_ - . '`. Written as four small
 // checks rather than one shape regex on purpose: each fault gets its own sentence, and a class
 // nobody can read is a class nobody can check.
-const ALLOWED_CHAR = /[\p{L}\p{N}_.'\- ]/u
+const ALLOWED_CHAR = new RegExp(`[${MENTION_ALPHABET} ]`, 'u')
 const STARTS_WELL = /^[\p{L}\p{N}]/u
 
 const codepoint = ch => `U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`
@@ -65,3 +80,29 @@ export function taskRouteMention(value) {
 // The COMPARISON key. Folded the same way the matcher's `i` flag folds, so `@MC Claude` and
 // `@mc claude` are one route rather than two rows that both fire.
 export const taskRouteMentionKey = value => String(value == null ? '' : value).toLowerCase()
+
+// THE MATCHER (#408). Lives here, next to the alphabet it depends on, rather than as a regex
+// literal in scanReturnLane — the defect this replaces was precisely those two drifting apart.
+//
+// The trailing lookahead says "the name has not ended here". It is the alphabet MINUS the
+// separator: any character that may appear inside a mention would mean the at-word in the body is
+// a longer name than this route, and only a space is exempt because a space may be interior.
+// Keeping `\p{L}`/`\p{N}` in the class also keeps every ASCII letter and digit that `\w` used to
+// contribute, which is what still stops a route named `every` matching `@everyone` and `chan`
+// matching `@channel` — the one direction the old boundary got right.
+//
+// There is deliberately no LEADING boundary. Buzz writes the at-word at a word start, and adding
+// one would be a behaviour change beyond this fix; `mail@Dennis` matching is pre-existing and
+// belongs to whoever revisits it.
+const RE_ESCAPE = /[.*+?^${}()|[\]\\]/g
+export function taskRouteMentionMatcher(mention) {
+  const m = String(mention == null ? '' : mention).replace(/^@/, '')
+  if (!m) return null
+  return new RegExp(`@${m.replace(RE_ESCAPE, '\\$&')}(?![${MENTION_ALPHABET}])`, 'iu')
+}
+
+// Does this body name this mention? The one question scanReturnLane actually asks.
+export function taskRouteMentioned(body, mention) {
+  const re = taskRouteMentionMatcher(mention)
+  return !!re && re.test(String(body == null ? '' : body))
+}

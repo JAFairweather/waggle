@@ -48,7 +48,7 @@ import { fileURLToPath } from 'node:url'
 // Extracted leaf modules (#154). Each is dependency-free of config and ambient state, which is why
 // these four came out first — the split is staged, not big-bang.
 import { LANE_IDS, LANES, RELEASED } from './lanes.mjs'   // the trust gradient's one source (#282)
-import { taskRouteMention, taskRouteMentionProblem, taskRouteMentionKey } from './task_route_mention.mjs'   // #404
+import { taskRouteMention, taskRouteMentionProblem, taskRouteMentionKey, taskRouteMentioned } from './task_route_mention.mjs'   // #404, #408
 import { log, err } from './log.mjs'
 import { markLatency } from './latency.mjs'
 import { durableSet, durableQueue } from './stores.mjs'
@@ -3436,7 +3436,9 @@ async function scanReturnLane(msgs, opts = {}) {
       const boundUnique = r.authors.some(a => a === from && !PUB.sharedAuthorKeys.has(a))
       if (from === r.npub_hex || boundUnique || agentAuthoredBy(m.id) === r.npub_hex) continue
       const mentioned = ptags.includes(r.npub_hex) ||
-        (!r.dynamic && !!r.mention && new RegExp('@' + r.mention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])', 'i').test(body))
+        // #408: the boundary is derived from the mention alphabet in task_route_mention.mjs, not
+        // restated here. `(?![\w-])` was correct only while the grammar was the slug alphabet.
+        (!r.dynamic && !!r.mention && taskRouteMentioned(body, r.mention))
       if (!mentioned && !repliedTo) continue
       const why = repliedTo && !mentioned ? 'reply' : 'mention'
       let descriptor
