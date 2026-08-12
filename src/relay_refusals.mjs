@@ -108,3 +108,25 @@ export function refusalLedger({ cap = 64, log = () => {} } = {}) {
     reset() { rows.clear() },
   }
 }
+
+/// Explain ONE fanout call's refusals — never the ledger's lifetime view (#402). `summary()` above
+/// answers "what has this relay ever done", which is the right question for a periodic operator
+/// report and the wrong one for "why was THIS send short": a relay that refused hours ago, on a
+/// different send, to a different relay set, is unrelated history, and printing it next to an
+/// unrelated short ratio is the #374 misattribution moved one level up — the reader blames a relay
+/// that was never dialed.
+///
+/// Takes exactly what the caller collected from its own fanout call, so it is scoped by
+/// construction: no relay it never talked to, no refusal from a different send. First reason per
+/// relay only — a caller that wants the ledger's fuller history has `summary()`.
+export function explainSendRefusals(refusals) {
+  if (!refusals || !refusals.length) return null
+  const byRelay = new Map()
+  for (const r of refusals) {
+    const relay = String(r?.relay || '')
+    if (!relay || byRelay.has(relay)) continue
+    byRelay.set(relay, String(r?.reason ?? '') || '(no reason given)')
+  }
+  if (!byRelay.size) return null
+  return [...byRelay].map(([relay, reason]) => `${relay}: ${reason}`).join(' · ')
+}

@@ -63,7 +63,7 @@ import { PolicyRequestQueue } from './policy_request_queue.mjs'
 import { defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased } from './render.mjs'
 import { hex as concordHex, publicChannel, openChannelWrap } from './concord_lib.mjs'
 import { thinRelaySet } from './relays.mjs'
-import { refusalLedger } from './relay_refusals.mjs'
+import { refusalLedger, explainSendRefusals } from './relay_refusals.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
@@ -2428,7 +2428,7 @@ function rlDropOnce(id) {
 // wherever the operator is already looking for faults. One line the first time, then counted.
 const relayRefusals = refusalLedger({ log: err })
 
-function publishWrapToRelayList(wrap, relays, mkSocket) {
+function publishWrapToRelayList(wrap, relays, mkSocket, onRefusal) {
   if (process.env.WB_STUB_SEND) return Promise.resolve(relays.length || 1)
   // All-settled-with-a-count: per-relay OK-true is the ONLY landing signal. A relay that opens but
   // never OKs is bounded by the budget, and an explicit ["OK", id, false] rejection must not read
@@ -2439,6 +2439,11 @@ function publishWrapToRelayList(wrap, relays, mkSocket) {
   // the ledger, which logs a relay's first refusal, counts the identical repeats, and speaks up
   // again if the reason changes. Nothing here reacts to a refusal; that is #346, and it cannot be
   // built on a message nobody reads.
+  //
+  // `onRefusal` is additive (#402): the ledger's view is a lifetime one, right for a periodic
+  // summary and wrong for explaining THIS call's own short ratio — a refusal from an unrelated
+  // relay on an unrelated send is not this send's story. A caller that needs to explain its own
+  // ratio collects only what this call actually saw.
   let accepted = 0
   return fanout(relays || [], {
     timeoutMs: 10000,
@@ -2454,6 +2459,7 @@ function publishWrapToRelayList(wrap, relays, mkSocket) {
             // event"]` is the healthiest answer a relay gives, and reading it as one would report
             // the working relays as the broken ones. The boolean decides; the message explains.
             relayRefusals.record({ relay: url, accepted: !!m[2], reason: m[3] })
+            if (!m[2] && typeof onRefusal === 'function') onRefusal({ relay: url, reason: m[3] })
             done()
           }
         } catch { /* non-OK frame */ }
@@ -2464,8 +2470,8 @@ function publishWrapToRelayList(wrap, relays, mkSocket) {
   })
 }
 
-function publishWrapToRelays(wrap, mkSocket) {
-  return publishWrapToRelayList(wrap, PUB.relays || [], mkSocket)
+function publishWrapToRelays(wrap, mkSocket, onRefusal) {
+  return publishWrapToRelayList(wrap, PUB.relays || [], mkSocket, onRefusal)
 }
 
 // --- signed owner-control state (#67 / #206) -------------------------------------------------
@@ -2983,7 +2989,13 @@ async function returnLaneSend(toHex, descriptor, meta, publish = publishWrapToRe
       return 0
     }
     const relays = recipientRelays ? recipientRelays.length : (PUB.relays || []).length
-    const publisher = recipientRelays ? (wrap) => publishWrapToRelayList(wrap, recipientRelays) : publish
+    // Collected fresh per call (#402): this send's own refusals, not the ledger's lifetime view —
+    // see publishWrapToRelayList. Extra args on an injected test `publish` are simply ignored.
+    const sendRefusals = []
+    const collectRefusal = (r) => sendRefusals.push(r)
+    const publisher = recipientRelays
+      ? (wrap) => publishWrapToRelayList(wrap, recipientRelays, undefined, collectRefusal)
+      : (wrap) => publish(wrap, undefined, collectRefusal)
     // A3 §2.5: the seal/wrap construction and the key both live in nostr_egress.mjs. `descriptor`
     // is {template, slots} — there is no parameter here that could carry a composed sentence.
     const { wrap, accepted, bytes } = await sealAndWrap({ template: descriptor.template, to: toHex, slots: descriptor.slots }, publisher)
@@ -2998,12 +3010,21 @@ async function returnLaneSend(toHex, descriptor, meta, publish = publishWrapToRe
     if (traceSource && accepted >= 1) markLatency(traceSource, 'return.published')
     if (accepted < 1)
       err(`RETURN 0/${relays} -> ${toHex.slice(0, 12)}…: seal reached NO relay — NOT marked sent, will re-carry (wrap ${wrap.id.slice(0, 12)}…)`)
-    else
+    else {
       // A short ratio is the moment somebody asks which relay and why, so the answer goes on the
       // same line rather than in a separate one they would have to correlate by timestamp. Only
       // when it IS short: appending "all relays fine" to every send is noise, and noise is what
       // stops the short ones being noticed.
-      log(`RETURN ${accepted}/${relays} -> ${toHex.slice(0, 12)}…: sealed ${bytes}B (wrap ${wrap.id.slice(0, 12)}…)` + (accepted < relays && relayRefusals.summary() ? ` — ${relayRefusals.summary()}` : ''))
+      //
+      // The explanation is THIS call's own refusals (#402), never relayRefusals.summary() — that
+      // ledger is a lifetime view across every relay this process has ever dialed, on every send,
+      // and a return-lane send normally dials a *different* relay set per recipient (their own
+      // kind:10050 list). Printing the ledger's global summary here blamed relays that were never
+      // part of this send; a short ratio with no recorded refusal (a timeout) now correctly prints
+      // no explanation rather than an unrelated one.
+      const explanation = accepted < relays ? explainSendRefusals(sendRefusals) : null
+      log(`RETURN ${accepted}/${relays} -> ${toHex.slice(0, 12)}…: sealed ${bytes}B (wrap ${wrap.id.slice(0, 12)}…)` + (explanation ? ` — ${explanation}` : ''))
+    }
     return accepted
   } catch (e) { err(`return lane: seal/send failed: ${e.message}`); return 0 }
 }

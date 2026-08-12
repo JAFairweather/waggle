@@ -35,7 +35,7 @@ process.env.SEEN_PATH = join(dir, 'seen.log')
 process.env.PUB_WATERMARK_PATH = join(dir, 'watermark')
 delete process.env.WB_STUB_SEND          // the stub short-circuits the publisher entirely
 
-const { refusalKey, refusalLedger } = await import('../src/relay_refusals.mjs')
+const { refusalKey, refusalLedger, explainSendRefusals } = await import('../src/relay_refusals.mjs')
 const { publishWrapToRelayList, relayRefusals } = await import('../src/bridge.mjs')
 
 let fails = 0
@@ -187,6 +187,82 @@ const ok = (n, c) => { console.info(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) 
   // Both directions: without this, "resets on accept" is indistinguishable from never suppressing.
   ok('  …and suppression still holds WITHIN the new episode — this is not "log everything"',
     L.record({ relay: R, accepted: false, reason: 'pow: 28 bits needed. (11)' }) === 'suppressed' && lines.length === 2)
+}
+
+// ── #402: a short ratio is explained by THIS send, never by the ledger's lifetime view ────────
+// The ledger view (`summary()`) is right for a periodic report and wrong for "why was this send
+// short": a relay that refused on a different send, to a different relay set, is unrelated history.
+// The negative control matters more than the positive one — a fix that explains nothing passes the
+// positive half too, so both must hold: this send's own reason is named, and history's is not.
+{
+  ok('a relay with no refusals in this send explains to null — nothing to blame, so nothing is said',
+    explainSendRefusals([]) === null && explainSendRefusals(null) === null)
+  ok('one refusal is named with its reason',
+    explainSendRefusals([{ relay: 'wss://a.invalid', reason: 'pow: 28 bits needed. (12)' }]) ===
+    'wss://a.invalid: pow: 28 bits needed. (12)')
+  ok('  …a second relay from the SAME send is named alongside it, first reason kept if repeated',
+    explainSendRefusals([
+      { relay: 'wss://a.invalid', reason: 'pow: 28 bits needed. (12)' },
+      { relay: 'wss://b.invalid', reason: 'blocked: not on the allow list' },
+      { relay: 'wss://a.invalid', reason: 'pow: 28 bits needed. (9)' },
+    ]) === 'wss://a.invalid: pow: 28 bits needed. (12) · wss://b.invalid: blocked: not on the allow list')
+}
+{
+  // THE PAIRED HALF, end to end through the real publisher. `relayRefusals` (the shared ledger) is
+  // seeded with an UNRELATED relay's refusal from a prior send, standing in for "nos.lol refused
+  // hours ago". A fresh send then goes to two DIFFERENT relays, neither of them the seeded one.
+  const made = []
+  const mkSocket = (url) => {
+    const h = {}
+    const s = {
+      url, on(ev, fn) { (h[ev] ||= []).push(fn); return this }, send() {}, close() {},
+      emit(ev, ...a) { for (const fn of h[ev] || []) fn(...a) },
+      frame(o) { this.emit('message', { toString: () => JSON.stringify(o) }) },
+    }
+    made.push(s)
+    return s
+  }
+
+  relayRefusals.reset()
+  relayRefusals.record({ relay: 'wss://stale-history.invalid', accepted: false, reason: 'pow: 28 bits needed. (12)' })
+
+  const wrap = { id: 'e'.repeat(64), kind: 1059, content: 'x', tags: [], pubkey: 'b'.repeat(64), created_at: 1, sig: 'c'.repeat(128) }
+  const RELAYS = ['wss://this-send-a.invalid', 'wss://this-send-b.invalid']
+  const collected = []
+  const p = publishWrapToRelayList(wrap, RELAYS, mkSocket, (r) => collected.push(r))
+  made[0].emit('open'); made[1].emit('open')
+  made[0].frame(['OK', wrap.id, false, 'blocked: not on the allow list'])
+  made[1].frame(['OK', wrap.id, true, ''])
+  const accepted = await p
+  ok('the send is short (1 of 2), same as before onRefusal existed', accepted === 1)
+
+  const explanation = explainSendRefusals(collected)
+  ok('POSITIVE — the relay that refused THIS send is named, with its own reason',
+    /this-send-a\.invalid: blocked: not on the allow list/.test(explanation))
+  ok('NEGATIVE (load-bearing) — the relay that never saw this send is NOT named, even though the ' +
+    'shared ledger still remembers it refusing earlier — a fix that explains nothing would pass the ' +
+    'POSITIVE assertion above by accident, so this is the one that catches it',
+    !/stale-history\.invalid/.test(String(explanation)))
+  ok('  …and the accepting relay from this send is not named as a refusal either',
+    !/this-send-b\.invalid/.test(String(explanation)))
+}
+{
+  // A timeout in this send has no reason (matches the ledger's own rule above) — onRefusal must not
+  // invent one, so a short ratio caused purely by silence explains to null, not to stale history.
+  const made = []
+  const mkSocket = (url) => {
+    const h = {}
+    const s = { url, on(ev, fn) { (h[ev] ||= []).push(fn); return this }, send() {}, close() {}, emit(ev, ...a) { for (const fn of h[ev] || []) fn(...a) } }
+    made.push(s); return s
+  }
+  relayRefusals.reset()
+  relayRefusals.record({ relay: 'wss://stale-history.invalid', accepted: false, reason: 'pow: 28 bits needed. (12)' })
+  const wrap = { id: 'f'.repeat(64), kind: 1059, content: 'x', tags: [], pubkey: 'b'.repeat(64), created_at: 1, sig: 'c'.repeat(128) }
+  const collected = []
+  const accepted = await publishWrapToRelayList(wrap, ['wss://silent-this-send.invalid'], mkSocket, (r) => collected.push(r))
+  ok('a relay that never answers contributes no accept', accepted === 0)
+  ok('  …onRefusal was never called — a timeout is not a refusal, in this send or any other',
+    collected.length === 0 && explainSendRefusals(collected) === null)
 }
 
 console.info(`\n${fails ? `RELAY REFUSAL FAIL — ${fails}` : 'RELAY REFUSAL PASS — the reason survives, the repeat is quiet, and a change speaks'}`)
