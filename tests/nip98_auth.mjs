@@ -12,6 +12,8 @@
 import { createHash } from 'node:crypto'
 import { generateSecretKey, getPublicKey, verifyEvent, finalizeEvent } from 'nostr-tools/pure'
 import { nip98Template, nip98Header, expectedUrl } from '../console/nip98.mjs'
+import { refusal, exitFor, checkMintBounds, EXIT, CLAIM_RATE_LIMIT, MIN_TTL_SECS, MAX_TTL_SECS, MAX_USES }
+  from '../src/relay_invite.mjs'
 
 // console/nip98.mjs does not sign — the key stays with the caller, which is the console's signer
 // in one case and a key file in the other. The test signs exactly as tools/relay-invite.mjs does.
@@ -95,6 +97,70 @@ ok('an unsigned template is refused as a header, and says to sign it first', /SI
 refused = null
 try { await nip98Template({ body: '{}' }) } catch (e) { refused = e.message }
 ok('building without a url is refused, naming why the url matters', /tenant host/.test(String(refused)))
+
+// ── What a refusal MEANS (#362) ───────────────────────────────────────────────────────────────
+// The tool collapsed every non-401 failure into exit 2, "relay/network" — so a deliberate
+// `403 join_policy_required` reached the operator as a suspected connectivity problem. These
+// assert the REASON, not merely that something was refused: `!ok` cannot tell a correct refusal
+// from a correct refusal nobody can act on.
+{
+  // Each refusal must name the thing to DO about it, not just restate the code.
+  const cases = [
+    ['join_policy_required', /--accept-terms/, 'names the flag that fixes it'],
+    ['invite_expired', /Mint a new one/, 'says to mint again'],
+    ['invite_exhausted', /uses left/, 'distinguishes exhausted from expired'],
+    ['invite_invalid', /another relay/, 'points at the wrong-deployment case, not at expiry'],
+  ]
+  for (const [err, wants, why] of cases) {
+    const msg = refusal(403, { error: err })
+    ok(`403 ${err} — ${why}`, wants.test(msg) && msg.includes(err))
+  }
+
+  // Two refusals that are easy to conflate, and must not be.
+  ok('invite_expired and invite_exhausted do not share an explanation',
+    refusal(403, { error: 'invite_expired' }) !== refusal(403, { error: 'invite_exhausted' }))
+
+  // 429 is a throttle, and reading it as a rejection of the code sends the operator to re-mint
+  // a code that was fine.
+  const throttled = refusal(429, { error: 'too many invite claim attempts' })
+  ok('429 is explained as a throttle, not as a bad code',
+    /throttle, not a rejection/.test(throttled) && new RegExp(String(CLAIM_RATE_LIMIT)).test(throttled))
+
+  // Second-granularity created_at: a retry loop hits this and it looks like a signing failure.
+  ok('a replay refusal is explained by the clock, not blamed on the key',
+    /same second/.test(refusal(403, { error: 'auth event replay detected' })))
+
+  // NEGATIVE CONTROL — an unknown error must still say something usable. A refusal explainer
+  // that returns '' for anything it does not recognise is worse than none: the operator sees a
+  // bare status and assumes the tool broke.
+  ok('an unrecognised error is passed through rather than swallowed',
+    refusal(400, { error: 'something_new' }) === 'something_new')
+  ok('and with no body at all it still says so rather than returning empty',
+    refusal(500, null, '') === '(no error body)')
+
+  // The status split: 4xx is the relay DECIDING, 5xx is the relay FAILING. A retry loop must
+  // back off on one and stop on the other, so this cannot be one bucket.
+  ok('a 403 exits REFUSED, not NETWORK — the answer is an answer', exitFor(403) === EXIT.REFUSED)
+  ok('a 429 exits REFUSED', exitFor(429) === EXIT.REFUSED)
+  ok('a 503 exits NETWORK — that one really is the relay failing', exitFor(503) === EXIT.NETWORK)
+  ok('a 401 stays INPUT — the signature is the caller\'s problem', exitFor(401) === EXIT.INPUT)
+  ok('NEGATIVE CONTROL — 200 is still OK, so this is a classifier and not a wall',
+    exitFor(200) === EXIT.OK)
+}
+
+// ── The mint bounds, both directions ──────────────────────────────────────────────────────────
+{
+  ok('a ttl below the relay minimum is caught locally, with the limit named',
+    /minimum of 60s/.test(String(checkMintBounds(30, 1))))
+  ok('a ttl above the 30-day maximum likewise',
+    /maximum/.test(String(checkMintBounds(MAX_TTL_SECS + 1, 1))))
+  ok('and uses above the cap', /10000/.test(String(checkMintBounds(3600, MAX_USES + 1))))
+  // NEGATIVE CONTROL — the documented defaults, and both exact boundaries, must pass. A checker
+  // that rejects everything would satisfy all three assertions above and block every real mint.
+  ok('NEGATIVE CONTROL — the default 3600/1 is accepted', checkMintBounds(3600, 1) === null)
+  ok('and both boundaries are inclusive, not off by one',
+    checkMintBounds(MIN_TTL_SECS, 1) === null && checkMintBounds(MAX_TTL_SECS, MAX_USES) === null)
+}
 
 console.log(fails ? `\nNIP-98 AUTH FAIL — ${fails}` : '\nNIP-98 AUTH PASS — the envelope matches what buzz-auth verifies')
 process.exit(fails ? 1 : 0)
