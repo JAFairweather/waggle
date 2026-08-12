@@ -2725,10 +2725,93 @@ async function postRelay(ev, sender, dest, wantCh, body) {
   }).catch(e => {
     // A channel waggle is not a member of fails HERE with a distinct RELAY[buzz] ERR — it can never
     // masquerade as a §7 drop, and it is NOT marked seen, so it retries rather than dropping.
+    // That promise is load-bearing and it is now pinned by `tests/relay_ingress.mjs` case (e),
+    // against the payload the live binary actually returns. An earlier version of the fix below
+    // broke it while this comment still claimed it held — and the comment is what the next reader
+    // trusts, so it is now the thing a test fails on.
+    //
+    // But not every refusal is worth retrying, and rolling back UNCONDITIONALLY was a defect. Buzz
+    // returns its own verdict: `e.message` is the CLI's stderr (egress.mjs:369), JSON carrying an
+    // explicit `retryable` flag. A `retryable:false` user_error — an @name Buzz will never resolve —
+    // was re-posted on every restart, forever. Observed 2026-08-10 as a queue of `@claude` posts
+    // replaying since the day they were written, and still growing.
+    //
+    // Honour the flag, and honour it in ONE direction only: anything we cannot classify stays
+    // retryable. Being unable to read a refusal is not evidence that it is permanent, and silently
+    // dropping a message that would have landed is the worse of the two failures.
+    // THREE outcomes, not two. `retryable:false` is necessary but NOT sufficient to call something
+    // a refusal, because Buzz uses it for two different things (buzz-cli `error.rs:72`,
+    // `is_retryable_error`):
+    //
+    //   user_error       — Buzz looked at it and said no. Definite. Retrying replays a known loss.
+    //   delivery_unknown — Buzz never told us. `submit_stored_event` returns this on a timeout,
+    //                      body loss or 502-504 that happened AFTER the POST, so the write
+    //                      PLAUSIBLY LANDED. Its own doc comment: "the operation may already have
+    //                      executed... a blind re-run can duplicate the mutation."
+    //
+    // Both are `retryable:false` and the first version of this fix read only that boolean, so it
+    // treated an ambiguous outcome as a definite refusal: it recorded the message as undelivered
+    // and acked the sender "refused by buzz" for something that may well be sitting in the channel.
+    // A sender told "refused, ask again" about a message that posted is how you get a duplicate —
+    // the same failure class as the dup-on-crash residual noted above, via a different trigger.
+    // Found in review by the crew, against buzz-cli source rather than against this diff.
+    //
+    // For the retry decision the two behave identically — commit the claim, do not re-send. They
+    // differ in what the SENDER is told, and that is the whole point of separating them. Anything
+    // this cannot classify still stays retryable: being unable to read a refusal is not evidence
+    // that it is permanent, and silently dropping a message that would have landed is worse.
+    //
+    // AND THE CATEGORY IS THE GATE, NOT THE FLAG. Reading `retryable === false` and treating
+    // everything that is not `delivery_unknown` as a definite refusal was still too coarse, because
+    // Buzz also returns it for `relay_error: restricted: not a channel member` — captured from the
+    // live binary, exit 2. That is the case the comment at the top of this handler promises will
+    // retry, and it is the most OPERATOR-FIXABLE refusal there is: waggle is simply not in the
+    // channel yet, and a minute later the same message would land. Dropping it permanently for a
+    // condition an operator is about to fix is the exact failure this whole handler exists to
+    // prevent, running in the opposite direction.
+    //
+    // So the classification is an ALLOWLIST. A category earns 'do not retry' by being understood;
+    // it does not earn it by carrying a flag. An unrecognised category — a `relay_error`, a
+    // `network_error`, one buzz-cli adds next year — falls through to retry, which is the safe
+    // direction and the one this handler already argues for everywhere else.
+    const detail = String(e.message || '')
+    let verdict = null
+    try {
+      const parsed = JSON.parse(detail)
+      if (parsed.retryable === false) verdict = REFUSAL_CATEGORIES[parsed.error] ?? null
+    } catch { verdict = null }
+    if (verdict) {
+      markRelaySeen(ev.id) // commit either way — a re-send risks a duplicate, not a rescue
+      if (verdict === 'unknown') {
+        // Deliberately NOT recorded as undelivered: the undelivered log is where an operator looks
+        // for messages that did not land, and an entry that may have landed makes every other entry
+        // less trustworthy. The journal carries it instead, said plainly.
+        err(`RELAY[buzz] UNCONFIRMED -> ${dest}: ${detail} — buzz did not say whether this landed; NOT retried (a re-send would risk a duplicate) and NOT recorded as undelivered`)
+        return
+      }
+      recordUndelivered({ lane: 'relay', dest, recipient: null, id: ev.id, author: sender, reason: detail })
+      // The ack `reason` is a CLOSED set on purpose (nostr_egress.mjs:335) — Buzz's own message is
+      // platform free text and does not go on the wire. It goes to the journal and the undelivered
+      // record, which is where an operator looks. The sender learns it is permanent and must ask.
+      returnLaneSend(sender, {
+        template: 'relay_ack_err',
+        slots: { reason: 'refused by buzz', channel: wantCh, ts: Math.floor(Date.now() / 1000) },
+      }, { lane: 'relay-ack' })
+      err(`RELAY[buzz] REFUSED -> ${dest}: ${detail} — buzz says retryable:false, so this is NOT retried; recorded in ${UNDELIVERED_PATH}`)
+      return
+    }
     dropRelaySeen(ev.id)
-    err(`RELAY[buzz] ERR -> ${dest}: ${e.message} — claim rolled back, will retry`)
+    err(`RELAY[buzz] ERR -> ${dest}: ${detail} — claim rolled back, will retry`)
   })
 }
+// The ONLY two `retryable:false` categories waggle claims to understand (buzz-cli `error.rs`).
+// Everything else — including `relay_error`, which covers "restricted: not a channel member" — is
+// deliberately absent, so it retries. Membership of this table is a claim that the category is
+// definitely terminal; absence is not a claim about anything.
+const REFUSAL_CATEGORIES = Object.freeze({
+  user_error: 'refused',        // Buzz looked at it and said no. Retrying replays a known loss.
+  delivery_unknown: 'unknown',  // Buzz never told us; the write PLAUSIBLY landed. Re-sending dups.
+})
 async function handleRelayIngress(ev, { openSealFn = openSeal, openRumorFn = openRumor, postRelayFn = postRelay,
   openedSeal = null, openedRumor = null, budgetCharged = false } = {}) {
   if (!hasBridgeKey() || !PUB) return
@@ -2816,7 +2899,9 @@ function sourceWireRejectReason(message) {
 
 function carryDescriptor(recipient, message, why, channel) {
   if (recipient.protocol !== 'nvoy-task-carry-v1') {
-    return { template: 'return_carry', slots: { mention: recipient.mention, why, body: String(message.content || '') } }
+    // #352: carry the AUTHOR. The bridge has held `message.pubkey` here all along — it simply was
+    // not passed, so every carried reply arrived attributed to waggle, the carrier.
+    return { template: 'return_carry', slots: { mention: recipient.mention, why, body: String(message.content || ''), author: message.pubkey || null } }
   }
   const ch = String(channel || '').toLowerCase()
   const source = sourceWireEvent(message)
@@ -2961,7 +3046,7 @@ async function scanReturnLane(msgs, opts = {}) {
         dropRlSeen(key)
         // Owed, durably. The overlap re-read may still catch it first; enqueue is idempotent and
         // does not reset the attempt count, so the two paths cannot inflate each other.
-        rlPending.enqueue(key, { to: r.npub_hex, mention: r.mention, why, body, src: m.id,
+        rlPending.enqueue(key, { to: r.npub_hex, mention: r.mention, why, body, src: m.id, author: m.pubkey || null,
           protocol: r.protocol || null, channel: opts.channel || null, source: r.protocol === 'nvoy-task-carry-v1' ? sourceWireEvent(m) : null })
       }
     }
@@ -2999,7 +3084,10 @@ async function retryPendingCarries(opts = {}) {
     try {
       descriptor = item.protocol === 'nvoy-task-carry-v1'
         ? { template: 'return_task_carry', slots: { channel: item.channel, why: item.why, source: item.source } }
-        : { template: 'return_carry', slots: { mention: item.mention, why: item.why, body: item.body } }
+        // `item.author` is absent on anything queued before #352; the template renders that as an
+        // explicit "not recorded" rather than rejecting, so a pending carry does not become a dead
+        // letter over a field that did not exist when it was enqueued.
+        : { template: 'return_carry', slots: { mention: item.mention, why: item.why, body: item.body, author: item.author || null } }
     } catch (e) { err(`RETURN retry invalid: ${String(item.src).slice(0, 12)}…: ${e.message}`); rlPending.remove(key); continue }
     const accepted = await returnLaneSend(item.to, descriptor,
       { src: item.src, why: item.why, protocol: item.protocol || 'return-carry-v1', channel: item.channel || null, retry: n }, opts.publish)
