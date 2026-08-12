@@ -3,7 +3,7 @@
 // The console must never read config.json. This drives the real bridge-derived payload through
 // the bridge-key signer, checks its wire signature, and proves the consent lifecycle is rendered
 // as owner-observable state without creating a free-form public publishing capability.
-import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, rmdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, unlinkSync, mkdirSync, rmdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { generateSecretKey, getEventHash, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
@@ -635,6 +635,35 @@ t('#389 the console vocabulary matches src/ word for word, and in the same order
 t('#389 every state has an owner-facing label and a carrying answer',
   CONSENT_STATES.every(s => typeof CONSENT_LABEL[s] === 'string' && CONSENT_LABEL[s].length > 0 &&
     typeof CONSENT_IS_CARRYING[s] === 'boolean'))
+// NOT an instance check — a property one. Three separate files restated the four words, and each
+// one rejects the ENTIRE signed state on a word it does not know, so a missed copy does not degrade
+// a row: it blanks the page. Fixing the three I found would leave the fourth to be found in
+// production, so assert that no file anywhere restates the list. Caught console/routing.mjs and
+// console/following.html, both missed on the first pass of this very change.
+{
+  const roots = ['console', 'src', 'tools']
+  const offenders = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(new URL(`../${dir}/`, import.meta.url), { withFileTypes: true })) {
+      const rel = `${dir}/${entry.name}`
+      if (entry.isDirectory()) { if (entry.name !== 'vendor' && entry.name !== 'assets') walk(rel); continue }
+      if (!/\.(mjs|html)$/.test(entry.name)) continue
+      if (rel === 'src/consent_state.mjs' || rel === 'console/consent-vocabulary.mjs') continue   // the definitions
+      const text = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8')
+      // Any literal list holding 'active' and 'revoked' together is this vocabulary being restated.
+      if (/\[[^\]\n]*'active'[^\]\n]*'revoked'[^\]\n]*\]|\[[^\]\n]*'revoked'[^\]\n]*'active'[^\]\n]*\]/.test(text)) offenders.push(rel)
+    }
+  }
+  roots.forEach(walk)
+  t('#389 no file restates the consent vocabulary — one missed copy blanks a whole page',
+    offenders.length === 0)
+  if (offenders.length) console.log(`     restated in: ${offenders.join(', ')}`)
+}
+t('#389 the two console pages that verify signed state read the shared list',
+  [ '../console/routing.mjs', '../console/following.html' ].every(f =>
+    /CONSENT_STATES\.includes\(f\.consent\)/.test(readFileSync(new URL(f, import.meta.url), 'utf8'))))
+t('#389 the Following page names grandfathered as a CARRY, not as a pending consent',
+  /carried, with no consent record/i.test(readFileSync(new URL('../console/following.html', import.meta.url), 'utf8')))
 t('#389 config-operations accepts the vocabulary from the shared list, not a restated one',
   /CONSENT_STATES\.includes\(follow\.consent\)/.test(readFileSync(new URL('../console/config-operations.mjs', import.meta.url), 'utf8')) &&
   !/'pending', 'asked', 'active', 'revoked'/.test(readFileSync(new URL('../console/config-operations.mjs', import.meta.url), 'utf8')))

@@ -22,6 +22,7 @@ import { verifyEvent, nip19 } from 'nostr-tools'
 import { consoleSigner } from './signer-session.mjs'
 import { stableControlSigner } from './stable-control-signer.mjs'
 import { newestFreshControlState, requireFreshControlState } from './control-state-freshness.mjs'
+import { CONSENT_STATES } from './consent-vocabulary.mjs'   // the one list, checked against src/ (#389)
 
 const RELAYS = ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub', 'wss://jskitty.com/nostr']
 const $ = id => document.getElementById(id)
@@ -77,7 +78,7 @@ function validState(ev, bridge) {
     const now = Math.floor(Date.now() / 1000)
     if (s.observed_at > now + 60) return null
     for (const f of s.follows) {
-      if (!/^[0-9a-f]{64}$/.test(f.pubkey) || !['pending', 'asked', 'active', 'revoked'].includes(f.consent)) return null
+      if (!/^[0-9a-f]{64}$/.test(f.pubkey) || !CONSENT_STATES.includes(f.consent)) return null
     }
     return s
   } catch { return null }
