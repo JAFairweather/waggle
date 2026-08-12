@@ -33,10 +33,12 @@ process.env.WB_NO_BOOT = '1'
 process.env.FORWARD_MODE = 'dryrun'
 process.env.SEEN_PATH = join(dir, 'seen.log')
 process.env.PUB_WATERMARK_PATH = join(dir, 'watermark')
+process.env.SEND_JOURNAL_PATH = join(dir, 'send-journal.log')
+process.env.BUZZ_PRIVATE_KEY = 'c'.repeat(64)   // returnLaneSend refuses to seal with no bridge key
 delete process.env.WB_STUB_SEND          // the stub short-circuits the publisher entirely
 
 const { refusalKey, refusalLedger, explainSendRefusals } = await import('../src/relay_refusals.mjs')
-const { publishWrapToRelayList, relayRefusals } = await import('../src/bridge.mjs')
+const { publishWrapToRelayList, relayRefusals, returnLaneSend, PUB } = await import('../src/bridge.mjs')
 
 let fails = 0
 const ok = (n, c) => { console.info(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) fails++ }
@@ -263,6 +265,57 @@ const ok = (n, c) => { console.info(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) 
   ok('a relay that never answers contributes no accept', accepted === 0)
   ok('  …onRefusal was never called — a timeout is not a refusal, in this send or any other',
     collected.length === 0 && explainSendRefusals(collected) === null)
+}
+
+// ── #402 gap: `returnLaneSend` itself, not the two functions it calls in isolation ────────────
+// Every assertion above drives `explainSendRefusals` or `publishWrapToRelayList` directly. The
+// line that actually shipped the bug lives one level up — the RETURN log statement INSIDE
+// `returnLaneSend` — and nothing above calls that function at all, so reverting only that one
+// line back to `relayRefusals.summary()` would leave every prior assertion green. This drives the
+// real function with an injected publish, reads the real console line it wrote, and checks it the
+// same both-directions way: named when it should be, silent about unrelated history when it
+// should be.
+{
+  const savedRelays = PUB.relays
+  PUB.relays = ['wss://this-send-a.invalid', 'wss://this-send-b.invalid']
+
+  relayRefusals.reset()
+  // Stands in for "a different relay refused a different send, hours ago" — still live in the
+  // shared ledger at the moment THIS send runs.
+  relayRefusals.record({ relay: 'wss://stale-history.invalid', accepted: false, reason: 'pow: 28 bits needed. (12)' })
+
+  const testPublish = async (_wrap, _mkSocket, onRefusal) => {
+    if (typeof onRefusal === 'function') onRefusal({ relay: 'wss://this-send-a.invalid', reason: 'blocked: not on the allow list' })
+    return 1   // 1 of the 2 configured relays — a short ratio, so the RETURN line explains itself
+  }
+
+  const said = []
+  const realLog = console.log, realErr = console.error
+  console.log = (...a) => { said.push(a.join(' ')) }
+  console.error = (...a) => { said.push(a.join(' ')) }
+  let accepted
+  try {
+    accepted = await returnLaneSend(
+      'a'.repeat(64),
+      { template: 'return_carry', slots: { mention: 'someone', why: 'mention', body: 'hello there', author: null } },
+      {},
+      testPublish,
+    )
+  } finally {
+    console.log = realLog; console.error = realErr
+    PUB.relays = savedRelays
+  }
+
+  ok('returnLaneSend reports the short accept count unchanged', accepted === 1)
+  const line = said.find(l => l.includes('RETURN'))
+  ok('returnLaneSend logged a RETURN line at all — a test that captured nothing has proven nothing',
+    !!line)
+  ok('POSITIVE — the RETURN line names THIS send\'s own refusing relay, with its own reason',
+    !!line && /this-send-a\.invalid: blocked: not on the allow list/.test(line))
+  ok('NEGATIVE (load-bearing) — it does NOT fall back to the shared ledger\'s unrelated history, ' +
+    'live in that ledger at the moment this send ran; reverting the RETURN line inside ' +
+    'returnLaneSend back to relayRefusals.summary() makes this assertion fail',
+    !!line && !/stale-history\.invalid/.test(line))
 }
 
 console.info(`\n${fails ? `RELAY REFUSAL FAIL — ${fails}` : 'RELAY REFUSAL PASS — the reason survives, the repeat is quiet, and a change speaks'}`)
