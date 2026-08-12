@@ -167,5 +167,27 @@ const ok = (n, c) => { console.info(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) 
     relayRefusals.summary() === null && relayRefusals.rows().length === 0)
 }
 
+// #374 review: an accept must END the refusal episode. Otherwise "this relay started refusing
+// again after a week" is folded into "this relay is still refusing" — two different events for an
+// operator, and only the first is actionable. Its own ledger, so it cannot perturb the counts the
+// sequence above depends on.
+{
+  const lines = []
+  const L = refusalLedger({ log: (m) => lines.push(m) })
+  const R = 'wss://nos.lol'
+
+  ok('episode: the first refusal is logged',
+    L.record({ relay: R, accepted: false, reason: 'pow: 28 bits needed. (12)' }) === 'logged' && lines.length === 1)
+  ok('  …and a repeat inside the episode is suppressed',
+    L.record({ relay: R, accepted: false, reason: 'pow: 28 bits needed. (9)' }) === 'suppressed' && lines.length === 1)
+  ok('  …an ACCEPT ends the episode',
+    L.record({ relay: R, accepted: true, reason: '' }) === 'accepted')
+  ok('  …so the SAME reason afterwards is logged again, not swallowed as still-refusing',
+    L.record({ relay: R, accepted: false, reason: 'pow: 28 bits needed. (12)' }) === 'logged' && lines.length === 2)
+  // Both directions: without this, "resets on accept" is indistinguishable from never suppressing.
+  ok('  …and suppression still holds WITHIN the new episode — this is not "log everything"',
+    L.record({ relay: R, accepted: false, reason: 'pow: 28 bits needed. (11)' }) === 'suppressed' && lines.length === 2)
+}
+
 console.info(`\n${fails ? `RELAY REFUSAL FAIL — ${fails}` : 'RELAY REFUSAL PASS — the reason survives, the repeat is quiet, and a change speaks'}`)
 process.exit(fails ? 1 : 0)
