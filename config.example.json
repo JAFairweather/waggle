@@ -24,6 +24,7 @@
     "mirror_consent_hive_handle": "<human-readable hive handle, e.g. jaf@dequalsf.com>",
     "mirror_consent_terms_url": "https://<operator>/terms.html",
     "mirror_consent_url": "https://jafairweather.github.io/nvoy/consent.html",
+    "seat_grantees": false,
     "mirror_expected_tos_hash": "<64-hex sha256 of the CURRENT ToS block; omit and it is derived from hive id+name+handle+terms_url, so a consent signed against superseded terms still binds. Set it explicitly and an older consent stops counting>",
     "mirror_ask_per_hour": 20,
     "seat_grantees": false,
