@@ -64,10 +64,24 @@ const ids = (r, pubkey) => r.findings.filter(f => f.pubkey === pubkey).map(f => 
   })
   t('#366 a revoked agent appears in ALL THREE of its disagreements, not just the first',
     ids(r, REVOKED).join() === 'name_no_grant,relay_no_grant,row_no_grant', ids(r, REVOKED).join())
-  t('#366 …and the relay finding says only the KEY can act, not the owner',
-    FINDINGS.relay_no_grant.actor === 'the key itself')
-  t('#366 …and the name finding admits nobody can clear it',
-    /nobody/i.test(FINDINGS.name_no_grant.actor))
+  // This assertion used to pin the OPPOSITE fact — "only the key itself" — and passed happily,
+  // which is how the error reached a table whose entire job is to be right about who can act.
+  // #366 concluded revocation was cooperative-only, but it searched HTTP routes under api/, and
+  // kind:9031 is a Nostr admin command dispatched from handlers/relay_admin.rs. Verified at
+  // block/buzz origin/main: the handler requires sender_role admin or owner, and an OWNER may
+  // remove members and admins, refusing only other owners.
+  t('#366 the relay finding names the OWNER as an actor — an owner can evict by signed kind:9031',
+    /owner/i.test(FINDINGS.relay_no_grant.actor))
+  t('#366 …and still names the key, since both levers are real',
+    /key/i.test(FINDINGS.relay_no_grant.actor))
+  t('#366 …and the detail says HOW, or an operator cannot act on it',
+    /9031/.test(FINDINGS.relay_no_grant.detail))
+  // Both directions: the OTHER two findings must NOT have grown an owner lever, or the correction
+  // above is indistinguishable from pasting "owner" across the whole table.
+  t('#366 grant_no_relay is still key-only — claiming an invite has no admin bypass',
+    FINDINGS.grant_no_relay.actor === 'the key itself')
+  t('#366 …and the name finding still admits nobody will clear it',
+    /nobody/i.test(FINDINGS.name_no_grant.actor) && !/^the owner/i.test(FINDINGS.name_no_grant.actor))
   t('#366 the three findings for one key are distinct rows, so none is hidden by another',
     r.findings.filter(f => f.pubkey === REVOKED).length === 3)
 }
@@ -109,7 +123,7 @@ const ids = (r, pubkey) => r.findings.filter(f => f.pubkey === pubkey).map(f => 
   const line = describeFinding(r.findings.find(f => f.finding === 'relay_no_grant'))
   t('a rendered finding names the key, what is wrong, who is authoritative and who can act',
     line.includes(REVOKED.slice(0, 12)) && /relay/i.test(line) &&
-    /Authority: the grant/.test(line) && /Who can fix it: the key itself/.test(line), line)
+    /Authority: the grant/.test(line) && /Who can fix it: the owner, or the key itself/.test(line), line)
   t('every finding id renders — a new one cannot be added without a label and an actor',
     FINDING_IDS.every(id => {
       const out = describeFinding({ pubkey: OWNER_AGENT, finding: id })

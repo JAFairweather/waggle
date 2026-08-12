@@ -46,8 +46,11 @@ export const FINDINGS = Object.freeze({
   },
   relay_no_grant: {
     label: 'Can still authenticate to the relay, no live grant',
-    detail: 'Revocation is cooperative (#366): the relay row can only be removed by the key itself.',
-    authority: 'grant', actor: 'the key itself',
+    detail: 'The owner can evict it directly by signing a kind:9031 relay-admin removal; ' +
+      'an owner may remove members and admins, refusing only other owners. #366 concluded this was ' +
+      'cooperative-only, but that search was scoped to HTTP routes under api/ and 9031 is a Nostr ' +
+      'admin command dispatched from handlers/relay_admin.rs — a directory it never looked in.',
+    authority: 'grant', actor: 'the owner, or the key itself',
   },
   grant_no_relay: {
     label: 'Has a grant, never claimed its relay invite',
@@ -56,8 +59,10 @@ export const FINDINGS = Object.freeze({
   },
   name_no_grant: {
     label: 'Name still resolves, no live grant',
-    detail: 'Nothing clears a display name (#366) — not waggle, not the owner, not the key.',
-    authority: 'grant', actor: 'nobody — filed with Block',
+    detail: 'Nothing can CLEAR a display name (#366) — no DELETE or UPDATE of users.display_name ' +
+      'exists in buzz-db. Only the key that wrote it could overwrite it, and a key that has lost its ' +
+      'grant is exactly the one that will not.',
+    authority: 'grant', actor: 'nobody who will — only the key that wrote it could overwrite it',
   },
 })
 
