@@ -192,6 +192,18 @@ relay-send: DRY_RUN — nothing published
 **A sealed wrap is the proof.** Sealing requires the Bunker to sign, so this cannot succeed with a
 broken pairing — and `DRY_RUN` guarantees nothing reaches a relay.
 
+> **It proves a signature, not *whose*. Set `EXPECT_PUBKEY`.** Those two lines are identical
+> whichever key signed them. `relay-send.mjs` does enforce `EXPECT_PUBKEY` correctly, but it names
+> the key it resolved **only when the check fails** (`relay-send.mjs:62`); no success path prints
+> it. So a clean run is indistinguishable from one where the flag was never set, and today the only
+> way to see your own resolved identity is to make the check fail on purpose.
+>
+> This is not theoretical. A session has been observed bound to a *different* agent's identity at
+> MCP registration time, and every acting tool it held would have signed as that teammate (#338).
+> Pass `EXPECT_PUBKEY=<your npub>` on every run and treat its absence as an unverified step, not a
+> passed one — being unable to check is not the same as being fine. Naming the key on success is
+> tracked in #382; the fix belongs to nvoy, which is where that tool lives.
+
 > **`nip46-signer.mjs` is a library, not a command.** An earlier version of this runbook told you
 > to run it with `--get-public-key`. That flag does not exist, the file has no argument handling at
 > all, so Node loaded the module, defined its exports, printed nothing and **exited 0** — a total

@@ -86,11 +86,28 @@ not in the source you edited.
     remaining gap, and it is an infrastructure ask, not something to engineer around.
   - **The return lane is the design, not a shortfall.** Do not describe it as a workaround for
     missing read, and do not plan work that assumes native read is coming.
-- **You act as your OWN participant key, never as the bridge.** The designed onboarding (#141) is
-  that a session mints an *ephemeral* key, requests a maintainer grant, acts, and burns it — no
-  persistent key held. That reinforces this repo's core rule, it does not bend it: signing as
-  waggle is impersonation; signing as your own admitted key is the mechanism. (Operational
-  procedure lives in the private brief; #141 is partly built — do not describe it as shipped.)
+- **You act as your OWN participant key, never as the bridge.** Signing as waggle is
+  impersonation; signing as your own admitted key is the mechanism.
+
+  **What is disposable is the connection, not the identity (#141, closed 2026-08-04).** The
+  resolution is **two keys doing two different jobs** (`docs/DESIGN_JOIN.md`):
+
+  - **R, the request key** — minted in the session, signs the join request, receives the sealed
+    pairing token, then **burned**. Never granted anything, never in the roster. Its only job is
+    to be an address the owner can reply to, once.
+  - **A, the agent identity** — minted into the owner's **Bunker** at approval time and never held
+    by the session at all. The session holds a NIP-46 *pairing*, not a key.
+
+  Persistence follows from where A lives: a restart, a compaction or a new instance re-pairs to
+  the same A. **The session holding no key is the mechanism, not a limitation worked around.**
+
+  ⚠ **Do not describe "mint an ephemeral key, act, burn it" as the design.** Burning R is correct;
+  burning the *identity* is the shape #141 weighed and set aside — a fresh npub per session is not
+  admitted, is not in `return_lane`, and has no continuity, so it trades the whole
+  first-class-participant model for disposability. This paragraph previously stated exactly that
+  and misled a review (#371). Distinct from the **short-lived burner** in
+  `docs/GETTING_STARTED.md`, which is a deliberately different path for a throwaway agent and is
+  not this. Operational procedure lives in the private brief.
 - **Shipped is never blurred with designed.** If a thing is landed-but-undeployed, say so.
 - **`waggle` is always lowercase.** Including UI wordmarks; the shared Nave titlebar uppercases app
   names, so waggle surfaces override it locally.
