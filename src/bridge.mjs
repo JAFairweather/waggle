@@ -853,12 +853,35 @@ const seated = new Set()
 // the half that GRANTS it retried. That asymmetry runs the wrong way for something whose entire
 // claim is that the row cannot outlive the grant. Same durable-queue shape as an owed carry.
 const unseatPending = durableQueue({ path: UNSEATPENDING_PATH, cap: 1000, label: 'roster unseat' })
+// WHICH channel the roster is — independent of whether seating is currently switched on.
+// Boot resolves a configured channel NAME to a UUID. A name still sitting here means that
+// resolution did not happen, and `--channel` takes a UUID — so this is a refusal, not a retry.
+function rosterChannel() {
+  const ch = String(PUB?.inbox || '')
+  return /^[0-9a-fA-F-]{36}$/.test(ch) ? ch : null
+}
+
+// WHETHER to seat. Default-OFF is deliberate. Removal is deliberately NOT symmetric with this —
+// see removalChannel.
 function seatingChannel() {
   if (!PUB?.seatGrantees) return null
-  // Boot resolves a configured channel NAME to a UUID. A name still sitting here means that
-  // resolution did not happen, and `--channel` takes a UUID — so this is a refusal, not a retry.
-  const ch = String(PUB.inbox || '')
-  return /^[0-9a-fA-F-]{36}$/.test(ch) ? ch : null
+  return rosterChannel()
+}
+
+// Removal must survive the off switch (#356 B4). `seatGrantees` governs whether waggle WRITES
+// rows; once one exists, flipping the switch off must not strand it — a row that outlives its
+// grant is the single thing this feature claims cannot happen, and gating removal on the same flag
+// made the off switch produce exactly that. So removal proceeds while seating is on, and also for
+// any key we know we seated or still owe a removal for.
+//
+// It deliberately does NOT fire for a key we never seated: a bridge that has never had seating
+// enabled must not start emitting roster writes because some grant was revoked. `seated` is memory
+// and `unseatPending` is durable, so the pair covers a restart as well as a flag flip.
+function removalChannel(pk) {
+  const ch = rosterChannel()
+  if (!ch) return null
+  if (PUB?.seatGrantees) return ch
+  return (seated.has(pk) || unseatPending.has(pk)) ? ch : null
 }
 // Nameable and reachable are two different facts, and seating only supplies the first. The roster
 // seating writes into is `inbox`; the channels whose mentions actually get CARRIED are
@@ -957,9 +980,9 @@ async function seatGrantee(pubkey, emitFn = emit, queryFn = query) {
   }
 }
 async function unseatGrantee(pubkey, emitFn = emit) {
-  const dest = seatingChannel()
-  if (!dest) return false
   const pk = String(pubkey || '').toLowerCase()
+  const dest = removalChannel(pk)   // NOT seatingChannel — removal outlives the off switch (#356 B4)
+  if (!dest) return false
   if (FORWARD_MODE !== 'buzz') { log(`UNSEAT[dryrun] ${pk.slice(0, 12)}… -> ${dest}`); seated.delete(pk); return true }
   try {
     await emitFn({ template: 'member_unseat', dest, pubkey: pk })
@@ -3244,7 +3267,9 @@ async function scanReturnLane(msgs, opts = {}) {
 // the removal is cancelled rather than carried out. The queue records what was true at the moment
 // of the failure; `grantSet` records what is true now, and where they disagree the grant wins.
 async function retryPendingUnseats({ emitFn = emit } = {}) {
-  const dest = seatingChannel()
+  // rosterChannel, not seatingChannel: owed removals only exist because we seated, so draining them
+  // is always correct — and must not stop the moment an operator flips seating off (#356 B4).
+  const dest = rosterChannel()
   if (!dest) return
   const owed = unseatPending.entries()
   if (!owed.length) return
@@ -3728,7 +3753,7 @@ export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, c
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, revokedGrants, activeReturnLane, seatGrantee, unseatGrantee, seated, seatingCoverageGap, unseatPending, retryPendingUnseats, UNSEATPENDING_MAX_ATTEMPTS, rosterRole, isElevated, seatingAuthority, ELEVATED_ROLES, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, relayRefusals, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, revokedGrants, activeReturnLane, seatGrantee, unseatGrantee, seated, seatingCoverageGap, unseatPending, retryPendingUnseats, UNSEATPENDING_MAX_ATTEMPTS, rosterRole, isElevated, seatingAuthority, ELEVATED_ROLES, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, relayRefusals, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL, rosterChannel, removalChannel }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests,
   policyRequests, policyWriterInFlight, remotePolicyGatePublic, processRemotePolicyRequest,
   retryRemotePolicyRequests, __setPolicyWriterRunnerForTests, unframePolicyWriterResponse,
