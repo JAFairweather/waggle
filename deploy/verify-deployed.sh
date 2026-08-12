@@ -32,7 +32,7 @@ cd "$REPO"
 
 # Canonical ship list — MUST mirror deploy.sh's rsync set. Dirs expand to the tracked
 # files at REF, so the "should match" set is defined by git, not by whatever is on disk.
-SHIP='src tests tools package.json package-lock.json config.example.json'
+SHIP='src tests tools package.json package-lock.json config.example.json deploy/tripwire-alarm-bunker.conf deploy/waggle-tripwire-drill.service deploy/setup-tripwire-alarm.sh'
 PATHS=$(git ls-tree -r --name-only "$REF" -- $SHIP) \
   || { echo "  ✗ not a valid git ref: $REF"; exit 2; }
 [ -n "$PATHS" ] || { echo "  ✗ ship list resolved to nothing at $REF"; exit 2; }
