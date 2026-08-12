@@ -85,15 +85,33 @@ AUTHORITY. A consent record is authored by the DATA SUBJECT."*
 Most of the machinery exists; the surface does not. **Enforcement is ON in production** — read from
 the box, not inferred from the code default, which is off when the key is unset.
 
-**Six states, taken from the bridge's own vocabulary:**
+**Seven states, taken from the bridge's own vocabulary** — published per author in the signed
+control record and defined once in `src/consent_state.mjs` (#389):
 
-**Carrying · Asked — waiting on them · Held, no consent · Declined · Withdrawn · Grandfathered**
+| wire | reads as | carried? |
+|---|---|---|
+| `active` | Carrying | yes |
+| `grandfathered` | Grandfathered — carried, no consent | **yes** |
+| `pending` | No consent — carried, gate off | yes |
+| `asked` | Asked — waiting on them | no |
+| `muted` | Rejected by you — never asked | no |
+| `revoked` | Withdrawn | no |
+| `held` | Held, no consent | no |
 
 - **Held, not dropped.** The bridge logs `PUBLIC hold[no-consent]: … participant has not consented
   (default-closed, §8)` and seals a consent ask the same second. Use its word.
-- **Grandfathered** — carried, no consent record, permanently exempt. A tab showing five states
-  while reality has six lies in the worst direction: it implies consent underpins a carry that is
-  running on an exemption.
+- **Grandfathered** — carried, no consent record, permanently exempt. A tab that hides this lies in
+  the worst direction: it implies consent underpins a carry that is running on an exemption. Until
+  #389 the record published `pending` for it, the same word as an author whose every post was held.
+- **`held` and `pending` are the same consent situation under different gates.** One word for both
+  made the meaning depend on `operations.gates.consent_required`, which the schema treats as
+  optional — so an omitted field silently flipped it.
+
+> **"Declined" was wrong and is retired.** #331 listed it as a first-class state. The bridge cannot
+> observe it: `docs/CONSENT.md` §6 is that **silence is a no**, there is no decline event, and asking
+> twice is harassment — so nothing ever distinguishes "said no" from "has not answered". The state
+> that does exist is `muted`, which is the **approver's** rejection, not the author's. Opposite
+> parties; labelling one as the other tells an owner the author refused when in fact they did.
 
 ---
 

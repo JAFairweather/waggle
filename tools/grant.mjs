@@ -31,6 +31,7 @@ import { fileURLToPath } from 'node:url'
 import { finalizeEvent, getPublicKey, generateSecretKey } from 'nostr-tools/pure'
 import { BunkerSigner, parseBunkerInput } from 'nostr-tools/nip46'
 import * as nip19 from 'nostr-tools/nip19'
+import { DEFAULT_PUBLIC_RELAYS } from '../src/relays.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const NIPDA = (() => {
@@ -103,7 +104,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 function relays() {
   try { const c = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')); if (c.public?.relays?.length) return c.public.relays } catch { /* fall through */ }
-  return ['wss://nos.lol', 'wss://relay.primal.net']
+  return [...DEFAULT_PUBLIC_RELAYS]
 }
 
 function publish(ev) {

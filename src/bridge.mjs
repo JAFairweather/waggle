@@ -40,6 +40,7 @@ import * as nip19 from 'nostr-tools/nip19'
 import { emit, query, checkConfigRenderable, runPolicyShadowSsh, runPolicyWriterSsh } from './egress.mjs'
 import { bridgePubkey, bridgeSignerMode, hasBridgeKey, openSeal, openRumor, sealAndWrap, consentTosBlock, signControlState, prepareRelayActionReaction, submitRelayActionReaction } from './nostr_egress.mjs'
 import { verifyConsent } from './consent.mjs'   // in-door consent (#131/#132, docs/CONSENT.md §8)
+import { consentState } from './consent_state.mjs'   // one honest word per watched author (#389)
 import { createHash, randomBytes } from 'node:crypto'
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, unlinkSync, openSync, closeSync, fsyncSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -59,6 +60,7 @@ import { comparePolicyShadow, validateShadowClientConfig } from './buzz_policy_s
 import { PolicyRequestQueue } from './policy_request_queue.mjs'
 import { defuseRefs, defuseMarkup, quoted, renderQuarantined, renderReleased } from './render.mjs'
 import { hex as concordHex, publicChannel, openChannelWrap } from './concord_lib.mjs'
+import { thinRelaySet } from './relays.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
@@ -902,6 +904,29 @@ const mirrorAskedStore = durableSet({ path: MIRRORASKED_PATH, cap: 100000, label
 const mirrorAsked = mirrorAskedStore.mem
 const askInFlight = new Set()   // prevents two rapid holds double-sending before the first records
 let askWindowStart = 0, askWindowCount = 0
+/**
+ * The remaining ask budget, for the owner (#331). The cap alone is not enough: #331's own words are
+ * that "a silent refusal at the cap is indistinguishable from a broken send", and an operator who
+ * cannot see the budget will read a refusal as a bug and go hunting. Aggregate counters only — the
+ * same public-safe class as `drops`, no targets and no identities.
+ *
+ * Reports the budget as it will be when NEXT consulted, not as the counter happens to sit: an
+ * elapsed window is spent, and saying "0 left" for a window that has already reset would send the
+ * owner hunting for the opposite problem.
+ */
+export function askBudget(now = Date.now()) {
+  const cap = PUB?.mirrorAskPerHour ?? 0
+  const elapsed = askWindowStart === 0 || now - askWindowStart >= 3600_000
+  const used = elapsed ? 0 : askWindowCount
+  return {
+    per_hour: cap,
+    used_this_window: used,
+    remaining: Math.max(0, cap - used),
+    // Seconds until the window rolls. Zero when no window is open — there is nothing to wait for,
+    // which is a different fact from "it resets imminently".
+    window_resets_in: elapsed ? 0 : Math.max(0, Math.ceil((askWindowStart + 3600_000 - now) / 1000)),
+  }
+}
 function askRateOk() {
   const t = Date.now()
   if (t - askWindowStart >= 3600_000) { askWindowStart = t; askWindowCount = 0 }
@@ -2035,12 +2060,20 @@ function buildControlState() {
     hive: { id: PUB.mirrorConsentHiveId, name: PUB.mirrorConsentHiveName, handle: PUB.mirrorConsentHiveHandle },
     bridge: BRIDGE_PK,
     publishing: PUB.controlStatePublish,
+    // One word per author, and it must describe what the routing gate DOES to their posts (#389).
+    // It used to be four words for six realities: grandfathered, muted, never-asked and gated-held
+    // all published as `pending`, and a grandfathered author is CARRIED. Precedence lives in
+    // consent_state.mjs, copied from routePublic's gate rather than chosen here.
     follows: PUB.authors.map((pubkey) => ({
       pubkey,
-      consent: mirrorConsent.has(pubkey) ? 'active'
-        : mirrorRevoked.has(pubkey) ? 'revoked'
-          : mirrorAsked.has(pubkey) ? 'asked'
-            : 'pending',
+      consent: consentState({
+        consented: mirrorConsent.has(pubkey),
+        grandfathered: PUB.mirrorGrandfathered.includes(pubkey),
+        revoked: mirrorRevoked.has(pubkey),
+        muted: PUB.muted.includes(pubkey),
+        asked: mirrorAsked.has(pubkey),
+        gated: PUB.mirrorRequireConsent,
+      }),
     })),
     // Per-agent lifecycle rows (#309). Public-safe by construction: a public key, a status from a
     // closed set, an owner-chosen label and one boolean. This projection RE-DERIVES each field
@@ -2073,6 +2106,9 @@ function buildControlState() {
         public_lane_per_hour: PUB.lanePerHour,
       },
       drops: { relay_preauth: relayDropTotalPreAuth(), relay_not_relay: relayDropCounts.notRelay },
+      // The consent-ask budget, not just its cap (#331). Additive, like `agents` and `operations`
+      // before it: a record signed without this field stays valid.
+      consent_asks: askBudget(),
     },
   }
 }
@@ -3468,6 +3504,10 @@ if (!process.env.WB_NO_BOOT) {
   }
   if (PUB) {
     if (!PUB.relays.length) err('WARN: public read lane configured but cfg.public.relays is empty — nothing to listen on')
+    // #345: this set is BOTH what we listen on and what sealed wraps fan out to. Two relays read
+    // as fine right up until one of them starts refusing, and then the only visible symptom is a
+    // ratio in the journal that nobody is watching for. Say it once, at boot, where it is read.
+    else { const thin = thinRelaySet(PUB.relays); if (thin) err(`WARN: public relay set is thin — ${thin}`) }
     resolveChannels(() => {
     log(`public read lane -> inbox ${PUB.inbox}: ${PUB.relays.length} relay(s), ${PUB.authors.length} watched author(s), ${PUB.events.length} watched note(s), pub-since=${PUB.since} (${PUB_SINCE_SECS}s), watermark=${pubWatermark || 'none'}`)
     log(`  gates: staging=${PUB.staging || 'HOLD (none)'} · backfill<=${PUB.backfillLimit} · maxContent=${PUB.maxContentBytes}B · rate ${PUB.replierPerMin}/replier/min ${PUB.channelPerMin}/chan/min ${PUB.lanePerHour}/lane/h · deletes ${PUB.deletesPerHour}/h (A7)`)
