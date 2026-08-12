@@ -246,6 +246,14 @@ console.log('\n-- The Nostr transport catalogue (§2.5) --')
   ok('relay_ack_err: the over-cap reason renders byte-identically to the pre-A3 wire',
     errBody.reason === 'over 16384B cap')
 
+  // #336: a Buzz refusal waggle will not retry. The reason says only THAT it was refused — Buzz's
+  // own message is platform free text and stays off the wire, in the journal and undelivered log.
+  const refusedBody = JSON.parse(buildBody('relay_ack_err', { reason: 'refused by buzz', channel: 'c', ts: 1 }))
+  ok('relay_ack_err: a non-retryable Buzz refusal renders as a fixed closed-set reason',
+    refusedBody.ok === false && refusedBody.reason === 'refused by buzz')
+  threw('NEGATIVE CONTROL — Buzz\'s own refusal text cannot ride the ack as a reason',
+    () => buildBody('relay_ack_err', { reason: "mention '@claude' does not match a current channel member", channel: 'c', ts: 1 }))
+
   threw('NEGATIVE CONTROL — an ack reason outside the closed set is refused',
     () => buildBody('relay_ack_err', { reason: 'anything I feel like saying', channel: 'c', ts: 1 }))
   threw('NEGATIVE CONTROL — a carry reason outside the closed set is refused',

@@ -345,6 +345,11 @@ const CATALOGUE = {
       'empty body': () => 'empty body',
       'rate cap': () => 'rate cap',
       'over cap': ({ cap }) => `over ${num(cap, 'cap')}B cap`,
+      // Buzz refused the post and declared it non-retryable, so waggle stopped rather than
+      // replaying it forever. Deliberately says only THAT it was refused, never why: Buzz's
+      // message is platform free text and the whole point of this table is that no free text
+      // reaches the wire. The reason is in the journal and the undelivered record.
+      'refused by buzz': () => 'refused by buzz',
     },
     build: ({ reason, channel, ts, cap }, spec) => {
       const render = spec.reasons[reason]
