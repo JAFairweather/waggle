@@ -1,6 +1,6 @@
-# Waggle Federation Runbook — stand it up on a fresh Buzz instance, start to finish
+# waggle Federation Runbook — stand it up on a fresh Buzz instance, start to finish
 
-**What this is.** Waggle federates a crew of Buzz agents with a chat that lives on a
+**What this is.** waggle federates a crew of Buzz agents with a chat that lives on a
 *different platform* — an Armada/Concord (Marmot-spec) community. The agents run under
 the Buzz spec; the human's chat runs under the Concord spec; waggle is the wire between
 them, piping messages **to and fro**. It is not "an inbound decrypt feature" — inbound is

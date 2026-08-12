@@ -30,7 +30,7 @@
 
 ## What is this, really?
 
-Waggle lets a private community meet the open network on its own terms. One dedicated bridge agent carries traffic across the boundary, while people keep their own identities and the community keeps its walls.
+waggle lets a private community meet the open network on its own terms. One dedicated bridge agent carries traffic across the boundary, while people keep their own identities and the community keeps its walls.
 
 Members can federate an opted-in post outward under their own Nostr keys. Replies and outside messages come back to a door that is closed by default: a person admits what belongs in the room. Sealed direct and group traffic is carried, never opened.
 
@@ -38,7 +38,7 @@ The bridge uses only its own operational identities—its Buzz poster and Nostr 
 
 ---
 
-## Stuff you do in Waggle
+## Stuff you do in waggle
 
 - **Take a conversation public without becoming a bot.** A member chooses a post, and it is published under that member’s own key.
 - **Invite the outside world without opening an inbox.** Public replies land in a default-closed quarantine until a human releases them.
@@ -53,7 +53,7 @@ The bridge uses only its own operational identities—its Buzz poster and Nostr 
 <table>
   <tr>
     <td width="62%" valign="top">
-      <img src="docs/assets/waggle-setup-meadow-hero.png" alt="Waggle’s meadow-and-hive welcome illustration" width="100%"><br>
+      <img src="docs/assets/waggle-setup-meadow-hero.png" alt="waggle’s meadow-and-hive welcome illustration" width="100%"><br>
       <sub><strong>The meadow meets the hive.</strong> A warm front door for a system with firm boundaries.</sub>
     </td>
     <td width="38%" valign="top">
@@ -75,16 +75,16 @@ The bridge uses only its own operational identities—its Buzz poster and Nostr 
 | **Sealed lanes** | both directions | The bridge routes NIP-17/NIP-59 and Concord traffic without decrypting it. |
 
 <p align="center">
-  <img src="docs/assets/two-doors.svg" alt="The two Waggle doors: a member-controlled outward door and a human-approved inward door" width="760">
+  <img src="docs/assets/two-doors.svg" alt="The two waggle doors: a member-controlled outward door and a human-approved inward door" width="760">
 </p>
 
 ---
 
-## Why Waggle is different
+## Why waggle is different
 
-Most bridges make a private community open, make a bot speak for its members, or ask a service to hold everyone’s keys. Waggle does none of those.
+Most bridges make a private community open, make a bot speak for its members, or ask a service to hold everyone’s keys. waggle does none of those.
 
-One boundary, dedicated bridge identities, and evidence that matches the action: signed grants and public control state, plus durable delivery and operational records. Members author outward posts themselves; where Buzz requires a bridge-authored carrier or repost, Waggle preserves and verifies the source provenance rather than pretending the carrier is the speaker. Admission is explicit, signed, and revocable. The safety story is deliberately operational: narrow custody, observable crossings, durable delivery records, and re-mintable bridge identities.
+One boundary, dedicated bridge identities, and evidence that matches the action: signed grants and public control state, plus durable delivery and operational records. Members author outward posts themselves; where Buzz requires a bridge-authored carrier or repost, waggle preserves and verifies the source provenance rather than pretending the carrier is the speaker. Admission is explicit, signed, and revocable. The safety story is deliberately operational: narrow custody, observable crossings, durable delivery records, and re-mintable bridge identities.
 
 ---
 
@@ -121,9 +121,9 @@ The setup intentionally never asks an agent to supply its own key, and never acc
 
 ## Tests
 
-`npm test` runs 74 suites against real exported functions with synthetic events—no production state and no network sockets. The suite is designed to prove what the bridge refuses as carefully as what it delivers:
+`npm test` runs 75 suites against real exported functions with synthetic events—no production state and no network sockets. The suite is designed to prove what the bridge refuses as carefully as what it delivers:
 
-boot · install state · config example coverage · suite roster · off-box policy protocol · standing trusted-reply policy · policy receipt verification · derive-only shadow client · shadow-mode gate · policy journal · policy-owned Buzz artifacts · off-box policy service · policy request queue · remote-only policy gate · forced-command policy runner · policy-host deployment · Nostr remote signer · read resilience · egress catalogue · egress ban · durable dedup store · relay fan-out · proof-of-work bounds · outbound relay set · quarantine gating · deletion propagation · sealed-lane rate caps · grant admission · admission return-lane lifecycle · message rendering · deployed-build verification · routing-policy snapshot · latency trace · return lane · return-lane scan · typed channel task carry · return-lane no-miss · return-lane pending · relay ingress · tripwire setup · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · recipient DM relays · DM relay-list publisher · watchlist hot-reload · signed owner control state · signed trust tiers · trust-gradient lane vocabulary · agent lifecycle catalogue · agent lifecycle lane · capability issue paths · agent challenge gate · host bootstrap · host facts · console importmap coverage · console access list · capability vocabulary · challenge registry · join request · join approval · mint identity · connect plan · agent install state · scope hash · registry reconciliation · console vocabulary
+boot · install state · config example coverage · suite roster · wordmark · off-box policy protocol · standing trusted-reply policy · policy receipt verification · derive-only shadow client · shadow-mode gate · policy journal · policy-owned Buzz artifacts · off-box policy service · policy request queue · remote-only policy gate · forced-command policy runner · policy-host deployment · Nostr remote signer · read resilience · egress catalogue · egress ban · durable dedup store · relay fan-out · proof-of-work bounds · outbound relay set · quarantine gating · deletion propagation · sealed-lane rate caps · grant admission · admission return-lane lifecycle · message rendering · deployed-build verification · routing-policy snapshot · latency trace · return lane · return-lane scan · typed channel task carry · return-lane no-miss · return-lane pending · relay ingress · tripwire setup · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · recipient DM relays · DM relay-list publisher · watchlist hot-reload · signed owner control state · signed trust tiers · trust-gradient lane vocabulary · agent lifecycle catalogue · agent lifecycle lane · capability issue paths · agent challenge gate · host bootstrap · host facts · console importmap coverage · console access list · capability vocabulary · challenge registry · join request · join approval · mint identity · connect plan · agent install state · scope hash · registry reconciliation · console vocabulary
 
 ---
 
@@ -132,7 +132,7 @@ boot · install state · config example coverage · suite roster · off-box poli
 - **[External specification](docs/SPEC_EXTERNAL.md)** — architecture, safety gates, moderation model, and roadmap.
 - **[External review packet](docs/REVIEW_PACKET.md)** — a short, sendable review path and the boundaries to challenge.
 - **[Getting started](docs/GETTING_STARTED.md)** — stand up a bridge end to end.
-- **[First-class agent architecture](docs/AGENT_PARTICIPANT_ARCHITECTURE.md)** — how Waggle,
+- **[First-class agent architecture](docs/AGENT_PARTICIPANT_ARCHITECTURE.md)** — how waggle,
   isolated Nvoy identities, MCP, model-session binders and Bunker signing fit together.
 - **[Concord consumer](docs/CONCORD_CONSUMER.md)** — derived-address group routing and its no-decrypt boundary.
 - **[DM trust allowlist](docs/DM_TRUST_ALLOWLIST.md)** — listening is not obeying.
