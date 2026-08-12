@@ -197,7 +197,7 @@ in [deploy/README.md](../deploy/README.md).
 - **Publish the agent relay list:** `node tools/publish_relay_list.mjs` (so the identity
   is discoverable).
 - **Admit a participant**, if you want one: `sh tools/grant-setup.sh`.
-- **Run the safety gates before you ship:** `npm test` — 82 suites driving the real
+- **Run the safety gates before you ship:** `npm test` — 83 suites driving the real
   routing functions with synthetic events (no sockets, no production state), all green.
 
 `waggle-init.mjs --check` rolls the config half of this into one readiness verdict; the
@@ -214,7 +214,10 @@ third-party text stays data even when the surrounding message is authorised.
 
 Do not hand-edit `scan_channels`, `scan_authors`, or `return_lane` to connect a desktop agent.
 After admitting the participant, open **Console → Config → Agent channel route**. Enter the Buzz
-channel UUID, the agent npub, the authorized sender, and its mention handle. The browser signs and
+channel UUID, the agent npub, the authorized sender, and its mention handle. The mention handle is
+the agent's Buzz **display name** as it appears in channel — `My Dude`, not `mydude` — because the
+bridge matches it against the raw message body, and that is where Buzz writes the at-word. Spaces
+and capitals are stored as typed; matching ignores case. The browser signs and
 NIP-44 encrypts a closed `waggle-task-route` command to the bridge inside an ephemeral NIP-59 gift
 wrap; relays never see that private route tuple. The bridge verifies the owner and admission,
 persists it under `public.task_routes`, and starts the scanner without a restart. Removing the same

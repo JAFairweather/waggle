@@ -394,8 +394,8 @@ t('a source that was never quarantined is not a moderation target',
 
 const participant = getPublicKey(generateSecretKey())
 const taskChannel = '88888888-8888-4888-8888-888888888888'
-const taskBody = (action, target = participant, channel = taskChannel) => ({ v: 1, type: 'waggle-task-route', action, channel,
-  sender: getPublicKey(watchedSk), participant: target, mention: 'codex', protocol: TASK_ROUTE_PROTOCOL })
+const taskBody = (action, target = participant, channel = taskChannel, mention = 'codex') => ({ v: 1, type: 'waggle-task-route', action, channel,
+  sender: getPublicKey(watchedSk), participant: target, mention, protocol: TASK_ROUTE_PROTOCOL })
 const taskCommand = (body, created_at, sk = watchedSk) => {
   const rumor = { kind: 14, pubkey: getPublicKey(sk), created_at, content: JSON.stringify(body), tags: [['p', getPublicKey(bridgeSk)]] }
   rumor.id = getEventHash(rumor)
@@ -503,6 +503,38 @@ t('removing one route preserves the participant’s other conversation', routeRe
 const lastRouteRemoved = await applyTask(taskBody('remove', participant, secondTaskChannel), now + 16)
 t('the same signed control plane can remove the final managed task route', lastRouteRemoved.ok &&
   !PUB.returnLane.some(route => route.managedTaskRoute && route.npub_hex === participant) &&
+  JSON.parse(readFileSync(CFG, 'utf8')).public.task_routes.length === 0)
+
+// ---- #404: the mention is a Buzz DISPLAY NAME, through this signed path ------------------------
+// Every mention fixture above is `codex`, one lowercase word — which is exactly why the slug
+// grammar survived here. A spaced name must reach the same place, and a hostile one must be
+// refused for a reason the operator can act on. tests/task_route_mention.mjs proves the matcher
+// end to end; this proves the signed control plane agrees with it.
+const spacedRoute = await applyTask(taskBody('upsert', participant, taskChannel, 'MC Claude'), now + 17)
+t('#404 an owner can route a display name with a space and a capital', spacedRoute.ok &&
+  PUB.returnLane.some(route => route.managedTaskRoute && route.npub_hex === participant && route.mention === 'MC Claude'))
+t('#404 the stored mention keeps the owner’s casing — the matcher folds, the record does not',
+  JSON.parse(readFileSync(CFG, 'utf8')).public.task_routes[0].mention === 'MC Claude')
+const refoldedRoute = await applyTask(taskBody('upsert', participant, taskChannel, '@mc claude'), now + 18)
+t('#404 re-upserting the same name in different case is ONE route, not two', refoldedRoute.ok &&
+  JSON.parse(readFileSync(CFG, 'utf8')).public.task_routes.length === 1)
+const injectedMention = await applyTask(taskBody('upsert', participant, taskChannel, 'Dennis @everyone'), now + 19)
+t('#404 an embedded at-word is refused, and the reason names it', !injectedMention.ok &&
+  /invalid task route: .*second @/.test(injectedMention.reason), injectedMention.reason)
+const broadcastMention = await applyTask(taskBody('upsert', participant, taskChannel, 'everyone'), now + 20)
+t('#404 a broadcast at-word is refused with a DIFFERENT reason, not one catch-all',
+  !broadcastMention.ok && /broadcast at-word/.test(broadcastMention.reason) &&
+  broadcastMention.reason !== injectedMention.reason, broadcastMention.reason)
+const invisibleMention = await applyTask(taskBody('upsert', participant, taskChannel, `My${String.fromCodePoint(0xa0)}Dude`), now + 21)
+t('#404 an invisible character is refused and NAMED by codepoint, not left to be hunted',
+  !invisibleMention.ok && /U\+00A0/.test(invisibleMention.reason), invisibleMention.reason)
+const stillRouting = await applyTask(taskBody('upsert', participant, secondTaskChannel, 'My Dude'), now + 22)
+t('#404 and a legitimate spaced name still gets through after all four refusals', stillRouting.ok &&
+  PUB.returnLane.some(route => route.managedTaskRoute && route.mention === 'My Dude'))
+for (const [i, channel] of [taskChannel, secondTaskChannel].entries()) {
+  await applyTask(taskBody('remove', participant, channel, i === 0 ? 'MC Claude' : 'My Dude'), now + 23 + i)
+}
+t('#404 both spaced routes remove cleanly, leaving the config as it was found',
   JSON.parse(readFileSync(CFG, 'utf8')).public.task_routes.length === 0)
 
 const followingPage = readFileSync(new URL('../console/following.html', import.meta.url), 'utf8')
