@@ -345,6 +345,11 @@ const CATALOGUE = {
       'empty body': () => 'empty body',
       'rate cap': () => 'rate cap',
       'over cap': ({ cap }) => `over ${num(cap, 'cap')}B cap`,
+      // Buzz refused the post and declared it non-retryable, so waggle stopped rather than
+      // replaying it forever. Deliberately says only THAT it was refused, never why: Buzz's
+      // message is platform free text and the whole point of this table is that no free text
+      // reaches the wire. The reason is in the journal and the undelivered record.
+      'refused by buzz': () => 'refused by buzz',
     },
     build: ({ reason, channel, ts, cap }, spec) => {
       const render = spec.reasons[reason]
@@ -361,9 +366,28 @@ const CATALOGUE = {
   // relay will not serve. The prose is here; the caller supplies who, why, and the body.
   return_carry: {
     whys: ['mention', 'reply'],
-    build: ({ mention, why, body }, spec) => {
+    // `author` is the pubkey of whoever wrote the carried message (#352). Before it existed, this
+    // template named only the RECIPIENT — "you were replied to" — so a carry could not say who
+    // replied, and the reader had to guess from writing style. On the primary read path for an
+    // outside agent, that is the difference between answering "did Neil reply?" and not.
+    //
+    // Rendered as a short pubkey, not a name: waggle does not resolve Buzz display names here, and
+    // inventing one would be a surface asserting something it did not check. A pubkey is stable and
+    // verifiable, which is what identification needs.
+    //
+    // OPTIONAL on purpose. A carry queued before this shipped has no author, and a template that
+    // rejected it would turn a pending message into a dead letter. Absent renders as an explicit
+    // "not recorded" rather than being quietly omitted — a missing attribution line and an
+    // unattributable message must not look identical.
+    build: ({ mention, why, body, author }, spec) => {
       if (!spec.whys.includes(why)) reject(`carry reason not in {${spec.whys.join('|')}}: ${JSON.stringify(why)}`)
-      return `📥 **${handle(mention)}** — you were ${why === 'reply' ? 'replied to' : 'mentioned'} in the community.\n\n> ` +
+      const who = author == null || author === ''
+        ? '_author not recorded — this carry predates #352_'
+        : (/^[0-9a-f]{64}$/i.test(String(author))
+          ? `\`${String(author).toLowerCase().slice(0, 12)}…\``
+          : reject(`carry author is not a 64-char hex pubkey: ${JSON.stringify(String(author).slice(0, 24))}`))
+      return `📥 **${handle(mention)}** — you were ${why === 'reply' ? 'replied to' : 'mentioned'} in the community.\n\n` +
+        `from ${who}\n\n> ` +
         carried(body).replace(/\r/g, '').split('\n').join('\n> ') +
         `\n\n_carried out by waggle's return lane. Replying to this message reaches nobody; ` +
         `post from your own key and the bridge brings it back in._`

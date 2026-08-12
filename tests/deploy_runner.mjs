@@ -109,6 +109,7 @@ function runCase(state, extraEnv = {}) {
     WB_NO_FETCH: '1',                                  // offline: drive the hub as-is
     STUB_CI_STATE: state,
     WB_CI_STATE_CMD: 'echo "$STUB_CI_STATE" #',        // ignore the sha arg (commented out)
+    WB_CONFIG_VERIFY_CMD: ':',                           // fixture has no private live config
     WB_NPM_CMD: ':',                                   // no registry in the test
     WB_RESTART_CMD: `touch "${restartMarker}" #`,      // record the restart, ignore unit arg
     ...extraEnv,
@@ -126,6 +127,10 @@ try {
   const g = runCase('success')
   check(g.code === 0, 'green commit -> exit 0')
   check(existsSync(join(g.tree, 'src', 'bridge.mjs')), 'green -> code shipped into tree (src/bridge.mjs)')
+  check(existsSync(join(g.tree, 'deploy', 'tripwire-alarm-bunker.conf')) &&
+    existsSync(join(g.tree, 'deploy', 'waggle-tripwire-drill.service')) &&
+    existsSync(join(g.tree, 'deploy', 'setup-tripwire-alarm.sh')),
+  'green -> operator tripwire artifacts shipped into the runtime tree')
   check(existsSync(g.restartMarker), 'green -> unit restart invoked')
   check(existsSync(join(g.tree, 'DEPLOYED_SHA')), 'green -> DEPLOYED_SHA recorded')
   check(existsSync(join(g.tree, 'DEPLOYED_SHA')) &&
@@ -181,6 +186,7 @@ try {
       cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, WB_HUB: hub, WB_TREE: first.tree, WB_REF: TARGET, WB_NO_FETCH: '1',
              STUB_CI_STATE: 'success', WB_CI_STATE_CMD: 'echo "$STUB_CI_STATE" #',
+             WB_CONFIG_VERIFY_CMD: ':',
              WB_NPM_CMD: ':', WB_RESTART_CMD: `touch "${first.restartMarker}" #` },
     })
   } catch (e) { code2 = e.status ?? 1; out2 = (e.stdout || '') + (e.stderr || '') }
@@ -208,6 +214,7 @@ try {
     const env = {
       ...process.env, WB_HUB: hub, WB_TREE: d.tree, WB_REF: TARGET, WB_NO_FETCH: '1',
       STUB_CI_STATE: 'success', WB_CI_STATE_CMD: 'echo "$STUB_CI_STATE" #',
+      WB_CONFIG_VERIFY_CMD: ':',
       WB_NPM_CMD: 'printf "\\n// injected drift\\n" >> src/bridge.mjs',
       WB_RESTART_CMD: 'true #',
     }
@@ -231,7 +238,8 @@ try {
     dOut = execFileSync('sh', ['-c', `sh "${SCRIPT}" read 2>&1`], {
       cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, WB_HUB: hub, WB_REF: TARGET, WB_NO_FETCH: '1', DRY_RUN: '1',
-             STUB_CI_STATE: 'success', WB_CI_STATE_CMD: 'echo "$STUB_CI_STATE" #' },
+             STUB_CI_STATE: 'success', WB_CI_STATE_CMD: 'echo "$STUB_CI_STATE" #',
+             WB_CONFIG_VERIFY_CMD: ':' },
     })
   } catch (e) { dc = e.status ?? 1; dOut = (e.stdout || '') + (e.stderr || '') }
   check(dc === 0, 'WB_TREE unset + DRY_RUN -> exit 0 (no set -e trip on the override guard)')
@@ -250,6 +258,7 @@ try {
         cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, WB_HUB: hub, WB_TREE: tree, WB_REF: ref, WB_NO_FETCH: '1',
                STUB_CI_STATE: 'success', WB_CI_STATE_CMD: 'echo "$STUB_CI_STATE" #',
+               WB_CONFIG_VERIFY_CMD: ':',
                WB_NPM_CMD: ':', WB_RESTART_CMD: `touch "${marker}" #`, ...extraEnv },
       })
     } catch (e) { c = e.status ?? 1; o = (e.stdout || '') + (e.stderr || '') }
