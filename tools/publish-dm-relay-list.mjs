@@ -5,33 +5,46 @@
 // mail is delivered.  This intentionally updates ONLY that event: no kind:0
 // profile and no kind:10002 general relay list are changed as a side effect.
 //
-//   NVOY_NSEC=… EXPECT_PUBKEY=<npub|hex> \
-//     node tools/publish-dm-relay-list.mjs \
-//       --dm-relays wss://nos.lol,wss://relay.primal.net,wss://relay.nave.pub
+// Two ways to sign, and the Bunker one is preferred (#381, #367):
+//
+//   NVOY_BUNKER=bunker://… EXPECT_PUBKEY=<npub|hex> \        # key never on this host
+//     node tools/publish-dm-relay-list.mjs --dm-relays wss://…
+//
+//   NVOY_NSEC=… EXPECT_PUBKEY=<npub|hex> \                   # local key
+//     node tools/publish-dm-relay-list.mjs --dm-relays wss://…
+//
+// Until #381 this tool took NVOY_NSEC and nothing else, so the sanctioned
+// custody model — key in the Bunker, nsec deleted — could not use it, and
+// completing onboarding meant putting an nsec back on disk. A tool that
+// forces a custody violation to finish the flow it serves undermines the
+// design it implements.
 //
 // The key arrives through the environment, never argv. EXPECT_PUBKEY is
 // mandatory so a copied shell environment cannot silently publish for the
-// wrong standing identity. Success requires a fresh, signature-verified
-// read-back — relay OK alone is not delivery evidence.
+// wrong standing identity — and on the Bunker path it is compared to
+// get_public_key BEFORE sign_event is called, because a signature obtained
+// under the wrong identity cannot be un-obtained. Success requires a fresh,
+// signature-verified read-back — relay OK alone is not delivery evidence.
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { resolve } from 'node:path'
 import WebSocket from 'ws'
-import { getPublicKey, verifyEvent } from 'nostr-tools/pure'
+import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure'
+import { BunkerSigner, parseBunkerInput } from 'nostr-tools/nip46'
 import * as nip19 from 'nostr-tools/nip19'
-import { buildDmRelayListEvent } from './dm_relay_list_lib.mjs'
+import { signDmRelayList } from './dm_relay_list_lib.mjs'
 import { recipientDmRelays } from '../src/dm_relays.mjs'
 
 const args = process.argv.slice(2)
 const flag = (name, fallback = '') => { const i = args.indexOf(name); return i < 0 ? fallback : args[i + 1] || '' }
 const die = message => { console.error(`publish-dm-relay-list: ${message}`); process.exit(1) }
 const expected = flag('--expect-pubkey', process.env.EXPECT_PUBKEY || '').trim()
+const bunkerUri = String(process.env.NVOY_BUNKER || '').trim()
 const raw = String(process.env.NVOY_NSEC || process.env.SESSION_NSEC || '').trim()
-if (!raw) die('set NVOY_NSEC (or SESSION_NSEC); a secret is never accepted as an argument')
+if (!bunkerUri && !raw) die('set NVOY_BUNKER (remote signer, preferred) or NVOY_NSEC/SESSION_NSEC; a secret is never accepted as an argument')
+if (bunkerUri && raw) die('both NVOY_BUNKER and NVOY_NSEC are set — refusing to guess which identity you meant')
 if (!expected) die('set EXPECT_PUBKEY (or --expect-pubkey) so the target identity is explicit')
-
-let secretKey
-try { secretKey = raw.startsWith('nsec1') ? nip19.decode(raw).data : Uint8Array.from(Buffer.from(raw, 'hex')) }
-catch { die('NVOY_NSEC is not a valid nsec or 64-hex key') }
-if (!(secretKey instanceof Uint8Array) || secretKey.length !== 32) die('NVOY_NSEC is not a 32-byte key')
 
 const toHex = value => {
   if (/^[0-9a-f]{64}$/i.test(value)) return value.toLowerCase()
@@ -41,14 +54,48 @@ const toHex = value => {
   } catch { /* clear error below */ }
   die('EXPECT_PUBKEY must be an npub or 64-character public key')
 }
-const pubkey = getPublicKey(secretKey)
-if (pubkey !== toHex(expected)) die('EXPECT_PUBKEY does not match the supplied signing identity; nothing published')
+const wanted = toHex(expected)
+
+// The Bunker authorises a specific CLIENT keypair, not anyone holding the secret. A fresh key
+// each run is an app the signer has never seen ("Unknown client"), so it is persisted — the same
+// reasoning as tools/grant.mjs. This is the transport identity, never the signing one.
+async function resolveSigner() {
+  if (!bunkerUri) {
+    let secretKey
+    try { secretKey = raw.startsWith('nsec1') ? nip19.decode(raw).data : Uint8Array.from(Buffer.from(raw, 'hex')) }
+    catch { die('NVOY_NSEC is not a valid nsec or 64-hex key') }
+    if (!(secretKey instanceof Uint8Array) || secretKey.length !== 32) die('NVOY_NSEC is not a 32-byte key')
+    return { pubkey: getPublicKey(secretKey), sign: tmpl => finalizeEvent(tmpl, secretKey), close: () => {} }
+  }
+  const bp = await parseBunkerInput(bunkerUri)
+  if (!bp?.pubkey) die('NVOY_BUNKER is not a valid bunker:// URI — expected bunker://<64-hex>?relay=wss://…&secret=…')
+  const keyDir = process.env.WAGGLE_HOME || resolve(homedir(), '.waggle')
+  const keyPath = resolve(keyDir, 'dm-relay-client.key')
+  let clientSk
+  if (existsSync(keyPath)) clientSk = Uint8Array.from(Buffer.from(readFileSync(keyPath, 'utf8').trim(), 'hex'))
+  else {
+    clientSk = generateSecretKey()
+    mkdirSync(keyDir, { recursive: true, mode: 0o700 })
+    writeFileSync(keyPath, Buffer.from(clientSk).toString('hex'), { mode: 0o600 })
+    console.error(`(new client key saved to ${keyPath} — approve this app in your signer once; later runs reuse it)`)
+  }
+  const bunker = BunkerSigner.fromBunker(clientSk, bp, { onauth: url => console.error(`approve this connection in your signer: ${url}`) })
+  try { await bunker.connect() } catch (e) { die(`bunker connect failed: ${String(e?.message || e)}`) }
+  return { pubkey: await bunker.getPublicKey(), sign: tmpl => bunker.signEvent(tmpl), close: () => bunker.close?.() }
+}
+
+const signer = await resolveSigner()
+const pubkey = String(signer.pubkey || '').toLowerCase()
 
 const relays = String(process.env.RELAY_RELAYS || 'wss://nos.lol,wss://relay.primal.net,wss://relay.nave.pub')
   .split(',').map(s => s.trim()).filter(Boolean)
 const dmRelays = String(flag('--dm-relays', process.env.DM_RELAYS || relays.join(','))).split(',').map(s => s.trim())
 let event
-try { event = buildDmRelayListEvent(secretKey, dmRelays) } catch (e) { die(e.message) }
+// signDmRelayList refuses on identity mismatch BEFORE asking for a signature, and re-checks the
+// event that comes back — a remote signer is a network peer, not a library call.
+try { event = await signDmRelayList(signer, dmRelays, wanted) }
+catch (e) { await signer.close?.(); die(e.message) }
+await signer.close?.()
 const intended = event.tags.map(tag => tag[1])
 
 function publish(url) {
@@ -82,7 +129,9 @@ function readBack(url) {
   })
 }
 
-console.error(`publish-dm-relay-list: ${nip19.npubEncode(pubkey)}`)
+// Name the identity AND how it was signed. A run that does not say which key it resolved is
+// indistinguishable from one that never checked — the same silence #382 is about.
+console.error(`publish-dm-relay-list: ${nip19.npubEncode(pubkey)} (signed via ${bunkerUri ? 'Bunker — no key on this host' : 'local key in the environment'})`)
 console.error(`  private-message relays: ${intended.join(', ')}`)
 const writes = await Promise.all(relays.map(publish))
 for (const result of writes) console.error(`  publish ${new URL(result.url).host.padEnd(20)} ${result.note}`)
