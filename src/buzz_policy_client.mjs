@@ -13,14 +13,17 @@ const HOST = /^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-Fa-f:]
 const USER = /^[a-z_][a-z0-9_-]{0,31}$/
 const EVENT_KEYS = new Set(['id', 'pubkey', 'created_at', 'kind', 'tags', 'content', 'sig'])
 const REQUEST_KEYS = new Set(['version', 'policy_instance', 'operation', 'catalogue_version', 'observed_at', 'evidence'])
-const EVIDENCE_KEYS = new Set(['source_event'])
+const EVIDENCE_KEYS = Object.freeze({
+  quarantine_header: new Set(['source_event']), standing_trusted_reply: new Set(['source_event']),
+  sealed_direct_envelope: new Set(['source_event']), withdraw_repost: new Set(['source_event', 'deletion_event', 'prior_receipt']),
+})
 const RESPONSE_KEYS = new Set(['status', 'result', 'receipt'])
 const RECEIPT_KEYS = new Set(['version', 'policy_instance', 'operation', 'catalogue_version', 'request_digest',
   'idempotency_key', 'source_ids', 'buzz_channel', 'endpoint_authority', 'buzz_event_id', 'result',
   'reason_code', 'response_digest', 'completed_at'])
 const fail = message => { throw new Error(`buzz-policy-client: ${message}`) }
 export const LEGACY_POLICY_OPERATIONS = Object.freeze(['quarantine_header', 'standing_trusted_reply'])
-const POLICY_OPERATIONS = new Set([...LEGACY_POLICY_OPERATIONS, 'sealed_direct_envelope'])
+const POLICY_OPERATIONS = new Set([...LEGACY_POLICY_OPERATIONS, 'sealed_direct_envelope', 'withdraw_repost'])
 export function normalizePolicyOperations(value, label = 'policy') {
   const operations = value == null ? [...LEGACY_POLICY_OPERATIONS] : value
   if (!Array.isArray(operations) || !operations.length || operations.some(operation => !POLICY_OPERATIONS.has(operation)) ||
@@ -55,12 +58,20 @@ const verifySourceEvent = (event, expectedKind = 1) => {
 }
 const verifyRequestShape = request => {
   exactKeys(request, REQUEST_KEYS, 'request')
-  exactKeys(request.evidence, EVIDENCE_KEYS, 'evidence')
-  if (request.version !== 1 || !['quarantine_header', 'standing_trusted_reply', 'sealed_direct_envelope'].includes(request.operation) || !ID.test(String(request.policy_instance || '')) ||
+  if (request.version !== 1 || !POLICY_OPERATIONS.has(request.operation) || !ID.test(String(request.policy_instance || '')) ||
       !HEX64.test(String(request.catalogue_version || '')) || !Number.isSafeInteger(request.observed_at) || request.observed_at < 0) fail('request binding is invalid')
+  exactKeys(request.evidence, EVIDENCE_KEYS[request.operation], 'evidence')
   verifySourceEvent(request.evidence.source_event, request.operation === 'sealed_direct_envelope' ? 1059 : 1)
+  if (request.operation === 'withdraw_repost') {
+    verifySourceEvent(request.evidence.deletion_event, 5)
+    verifySourceEvent(request.evidence.prior_receipt, 30078)
+  }
   return request
 }
+
+const requestSourceIds = request => request.operation === 'withdraw_repost'
+  ? [request.evidence.source_event.id, request.evidence.deletion_event.id, request.evidence.prior_receipt.id]
+  : [request.evidence.source_event.id]
 
 export function validatePolicyWriterConfig(config) {
   if (!config || config.mode !== 'remote-only' || !ID.test(String(config.policyInstance || '')) ||
@@ -105,6 +116,26 @@ export function buildSealedDirectPolicyRequest(sourceEvent, {
     evidence: { source_event: JSON.parse(JSON.stringify(sourceEvent)) } })
 }
 
+export function buildWithdrawRepostPolicyRequest(sourceEvent, deletionEvent, priorReceipt, {
+  policyInstance, catalogueVersion, observedAt = Math.floor(Date.now() / 1000),
+} = {}) {
+  if (!ID.test(String(policyInstance || '')) || !HEX64.test(String(catalogueVersion || ''))) fail('policy identity is invalid')
+  if (!Number.isSafeInteger(observedAt) || observedAt < 0) fail('observed_at is invalid')
+  verifySourceEvent(sourceEvent, 1); verifySourceEvent(deletionEvent, 5); verifySourceEvent(priorReceipt, 30078)
+  return canonicalJson({ version: 1, policy_instance: policyInstance, operation: 'withdraw_repost',
+    catalogue_version: catalogueVersion, observed_at: observedAt,
+    evidence: { source_event: JSON.parse(JSON.stringify(sourceEvent)), deletion_event: JSON.parse(JSON.stringify(deletionEvent)),
+      prior_receipt: JSON.parse(JSON.stringify(priorReceipt)) } })
+}
+
+export function policyRequestQueueKey(requestRaw) {
+  const request = parseCanonical(requestRaw, 'request', 128 * 1024)
+  verifyRequestShape(request)
+  return request.operation === 'withdraw_repost'
+    ? createHash('sha256').update(canonicalJson([request.evidence.deletion_event.id, request.evidence.source_event.id])).digest('hex')
+    : request.evidence.source_event.id
+}
+
 export function verifyPolicyResponse(raw, {
   requestRaw, posterPubkey, expectedChannel, endpointAuthority, maxBytes = 256 * 1024,
 } = {}) {
@@ -112,7 +143,7 @@ export function verifyPolicyResponse(raw, {
       typeof endpointAuthority !== 'string' || !endpointAuthority || endpointAuthority.length > 255) fail('expected policy binding is invalid')
   const request = parseCanonical(requestRaw, 'request', 128 * 1024)
   verifyRequestShape(request)
-  const sourceId = request.evidence.source_event.id
+  const sourceIds = requestSourceIds(request)
   const response = parseCanonical(raw, 'response', maxBytes)
   exactKeys(response, RESPONSE_KEYS, 'response')
   if (['held', 'ambiguous', 'recoverable'].includes(response.status)) {
@@ -131,11 +162,11 @@ export function verifyPolicyResponse(raw, {
   exactKeys(fields, RECEIPT_KEYS, 'receipt content')
   const requestDigest = createHash('sha256').update(requestRaw).digest('hex')
   const expectedKey = createHash('sha256').update(canonicalJson([request.version, request.policy_instance,
-    request.catalogue_version, request.operation, [sourceId], expectedChannel])).digest('hex')
+    request.catalogue_version, request.operation, sourceIds, expectedChannel])).digest('hex')
   if (fields.version !== request.version || fields.policy_instance !== request.policy_instance ||
       fields.operation !== request.operation || fields.catalogue_version !== request.catalogue_version ||
       fields.request_digest !== requestDigest || fields.idempotency_key !== expectedKey ||
-      !same(fields.source_ids, [sourceId]) || fields.buzz_channel !== expectedChannel ||
+      !same(fields.source_ids, sourceIds) || fields.buzz_channel !== expectedChannel ||
       fields.endpoint_authority !== endpointAuthority || fields.result !== response.result ||
       !HEX64.test(String(fields.response_digest || '')) || !Number.isSafeInteger(fields.completed_at) ||
       fields.completed_at !== event.created_at) fail('signed receipt is not bound to this request and policy')

@@ -19,7 +19,7 @@ const directRecipient = getPublicKey(generateSecretKey()), directInbox = 'cccccc
 const config = { relays: [], recipients: [{ npub_hex: directRecipient, name: 'Codex Test', inbox: directInbox }], public: {
   relays: [], inbox, staging_inbox: staging, watch_authors: [], watch_events: [watched], approvers: [],
   trusted_repliers: [trusted],
-  policy_writer: { mode: 'remote-only', operations: ['quarantine_header', 'standing_trusted_reply', 'sealed_direct_envelope'], policy_instance: 'jaf-hive', catalogue_version: catalogue,
+  policy_writer: { mode: 'remote-only', operations: ['quarantine_header', 'standing_trusted_reply', 'sealed_direct_envelope', 'withdraw_repost'], policy_instance: 'jaf-hive', catalogue_version: catalogue,
     poster_pubkey: poster, endpoint_authority: endpoint, ssh_host: 'policy.example',
     ssh_user: 'waggle-policy-ingress', ssh_identity_file: '/etc/waggle/policy-client/writer_ed25519',
     ssh_known_hosts_file: '/etc/waggle/policy-client/known_hosts' },
@@ -60,7 +60,7 @@ ok('a recipients-only legacy config routes a direct wrap without touching public
   legacyProbe.status === 0 && legacyProbe.stdout.includes('legacy-route-ok') && !legacyProbe.stderr.includes('TypeError'))
 
 const B = await import('../src/bridge.mjs')
-const { route, routePublic, seen, postedMap, policyRequests, policyWriterInFlight, PUB,
+const { route, routePublic, routeDelete, seen, postedMap, policyRequests, policyWriterInFlight, PUB, recordPosted,
   retryRemotePolicyRequests, processRemotePolicyRequest, __setPolicyWriterRunnerForTests,
   unframePolicyWriterResponse } = B
 policyRequests.load()
@@ -70,13 +70,17 @@ const response = (raw, result = 'accepted') => {
   const request = JSON.parse(raw), source = request.evidence.source_event
   const requestDigest = createHash('sha256').update(raw).digest('hex')
   const operation = request.operation
-  const channel = operation === 'sealed_direct_envelope' ? directInbox : operation === 'standing_trusted_reply' ? inbox : staging
+  const channel = operation === 'withdraw_repost' ? postedMap.get(source.id)?.dest
+    : operation === 'sealed_direct_envelope' ? directInbox : operation === 'standing_trusted_reply' ? inbox : staging
+  const sourceIds = operation === 'withdraw_repost'
+    ? [source.id, request.evidence.deletion_event.id, request.evidence.prior_receipt.id]
+    : [source.id]
   const key = createHash('sha256').update(canonicalJson([1, 'jaf-hive', catalogue,
-    operation, [source.id], channel])).digest('hex')
+    operation, sourceIds, channel])).digest('hex')
   const accepted = result === 'accepted', completed = Math.floor(Date.now() / 1000)
   const fields = { version: 1, policy_instance: 'jaf-hive', operation,
     catalogue_version: catalogue, request_digest: requestDigest, idempotency_key: key,
-    source_ids: [source.id], buzz_channel: channel, endpoint_authority: endpoint,
+    source_ids: sourceIds, buzz_channel: channel, endpoint_authority: endpoint,
     buzz_event_id: accepted ? 'b'.repeat(64) : 'e'.repeat(64), result,
     reason_code: accepted ? 'accepted' : 'relay_refused', response_digest: 'f'.repeat(64), completed_at: completed }
   const receipt = wire(finalizeEvent({ kind: 30078, created_at: completed,
@@ -104,6 +108,54 @@ retryRemotePolicyRequests(); await wait()
 ok('retry uses byte-identical request bytes after the hold', firstRaw === retryRaw)
 ok('a verified accepted receipt closes debt and records the off-box Buzz event', !policyRequests.has(held.id) && seen.has(held.id) && postedMap.get(held.id)?.buzz === 'b'.repeat(64))
 ok('the off-box event enters the durable tripwire journal', readFileSync(join(tmp, 'send.log'), 'utf8').includes('"lane":"public-policy"'))
+
+PUB.authors.push(held.pubkey)
+let withdrawalRaw = ''
+__setPolicyWriterRunnerForTests(async raw => {
+  withdrawalRaw = raw
+  return `${canonicalJson({ status: 'held', result: null, receipt: null })}\n`
+})
+const deletion = wire(finalizeEvent({ kind: 5, created_at: Math.floor(Date.now() / 1000),
+  tags: [['e', held.id]], content: 'author withdrawal' }, generateSecretKey()))
+// Re-sign with the source key is impossible after note() discards it, so use a new complete
+// source/receipt pair below for the live bridge gate. This malformed author mismatch remains inert.
+routeDelete(deletion); await wait()
+ok('a deletion not signed by the source author cannot enter the remote queue', !withdrawalRaw)
+
+const withdrawSk = generateSecretKey(), withdrawSource = note('withdraw remotely', withdrawSk)
+__setPolicyWriterRunnerForTests(async raw => response(raw))
+routePublic(withdrawSource); await wait()
+PUB.authors.push(withdrawSource.pubkey)
+const withdrawDelete = wire(finalizeEvent({ kind: 5, created_at: Math.floor(Date.now() / 1000),
+  tags: [['e', withdrawSource.id]], content: 'withdraw remotely' }, withdrawSk))
+withdrawalRaw = ''
+__setPolicyWriterRunnerForTests(async raw => {
+  withdrawalRaw = raw
+  return `${canonicalJson({ status: 'held', result: null, receipt: null })}\n`
+})
+routeDelete(withdrawDelete); await wait()
+const withdrawalKey = createHash('sha256').update(canonicalJson([withdrawDelete.id, withdrawSource.id])).digest('hex')
+ok('remote withdrawal debt is durable before dispatch and contains no caller-selected Buzz target',
+  policyRequests.has(withdrawalKey) && JSON.parse(withdrawalRaw).operation === 'withdraw_repost' &&
+  !('target' in JSON.parse(withdrawalRaw)) && !('target_id' in JSON.parse(withdrawalRaw).evidence) &&
+  !seen.has(withdrawDelete.id) &&
+  !postedMap.get(withdrawSource.id).deleted)
+let withdrawalRetry = ''
+__setPolicyWriterRunnerForTests(async raw => { withdrawalRetry = raw; return response(raw) })
+retryRemotePolicyRequests(); await wait()
+ok('restart retry uses identical withdrawal evidence and retires debt only after durable completion',
+  withdrawalRetry === withdrawalRaw && !policyRequests.has(withdrawalKey) && seen.has(withdrawDelete.id) &&
+  postedMap.get(withdrawSource.id).deleted && readFileSync(join(tmp, 'send.log'), 'utf8').includes('"lane":"withdraw-policy"'))
+
+const legacySk = generateSecretKey(), legacySource = note('legacy local copy', legacySk)
+PUB.authors.push(legacySource.pubkey)
+recordPosted({ id: legacySource.id, author: legacySource.pubkey, buzz: 'a'.repeat(64), dest: staging, q: true })
+const legacyDelete = wire(finalizeEvent({ kind: 5, created_at: Math.floor(Date.now() / 1000),
+  tags: [['e', legacySource.id]], content: '' }, legacySk))
+routeDelete(legacyDelete); await wait()
+ok('legacy rows without signed policy evidence hold closed instead of falling back to the local writer',
+  !seen.has(legacyDelete.id) && !postedMap.get(legacySource.id).deleted &&
+  !policyRequests.entries().some(({ requestRaw }) => requestRaw.includes(legacyDelete.id)))
 
 let standingRaw = ''
 __setPolicyWriterRunnerForTests(async raw => { standingRaw = raw; return response(raw) })
