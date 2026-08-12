@@ -35,6 +35,7 @@ import { BunkerSigner, parseBunkerInput } from 'nostr-tools/nip46'
 import * as nip19 from 'nostr-tools/nip19'
 import { signDmRelayList } from './dm_relay_list_lib.mjs'
 import { recipientDmRelays } from '../src/dm_relays.mjs'
+import { DEFAULT_PUBLIC_RELAYS, relaySet } from '../src/relays.mjs'
 
 const args = process.argv.slice(2)
 const flag = (name, fallback = '') => { const i = args.indexOf(name); return i < 0 ? fallback : args[i + 1] || '' }
@@ -87,8 +88,9 @@ async function resolveSigner() {
 const signer = await resolveSigner()
 const pubkey = String(signer.pubkey || '').toLowerCase()
 
-const relays = String(process.env.RELAY_RELAYS || 'wss://nos.lol,wss://relay.primal.net,wss://relay.nave.pub')
-  .split(',').map(s => s.trim()).filter(Boolean)
+// nave.pub on top of the default set: this list is what tells a sender where to reach a Nave/Buzz
+// identity, and leaving out the relay that community actually runs on makes the list wrong there.
+const relays = relaySet(process.env.RELAY_RELAYS, [...DEFAULT_PUBLIC_RELAYS, 'wss://relay.nave.pub'])
 const dmRelays = String(flag('--dm-relays', process.env.DM_RELAYS || relays.join(','))).split(',').map(s => s.trim())
 let event
 // signDmRelayList refuses on identity mismatch BEFORE asking for a signature, and re-checks the
