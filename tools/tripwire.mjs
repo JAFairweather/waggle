@@ -27,6 +27,7 @@ import { getPublicKey } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import { loadBunkerSignerFiles, makeLocalSigner } from '../src/nostr_signer.mjs'
 import { buildTripwireAlarmWrap } from './tripwire_alarm_lib.mjs'
+import { credentialModeIsPrivate } from '../src/credential_file.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const arg = (n, d) => { const i = process.argv.indexOf(n); return i === -1 ? d : process.argv[i + 1] }
@@ -60,7 +61,7 @@ function credential(name) {
   let st
   try { st = lstatSync(path) } catch (e) { die(`${name}_FILE cannot be read: ${e.message}`) }
   if (!st.isFile() || st.isSymbolicLink()) die(`${name}_FILE must be a regular non-symlink file`)
-  if ((st.mode & 0o077) !== 0) die(`${name}_FILE must not be group/world accessible`)
+  if (!credentialModeIsPrivate(path, st)) die(`${name}_FILE must not be group/world accessible outside systemd's protected credential mount`)
   if (st.size < 1 || st.size > 512) die(`${name}_FILE has an invalid size`)
   try { return readFileSync(path, 'utf8').trim() } catch (e) { die(`${name}_FILE cannot be read: ${e.message}`) }
 }

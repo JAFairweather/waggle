@@ -348,6 +348,11 @@ const CATALOGUE = {
       'empty body': () => 'empty body',
       'rate cap': () => 'rate cap',
       'over cap': ({ cap }) => `over ${num(cap, 'cap')}B cap`,
+      // Buzz refused the post and declared it non-retryable, so waggle stopped rather than
+      // replaying it forever. Deliberately says only THAT it was refused, never why: Buzz's
+      // message is platform free text and the whole point of this table is that no free text
+      // reaches the wire. The reason is in the journal and the undelivered record.
+      'refused by buzz': () => 'refused by buzz',
     },
     build: ({ reason, channel, ts, cap }, spec) => {
       const render = spec.reasons[reason]
@@ -364,19 +369,37 @@ const CATALOGUE = {
   // relay will not serve. The prose is here; the caller supplies who, why, and the body.
   return_carry: {
     whys: ['mention', 'reply'],
-    // `channel` is OPTIONAL and, when given, is the difference between a notice you can act on and
-    // one you cannot. "Replying reaches nobody" is true and useless: it does not say what would
-    // work. A reply needs a `relay` tag naming a channel, and a recipient who has not read
-    // DESIGN_RELAY_INGRESS has no way to know which. They already receive this channel's traffic,
-    // so naming it discloses nothing new — `relay_ack_ok` returns the same id to the same party.
-    build: ({ mention, why, body, channel = null }, spec) => {
+    // Two OPTIONAL slots, added independently and both kept on merge (#352 author, #357 channel).
+    //
+    // `author` is who wrote the carried message. Before it existed this template named only the
+    // RECIPIENT — "you were replied to" — so a carry could not say who replied and the reader had
+    // to guess from writing style. Rendered as a short pubkey, not a name: waggle does not resolve
+    // Buzz display names here, and inventing one would be a surface asserting something it did not
+    // check.
+    //
+    // `channel`, when given, is the difference between a notice you can act on and one you cannot.
+    // "Replying reaches nobody" is true and useless: it does not say what would work. A reply needs
+    // a `relay` tag naming a channel, and a recipient who has not read DESIGN_RELAY_INGRESS has no
+    // way to know which. They already receive this channel's traffic, so naming it discloses
+    // nothing new.
+    //
+    // Both are optional ON PURPOSE. A carry queued before either shipped has neither, and a
+    // template that rejected it would turn a pending message into a dead letter. A missing author
+    // renders as an explicit "not recorded" rather than being quietly omitted — an unattributed
+    // message and an unattributable one must not look identical. A missing channel leaves the
+    // wording byte-identical to what the lane has always sent.
+    build: ({ mention, why, body, channel = null, author }, spec) => {
       if (!spec.whys.includes(why)) reject(`carry reason not in {${spec.whys.join('|')}}: ${JSON.stringify(why)}`)
       const ch = channel == null ? null : String(channel).toLowerCase()
       if (ch !== null && !UUID_RE.test(ch)) reject(`carry channel is not a UUID: ${JSON.stringify(channel)}`)
-      const head = `📥 **${handle(mention)}** — you were ${why === 'reply' ? 'replied to' : 'mentioned'} in the community.\n\n> ` +
+      const who = author == null || author === ''
+        ? '_author not recorded — this carry predates #352_'
+        : (/^[0-9a-f]{64}$/i.test(String(author))
+          ? `\`${String(author).toLowerCase().slice(0, 12)}…\``
+          : reject(`carry author is not a 64-char hex pubkey: ${JSON.stringify(String(author).slice(0, 24))}`))
+      const head = `📥 **${handle(mention)}** — you were ${why === 'reply' ? 'replied to' : 'mentioned'} in the community.\n\n` +
+        `from ${who}\n\n> ` +
         carried(body).replace(/\r/g, '').split('\n').join('\n> ')
-      // Without a channel the wording stays byte-identical to what the lane has always sent: a
-      // caller that cannot supply one must not get a worse notice than before.
       if (!ch) {
         return head + `\n\n_carried out by waggle's return lane. Replying to this message reaches nobody; ` +
           `post from your own key and the bridge brings it back in._`
