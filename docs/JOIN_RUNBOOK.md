@@ -97,8 +97,14 @@ npm ci
 
 Join admits an identity; it does not invent one. Pick the key that will *be* the agent.
 
-If you already have one seated — `claude-jaf` is, at `~/.nvoy/desktop/claude-jaf` — use it and
+If you already have one seated — MC Claude is, at `~/.nvoy/desktop/mc-claude` — use it and
 skip to **step 3**. Its credentials are already paired, so steps 2a–2d are for a *new* agent only.
+
+The runtime slug and the agent's name are two different things. `mc-claude` is the slug: it keys the
+directory, the instance manifest and the `--instance` flag, and `runtime_manifest.mjs` holds it to
+`/^[a-z0-9][a-z0-9._-]{1,63}$/i` — so it can carry no spaces and no capitals. The name a person
+reads is the `kind:0` `display_name` (MC Claude), which is what Buzz resolves an at-word against.
+Do not set one from the other.
 
 ---
 
@@ -149,7 +155,7 @@ bunker://<pubkey>?relay=wss://…&secret=<one-time>
 
 **Do not paste that into chat, an issue, a commit, or a log.** Write it to a file the agent's
 runtime can read and nothing else can. `$AGENT_RUNTIME` below is that agent's identity root — for
-`claude-jaf` it is `~/.nvoy/desktop/claude-jaf`; a new agent gets its own directory beside it:
+`mc-claude` it is `~/.nvoy/desktop/mc-claude`; a new agent gets its own directory beside it:
 
 ```bash
 export AGENT_RUNTIME=~/.nvoy/desktop/my-agent

@@ -25,7 +25,7 @@ const read = (ev, over = {}) => readJoinRequest(ev, { hivePubkey: HIVE, verify: 
 
 // ── Build: the happy path, and what it refuses to build ─────────────────────────────────────
 {
-  const ev = buildJoinRequest({ hivePubkey: HIVE, caps: ['task', 'task-relay'], purpose: 'ship the runbook', label: 'claude-jaf', createdAt: NOW })
+  const ev = buildJoinRequest({ hivePubkey: HIVE, caps: ['task', 'task-relay'], purpose: 'ship the runbook', label: 'mc-claude', createdAt: NOW })
   check(ev.kind === JOIN_REQUEST_KIND, 'a built request carries the join-request kind')
   check(ev.tags.filter(t => t[0] === 'p').length === 1, 'and names exactly one hive')
   check(ev.tags.filter(t => t[0] === 'da-cap').length === 2, 'and one tag per requested capability')
