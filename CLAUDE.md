@@ -180,14 +180,14 @@ that merely ran.** The suite was green through all of them.
 
 ## Tests
 
-`npm test` — 73 suites, against the real exported functions with synthetic events. No sockets,
+`npm test` — 74 suites, against the real exported functions with synthetic events. No sockets,
 no production state, no writes outside a temp dir.
 
 boot · install state · config example coverage · host bootstrap · host facts · suite roster · off-box policy protocol · standing trusted-reply policy · policy receipt verification · derive-only shadow client · shadow-mode gate · policy journal · policy-owned Buzz artifacts · off-box policy service · policy request queue · remote-only policy gate · forced-command policy runner · policy-host deployment · Nostr remote signer · read resilience · egress catalogue · egress ban · durable dedup store · relay fan-out · quarantine gating · deletion propagation · sealed-lane rate caps · grant
 admission · admission return-lane lifecycle · member seating · message rendering · deployed-build verification · routing-policy snapshot · latency trace · return lane · return-lane scan · typed channel task carry ·
-return-lane no-miss · return-lane pending · relay ingress · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · recipient DM relays · DM relay-list publisher · watchlist hot-reload · signed owner control state · signed trust tiers · trust-gradient lane vocabulary · agent lifecycle catalogue · agent lifecycle lane · capability issue paths · agent challenge gate · console importmap coverage · console access list · capability vocabulary · challenge registry · join request · join approval · mint identity · console agent key mint · bunker custody proof · connect plan · agent install state · scope hash · console vocabulary
+return-lane no-miss · return-lane pending · relay ingress · tripwire setup · tripwire union · tripwire detection drill · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · recipient DM relays · DM relay-list publisher · watchlist hot-reload · signed owner control state · signed trust tiers · trust-gradient lane vocabulary · agent lifecycle catalogue · agent lifecycle lane · capability issue paths · agent challenge gate · console importmap coverage · console access list · capability vocabulary · challenge registry · join request · join approval · mint identity · bunker custody proof · console agent key mint · connect plan · agent install state · scope hash · console vocabulary
 
-CI runs them on push and PR. **If a run reports fewer than 73, the branch is on a stale base.**
+CI runs them on push and PR. **If a run reports fewer than 74, the branch is on a stale base.**
 The count of record is the `test` script in `package.json`; a prose count that disagrees with it
 is the prose being wrong.
 

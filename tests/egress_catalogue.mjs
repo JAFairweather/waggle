@@ -246,6 +246,14 @@ console.log('\n-- The Nostr transport catalogue (§2.5) --')
   ok('relay_ack_err: the over-cap reason renders byte-identically to the pre-A3 wire',
     errBody.reason === 'over 16384B cap')
 
+  // #336: a Buzz refusal waggle will not retry. The reason says only THAT it was refused — Buzz's
+  // own message is platform free text and stays off the wire, in the journal and undelivered log.
+  const refusedBody = JSON.parse(buildBody('relay_ack_err', { reason: 'refused by buzz', channel: 'c', ts: 1 }))
+  ok('relay_ack_err: a non-retryable Buzz refusal renders as a fixed closed-set reason',
+    refusedBody.ok === false && refusedBody.reason === 'refused by buzz')
+  threw('NEGATIVE CONTROL — Buzz\'s own refusal text cannot ride the ack as a reason',
+    () => buildBody('relay_ack_err', { reason: "mention '@claude' does not match a current channel member", channel: 'c', ts: 1 }))
+
   threw('NEGATIVE CONTROL — an ack reason outside the closed set is refused',
     () => buildBody('relay_ack_err', { reason: 'anything I feel like saying', channel: 'c', ts: 1 }))
   threw('NEGATIVE CONTROL — a carry reason outside the closed set is refused',
@@ -253,20 +261,51 @@ console.log('\n-- The Nostr transport catalogue (§2.5) --')
   threw('NEGATIVE CONTROL — a template outside the Nostr catalogue is refused',
     () => buildBody('freeform', { text: 'anything I feel like saying' }))
 
-  // A3 changes what waggle CAN say, never what crosses. The return lane's carried text moved from
-  // an inline template literal in bridge.mjs into the catalogue, so pin it byte-for-byte against
-  // the pre-#134 string — the existing return-lane suites assert only on WHETHER a carry happened,
-  // never on its bytes, so nothing else would have caught a drifted word here.
+  // A3 changed what waggle CAN say, never what crosses. The return lane's carried text moved from
+  // an inline template literal in bridge.mjs into the catalogue, so it is pinned byte-for-byte —
+  // the existing return-lane suites assert only on WHETHER a carry happened, never on its bytes,
+  // so nothing else would catch a drifted word here.
+  //
+  // #352 changes these bytes DELIBERATELY, and the pin moves with it rather than being relaxed.
+  // The old wire named only the recipient ("you were replied to"), so a carry could not say who
+  // wrote it — on the primary read path for an outside agent, that is the difference between
+  // answering "did Neil reply?" and guessing from writing style. An `from <pubkey>` line is added.
+  const AUTHOR = 'b'.repeat(64)
   for (const [why, verb] of [['mention', 'mentioned'], ['reply', 'replied to']]) {
     const body = 'line one\nline two'
-    const expected =
-      `📥 **claude** — you were ${verb} in the community.\n\n> ` +
-      body.replace(/\r/g, '').split('\n').join('\n> ') +
+    const tail = body.replace(/\r/g, '').split('\n').join('\n> ') +
       `\n\n_carried out by waggle's return lane. Replying to this message reaches nobody; ` +
       `post from your own key and the bridge brings it back in._`
-    ok(`return_carry (${why}): byte-identical to the pre-A3 wire`,
-      buildBody('return_carry', { mention: 'claude', why, body }) === expected)
+    ok(`return_carry (${why}): byte-identical to the #352 wire, author named`,
+      buildBody('return_carry', { mention: 'claude', why, body, author: AUTHOR }) ===
+      `📥 **claude** — you were ${verb} in the community.\n\nfrom \`${'b'.repeat(12)}…\`\n\n> ${tail}`)
+    // A carry queued before #352 has no author. It must still build — rejecting would turn a
+    // pending message into a dead letter over a field that did not exist when it was enqueued —
+    // and must say so EXPLICITLY. "no attribution line" and "unattributable" must not look alike.
+    ok(`return_carry (${why}): a pre-#352 carry still builds, and says the author is unrecorded`,
+      buildBody('return_carry', { mention: 'claude', why, body }) ===
+      `📥 **claude** — you were ${verb} in the community.\n\nfrom _author not recorded — this carry predates #352_\n\n> ${tail}`)
   }
+  // Both directions. A test that only checked "the author appears" cannot tell "renders the author"
+  // from "renders something" — pin that a DIFFERENT author renders differently.
+  ok('return_carry: a different author renders differently — the field is read, not decorative',
+    buildBody('return_carry', { mention: 'claude', why: 'reply', body: 'x', author: 'a'.repeat(64) }) !==
+    buildBody('return_carry', { mention: 'claude', why: 'reply', body: 'x', author: 'b'.repeat(64) }))
+  // The author is a pubkey, and anything else is refused rather than rendered. A display name here
+  // would be attacker-controlled text in an attribution line — a carried name that can mint an
+  // at-word is #336 with extra steps.
+  for (const bad of ['Neil', 'b'.repeat(63), '', 'npub1' + 'q'.repeat(58), 'B'.repeat(64) + 'x']) {
+    if (bad === '') continue                                   // empty is the pre-#352 case above
+    let threw = false
+    try { buildBody('return_carry', { mention: 'claude', why: 'reply', body: 'x', author: bad }) }
+    catch { threw = true }
+    ok(`return_carry: refuses a non-pubkey author ${JSON.stringify(bad.slice(0, 12))}`, threw)
+  }
+  // …and a legitimate value still gets through. Pairing every refusal with an acceptance is the
+  // 2026-08-01 lesson: a validator asserted only to reject also rejected every real recipient.
+  ok('return_carry: an uppercase hex pubkey is accepted and normalised, not refused',
+    buildBody('return_carry', { mention: 'claude', why: 'reply', body: 'x', author: 'A'.repeat(64) })
+      .includes(`\`${'a'.repeat(12)}…\``))
 
   const carry = buildBody('return_carry', { mention: 'claude', why: 'mention', body: HOSTILE })
   ok('return_carry: the community body is quoted, never waggle\'s own voice',

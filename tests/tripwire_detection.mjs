@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url'
 import { generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import { WebSocketServer } from 'ws'
+import { credentialModeIsPrivate } from '../src/credential_file.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '..')
@@ -151,6 +152,18 @@ try {
     /ALARM NOT DELIVERED/.test(pos.out))
 
   console.log('\nalarm credential files')
+  check('ordinary owner-only credential mode is accepted',
+    credentialModeIsPrivate('/etc/waggle-tripwire/alarm.to', { mode: 0o100600, uid: 0, gid: 0 }, ''))
+  check('systemd root-owned 0440 projection is accepted only inside its credential mount',
+    credentialModeIsPrivate('/run/credentials/waggle-tripwire.service/alarm.to',
+      { mode: 0o100440, uid: 0, gid: 0 }, '/run/credentials/waggle-tripwire.service'))
+  check('ordinary 0440 credential files remain refused',
+    !credentialModeIsPrivate('/etc/waggle-tripwire/alarm.to', { mode: 0o100440, uid: 0, gid: 0 }, ''))
+  check('a fake credential directory outside /run/credentials remains refused',
+    !credentialModeIsPrivate('/tmp/fake/alarm.to', { mode: 0o100440, uid: 0, gid: 0 }, '/tmp/fake'))
+  check('a non-root or nested systemd projection remains refused',
+    !credentialModeIsPrivate('/run/credentials/waggle-tripwire.service/sub/alarm.to',
+      { mode: 0o100440, uid: 1000, gid: 1000 }, '/run/credentials/waggle-tripwire.service'))
   const credentials = resolve(dir, 'credentials')
   const init = spawnSync('node', [INIT, '--directory', credentials, '--recipient', POSTER], { encoding: 'utf8' })
   check('initializer succeeds without accepting a secret', init.status === 0, init.stderr)

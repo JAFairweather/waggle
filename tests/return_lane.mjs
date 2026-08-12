@@ -10,11 +10,25 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { getPublicKey, generateSecretKey } from 'nostr-tools/pure'
+import * as nip44 from 'nostr-tools/nip44'
 
 const dir = mkdtempSync(resolve(tmpdir(), 'wb-rl-'))
 const bridgeSk = generateSecretKey()
-const participant = getPublicKey(generateSecretKey())
+const participantSk = generateSecretKey()
+const participant = getPublicKey(participantSk)
 const stranger = getPublicKey(generateSecretKey())
+const participant2 = getPublicKey(generateSecretKey())   // a SECOND author, so attribution can be told apart
+
+// Open a 1059 the way the recipient's own runtime would: unwrap to the seal with the wrap's
+// ephemeral key, then unseal to the rumor with the seal author's. Doing it for real — rather than
+// reaching into a descriptor — is what makes the assertion about what the reader actually sees.
+const openWrapAs = async (sk, wrap) => {
+  try {
+    const seal = JSON.parse(nip44.decrypt(wrap.content, nip44.getConversationKey(sk, wrap.pubkey)))
+    const rumor = JSON.parse(nip44.decrypt(seal.content, nip44.getConversationKey(sk, seal.pubkey)))
+    return String(rumor.content || '')
+  } catch { return null }
+}
 
 writeFileSync(resolve(dir, 'config.json'), JSON.stringify({
   relays: [], recipients: [],
@@ -73,6 +87,38 @@ ok('a mention followed by punctuation still matches', journal().length === 3)
 
 await scanReturnLane([{ id: 'm7', pubkey: stranger, content: '@claude' }])
 ok('a mention alone on the line matches', journal().length === 4)
+
+// --- #352: the carry says WHO wrote it ------------------------------------------------------
+// End-to-end, through the real wrap, not by inspecting a descriptor. The bridge held the author's
+// pubkey all along and simply did not pass it, so every carried reply arrived attributed to
+// waggle — the carrier — and a reader could not answer "who said this?" except by writing style.
+//
+// This is asserted on the DECRYPTED body because the send journal records only {lane, to, kind}.
+// A test that asserted on carryDescriptor's slots would be asserting the mechanism; what matters
+// is that the author reaches the text the recipient actually reads. Written after a mutation —
+// dropping the author in bridge.mjs — passed all 69 suites, which means the wiring had no cover
+// at all and only the template was tested.
+{
+  const wraps = []
+  const capture = async (wrap) => { wraps.push(wrap); return 1 }
+  await scanReturnLane([{ id: 'm8', pubkey: stranger, content: 'over to @claude' }], { publish: capture })
+  ok('the carry was captured for inspection', wraps.length === 1)
+  const body = await openWrapAs(participantSk, wraps[0])
+  ok('the carried text names the author, not only the recipient',
+    !!body && body.includes(stranger.slice(0, 12)))
+  // Both directions, or "names the author" cannot be told from "contains some hex".
+  const other = []
+  await scanReturnLane([{ id: 'm9', pubkey: participant2, content: 'also for @claude' }],
+    { publish: async (w) => { other.push(w); return 1 } })
+  const body2 = await openWrapAs(participantSk, other[0])
+  ok('a different author produces a different attribution — the field is read, not decorative',
+    !!body2 && body2.includes(participant2.slice(0, 12)) && !body2.includes(stranger.slice(0, 12)))
+  // The recipient is still named. The author line must ADD identification, not replace it.
+  ok('the recipient is still named alongside the author', !!body && body.includes('claude'))
+  // And the message itself still crosses intact — an attribution line that ate the body would
+  // pass every assertion above.
+  ok('the carried body is still there, unchanged', !!body && body.includes('over to @claude'))
+}
 
 console.log(fails ? `\nRETURN LANE FAIL — ${fails}` : '\nRETURN LANE PASS — carries mentions out, and nothing else')
 process.exit(fails ? 1 : 0)
