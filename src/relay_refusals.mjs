@@ -74,7 +74,12 @@ export function refusalLedger({ cap = 64, log = () => {} } = {}) {
       const r = row(url)
       r.lastAt = at
       if (r.firstAt === null) r.firstAt = at
-      if (accepted) { r.accepted++; return 'accepted' }
+      // An accept ENDS the refusal episode, so the next refusal is logged even if it repeats the
+      // last reason. Without this, "this relay started refusing again after a week" is silently
+      // folded into "this relay is still refusing" — two different events for an operator, and only
+      // the first is actionable. A relay that genuinely alternates will now log each episode; that
+      // is noisier and correct, because alternating IS a different condition from steady refusal.
+      if (accepted) { r.accepted++; r.key = null; return 'accepted' }
       r.refused++
       const key = refusalKey(reason)
       if (r.key === key) return 'suppressed'
