@@ -12,7 +12,8 @@
   ],
   "public": {
     "_comment": "Public kind:1 read lane. Phase-0 safety gates: quarantine + bounds + rate limits.",
-    "relays": ["wss://nos.lol", "wss://relay.primal.net"],
+    "_relays_comment": "The outbound set for sealed wraps AND the read lane. Keep it at three or more: on 2026-08-08 this list was exactly the two below, nos.lol began refusing waggle's ~8KB gift-wraps for want of 28 bits of NIP-13 proof-of-work, and the lane silently had no redundancy left (#345). Each extra relay is one more party holding the envelope metadata, so this is a trade, not a free win. The defaults live in src/relays.mjs.",
+    "relays": ["wss://nos.lol", "wss://relay.primal.net", "wss://relay.ditto.pub", "wss://jskitty.com/nostr"],
     "inbox": "COMMUNITY_READ_LANE_UUID",
     "staging_inbox": "<channel name or UUID for pending posts; may EQUAL inbox for a single-channel lifecycle (pending and released together); omit => hold-and-log>",
     "watch_authors": ["<hex pubkey of a trusted author whose kind:1 posts publish straight to the community channel>"],

@@ -30,9 +30,9 @@ import { tmpdir } from 'node:os'
 import { join as joinPath } from 'node:path'
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19 } from 'nostr-tools'
 import { buildJoinRequest, REQUESTABLE_CAPS } from '../src/join_request.mjs'
+import { relaySet } from '../src/relays.mjs'
 
-const RELAYS = (process.env.JOIN_RELAYS || 'wss://nos.lol,wss://relay.primal.net,wss://relay.ditto.pub')
-  .split(',').map(s => s.trim()).filter(Boolean)
+const RELAYS = relaySet(process.env.JOIN_RELAYS)
 
 const arg = (name, fallback = null) => {
   const i = process.argv.indexOf(`--${name}`)

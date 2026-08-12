@@ -27,8 +27,11 @@
 import WebSocket from 'ws'
 import { finalizeEvent, getPublicKey, nip19 } from 'nostr-tools'
 import { createHash } from 'node:crypto'
+import { DEFAULT_PUBLIC_RELAYS } from '../src/relays.mjs'
 
-const TRIO = ['wss://nos.lol', 'wss://relay.primal.net']
+// One definition, in src/relays.mjs. This constant was named TRIO and held two entries — which is
+// the shape of the bug in #345: nobody rereads a name they wrote themselves.
+const TRIO = DEFAULT_PUBLIC_RELAYS
 const now = () => Math.floor(Date.now() / 1000)
 const die = (m) => { console.error(`publish_relay_list: ${m}`); process.exit(1) }
 

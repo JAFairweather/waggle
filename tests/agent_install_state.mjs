@@ -14,7 +14,7 @@
 //
 //   node tests/agent_install_state.mjs
 
-import { installState, renderState, ARTIFACTS, ARTIFACT_KEYS, PRESENT, UNVERIFIED, MISSING, UNKNOWN }
+import { installState, renderState, foreignNvoyServers, ARTIFACTS, ARTIFACT_KEYS, PRESENT, UNVERIFIED, MISSING, UNKNOWN }
   from '../src/agent_install_state.mjs'
 
 let pass = true
@@ -139,6 +139,64 @@ check(ARTIFACTS.some(a => a.blocking) && ARTIFACTS.some(a => !a.blocking),
   // And prove exit 0 is reachable at all, or "never returns 0" would pass by refusing everything.
   check(installState(complete).exitCode === 0,
     'NEGATIVE CONTROL — a fully observed agent DOES reach exit 0, so the bar is not "always fail"')
+}
+
+// ── #380 — registered is not SOLE ───────────────────────────────────────────────────────────
+// #338's defect left `nvoy-oliver` correctly registered and instance-bound. Asking "is my server
+// there?" answered yes. The tools that SIGN were on a bare `nvoy` sitting beside it, hard-wired
+// to one identity, so the session held fifteen tools pointed at a teammate.
+//
+// Fixtures use the real output shape, real instance names, and a path containing a space — the
+// 2026-08-01 outage was a name with a space against a suite where every name was `A` or `Dennis`.
+{
+  const DIRTY = [
+    'nvoy: node /Users/op/Projects/nvoy/mcp/dist/server.js - ✔ Connected',
+    'nvoy-oliver: /Users/op/My Tools/node /Users/op/connect/claude-channel.mjs --instance oliver - ✘ Failed to connect',
+    'nvoy-lukedog: /Users/op/My Tools/node /Users/op/connect/claude-channel.mjs --instance lukedog - ✘ Failed to connect',
+    'github: docker run ghcr.io/github/github-mcp-server - ✔ Connected',
+  ].join('\n')
+
+  const dirty = foreignNvoyServers(DIRTY, 'oliver')
+  check(dirty.includes('nvoy'),
+    'the bare `nvoy` beside a correct nvoy-oliver is reported — the #338 configuration exactly')
+  check(dirty.includes('nvoy-lukedog'),
+    'another agent’s instance server is foreign too — it signs, just not as oliver')
+  check(!dirty.includes('nvoy-oliver'), 'the agent’s OWN server is not reported against it')
+  check(!dirty.includes('github'), 'a path containing a space does not turn an unrelated server into an nvoy one')
+
+  // BOTH DIRECTIONS. A check that only ever finds a conflict cannot be told from one that calls
+  // everything a conflict, and that version would still pass every assertion above.
+  const CLEAN = [
+    'nvoy-oliver: /Users/op/My Tools/node /Users/op/connect/claude-channel.mjs --instance oliver - ✘ Failed to connect',
+    'github: docker run ghcr.io/github/github-mcp-server - ✔ Connected',
+  ].join('\n')
+  check(Array.isArray(foreignNvoyServers(CLEAN, 'oliver')) && foreignNvoyServers(CLEAN, 'oliver').length === 0,
+    'a correctly provisioned session reports NO conflict — the guard is not "refuse everything"')
+
+  // The distinction this whole module exists to keep: could-not-look is not clean.
+  check(foreignNvoyServers(null, 'oliver') === null,
+    '`claude mcp list` unavailable returns null, NOT an empty array')
+  check(foreignNvoyServers(undefined, 'oliver') === null, 'and so does a missing argument')
+
+  // NEGATIVE CONTROL — a version returning [] on null passes "clean → []" identically. This is
+  // the assertion that tells them apart, so state it as the thing being relied on.
+  const collapsed = (out) => (typeof out === 'string' ? foreignNvoyServers(out, 'oliver') : [])
+  check(collapsed(null).length === 0 && foreignNvoyServers(null, 'oliver') === null,
+    'NEGATIVE CONTROL — a null-collapses-to-empty version WOULD read as clean; the real one returns null')
+}
+{
+  // And the report wiring: unknown must reach UNKNOWN (exit 3), a conflict must reach MISSING and
+  // BLOCK (exit 1). Assert the outcome, not just that something was flagged.
+  const conflicted = installState({ ...complete, 'mcp-exclusive': { found: false, note: 'also registered: nvoy' } })
+  check(conflicted.outcome === 'incomplete' && conflicted.exitCode === 1,
+    'a foreign nvoy server is BLOCKING — exit 1, not a warning the operator can read past')
+  check(conflicted.missing.includes('mcp-exclusive'), 'and it is named in the report')
+
+  const unlooked = installState({ ...complete, 'mcp-exclusive': { found: null } })
+  check(unlooked.outcome === 'inconclusive' && unlooked.exitCode === 3,
+    'and being unable to run `claude mcp list` is INCONCLUSIVE (3), never clean (0)')
+  check(installState(complete).exitCode === 0,
+    'while an exclusive registration still reaches exit 0 — the new artifact is satisfiable')
 }
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)

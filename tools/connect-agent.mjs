@@ -34,7 +34,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { installState, renderState } from '../src/agent_install_state.mjs'
+import { foreignNvoyServers, installState, renderState } from '../src/agent_install_state.mjs'
 
 const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (process.argv[i + 1] || '') }
 const has = n => process.argv.includes(n)
@@ -160,15 +160,28 @@ see('channel-key', existsSync(keyPath), keyOk, existsSync(keyPath) ? (keyOk ? 'm
 
 // ── MCP registration. Reported, never written: it edits the operator's own config, and this tool
 // prints the exact command rather than reaching into it. ────────────────────────────────────
-let registered = null, regNote = ''
+let registered = null, regNote = '', mcpList = null
 try {
-  const list = execFileSync('claude', ['mcp', 'list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30000 })
-  registered = new RegExp(`^nvoy-${name}:`, 'm').test(list)
+  mcpList = execFileSync('claude', ['mcp', 'list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30000 })
+  registered = new RegExp(`^nvoy-${name}:`, 'm').test(mcpList)
   regNote = registered
     ? 'registered — note that "Failed to connect" here is EXPECTED while the real channel holds the lock'
     : `not registered. Run:\n      claude mcp add nvoy-${name} -s user -e NVOY_INSTANCE_ROOT=${instDir} -- <node> <path>/claude-channel.mjs --instance ${name}`
-} catch { registered = null; regNote = 'could not run `claude mcp list` — INCONCLUSIVE, not absent' }
+} catch { mcpList = null; registered = null; regNote = 'could not run `claude mcp list` — INCONCLUSIVE, not absent' }
 see('mcp-registration', registered, false, regNote)
+
+// Registered is not SOLE. #338: the acting tools live on a generically-named server that is not
+// instance-bound, so a correct `nvoy-<name>` alongside a bare `nvoy` still signs as somebody else.
+// This is the MCP path's EXPECT_PUBKEY — the Bunker path hard-stops on a key mismatch, and until
+// now this one had no guard at all.
+const foreign = foreignNvoyServers(mcpList, name)
+see('mcp-exclusive', foreign === null ? null : foreign.length === 0, foreign !== null && foreign.length === 0,
+  foreign === null
+    ? 'could not run `claude mcp list` — INCONCLUSIVE, not absent'
+    : foreign.length === 0
+      ? `nvoy-${name} is the only nvoy server registered`
+      : `also registered: ${foreign.join(', ')} — these carry the tools that SIGN, and not as ${name}. Remove with \`claude mcp remove <name>\` before acting.`)
+if (foreign?.length) warn.push(`${foreign.join(', ')} would sign as another identity from this session`)
 see('channel-answers', registered === true ? true : null, false, 'registered is not running — prove with an initialize + tools/list handshake')
 
 // ── Report ──────────────────────────────────────────────────────────────────────────────────

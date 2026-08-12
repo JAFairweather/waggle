@@ -6,6 +6,7 @@ import { finalizeEvent } from 'nostr-tools/pure'
 import { nip19 } from 'nostr-tools'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { DEFAULT_PUBLIC_RELAYS, relaySet } from '../src/relays.mjs'
 
 const TARGET = process.argv[2]
 if (!/^[0-9a-f]{64}$/.test(TARGET || '')) { console.error('usage: retract.mjs <64-hex event id>'); process.exit(1) }
@@ -18,9 +19,10 @@ for (const line of readFileSync(homedir() + '/.nvoy/claude-identity.env', 'utf8'
 if (!nsec) { console.error('no NVOY_NSEC'); process.exit(1) }
 const sk = nsec.startsWith('nsec') ? nip19.decode(nsec).data : Uint8Array.from(nsec.match(/../g).map(b => parseInt(b, 16)))
 
-const RELAYS = ['wss://nos.lol', 'wss://relay.primal.net',
-                'wss://relay.ditto.pub', 'wss://jskitty.com/nostr', 'wss://asia.vectorapp.io',
-                'wss://relay.dreamith.to']
+// Deliberately WIDER than the default set. Deletion is a request, not a guarantee (see the header),
+// so the question this tool answers is "who is still serving it" — and a relay left out of the
+// sweep is a relay that answers "no" by not being asked.
+const RELAYS = relaySet([...DEFAULT_PUBLIC_RELAYS, 'wss://asia.vectorapp.io', 'wss://relay.dreamith.to'].join(','))
 const pool = new SimplePool()
 
 const del = finalizeEvent({

@@ -28,6 +28,7 @@ import * as nip19 from 'nostr-tools/nip19'
 import { loadBunkerSignerFiles, makeLocalSigner } from '../src/nostr_signer.mjs'
 import { buildTripwireAlarmWrap } from './tripwire_alarm_lib.mjs'
 import { credentialModeIsPrivate } from '../src/credential_file.mjs'
+import { DEFAULT_PUBLIC_RELAYS } from '../src/relays.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const arg = (n, d) => { const i = process.argv.indexOf(n); return i === -1 ? d : process.argv[i + 1] }
@@ -127,7 +128,7 @@ function loadRelays() {
   const out = new Set()
   if (process.env.BUZZ_RELAY_URL) out.add(process.env.BUZZ_RELAY_URL)
   try { const c = JSON.parse(readFileSync(resolve(ROOT, 'config.json'), 'utf8')); for (const r of c.public?.relays || []) out.add(r) } catch { /* fall through */ }
-  if (!out.size) ['wss://nos.lol', 'wss://relay.primal.net'].forEach(r => out.add(r))
+  if (!out.size) DEFAULT_PUBLIC_RELAYS.forEach(r => out.add(r))
   return [...out]
 }
 
