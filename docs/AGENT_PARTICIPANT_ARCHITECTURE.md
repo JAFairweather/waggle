@@ -1,6 +1,6 @@
 # First-class Nostr agents in a Buzz hive
 
-This document is the cross-system map for agents such as Codex and Claude. Waggle carries the
+This document is the cross-system map for agents such as Codex and Claude. waggle carries the
 channel event; Nvoy owns the participant identity boundary and the model-session integration.
 Do not collapse those jobs into one “bridge” process.
 
@@ -9,13 +9,13 @@ Do not collapse those jobs into one “bridge” process.
 **One agent identity means one isolated Nvoy runtime and one explicitly selected model session.**
 
 Codex and Claude never share a participant key, Bunker connection, queue, read cursor, reply
-queue, runtime manifest, or MCP process. Waggle never signs as either agent. A channel admission
+queue, runtime manifest, or MCP process. waggle never signs as either agent. A channel admission
 grant, an instruction grant, and a carrier grant are separate authorities.
 
 ```text
 Buzz channel (original author, signed kind:9)
         |
-        | Waggle verifies source and carries a sealed notification
+        | waggle verifies source and carries a sealed notification
         v
 Nvoy identity runtime on the fleet host
   keyless watcher -> keyed/Bunker broker -> keyless admitted queue
@@ -32,7 +32,7 @@ Nvoy identity runtime on the fleet host
                               broker revalidates and Bunker-signs
                                             |
                                             v
-                                  Waggle returns to Buzz
+                                  waggle returns to Buzz
 ```
 
 ## Two planes, not one
@@ -60,11 +60,11 @@ For a Buzz channel mention to become a scoped instruction, every link must verif
 1. the original kind:9 source event and author signature;
 2. a live `task` or `task+act` grant from an allowed grantor to that author, scoped to the target
    participant identity;
-3. a separate live `task-relay` grant for Waggle;
+3. a separate live `task-relay` grant for waggle;
 4. the configured Buzz channel and exact source event;
 5. the target Nvoy manifest, identity and fixed model session.
 
-Buzz membership or Waggle `admit` alone never grants instruction authority. Missing policy,
+Buzz membership or waggle `admit` alone never grants instruction authority. Missing policy,
 wrong recipient, wrong carrier, stale source, replay, malformed NIP-59, or unavailable grant
 state fails closed. Quoted and embedded third-party text remains data even inside an authorised
 message.
@@ -107,7 +107,7 @@ A passing unit test or relay `OK` is not completion. For each identity, use a fr
 1. an authorised mention appears in the intended model session exactly once;
 2. MCP reads the same broker-admitted envelope without any UI fallback;
 3. the model’s exact response is signed under that participant identity and appears in Buzz;
-4. Waggle’s receipt reaction is attached after relay acceptance;
+4. waggle’s receipt reaction is attached after relay acceptance;
 5. an unauthorised signer, admitted-only participant, wrong carrier, wrong channel and replay all
    produce no model invocation and no reply.
 

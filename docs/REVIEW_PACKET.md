@@ -1,6 +1,6 @@
-# Waggle external review packet
+# waggle external review packet
 
-Waggle is a non-custodial, quarantine-gated bridge between a private Buzz community and
+waggle is a non-custodial, quarantine-gated bridge between a private Buzz community and
 the open Nostr network. It gives a community doors it can operate, rather than turning the
 community into a public room or asking one bridge account to impersonate everyone in it.
 

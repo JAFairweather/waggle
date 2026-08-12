@@ -116,7 +116,7 @@ it with the still-local `BUZZ_PRIVATE_KEY` used by the Buzz CLI.
 
 Everything lives in `config.json` (see `config.example.json` for the full shape). It is
 git-ignored and holds **no secrets** — those live in `.env`. Keep a reviewed, mode-0600 routing
-snapshot in an **owner-controlled private Git repository**; the public Waggle repo deliberately
+snapshot in an **owner-controlled private Git repository**; the public waggle repo deliberately
 does not contain your channels or roster. On the host, export it after a known-good change:
 
 ```
@@ -197,7 +197,7 @@ in [deploy/README.md](../deploy/README.md).
 - **Publish the agent relay list:** `node tools/publish_relay_list.mjs` (so the identity
   is discoverable).
 - **Admit a participant**, if you want one: `sh tools/grant-setup.sh`.
-- **Run the safety gates before you ship:** `npm test` — 71 suites driving the real
+- **Run the safety gates before you ship:** `npm test` — 72 suites driving the real
   routing functions with synthetic events (no sockets, no production state), all green.
 
 `waggle-init.mjs --check` rolls the config half of this into one readiness verdict; the

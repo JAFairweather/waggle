@@ -1,6 +1,6 @@
 # Off-box Buzz policy host
 
-This installs the first production boundary for #54. The Waggle box receives one SSH capability:
+This installs the first production boundary for #54. The waggle box receives one SSH capability:
 send a bounded evidence packet to a fixed Unix socket. It receives a signed receipt or a bounded
 hold, never a shell, signer, signed Buzz event, NIP-98 event, credential, URL, or destination choice.
 
@@ -22,7 +22,7 @@ all operation families, and the migration gates in `docs/DESIGN_OFFBOX_BUZZ_POLI
 
 ## 1. Dedicated ingress keys
 
-On the Waggle host, mint a key used for this forced command only:
+On the waggle host, mint a key used for this forced command only:
 
 ```sh
 install -d -m 0700 /etc/waggle/policy-client
@@ -123,7 +123,7 @@ Allow the policy identity/host only what the configured operation needs:
 - TCP 443 to the fixed Buzz host and the Bunker URI's relay hosts;
 - NTP for signature/freshness correctness.
 
-The Waggle host must not reach Bunker directly. Its live key may SSH only as
+The waggle host must not reach Bunker directly. Its live key may SSH only as
 `waggle-policy-ingress`; its separate comparison key may SSH only as
 `waggle-policy-shadow-ingress`. Neither identity is a management principal.
 
@@ -135,7 +135,7 @@ systemctl enable --now waggle-policy-shadow.socket
 sh /opt/waggle-policy/deploy/verify-policy-host.sh
 ```
 
-From the Waggle host, send a canonical fixture through the forced identity. Verify all of these:
+From the waggle host, send a canonical fixture through the forced identity. Verify all of these:
 
 1. valid evidence returns one canonical signed kind:30078 receipt;
 2. replay returns byte-identical receipt and does not sign or submit again;

@@ -1,7 +1,7 @@
 # Off-box policy service operator runbook
 
 This is the policy-host side of the remote Buzz writer. It does **not** belong on the
-Waggle bridge host. The bridge receives a forced-command SSH key whose credential-free
+waggle bridge host. The bridge receives a forced-command SSH key whose credential-free
 ingress can reach only the policy host's fixed Unix socket. A separate socket-activated,
 sandboxed identity runs `tools/buzz-policy-service.mjs`; the policy host alone holds the
 Bunker pairing, private policy configuration, journal, and recovery secret.
