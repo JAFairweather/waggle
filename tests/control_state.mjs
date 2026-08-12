@@ -98,7 +98,7 @@ const body = JSON.parse(signed.content)
 t('state contains only the declared owner-visible fields',
   Object.keys(body).sort().join(',') === 'agents,bridge,follows,hive,observed_at,operations,publishing,v' &&
   Object.keys(body.follows[0]).sort().join(',') === 'consent,pubkey' &&
-  Object.keys(body.operations).sort().join(',') === 'drops,gates,lanes,trust' &&
+  Object.keys(body.operations).sort().join(',') === 'consent_asks,drops,gates,lanes,trust' &&
   Object.keys(body.operations.drops).sort().join(',') === 'relay_not_relay,relay_preauth')
 
 // ---- agents must survive to the SIGNED artifact, not merely to buildControlState ------------------
@@ -667,6 +667,82 @@ t('#389 the Following page names grandfathered as a CARRY, not as a pending cons
 t('#389 config-operations accepts the vocabulary from the shared list, not a restated one',
   /CONSENT_STATES\.includes\(follow\.consent\)/.test(readFileSync(new URL('../console/config-operations.mjs', import.meta.url), 'utf8')) &&
   !/'pending', 'asked', 'active', 'revoked'/.test(readFileSync(new URL('../console/config-operations.mjs', import.meta.url), 'utf8')))
+
+// ---- the consent-ask budget, not just its cap (#331) -------------------------------------------
+// #331: "The rate cap needs a visible budget. A silent refusal at the cap is indistinguishable from
+// a broken send." The record published the cap and nothing else, so an owner at the cap saw asks
+// stop with no way to tell that from a bug.
+const { askBudget } = await import('../src/bridge.mjs')
+{
+  const hour = 3600_000
+  const b0 = askBudget(hour * 10)
+  t('#331 with no window open the budget is full and there is nothing to wait for',
+    b0.used_this_window === 0 && b0.remaining === b0.per_hour && b0.window_resets_in === 0)
+  t('#331 the budget always adds up — used + remaining is the cap',
+    b0.used_this_window + b0.remaining === b0.per_hour)
+
+  // Spend one, through the real ask path, so there is an OPEN window to reason about. The first
+  // draft asserted only against a never-opened window, where the elapsed branch is true either way —
+  // it passed with the reset mutated out, which is the one direction that matters: reporting a spent
+  // window as still spent would tell the owner they are capped when the next ask would go through.
+  const { sendConsentRequest } = await import('../src/bridge.mjs')
+  PUB.mirrorConsentUrl = PUB.mirrorConsentUrl || 'https://example.com/consent'
+  await sendConsentRequest('e'.repeat(64), async () => 1)
+  const open = askBudget()
+  t('#331 a spent ask shows in the budget and opens a window',
+    open.used_this_window === 1 && open.remaining === open.per_hour - 1 && open.window_resets_in > 0)
+  const later = askBudget(Date.now() + 3600_000 + 1000)
+  t('#331 an ELAPSED window reports the budget it will actually have, not the stale counter',
+    later.used_this_window === 0 && later.remaining === later.per_hour && later.window_resets_in === 0)
+
+  // It must survive SIGNING, which is where the agents field died once.
+  const signedOps = JSON.parse((await signControlState(buildControlState())).content).operations
+  t('#331 consent_asks survives the closed egress schema into the signed content',
+    signedOps.consent_asks &&
+    Object.keys(signedOps.consent_asks).sort().join(',') === 'per_hour,remaining,used_this_window,window_resets_in')
+  t('#331 …and carries the real cap, not a default',
+    signedOps.consent_asks.per_hour === PUB.mirrorAskPerHour && PUB.mirrorAskPerHour > 0)
+
+  // A budget that does not add up is WORSE than none: it tells the owner asks are available when
+  // the next one will be refused. Refuse to sign it. Assert the reason, not just the refusal.
+  const bad = async (consent_asks) => {
+    try { await signControlState({ ...buildControlState(), operations: { ...buildControlState().operations, consent_asks } }); return null }
+    catch (e) { return e.message }
+  }
+  const base = { per_hour: 20, used_this_window: 5, remaining: 15, window_resets_in: 900 }
+  t('#331 a good budget signs', (await bad(base)) === null)
+  t('#331 a budget that does not add up is REFUSED, and says so',
+    /does not add up/.test(await bad({ ...base, remaining: 19 }) || ''))
+  t('#331 used above the cap is refused', (await bad({ ...base, used_this_window: 25, remaining: 0 })) !== null)
+  t('#331 a missing field is refused rather than defaulted',
+    /unexpected fields/.test(await bad({ per_hour: 20, used_this_window: 5, remaining: 15 }) || ''))
+
+  // BOTH DIRECTIONS on the optionality: an older bridge omits the field entirely and its record must
+  // still sign, or this change bricks every deployment that has not restarted yet.
+  const { consent_asks, ...withoutAsks } = buildControlState().operations
+  let legacySigned = null
+  try { legacySigned = JSON.parse((await signControlState({ ...buildControlState(), operations: withoutAsks })).content) } catch { /* null */ }
+  t('#331 a record signed WITHOUT the budget is still valid — the field is additive',
+    legacySigned !== null && legacySigned.operations.consent_asks === undefined)
+}
+
+// The two things #331 says the surface must not get wrong, on screen before the button.
+{
+  const followingPage = readFileSync(new URL('../console/following.html', import.meta.url), 'utf8')
+  const opsModule = readFileSync(new URL('../console/config-operations.mjs', import.meta.url), 'utf8')
+  const askIdx = followingPage.indexOf('asks each writer once, ever')
+  const btnIdx = followingPage.indexOf('id="mirror"')
+  t('#331 "asked once, ever" appears BEFORE the ask button, not after it',
+    askIdx > 0 && btnIdx > 0 && askIdx < btnIdx)
+  t('#331 …and says silence is the answer, so a non-response is not read as a failed send',
+    /silence is a no/i.test(followingPage) && /not a failed send/i.test(followingPage))
+  t('#331 the remaining ask budget is rendered, not only the cap',
+    /consent_asks\.remaining/.test(opsModule) && /Consent asks left this hour/.test(opsModule))
+  t('#331 …and names a cap refusal as a refusal rather than a failure',
+    /not a failed send/i.test(opsModule))
+  t('#331 consent.mjs no longer claims to be unwired — bridge.mjs imports it and the gate is live',
+    !/NOT wired into the bridge/.test(readFileSync(new URL('../src/consent.mjs', import.meta.url), 'utf8')))
+}
 
 console.log(`\n${pass}/${n} passed`)
 process.exit(pass === n ? 0 : 1)
