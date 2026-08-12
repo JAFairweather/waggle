@@ -40,6 +40,7 @@ import * as nip19 from 'nostr-tools/nip19'
 import { emit, query, checkConfigRenderable, runPolicyShadowSsh, runPolicyWriterSsh } from './egress.mjs'
 import { bridgePubkey, bridgeSignerMode, hasBridgeKey, openSeal, openRumor, sealAndWrap, consentTosBlock, signControlState, prepareRelayActionReaction, submitRelayActionReaction } from './nostr_egress.mjs'
 import { verifyConsent } from './consent.mjs'   // in-door consent (#131/#132, docs/CONSENT.md §8)
+import { consentState } from './consent_state.mjs'   // one honest word per watched author (#389)
 import { createHash, randomBytes } from 'node:crypto'
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, unlinkSync, openSync, closeSync, fsyncSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -2035,12 +2036,20 @@ function buildControlState() {
     hive: { id: PUB.mirrorConsentHiveId, name: PUB.mirrorConsentHiveName, handle: PUB.mirrorConsentHiveHandle },
     bridge: BRIDGE_PK,
     publishing: PUB.controlStatePublish,
+    // One word per author, and it must describe what the routing gate DOES to their posts (#389).
+    // It used to be four words for six realities: grandfathered, muted, never-asked and gated-held
+    // all published as `pending`, and a grandfathered author is CARRIED. Precedence lives in
+    // consent_state.mjs, copied from routePublic's gate rather than chosen here.
     follows: PUB.authors.map((pubkey) => ({
       pubkey,
-      consent: mirrorConsent.has(pubkey) ? 'active'
-        : mirrorRevoked.has(pubkey) ? 'revoked'
-          : mirrorAsked.has(pubkey) ? 'asked'
-            : 'pending',
+      consent: consentState({
+        consented: mirrorConsent.has(pubkey),
+        grandfathered: PUB.mirrorGrandfathered.includes(pubkey),
+        revoked: mirrorRevoked.has(pubkey),
+        muted: PUB.muted.includes(pubkey),
+        asked: mirrorAsked.has(pubkey),
+        gated: PUB.mirrorRequireConsent,
+      }),
     })),
     // Per-agent lifecycle rows (#309). Public-safe by construction: a public key, a status from a
     // closed set, an owner-chosen label and one boolean. This projection RE-DERIVES each field

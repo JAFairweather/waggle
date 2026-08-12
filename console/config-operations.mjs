@@ -2,6 +2,7 @@
 // It deliberately reads the bridge's signed control state from relays, never bridge config.
 import { verifyEvent } from 'nostr-tools'
 import { newestFreshControlState } from './control-state-freshness.mjs'
+import { CONSENT_STATES } from './consent-vocabulary.mjs'   // one list, checked against src/ (#389)
 
 const RELAYS = ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub', 'wss://jskitty.com/nostr']
 const $ = id => document.getElementById(id)
@@ -28,7 +29,7 @@ function stateFrom(event, bridge) {
     const state = JSON.parse(event.content), operations = state.operations
     const exact = (object, keys) => object && typeof object === 'object' && Object.keys(object).sort().join(',') === keys.sort().join(',')
     if (!exact(state, ['v', 'observed_at', 'hive', 'bridge', 'publishing', 'follows', 'operations']) || state.v !== 1 || state.bridge !== bridge || typeof state.publishing !== 'boolean' || !Number.isInteger(state.observed_at) || state.observed_at <= 0 || !exact(state.hive, ['id', 'name', 'handle']) || !Array.isArray(state.follows) || !exact(operations, ['trust', 'lanes', 'gates', 'drops'])) return null
-    if (!state.follows.every(follow => exact(follow, ['pubkey', 'consent']) && /^[0-9a-f]{64}$/.test(follow.pubkey) && ['pending', 'asked', 'active', 'revoked'].includes(follow.consent))) return null
+    if (!state.follows.every(follow => exact(follow, ['pubkey', 'consent']) && /^[0-9a-f]{64}$/.test(follow.pubkey) && CONSENT_STATES.includes(follow.consent))) return null
     if (!exact(operations.trust, ['trusted_repliers', 'muted_authors', 'watched_notes']) || !exact(operations.lanes, ['public_read', 'sealed', 'return_watch', 'relay_ingress']) || !exact(operations.gates, ['consent_required', 'ask_per_hour', 'public_content_bytes', 'public_replier_per_min', 'public_channel_per_min', 'public_lane_per_hour']) || !exact(operations.drops, ['relay_preauth', 'relay_not_relay'])) return null
     const counts = [...Object.values(operations.trust), operations.gates.ask_per_hour, operations.gates.public_content_bytes, operations.gates.public_replier_per_min, operations.gates.public_channel_per_min, operations.gates.public_lane_per_hour, ...Object.values(operations.drops)]
     if (!counts.every(value => Number.isInteger(value) && value >= 0 && value <= 1000000) || typeof operations.gates.consent_required !== 'boolean' || !Object.values(operations.lanes).every(value => typeof value === 'boolean')) return null

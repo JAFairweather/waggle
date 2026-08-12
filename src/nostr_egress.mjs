@@ -17,6 +17,7 @@
 import { finalizeEvent, generateSecretKey, getEventHash, verifyEvent } from 'nostr-tools/pure'
 import * as nip44 from 'nostr-tools/nip44'
 import { loadNostrSigner } from './nostr_signer.mjs'
+import { isConsentState } from './consent_state.mjs'   // the one consent vocabulary (#389)
 import { createHash, randomBytes } from 'node:crypto'
 
 // --- The key, held here and nowhere else ------------------------------------------------------
@@ -167,7 +168,9 @@ const controlState = (v) => {
   if (!hiveHandle) reject('control state hive.handle empty')
   const follows = Array.isArray(s.follows) ? s.follows : reject('control state follows is not an array')
   if (follows.length > 1000) reject('control state has too many follows')
-  const statuses = new Set(['pending', 'asked', 'active', 'revoked'])
+  // The vocabulary is IMPORTED, not restated (#389). A word the projection can emit and this schema
+  // rejects fails closed after signing, on a record nobody looks at until the console renders blank —
+  // and the two lists sat far enough apart that a fifth state would have been added to one of them.
   const seen = new Set()
   const cleaned = follows.map((f) => {
     if (!f || typeof f !== 'object') reject('control state follow is not an object')
@@ -175,7 +178,7 @@ const controlState = (v) => {
     if (seen.has(pubkey)) reject('control state has duplicate follow')
     seen.add(pubkey)
     const consent = String(f.consent || '')
-    if (!statuses.has(consent)) reject('control state follow.consent is invalid')
+    if (!isConsentState(consent)) reject('control state follow.consent is invalid')
     return { pubkey, consent }
   }).sort((a, b) => a.pubkey.localeCompare(b.pubkey))
   if (typeof s.publishing !== 'boolean') reject('control state publishing is not boolean')
