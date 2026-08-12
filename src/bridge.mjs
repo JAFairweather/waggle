@@ -48,6 +48,7 @@ import { fileURLToPath } from 'node:url'
 // Extracted leaf modules (#154). Each is dependency-free of config and ambient state, which is why
 // these four came out first — the split is staged, not big-bang.
 import { LANE_IDS, LANES, RELEASED } from './lanes.mjs'   // the trust gradient's one source (#282)
+import { taskRouteMention, taskRouteMentionProblem, taskRouteMentionKey } from './task_route_mention.mjs'   // #404
 import { log, err } from './log.mjs'
 import { markLatency } from './latency.mjs'
 import { durableSet, durableQueue } from './stores.mjs'
@@ -307,18 +308,28 @@ const POSTED_CAP = Number(process.env.POSTED_CAP || 100000)
 const DEL_SINCE_SECS = Number(process.env.DEL_SINCE_SECS || 172800) // 48h
 const TASK_ROUTE_PROTOCOL = 'nvoy-task-carry-v1'
 const TASK_ROUTE_MESSAGE_TYPE = 'waggle-task-route'
+// #404: the mention keeps the operator's own casing and spacing. The matcher in scanReturnLane is
+// case-insensitive and runs against the raw Buzz body, which carries the member's display_name —
+// so a slug is exactly the thing that never matches. Grammar and refusal reasons live in
+// task_route_mention.mjs, shared byte-for-byte with the console.
 function normalizedTaskRoute(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const participant = String(value.participant || '').toLowerCase()
   const sender = String(value.sender || '').toLowerCase()
   const channel = String(value.channel || '').toLowerCase()
-  const mention = String(value.mention || '').replace(/^@/, '').toLowerCase()
+  const mention = taskRouteMention(value.mention)
   if (!/^[0-9a-f]{64}$/.test(participant) || !/^[0-9a-f]{64}$/.test(sender) ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(channel) || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(mention) ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(channel) || mention === null ||
       String(value.protocol || TASK_ROUTE_PROTOCOL) !== TASK_ROUTE_PROTOCOL) return null
   return Object.freeze({ participant, sender, channel, mention, protocol: TASK_ROUTE_PROTOCOL })
 }
-const configuredTaskRoutes = Object.freeze((cfg.public?.task_routes || []).map(normalizedTaskRoute).filter(Boolean))
+// A route dropped here is a route that will never fire, and silence is how it stays unnoticed
+// until someone wonders why an @name reaches nobody. Name it, with its reason, at boot.
+const configuredTaskRoutes = Object.freeze((cfg.public?.task_routes || []).map((value, i) => {
+  const route = normalizedTaskRoute(value)
+  if (!route) err(`task route: public.task_routes[${i}] ignored — ${taskRouteMentionProblem(value?.mention) || 'invalid participant, sender, channel or protocol'}`)
+  return route
+}).filter(Boolean))
 const policyShadowRaw = cfg.public?.policy_shadow || {}
 const policyShadowMode = String(policyShadowRaw.mode || 'off').toLowerCase()
 if (!['off', 'observe', 'enforce-shadow'].includes(policyShadowMode)) throw new Error('public.policy_shadow.mode must be off, observe, or enforce-shadow')
@@ -2894,11 +2905,19 @@ function applyTaskRouteCommand({ author, createdAt, body, id }) {
   if (!body || body.v !== 1 || body.type !== TASK_ROUTE_MESSAGE_TYPE || !['upsert', 'remove'].includes(body.action) ||
       Object.keys(body).sort().join(',') !== 'action,channel,mention,participant,protocol,sender,type,v') return { ok: false, reason: 'invalid command body' }
   const route = normalizedTaskRoute(body)
-  if (!route) return { ok: false, reason: 'invalid task route' }
+  // The reason is what the operator acts on. "invalid task route" for a mention fault sent one
+  // owner looking at the participant key; the mention grammar says which character and where.
+  if (!route) {
+    const why = taskRouteMentionProblem(body.mention)
+    return { ok: false, reason: why ? `invalid task route: ${why}` : 'invalid task route' }
+  }
   if (createdAt <= PUB.taskRouteCommandAt) return { ok: false, reason: 'superseded command' }
   if (body.action === 'upsert' && !grantSet.has(route.participant)) return { ok: false, reason: 'participant is not admitted' }
+  // Mentions compare case-folded (the matcher's `i` flag folds too), so re-upserting `@mc claude`
+  // over `@MC Claude` is the same route, not a second row that fires alongside it.
   const same = value => value.participant === route.participant && value.sender === route.sender &&
-    value.channel === route.channel && value.mention === route.mention && value.protocol === route.protocol
+    value.channel === route.channel && taskRouteMentionKey(value.mention) === taskRouteMentionKey(route.mention) &&
+    value.protocol === route.protocol
   const routes = body.action === 'upsert'
     ? (PUB.taskRoutes.some(same) ? [...PUB.taskRoutes] : [...PUB.taskRoutes, route])
     : PUB.taskRoutes.filter(value => !same(value))

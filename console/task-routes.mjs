@@ -5,6 +5,7 @@ import { nip19, verifyEvent } from 'nostr-tools'
 import { sealedTaskRouteCommand } from './task-route-envelope.mjs'
 import { consoleSigner } from './signer-session.mjs'
 import { newestFreshControlState } from './control-state-freshness.mjs'
+import { taskRouteMentionProblem } from './task-route-mention.mjs'   // #404 — one grammar, shared with the bridge
 
 const RELAYS = ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub', 'wss://jskitty.com/nostr']
 const $ = id => document.getElementById(id)
@@ -66,7 +67,8 @@ panel.innerHTML = `<h2>Agent channel route</h2>
   <label for="route-channel">Buzz channel UUID</label><input id="route-channel" placeholder="a8186b53-…" spellcheck="false">
   <label for="route-participant" style="margin-top:10px">Agent identity</label><input id="route-participant" placeholder="npub1… or 64-character hex" spellcheck="false">
   <label for="route-sender" style="margin-top:10px">Authorized sender</label><input id="route-sender" placeholder="Leave blank to use the signing identity" spellcheck="false">
-  <label for="route-mention" style="margin-top:10px">Mention handle</label><input id="route-mention" value="codex" placeholder="codex" spellcheck="false">
+  <label for="route-mention" style="margin-top:10px">Mention handle</label><input id="route-mention" placeholder="My Dude" spellcheck="false">
+  <p class="note" style="margin:6px 0 0">The agent's Buzz display name exactly as it appears in channel — spaces and capitals included. Matching ignores case.</p>
   <button id="route-add">Activate route</button> <button id="route-remove">Remove route</button><div class="status" id="routest"></div>`
 document.querySelector('section.panel.note').before(panel)
 
@@ -77,8 +79,12 @@ async function manage(action) {
     const participant = hex($('route-participant').value)
     const channel = String($('route-channel').value || '').trim().toLowerCase()
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(channel)) throw new Error('Use the Buzz channel UUID, not its display name.')
-    const mention = String($('route-mention').value || '').trim().replace(/^@/, '').toLowerCase()
-    if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(mention)) throw new Error('Mention must be 1–32 letters, numbers, underscores, or hyphens.')
+    // #404: the bridge matches this against the raw channel body, which holds the member's Buzz
+    // display_name — "@My Dude", space and capitals included. Type the name, not a slug, and keep
+    // the case: the stored value is what you typed.
+    const mention = String($('route-mention').value || '').replace(/^@/, '')
+    const mentionProblem = taskRouteMentionProblem(mention)
+    if (mentionProblem) throw new Error(`${mentionProblem[0].toUpperCase()}${mentionProblem.slice(1)}.`)
     const signer = await consoleSigner(), signingIdentity = (await signer.getPublicKey()).toLowerCase()
     const sender = $('route-sender').value.trim() ? hex($('route-sender').value) : signingIdentity
     const verb = action === 'upsert' ? 'activate' : 'remove'
