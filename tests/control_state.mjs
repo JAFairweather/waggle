@@ -719,7 +719,7 @@ const { askBudget } = await import('../src/bridge.mjs')
 
   // BOTH DIRECTIONS on the optionality: an older bridge omits the field entirely and its record must
   // still sign, or this change bricks every deployment that has not restarted yet.
-  const { consent_asks, ...withoutAsks } = buildControlState().operations
+  const { consent_asks: _omitted, ...withoutAsks } = buildControlState().operations
   let legacySigned = null
   try { legacySigned = JSON.parse((await signControlState({ ...buildControlState(), operations: withoutAsks })).content) } catch { /* null */ }
   t('#331 a record signed WITHOUT the budget is still valid — the field is additive',
