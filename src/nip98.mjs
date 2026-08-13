@@ -25,13 +25,23 @@
 // key this page holds), and the CLI signs with a key from a file. Neither can be baked in here. So
 // this builds an UNSIGNED template and whoever holds the key signs it.
 //
-// IT LIVES IN console/ because the browser is one of its two callers and `tools/serve-console.mjs`
-// serves only this directory — a module under src/ is not reachable from the page at all. tests/
-// already import from console/ for exactly this reason. The alternative was two copies of a
-// security-relevant builder, which is how the two drift apart.
+// IT LIVES IN src/ because that is where its callers are, and because src/ SHIPS (#432). It used
+// to live in console/ on the reasoning that the browser was one of its two callers — but no page
+// under console/ ever imported it. The two importers were `tools/relay-invite.mjs` and
+// `tests/nip98_auth.mjs`, both Node. Meanwhile console/ is not in the deploy ship list
+// (`deploy/verify-deployed.sh:35`, `deploy/deploy-runner.sh:63`), so relay-invite could not load in
+// the deployed tree at all: ERR_MODULE_NOT_FOUND on a resolver path that says nothing about a
+// missing directory.
 //
-// Hashing goes through Web Crypto rather than `node:crypto`, so the same file runs in both places.
-// That makes the builder ASYNC, which is the one thing to notice when calling it.
+// So this is a move, not a fork. The header it replaces was right that two copies of a
+// security-relevant builder is how two copies drift apart — that is exactly why there is still
+// only one. If a console page ever does need this, the arrangement to copy is
+// `console/scope-hash.mjs` (#328): a browser copy that a test binds to this one, not a
+// cross-boundary import in either direction.
+//
+// Hashing goes through Web Crypto rather than `node:crypto`, so this file would still run
+// unmodified in a browser if that day comes. That makes the builder ASYNC, which is the one thing
+// to notice when calling it.
 
 /// The URL the relay will compare against. It builds its own from the TENANT HOST — the Host
 /// header the request arrives on — not from any configured URL, so the `u` tag has to name the
