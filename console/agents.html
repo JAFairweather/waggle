@@ -91,6 +91,7 @@
 import { verifyEvent, nip19 } from 'nostr-tools'
 import { consoleSigner } from './signer-session.mjs'
 import { newestFreshControlState, requireFreshControlState } from './control-state-freshness.mjs'
+import { loadBridgeKey, rememberBridgeKey } from './bridge-key-store.mjs'
 
 const RELAYS = ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub', 'wss://jskitty.com/nostr']
 // WIRE values. These are what the bridge signs into its control state and what `validState`
@@ -204,7 +205,6 @@ async function load() {
   const st = $('status'); st.className = 'status'; setManage(false); activeBridge = null; activeState = null
   try {
     const bridge = hex($('bridge').value)
-    localStorage.setItem('waggle-agents-bridge', bridge)
     st.textContent = 'Reading signed state from relays…'
     const results = await Promise.all(RELAYS.map(u => query(u, { kinds: [30078], authors: [bridge], '#d': ['waggle-control-state'], limit: 2 })))
     if (!results.some(r => r.answered)) throw Error('No relay answered, so state is unavailable. This is not the same as "no agents".')
@@ -213,6 +213,7 @@ async function load() {
     const winner = newestFreshControlState(states)
     if (!winner) throw Error('No fresh valid signed state was found. Controls remain disabled.')
     activeBridge = bridge; activeState = winner; setManage(true)
+    rememberBridgeKey(bridge, winner)
     st.textContent = `Verified state, observed ${new Date(winner.observed_at * 1000).toLocaleString()}.`
     draw(winner)
   } catch (e) {
@@ -258,7 +259,7 @@ $('rename').onclick = () => {
   }
   send('agent_rename', { label })
 }
-const saved = localStorage.getItem('waggle-agents-bridge')
+const saved = loadBridgeKey()
 if (saved) $('bridge').value = saved
 </script>
 </body>
