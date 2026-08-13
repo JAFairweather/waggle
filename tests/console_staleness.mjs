@@ -219,5 +219,69 @@ if (pages.length < 5) inconclusive(`found only ${pages.length} console pages; ex
 const unwired = pages.filter(p => !readFileSync(join(CONSOLE, p), 'utf8').includes('staleness-guard.mjs'))
 check(unwired.length === 0, `every console page loads the staleness guard (${pages.length} pages${unwired.length ? `; missing: ${unwired.join(', ')}` : ''})`)
 
+// ---- 9. every path that can SIGN can reach the guard --------------------------------------------
+// Section 8 asserts each page mentions the module. That is the auto-install block — the banner —
+// and this suite's own argument is that a banner is undoable by anything drawing a control after it,
+// and that an operator can sign through one. So section 8 reports coverage the signing path may not
+// have: it passed while kind 440 and 441 were signed from a closure with no edge to the guard at
+// all. This asserts the property rather than the string.
+{
+  // Imports must be read in every form the console actually writes, including across newlines. A
+  // walker that only sees single-line `from '…'` reports a clean closure for a file it never read —
+  // the same blind spot #433 found in the ship-list walk.
+  const IMPORT_RE = /(?:^|[\s;{(])(?:import|export)\s[\s\S]{0,200}?from\s*['"](\.[^'"]+)['"]|(?:^|[\s;{(=])import\s*\(\s*['"](\.[^'"]+)['"]/g
+  const readSafe = (p) => { try { return readFileSync(p, 'utf8') } catch { return null } }
+  const resolveRel = (fromRel, spec) => join(dirname(fromRel), spec).replace(/^\.\//, '')
+
+  const closureOf = (startRel, startSrc) => {
+    const seen = new Set(), queue = [[startRel, startSrc]]
+    while (queue.length) {
+      const [rel, src] = queue.shift()
+      if (src == null) continue
+      for (const m of src.matchAll(IMPORT_RE)) {
+        const spec = m[1] || m[2]
+        if (!spec) continue
+        const next = resolveRel(rel, spec)
+        if (seen.has(next)) continue
+        seen.add(next)
+        queue.push([next, readSafe(join(CONSOLE, next))])
+      }
+    }
+    return seen
+  }
+
+  const GUARD = 'staleness-guard.mjs'
+  const SIGN_RE = /\.signEvent\s*\(/
+  const entries = []
+  for (const p of pages) {
+    const src = readSafe(join(CONSOLE, p))
+    if (src != null) entries.push({ name: p, src, closure: closureOf(p, src) })
+  }
+  // Module entry points too: a page that hands signing to a factory module still signs.
+  for (const m of readdirSync(CONSOLE).filter(f => f.endsWith('.mjs') && /signer/i.test(f)).sort()) {
+    const src = readSafe(join(CONSOLE, m))
+    if (src != null) entries.push({ name: m, src, closure: closureOf(m, src) })
+  }
+  if (entries.length < 5) inconclusive(`only ${entries.length} console entry points found; the closure walk did not read the console`)
+
+  // A size floor on what the walker actually read. A walk that silently resolved nothing would
+  // report every entry clean, which is the failure mode this whole section exists to catch.
+  const totalEdges = entries.reduce((n, e) => n + e.closure.size, 0)
+  check(totalEdges > 10, `the closure walk resolved ${totalEdges} module edge(s), so it is reading imports`)
+
+  const canSign = entries.filter(e => SIGN_RE.test(e.src) || [...e.closure].some(c => SIGN_RE.test(readSafe(join(CONSOLE, c)) || '')))
+  check(canSign.length > 0, `found ${canSign.length} entry point(s) that can reach signEvent`)
+
+  const unguarded = canSign.filter(e => e.name !== GUARD && !e.closure.has(GUARD))
+  check(unguarded.length === 0,
+    `every signing path can reach the staleness guard (${canSign.length} checked${unguarded.length ? `; UNGUARDED: ${unguarded.map(e => e.name).join(', ')}` : ''})`)
+
+  // NEGATIVE CONTROL. Everything above is satisfied by a walker that marks everything guarded. A
+  // synthetic entry that signs and imports nothing must come out unguarded, or this check is inert.
+  const decoy = { name: '__decoy__.mjs', src: 'export const go = (s) => s.signEvent({})', closure: new Set() }
+  check(SIGN_RE.test(decoy.src) && !decoy.closure.has(GUARD),
+    'NEGATIVE CONTROL — a signing entry with no guard in its closure is detected as unguarded')
+}
+
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
 process.exit(pass ? 0 : 1)

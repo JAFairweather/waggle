@@ -348,6 +348,9 @@ import { CAP_LABEL, capLabel, CAP_ENFORCER, capEnforcer, ISSUABLE, describeGrant
 import { scopeHash } from './scope-hash.mjs'
 import { mintAgentKey } from './mint-agent-key.mjs'
 import { proveCustody, custodyNonce } from './bunker-custody.mjs'
+// This page signs kind 440 and 441 without going through consoleSigner, so it does not inherit that
+// chokepoint's guard and needs its own (#418).
+import { assertConsoleFresh } from './staleness-guard.mjs'
 const { decode } = nip19
 
 const $ = (id) => document.getElementById(id)
@@ -721,6 +724,11 @@ $('confirm-go').addEventListener('click', async () => {
   if (!pendingTemplate || !signer) return
   const st = $('confirmst'); st.className = 'status'; st.textContent = 'Waiting for your signer…'
   try {
+    // FIRST, before the signer is asked for anything. A stale module graph means the scope-hash
+    // rule, the tag grammar and the capability vocabulary that built pendingTemplate are all the
+    // cached old copies — so the operator would be approving a grant assembled by code they cannot
+    // see. Grant issuance and revocation are the least recoverable things this console does.
+    await assertConsoleFresh()
     const signed = await signer.signEvent(pendingTemplate)
     st.textContent = 'Publishing…'
     const results = await publish(signed)
