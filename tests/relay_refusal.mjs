@@ -37,7 +37,7 @@ process.env.SEND_JOURNAL_PATH = join(dir, 'send-journal.log')
 process.env.BUZZ_PRIVATE_KEY = 'c'.repeat(64)   // returnLaneSend refuses to seal with no bridge key
 delete process.env.WB_STUB_SEND          // the stub short-circuits the publisher entirely
 
-const { refusalKey, refusalLedger, explainSendRefusals, defuseJournalText, REFUSAL_TEXT_MAX } = await import('../src/relay_refusals.mjs')
+const { refusalKey, refusalLedger, explainSendRefusals, defuseJournalText, REFUSAL_TEXT_MAX, INVISIBLE_CLASS } = await import('../src/relay_refusals.mjs')
 const { publishWrapToRelayList, relayRefusals, returnLaneSend, PUB } = await import('../src/bridge.mjs')
 
 let fails = 0
@@ -399,6 +399,104 @@ const ok = (n, c) => { console.info(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) 
     !/[\u000A\u000D]/.test(exp) && exp.includes('rejected: bad sig'))
   ok('  ...and an ordinary reason still comes through it untouched',
     explainSendRefusals([{ relay: 'wss://a.invalid', reason: REAL }]) === 'wss://a.invalid: ' + REAL)
+}
+
+
+// ---- invisible controls beyond C0/C1 (#423) -----------------------------------------------------
+// From the #420 review. `defuseJournalText` collapsed exactly the 65 Cc codepoints — no printable
+// character inside, none outside — and everything else survived. The one with teeth is U+202E
+// RIGHT-TO-LEFT OVERRIDE: it reorders what the operator reads with no C0 or C1 character anywhere
+// in the string, and the journal being text an operator reads and acts on is the premise the whole
+// of #405 rests on. The isolates U+2066-U+2069 do the same more selectively, and an unterminated
+// one bleeds into whatever prints on the next line.
+//
+// Every character below is written as an escape. A NUL probe and a non-breaking space inside a
+// character class have each broken tooling in this repo, and a literal invisible in a fixture is a
+// fixture nobody can review.
+{
+  const RTLO = '\u202E', LRO = '\u202D', LRI = '\u2066', RLI = '\u2067', FSI = '\u2068', PDI = '\u2069'
+  const ZWSP = '\u200B', ZWNJ = '\u200C', ZWJ = '\u200D', WJ = '\u2060', BOM = '\uFEFF'
+  const SHY = '\u00AD', NBSP = '\u00A0', LS = '\u2028', PS = '\u2029', ALM = '\u061C'
+
+  // READABILITY FIRST, as in #405. If the ordinary case does not survive byte for byte, the guard
+  // hides the fault the journal exists to reveal, and nothing below is worth having.
+  ok('the ordinary refusal still survives the widened class byte for byte',
+    defuseJournalText('pow: 28 bits needed. (12)') === 'pow: 28 bits needed. (12)')
+  ok('a non-ASCII relay message is untouched — accented letters are not controls',
+    defuseJournalText('relais refusé: événement trop grand') === 'relais refusé: événement trop grand')
+  ok('and so is non-Latin wording, which has no Cf or Zs in it at all',
+    defuseJournalText('拒绝: 事件过大') === '拒绝: 事件过大')
+
+  // The attack the issue is about, stated as the property: the override does not reach the line.
+  const spoof = `blocked: ${RTLO}deriuqer stib 82${PDI} — retry`
+  ok('U+202E does not reach the journal line', !defuseJournalText(spoof).includes(RTLO))
+  ok('and the U+2069 that terminated it does not either', !defuseJournalText(spoof).includes(PDI))
+  ok('what is left is still readable rather than emptied',
+    /blocked:.*retry/.test(defuseJournalText(spoof)) && defuseJournalText(spoof).length > 20)
+
+  for (const [name, ch] of [['U+202D LRO', LRO], ['U+2066 LRI', LRI], ['U+2067 RLI', RLI],
+    ['U+2068 FSI', FSI], ['U+2069 PDI', PDI], ['U+200B ZWSP', ZWSP], ['U+200C ZWNJ', ZWNJ],
+    ['U+200D ZWJ', ZWJ], ['U+2060 WJ', WJ], ['U+FEFF BOM', BOM], ['U+00AD SHY', SHY],
+    ['U+2028 LS', LS], ['U+2029 PS', PS], ['U+061C ALM', ALM]]) {
+    ok(`${name} is collapsed, not carried`, !defuseJournalText(`a${ch}b`).includes(ch))
+  }
+
+  // U+00A0 is the one to think about rather than collapse reflexively: it already renders as a
+  // space, so mapping it to one costs nothing visible. "Already looks fine" is not "is a space",
+  // which is why this asserts the codepoint rather than the appearance.
+  ok('U+00A0 becomes an actual space, not something that merely looks like one',
+    defuseJournalText(`pow:${NBSP}28 bits`) === 'pow: 28 bits')
+
+  // Zero-width characters become a space rather than being deleted. Deleting can JOIN two tokens
+  // into a word that never existed; spacing can only ever separate.
+  ok('a zero-width space separates rather than fusing two tokens',
+    defuseJournalText(`ab${ZWSP}cd`) === 'ab cd')
+
+  // A run of mixed invisibles is one space, not one space each — the squeeze still applies.
+  ok('a run of mixed invisibles collapses to a single space',
+    defuseJournalText(`a${RTLO}${ZWSP}${NBSP}${SHY}b`) === 'a b')
+
+  // Leading and trailing invisibles must not survive as padding that hides the shape of the line.
+  ok('invisibles at the edges are trimmed away entirely',
+    defuseJournalText(`${BOM}${NBSP}pow: 28 bits needed.${RTLO}`) === 'pow: 28 bits needed.')
+
+  // THE NEGATIVE CONTROL IS THE SWEEP, not a spot check. Two directions, because a class that
+  // catches everything and a class that catches nothing both make the list above pass or fail as a
+  // block. This asserts the class catches exactly the invisible categories and no printable
+  // character anywhere in the plane.
+  const single = new RegExp(`^${INVISIBLE_CLASS}$`, 'u')
+  let caught = 0, printableCaught = []
+  const PRINTABLE_SAMPLE = 'Aa0!~ßé中カ😀→'   // Latin, digit, punctuation, accented, CJK, kana, emoji, arrow
+  for (let cp = 0; cp <= 0x10FFFF; cp++) {
+    if (cp >= 0xD800 && cp <= 0xDFFF) continue          // lone surrogates are not characters
+    if (single.test(String.fromCodePoint(cp))) caught++
+  }
+  // A floor, because a sweep that examined nothing reports every character clean. Deliberately LOW:
+  // it exists to prove the loop ran, not to assert the size of the class. Set near the real count it
+  // would report INCONCLUSIVE for the very regression this block exists to catch - reverting to
+  // Cc alone catches 65, which is a correct sweep of a wrong class and must read as FAIL.
+  if (caught < 10) {
+    console.error(`relay_refusal: INCONCLUSIVE — the plane sweep caught only ${caught} codepoints`)
+    console.error('  This is NOT an all-clear: the class was not exercised against the plane.')
+    process.exit(3)
+  }
+  ok(`the class catches ${caught} codepoints across the whole plane, and they are all invisible`,
+    caught > 100 && caught < 5000)
+  for (const ch of PRINTABLE_SAMPLE) if (single.test(ch)) printableCaught.push(ch)
+  ok(`NEGATIVE CONTROL — no printable character is caught (${PRINTABLE_SAMPLE})`,
+    printableCaught.length === 0)
+  ok('NEGATIVE CONTROL — the sweep CAN catch, so the zero above is a measurement',
+    single.test(RTLO) && single.test(ZWSP) && single.test('\u0020'))
+
+  // The 65 Cc codepoints the original class covered are still covered. A widening that quietly
+  // dropped the thing it was widening would otherwise pass everything above.
+  let cc = 0
+  // The three Cc ranges by hand, NOT `cp <= 0x9F`: that span also contains U+0020 SPACE, which
+  // \p{Zs} now catches, so the naive loop counted 66 and failed against a correct class.
+  for (const [lo, hi] of [[0x00, 0x1F], [0x7F, 0x7F], [0x80, 0x9F]]) {
+    for (let cp = lo; cp <= hi; cp++) if (single.test(String.fromCodePoint(cp))) cc++
+  }
+  ok(`the original C0/C1/DEL coverage is intact (${cc} of 65 control codepoints still caught)`, cc === 65)
 }
 
 console.info(`\n${fails ? `RELAY REFUSAL FAIL — ${fails}` : 'RELAY REFUSAL PASS — the reason survives, the repeat is quiet, a change speaks, and nothing forges a line'}`)
