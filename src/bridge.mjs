@@ -66,6 +66,7 @@ import { defuseRefs, defuseMarkup, defuseInvisible, quoted, renderQuarantined, r
 import { hex as concordHex, publicChannel, openChannelWrap } from './concord_lib.mjs'
 import { thinRelaySet } from './relays.mjs'
 import { refusalLedger, explainSendRefusals } from './relay_refusals.mjs'
+import { powTargets } from './pow_targets.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
@@ -2461,6 +2462,10 @@ function rlDropOnce(id) {
 // The ledger for #374. `err`, not `log`: a relay refusing our writes is a fault, and it belongs
 // wherever the operator is already looking for faults. One line the first time, then counted.
 const relayRefusals = refusalLedger({ log: err })
+// What each relay has asked us to mine to (#346). The ledger keeps the last REASON per relay, for
+// reporting; this keeps the last NUMBER, because a number is the thing you can act on. Fed from the
+// same OK frames, below.
+const powDemands = powTargets()
 
 function publishWrapToRelayList(wrap, relays, mkSocket, onRefusal) {
   if (process.env.WB_STUB_SEND) return Promise.resolve(relays.length || 1)
@@ -2493,6 +2498,10 @@ function publishWrapToRelayList(wrap, relays, mkSocket, onRefusal) {
             // event"]` is the healthiest answer a relay gives, and reading it as one would report
             // the working relays as the broken ones. The boolean decides; the message explains.
             relayRefusals.record({ relay: url, accepted: !!m[2], reason: m[3] })
+            // Same frame, second reader: a proof-of-work refusal carries the target the next wrap
+            // to this relay should be mined to. Everything else it ignores (#346).
+            const learned = powDemands.record({ relay: url, accepted: !!m[2], reason: m[3] })
+            if (learned !== null) log(`POW: ${url} asks for ${learned} bits`)
             if (!m[2] && typeof onRefusal === 'function') onRefusal({ relay: url, reason: m[3] })
             done()
           }
@@ -3048,7 +3057,22 @@ async function returnLaneSend(toHex, descriptor, meta, publish = publishWrapToRe
       : (wrap) => publish(wrap, undefined, collectRefusal)
     // A3 §2.5: the seal/wrap construction and the key both live in nostr_egress.mjs. `descriptor`
     // is {template, slots} — there is no parameter here that could carry a composed sentence.
-    const { wrap, accepted, bytes } = await sealAndWrap({ template: descriptor.template, to: toHex, slots: descriptor.slots }, publisher)
+    // Mine only when a relay in THIS fan-out has actually asked (#346). `targetFor` returns the
+    // highest demand at or below the cap: proof-of-work is monotone, so one wrap at that difficulty
+    // satisfies every relay demanding less, and an over-cap relay must not be allowed to raise it —
+    // each bit doubles the cost, and that relay refuses either way.
+    const powPlan = powDemands.targetFor(recipientRelays || PUB.relays || [])
+    // The cap firing is a decision to let a relay refuse us, so it is said out loud rather than left
+    // to be inferred from a message that never arrives.
+    if (powPlan.overCap.length) err(`POW over cap: ${powPlan.overCap.join(', ')} demand more than ${powPlan.cap} bits — publishing without proof-of-work, expect a refusal`)
+    const { wrap, accepted, bytes, pow } = await sealAndWrap({ template: descriptor.template, to: toHex, slots: descriptor.slots, powTarget: powPlan.target }, publisher)
+    // A mine that did not happen must not read as one that did. Both outcomes are logged with the
+    // difficulty actually reached, because "we mined" and "we meant to" are the two states this
+    // whole module exists to keep apart.
+    if (pow) {
+      if (pow.mined) log(`POW mined ${pow.achieved} bits (asked ${pow.target}) in ${pow.iterations} nonces for ${powPlan.satisfies.join(', ')}`)
+      else err(`POW not mined (${pow.code}) for ${powPlan.satisfies.join(', ')} — ${pow.reason}`)
+    }
     // Journal stamped with the accept-count so the durable record is landed-reality, not intent: a
     // 0/N carry is written accepted:0, never a false "sent". The wrap's author is ephemeral and can
     // never trip the tripwire, so this record is a written-down intent — worth making a truthful one;
