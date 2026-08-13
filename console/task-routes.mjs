@@ -72,6 +72,7 @@ panel.innerHTML = `<h2>Agent channel route</h2>
   <label for="route-participant-pick" style="margin-top:10px">Agent identity</label>
   <select id="route-participant-pick"><option value="">Load the roster to choose an admitted agent</option></select>
   <button id="route-roster" type="button" style="margin-top:6px">Load roster</button>
+  <p class="note" style="margin:6px 0 0">The list shows lifecycle status, and admission is decided separately by the key's live grant (#440). A key marked removed can still hold one; an unmarked key may have had its grant withdrawn. Read the marks as advisory, not as a verdict on whether the route will activate.</p>
   <label for="route-participant" style="margin-top:10px">…or a key that is not on the roster yet</label><input id="route-participant" placeholder="npub1… or 64-character hex" spellcheck="false">
   <label for="route-sender-pick" style="margin-top:10px">Authorized sender</label>
   <select id="route-sender-pick"><option value="">The signing identity</option></select>
@@ -98,11 +99,44 @@ function fillPicker(select, agents, blank) {
   }
 }
 
+// Which bridge the loaded options describe, and what the picker last wrote into each field (#440).
+// `freshBridge()` re-reads `$('bridge')` on every call, so the signature and freshness checks follow
+// the operator to another bridge — the roster in front of them does not, and nothing in the console
+// listened to that field. Recording provenance is what lets a later change tell the picker's own
+// guess from something the operator typed, and clear only the first.
+let roster = null
+const picked = { participant: null, sender: null, mention: null }
+
+function clearIfOurs(id, key) {
+  const field = $(id)
+  if (picked[key] != null && field.value.trim() === picked[key]) field.value = ''
+  picked[key] = null
+}
+function forgetPicked() {
+  clearIfOurs('route-participant', 'participant')
+  clearIfOurs('route-sender', 'sender')
+  clearIfOurs('route-mention', 'mention')
+}
+// On an edit to the bridge field. Cosmetic on its own — `routing.mjs` also writes that field
+// programmatically, which fires no event — which is why the refusal in `manage()` is the guard and
+// this is the courtesy. Both are needed: without the clearing the select still SHOWS the old agent,
+// and the select is the operator's only evidence of what they chose.
+function forgetRoster() {
+  roster = null
+  fillPicker($('route-participant-pick'), [], 'Load the roster to choose an admitted agent')
+  fillPicker($('route-sender-pick'), [], 'The signing identity')
+  forgetPicked()
+}
+
 async function loadRoster() {
   const status = $('routest')
   try {
     status.className = 'status'; status.textContent = 'Verifying the bridge state…'
-    const { state } = await freshBridge()
+    const { bridge, state } = await freshBridge()
+    // Reloading is the operator's own remedy for the stale pick, so it has to actually clear one.
+    // It did not: the roster refilled and the picked key from the previous bridge stayed put.
+    if (roster && roster.bridge !== bridge) forgetPicked()
+    roster = { bridge }
     const agents = rosterAgents(state)
     fillPicker($('route-participant-pick'), agents, agents.length ? 'Choose an admitted agent' : 'The roster is empty')
     fillPicker($('route-sender-pick'), agents, 'The signing identity')
@@ -118,6 +152,16 @@ async function loadRoster() {
 async function manage(action) {
   const status = $('routest')
   try {
+    // Before the round trip and before anything is signed. The options in the picker describe ONE
+    // bridge; move the bridge field and they describe the wrong one, silently. The off-roster case
+    // fails closed at `applyTaskRouteCommand` — `participant is not admitted` — but the case that
+    // does not is ordinary for a crew running more than one hive: a key holding a live grant on
+    // both. The route then activates against the new bridge pointing at the agent chosen for the
+    // old one, which is the exact mis-routing this picker exists to prevent.
+    const target = hex($('bridge').value)
+    if (roster && roster.bridge !== target) {
+      throw new Error('The agent list was loaded for a different bridge, so the agent shown may not be the one this route would wake. Load the roster again for this bridge.')
+    }
     const { bridge } = await freshBridge()
     const participant = hex($('route-participant').value)
     const channel = String($('route-channel').value || '').trim().toLowerCase()
@@ -143,6 +187,8 @@ async function manage(action) {
   } catch (error) { status.className = 'status err'; status.textContent = error.message }
 }
 $('route-roster').onclick = () => loadRoster()
+$('bridge').addEventListener('input', forgetRoster)
+$('bridge').addEventListener('change', forgetRoster)
 // Choosing writes the key into the field `manage()` reads. The mention is only SUGGESTED — never
 // overwrite something the operator typed, because a label is printable ASCII and the display name
 // it has to match is not (#404), so the label is a guess and the typed value is an answer.
@@ -150,9 +196,22 @@ $('route-participant-pick').onchange = event => {
   const option = event.target.selectedOptions[0]
   if (!event.target.value) return
   $('route-participant').value = event.target.value
+  picked.participant = event.target.value
   const label = (option.textContent || '').split(' — ')[0]
-  if (!$('route-mention').value.trim() && label && label !== 'unnamed agent') $('route-mention').value = label
+  if (!label || label === 'unnamed agent') return
+  // Suggest UNLESS the operator has typed something — which is only the same rule as "suggest when
+  // empty" on the FIRST pick (#440). Changing your mind in a dropdown is the most ordinary thing an
+  // operator does, and the empty-only rule left the first agent's label sitting beside the second
+  // agent's key: a route whose mention names one agent and wakes another, reading as correct.
+  // Overwrite our own guess; never an answer.
+  const current = $('route-mention').value.trim()
+  if (current && current !== picked.mention) return
+  $('route-mention').value = label
+  picked.mention = label
 }
-$('route-sender-pick').onchange = event => { $('route-sender').value = event.target.value }
+$('route-sender-pick').onchange = event => {
+  $('route-sender').value = event.target.value
+  picked.sender = event.target.value || null
+}
 $('route-add').onclick = () => manage('upsert')
 $('route-remove').onclick = () => manage('remove')

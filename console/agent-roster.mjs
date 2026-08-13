@@ -72,7 +72,13 @@ export function shortNpub(pubkey, head = 12, tail = 6) {
 }
 
 // An admitted agent reads as its name. Anything else carries its status in the row, because the
-// operator is choosing a routing target and "removed" is the part that changes the decision.
+// operator is choosing a routing target and a key the owner has withdrawn is not one to pick blind.
+//
+// THE MARK IS ADVISORY, NOT THE GATE (#440). The bridge decides on `grantSet` — 440 grants in, 441
+// revocations out — and `applyLifecycle`, which is the only writer of `status`, never touches it.
+// Neither predicts the other in either direction: a key reading `removed` here is accepted if its
+// grant is live, and an unmarked key is refused if its grant was revoked. Render the status; do not
+// let a surface claim it decides the outcome.
 export function agentOptionText(agent) {
   const name = agent.label || 'unnamed agent'
   const suffix = agent.status === 'admitted' ? '' : ` — ${statusLabel(agent.status)}`
