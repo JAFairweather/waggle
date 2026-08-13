@@ -90,10 +90,21 @@ _pr_facts_once() {
           | map(if . == null or . == "" then "-" else tostring end) | @tsv' 2>/dev/null
 }
 
+# jq's `//` falls back on null and false, NOT on "". GitHub reports a still-running
+# check run as `"conclusion": ""` with `"status": "IN_PROGRESS"`, so `.conclusion //
+# .state // "PENDING"` returned an empty string, the join produced nothing, and `retry`
+# read that as an unreadable API. It refused rather than passing — the right direction —
+# but it would have blocked every PR whose CI was still in flight. Emptiness is tested
+# explicitly here, and `.status` is the third fallback because it is the field that
+# actually carries IN_PROGRESS and QUEUED.
 _ci_rollup_once() {
   gh pr view "$1" --repo "$REPO" --json statusCheckRollup \
-    --jq 'if (.statusCheckRollup | length) == 0 then "__NONE__"
-          else [.statusCheckRollup[] | (.conclusion // .state // "PENDING") | ascii_upcase] | join(" ") end' 2>/dev/null
+    --jq 'def pick: if (.conclusion // "") != "" then .conclusion
+                    elif (.state // "") != "" then .state
+                    elif (.status // "") != "" then .status
+                    else "PENDING" end;
+          if (.statusCheckRollup | length) == 0 then "__NONE__"
+          else [.statusCheckRollup[] | pick | ascii_upcase] | join(" ") end' 2>/dev/null
 }
 
 # CI verdict for a PR: prints pass | fail | pending | none.
