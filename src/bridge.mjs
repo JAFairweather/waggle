@@ -48,7 +48,7 @@ import { fileURLToPath } from 'node:url'
 // Extracted leaf modules (#154). Each is dependency-free of config and ambient state, which is why
 // these four came out first — the split is staged, not big-bang.
 import { LANE_IDS, LANES, RELEASED } from './lanes.mjs'   // the trust gradient's one source (#282)
-import { taskRouteMention, taskRouteMentionProblem, taskRouteMentionKey, taskRouteMentioned } from './task_route_mention.mjs'   // #404, #408
+import { taskRouteMention, taskRouteMentionProblem, taskRouteMentionKey, taskRouteMentionArbitrate } from './task_route_mention.mjs'   // #404, #408, #409
 import { log, err } from './log.mjs'
 import { markLatency } from './latency.mjs'
 import { durableSet, durableQueue } from './stores.mjs'
@@ -3414,6 +3414,21 @@ async function scanReturnLane(msgs, opts = {}) {
     }
     const body = String(m.content || '')
     const ptags = tags.filter(t => t[0] === 'p' && t[1]).map(t => String(t[1]).toLowerCase())
+    // #407/#409: WHO IS NAMED is a property of the text and the route set together, so it is
+    // settled once per message, before any per-recipient delivery test. Asking each route on its
+    // own is what let `mc` and `MC Claude` both carry `@MC Claude`. Longest wins at each at-word.
+    // Scoped to routes bound to THIS channel: a route in another channel is not in play here and
+    // must not take an at-word from one that is.
+    const contestants = recipients.filter(r => !r.dynamic && !!r.mention &&
+      (!r.managedTaskRoute || r.scan_channel === String(opts.channel || '').toLowerCase()))
+    const { carried: namedHere, suppressed: shadowed } =
+      taskRouteMentionArbitrate(body, contestants.map(r => r.mention))
+    // Named, not dropped silently. This says only who took the at-word — a route can also fail to
+    // carry for reasons that have nothing to do with naming, and this line does not claim otherwise.
+    if (shadowed.size && rlDropOnce(m.id)) {
+      for (const { mention, by, at } of shadowed.values())
+        log(`RETURN skip[longer-name]: ${String(m.id).slice(0, 12)}… @${mention} does not take the at-word at ${at} — @${by} is longer`)
+    }
     let carried = false
     // No break: one message fans out to EVERY matching recipient, each deduped on its own
     // (source × recipient) key. "@a @b" reaching only one of them was finding #4.
@@ -3437,8 +3452,10 @@ async function scanReturnLane(msgs, opts = {}) {
       if (from === r.npub_hex || boundUnique || agentAuthoredBy(m.id) === r.npub_hex) continue
       const mentioned = ptags.includes(r.npub_hex) ||
         // #408: the boundary is derived from the mention alphabet in task_route_mention.mjs, not
-        // restated here. `(?![\w-])` was correct only while the grammar was the slug alphabet.
-        (!r.dynamic && !!r.mention && taskRouteMentioned(body, r.mention))
+        // restated here. #409: and the winner among overlapping mentions is settled above, once
+        // for the whole message, because it is a cross-route question this per-route loop cannot
+        // answer on its own.
+        (!r.dynamic && !!r.mention && namedHere.has(taskRouteMentionKey(r.mention)))
       if (!mentioned && !repliedTo) continue
       const why = repliedTo && !mentioned ? 'reply' : 'mention'
       let descriptor

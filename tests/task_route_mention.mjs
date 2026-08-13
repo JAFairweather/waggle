@@ -26,7 +26,7 @@ import { resolve } from 'node:path'
 import { getPublicKey, generateSecretKey, finalizeEvent } from 'nostr-tools/pure'
 
 import { taskRouteMentionProblem, taskRouteMention, taskRouteMentionKey, TASK_ROUTE_MENTION_MAX,
-  taskRouteMentioned, taskRouteMentionMatcher }
+  taskRouteMentioned, taskRouteMentionMatcher, taskRouteMentionArbitrate }
   from '../src/task_route_mention.mjs'
 
 let fails = 0
@@ -176,6 +176,7 @@ const dir = mkdtempSync(resolve(tmpdir(), 'wb-mention-'))
 const bridgeSk = generateSecretKey()
 const myDude = getPublicKey(generateSecretKey())
 const mcClaude = getPublicKey(generateSecretKey())
+const mcOnly = getPublicKey(generateSecretKey())
 const crewSk = generateSecretKey(), crew = getPublicKey(crewSk)
 const channel = 'a8186b53-537d-46ad-a7e7-b6486c58970e'
 
@@ -186,6 +187,11 @@ writeFileSync(resolve(dir, 'config.json'), JSON.stringify({ relays: [], recipien
   task_routes: [
     { participant: myDude, sender: crew, channel, mention: 'My Dude', protocol: 'nvoy-task-carry-v1' },
     { participant: mcClaude, sender: crew, channel, mention: 'MC Claude', protocol: 'nvoy-task-carry-v1' },
+    // `MC` is a whole-word prefix of `MC Claude`, which is the #407/#409 collision. It is in the
+    // harness from the start rather than in a section of its own, so every assertion above runs
+    // with the ambiguity present — a suppression rule is only trustworthy if the cases it must
+    // NOT change are checked against it too.
+    { participant: mcOnly, sender: crew, channel, mention: 'MC', protocol: 'nvoy-task-carry-v1' },
   ],
 } }))
 process.env.CONFIG_PATH = resolve(dir, 'config.json')
@@ -201,10 +207,12 @@ process.env.WB_NO_BOOT = '1'
 const { scanReturnLane, PUB, grantSet } = await import('../src/bridge.mjs')
 grantSet.set(myDude, { grantId: '1'.repeat(64), grantor: crew })
 grantSet.set(mcClaude, { grantId: '2'.repeat(64), grantor: crew })
+grantSet.set(mcOnly, { grantId: '3'.repeat(64), grantor: crew })
 
-ok('both spaced routes survive config parsing', PUB.taskRoutes.length === 2)
+ok('all three routes survive config parsing, spaces and all', PUB.taskRoutes.length === 3,
+  String(PUB.taskRoutes.length))
 ok("and keep the operator's casing on the way in",
-  PUB.taskRoutes.map(r => r.mention).sort().join('|') === 'MC Claude|My Dude',
+  PUB.taskRoutes.map(r => r.mention).sort().join('|') === 'MC|MC Claude|My Dude',
   PUB.taskRoutes.map(r => r.mention).join('|'))
 
 const journal = () => existsSync(process.env.SEND_JOURNAL_PATH)
@@ -324,11 +332,98 @@ ok('a possessive does NOT carry to the agent whose name it starts with', to.leng
 
 to = await carriedBy('@MC Claudeé is someone else entirely')
 ok('a non-ASCII letter continuing the name does NOT carry — \\w could not see it',
-  to.length === 0, to.join('|'))
+  !to.includes(short(mcClaude)), to.join('|'))
+// It carries to `MC` instead, and that is correct rather than a leak. `@MC Claudeé is …` and
+// `@MC has this one …` are the same shape — `@MC`, a space, a word — so any rule that withheld the
+// first would withhold the second, and `MC` would be unreachable in prose. The space terminates a
+// mention; that is the price of spaced names being possible at all, and it is paid deliberately.
+ok('  …it reaches the SHORT route instead, which the separator makes unavoidable',
+  to.length === 1 && to[0] === short(mcOnly), to.join('|'))
 
 to = await carriedBy('@My Dude — still here after all that')
 ok('  …and the legitimate carry still lands, so the fix suppresses rather than blocks',
   to.length === 1 && to[0] === short(myDude), to.join('|'))
 
-console.log(fails ? `\nTASK ROUTE MENTION FAIL — ${fails}` : '\nTASK ROUTE MENTION PASS — grammar, reasons, console join, boundary, end-to-end carry')
+// ---------------------------------------------------------------------------------------------
+// 6. Arbitration: longest wins per at-word (#407, #409).
+// ---------------------------------------------------------------------------------------------
+// #411 derived the boundary from the alphabet and fixed `@Dr. Watson`. It could not fix
+// `@MC Claude`, and no boundary can: the separator has to TERMINATE a mention (or `My Dude` would
+// never match `@My Dude and …`) and be INTERIOR to one (or `MC Claude` could not be a name), so
+// both readings of `@MC Claude` are correct. What was missing is arbitration — longest wins, per
+// at-word — and the shorter route's loss is logged rather than dropped quietly.
+//
+// Both directions, and the second one carries the weight: a suppression rule cannot be told from a
+// rule that suppresses everything unless the shorter route is shown STILL CARRYING the at-words
+// that really are its own. `MC` is in the harness config from the top of this file for that reason.
+console.log('\narbitration — longest wins per at-word, both directions')
+
+const arb = (body, mentions) => {
+  const { carried, suppressed } = taskRouteMentionArbitrate(body, mentions)
+  return { won: [...carried.values()].sort(), lost: [...suppressed.values()].map(s => s.mention).sort() }
+}
+const ROUTES = ['MC', 'MC Claude', 'My Dude']
+
+const ARBITRATE = [
+  // body                                       won                        suppressed
+  ['@MC Claude — please look at this.',         ['MC Claude'],             ['MC']],
+  ['@MC please look at this.',                  ['MC'],                    []],
+  ['@MC and @MC Claude both',                   ['MC', 'MC Claude'],       []],
+  ['@My Dude and @MC Claude',                   ['MC Claude', 'My Dude'],  ['MC']],
+  ['@MC CLAUDE shouting',                       ['MC Claude'],             ['MC']],
+  ['@My Dude on their own',                     ['My Dude'],               []],
+  ['@MCClaude is nobody',                       [],                        []],
+  ['no at-words here',                          [],                        []],
+]
+for (const [body, won, lost] of ARBITRATE) {
+  const got = arb(body, ROUTES)
+  ok(`${JSON.stringify(body)} -> carries ${JSON.stringify(won)}`,
+    got.won.join('|') === won.join('|'), got.won.join('|'))
+  ok(`  …suppressing ${JSON.stringify(lost)}`, got.lost.join('|') === lost.join('|'), got.lost.join('|'))
+}
+
+// A route that LOSES one at-word and WINS another is carried. Suppression is a statement about one
+// at-word, never about a route — get this wrong and a busy channel silently mutes a short name.
+ok('losing one at-word does not mute a route that won another',
+  arb('@MC Claude first, then @MC alone', ROUTES).lost.length === 0,
+  JSON.stringify(arb('@MC Claude first, then @MC alone', ROUTES)))
+
+// Order independence: the winner is the longest, not the first configured.
+ok('the winner does not depend on route order',
+  arb('@MC Claude', ['MC', 'MC Claude']).won.join('|') === arb('@MC Claude', ['MC Claude', 'MC']).won.join('|'))
+
+// Size floor — an arbitration over no routes must report nothing rather than everything.
+ok('no routes means nothing carries', arb('@MC Claude', []).won.length === 0)
+
+// --- end to end, through the real scanReturnLane -----------------------------------------------
+to = await carriedBy('@MC Claude — please look at this.')
+ok('#407 live repro: the at-word reaches ONLY the longer route',
+  to.length === 1 && to[0] === short(mcClaude), to.join('|'))
+
+to = await carriedBy('@MC has this one on its own')
+ok('and the shorter route still reaches its own agent',
+  to.length === 1 && to[0] === short(mcOnly), to.join('|'))
+
+to = await carriedBy('@MC and @MC Claude are two different agents')
+ok('two at-words in one message reach two different agents',
+  to.length === 2 && to.join('|') === [short(mcOnly), short(mcClaude)].sort().join('|'), to.join('|'))
+
+// The suppression must be READABLE. A short route that quietly stops receiving presents as the
+// return lane being flaky, which is the failure this repo keeps paying for — so assert the reason,
+// not merely that the carry did not happen.
+{
+  const captured = []
+  const realLog = console.log
+  console.log = (...a) => { captured.push(a.join(' ')) }
+  await carriedBy('@MC Claude — the suppression must be legible')
+  console.log = realLog
+  ok('the bridge logged something at all', captured.length > 0, `${captured.length} lines`)
+  const line = captured.find(l => l.includes('skip[longer-name]'))
+  ok('the suppressed route is NAMED, not dropped silently', !!line,
+    captured.join(' / ').slice(0, 200))
+  ok('  …and the line says which longer name took the at-word, and where',
+    !!line && /@MC does not take the at-word at \d+ — @MC Claude is longer/.test(line), String(line))
+}
+
+console.log(fails ? `\nTASK ROUTE MENTION FAIL — ${fails}` : '\nTASK ROUTE MENTION PASS — grammar, reasons, console join, boundary, arbitration, end-to-end carry')
 process.exit(fails ? 1 : 0)

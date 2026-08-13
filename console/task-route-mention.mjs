@@ -84,8 +84,70 @@ export function taskRouteMentionMatcher(mention) {
   return new RegExp(`@${m.replace(RE_ESCAPE, '\\$&')}(?![${MENTION_ALPHABET}])`, 'iu')
 }
 
-// Does this body name this mention? The one question scanReturnLane actually asks.
+// Does this body name this mention? True in isolation — see the arbitration below for what happens
+// when a second route's mention also matches the same at-word.
 export function taskRouteMentioned(body, mention) {
   const re = taskRouteMentionMatcher(mention)
   return !!re && re.test(String(body == null ? '' : body))
+}
+
+// ARBITRATION (#407, #409). A boundary cannot settle `@MC Claude` when both `mc` and `MC Claude`
+// are routed in one channel, because the separator has to be two things at once. A space must
+// TERMINATE a mention, or a route named `My Dude` would never match `@My Dude and …`. A space must
+// also be INTERIOR to a mention, or `MC Claude` could not be a name at all. Both readings of
+// `@MC Claude` are correct — one mention, or `mc` followed by the word "Claude" — so what is
+// missing is arbitration, not a better character class. #411 withheld the space from the boundary
+// deliberately and could not have fixed this; including the space would have broken every spaced
+// mention instead.
+//
+// LONGEST WINS, PER `@` POSITION. Every candidate must begin at the SAME `@`, so the candidates at
+// one position are all prefixes of one span and are totally ordered by length. That dissolves the
+// awkward case raised in #409 — `MC Claude` against `Claude Ops` in `@MC Claude Ops` — because
+// `Claude Ops` has no `@` in front of it there and is not a candidate at that position at all.
+// Ties are impossible: two mentions matching the same span with the same length are the same
+// mention case-folded, and those are collapsed to one row before the scan.
+//
+// A mention that loses at one at-word and wins at another IS CARRIED. Suppression is a statement
+// about a single at-word, never about a route, which is why `carried` is resolved before
+// `suppressed` is answered.
+//
+// Returns { carried, suppressed }: `carried` maps mention key -> mention as written; `suppressed`
+// maps mention key -> { mention, by, at }, naming the longer mention that took the at-word and
+// where. The caller logs from `suppressed` — a route that silently stops receiving a carry it used
+// to receive presents as the return lane being flaky, which is the failure this repo keeps paying
+// for.
+export function taskRouteMentionArbitrate(body, mentions) {
+  const text = String(body == null ? '' : body)
+  const rows = []
+  for (const value of (Array.isArray(mentions) ? mentions : [])) {
+    const m = String(value == null ? '' : value).replace(/^@/, '')
+    if (!m) continue
+    const key = taskRouteMentionKey(m)
+    if (rows.some(row => row.key === key)) continue
+    // Sticky, so a candidate is tested AT the at-word rather than anywhere after it. A non-sticky
+    // test would let a mention later in the body win an at-word it does not start.
+    rows.push({ mention: m, key, re: new RegExp(`@${m.replace(RE_ESCAPE, '\\$&')}(?![${MENTION_ALPHABET}])`, 'iuy') })
+  }
+  const carried = new Map()
+  const contested = []
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '@') continue
+    let winner = null
+    const hits = []
+    for (const row of rows) {
+      row.re.lastIndex = i
+      if (!row.re.test(text)) continue
+      hits.push(row)
+      if (!winner || row.mention.length > winner.mention.length) winner = row
+    }
+    if (!winner) continue
+    carried.set(winner.key, winner.mention)
+    for (const row of hits) if (row.key !== winner.key) contested.push({ row, by: winner.mention, at: i })
+  }
+  const suppressed = new Map()
+  for (const { row, by, at } of contested) {
+    if (carried.has(row.key) || suppressed.has(row.key)) continue   // won elsewhere, or already recorded
+    suppressed.set(row.key, { mention: row.mention, by, at })
+  }
+  return { carried, suppressed }
 }
