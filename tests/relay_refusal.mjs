@@ -499,5 +499,124 @@ const ok = (n, c) => { console.info(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) 
   ok(`the original C0/C1/DEL coverage is intact (${cc} of 65 control codepoints still caught)`, cc === 65)
 }
 
+
+// ── a relay cannot cause unbounded journal LINES (#422) ──────────────────────────────────────────
+// #405 bounded the LENGTH of one line. Nothing bounded the COUNT, and the two are different
+// attacks: the suppression here is keyed on the reason, "genuinely different" is the relay's
+// choice, and 500 sends whose wording it varies by a request id is 500 lines with nothing invalid
+// in any of them. The fixture below therefore varies the VISIBLE text and contains no control
+// character at all — the control-character variant passes for the wrong reason.
+{
+  const SENDS = 500
+  const NOISY = 'wss://noisy.example'
+  const varied = (i) => `pow: 28 bits needed. (12) req=${i}`   // outside the brackets, so the key varies
+  const flood = (opts) => {
+    const lines = []
+    const L = refusalLedger({ log: (m) => lines.push(m), ...opts })
+    for (let i = 0; i < SENDS; i++) {
+      L.record({ relay: NOISY, accepted: false, reason: varied(i), at: 1000 + i })
+    }
+    return { lines, L }
+  }
+
+  // THE VACUITY GUARD, run first. Every assertion below is of the form "the cap held", and every
+  // one of them passes against a fixture that never flooded. So measure the uncapped case and
+  // refuse to report on the capped one until the flood is a fact.
+  const { lines: uncapped } = flood({ linesPerWindow: Number.MAX_SAFE_INTEGER })
+  if (uncapped.length < 100) {
+    console.error(`relay_refusal: INCONCLUSIVE — the uncapped fixture produced only ${uncapped.length} lines`)
+    console.error('  This is NOT an all-clear: nothing below tests a cap that was never reached.')
+    process.exit(3)
+  }
+  ok(`NEGATIVE CONTROL — uncapped, the same fixture DOES flood (${uncapped.length} lines from ${SENDS} sends)`,
+    uncapped.length > SENDS * 0.9)
+  // Escapes, never literals — a literal invisible in a fixture is a fixture nobody can review.
+  ok('NEGATIVE CONTROL — and the flood needs no control character; every reason is plain ASCII',
+    !uncapped.some(l => new RegExp(INVISIBLE_CLASS.replace('\\p{Zs}', ''), 'u').test(l)))
+
+  const { lines: capped, L: floodedLedger } = flood({})
+  ok(`the same ${SENDS} sends are bounded to ${capped.length} lines by the default cap`,
+    capped.length <= 12)
+
+  // The cap must never be silent: a ledger that quietly stops writing looks exactly like a relay
+  // that stopped refusing, which is the #374 failure one level up.
+  const trip = capped.filter(l => l.startsWith('RELAY REFUSAL FLOOD ') && !l.startsWith('RELAY REFUSAL FLOOD ENDED'))
+  ok('the cap SAYS it tripped', trip.length === 1)
+  ok('and said it ONCE — a line per withheld line would be the flood again, in the bridge\'s voice',
+    capped.filter(l => l.includes('#422')).length === 1)
+  ok('the trip line names the relay, what it is now doing instead, and the issue',
+    trip.length === 1 && trip[0].includes('noisy.example') &&
+    /counted, not logged/.test(trip[0]) && trip[0].includes('#422'))
+
+  // BOTH DIRECTIONS. A cap that eats the one line a quiet relay had to say is worse than the flood.
+  {
+    const lines = []
+    const L = refusalLedger({ log: (m) => lines.push(m), linesPerWindow: 2 })
+    L.record({ relay: 'wss://quiet.example', accepted: false, reason: 'pow: 28 bits needed. (12)', at: 1000 })
+    L.record({ relay: 'wss://quiet.example', accepted: false, reason: 'blocked: not on the allowlist', at: 1100 })
+    ok('a quiet relay whose reason genuinely changes still prints, both lines',
+      lines.length === 2 && lines[0].startsWith('RELAY REFUSED') && lines[1].startsWith('RELAY REFUSAL CHANGED'))
+  }
+
+  // And the cap is per relay, so a flooding relay cannot spend a quiet one's budget.
+  {
+    const lines = []
+    const L = refusalLedger({ log: (m) => lines.push(m), linesPerWindow: 2 })
+    for (let i = 0; i < 50; i++) L.record({ relay: NOISY, accepted: false, reason: varied(i), at: 1000 + i })
+    L.record({ relay: 'wss://quiet.example', accepted: false, reason: 'pow: 28 bits needed. (12)', at: 1060 })
+    ok('a flooding relay does not eat a quiet one\'s line — the cap is per relay, not global',
+      lines.filter(l => l.includes('quiet.example')).length === 1)
+  }
+
+  // An identical repeat is already suppressed by #374, and must not spend the #422 budget: if it
+  // did, a steadily-refusing relay would go silent for the wrong reason.
+  {
+    const lines = []
+    const L = refusalLedger({ log: (m) => lines.push(m), linesPerWindow: 2 })
+    for (let i = 0; i < 100; i++) {
+      L.record({ relay: 'wss://steady.example', accepted: false, reason: 'pow: 28 bits needed. (12)', at: 1000 + i })
+    }
+    L.record({ relay: 'wss://steady.example', accepted: false, reason: 'blocked: not on the allowlist', at: 1200 })
+    ok('an identical repeat is suppressed by #374 and does not spend the #422 budget', lines.length === 2)
+  }
+
+  // The count is the finding. "This relay caused 500 refusal lines in an hour" is what an operator
+  // acts on, and it currently exists only as 500 lines that each look like news.
+  ok('record() returns \'capped\', which a caller can tell from \'suppressed\'',
+    floodedLedger.record({ relay: NOISY, accepted: false, reason: varied(9999), at: 1500 }) === 'capped')
+  ok('the reason is still RECORDED while capped — the cap costs timeliness, not fact',
+    /req=9999/.test(floodedLedger.rows()[0].reason))
+  ok('summary() carries the withheld count, because a flood that STOPS never rolls its window',
+    /\+\d{3} changed reason\(s\) counted, not logged/.test(floodedLedger.summary() || ''))
+  ok('and summary() still leads with the current reason rather than replacing it with the count',
+    (floodedLedger.summary() || '').includes('pow: 28 bits needed. (12) req=9999'))
+
+  // The window roll reports what it withheld, and then speaks normally again.
+  {
+    const lines = []
+    const L = refusalLedger({ log: (m) => lines.push(m), linesPerWindow: 2, windowSeconds: 100 })
+    for (let i = 0; i < 20; i++) L.record({ relay: NOISY, accepted: false, reason: varied(i), at: 1000 + i })
+    const before = lines.length
+    L.record({ relay: NOISY, accepted: false, reason: varied(999), at: 1200 })
+    const ended = lines.filter(l => l.startsWith('RELAY REFUSAL FLOOD ENDED'))
+    ok('the window roll reports the exact count it withheld', ended.length === 1 && / 18 further changed reason/.test(ended[0]))
+    ok('and the refusal that rolled the window is itself logged, not eaten', lines.length === before + 2)
+    ok('NEGATIVE CONTROL — without the roll, the same refusal is capped',
+      L.record({ relay: NOISY, accepted: false, reason: varied(1000), at: 1201 }) === 'logged' &&
+      L.record({ relay: NOISY, accepted: false, reason: varied(1001), at: 1202 }) === 'capped')
+  }
+
+  // A relay that never floods must never see any of this vocabulary — the same shape as the class
+  // sweep above: a guard that fires on everything and one that fires on nothing read identically.
+  {
+    const lines = []
+    const L = refusalLedger({ log: (m) => lines.push(m) })
+    L.record({ relay: 'wss://ordinary.example', accepted: false, reason: 'pow: 28 bits needed. (12)', at: 1000 })
+    L.record({ relay: 'wss://ordinary.example', accepted: true, at: 1001 })
+    ok('NEGATIVE CONTROL — an ordinary relay\'s journal gains no flood vocabulary at all',
+      lines.length === 1 && !lines[0].includes('#422') && !(L.summary() || '').includes('#422'))
+  }
+}
+
 console.info(`\n${fails ? `RELAY REFUSAL FAIL — ${fails}` : 'RELAY REFUSAL PASS — the reason survives, the repeat is quiet, a change speaks, and nothing forges a line'}`)
 process.exit(fails ? 1 : 0)
