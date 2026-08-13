@@ -42,6 +42,7 @@ import { bridgePubkey, bridgeSignerMode, hasBridgeKey, openSeal, openRumor, seal
 import { verifyConsent } from './consent.mjs'   // in-door consent (#131/#132, docs/CONSENT.md §8)
 import { consentState } from './consent_state.mjs'   // one honest word per watched author (#389)
 import { createHash, randomBytes } from 'node:crypto'
+import { scopeHashSync, scopeHashOrNull } from './scope_hash.mjs'
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, renameSync, unlinkSync, openSync, closeSync, fsyncSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -832,10 +833,10 @@ const NIPDA = (() => {
   const d = { grant: 440, revocation: 441, index: 10440, dataset: 30440, scopeTag: 'da-scope', capTag: 'da-cap' }
   try { return { ...d, ...JSON.parse(readFileSync(NIPDA_PATH, 'utf8')) } } catch { return d }
 })()
-const scopeHash = (channelId, saltHex) =>
-  createHash('sha256').update(Buffer.concat([
-    Buffer.from('waggle/da-scope/v1'), Buffer.from([0]), Buffer.from(String(channelId)), Buffer.from(saltHex, 'hex'),
-  ])).digest('hex')
+// Two sites, opposite requirements — see src/scope_hash.mjs. The grant handler below reads a
+// salt off the wire and must ignore what it cannot decode; buildConsentPrefill issues with a salt
+// this process just generated, where an undecodable salt is our own bug and must not be swallowed
+// into a published tag.
 // grantee pubkey -> Map(grantId -> grantor). A SET of grants, not one, and that is the whole of
 // #364: a grantee may legitimately hold several — one per channel, per capability, or simply
 // re-issued. This map used to hold the last one written, so revoking THAT id de-admitted a key
@@ -1094,7 +1095,10 @@ function processGrantEvent(ev, { emitFn = emit, queryFn = query } = {}) {
   if (!grantee || !scope || !cap) return
   // The salted hash binds the grant to a channel without the channel id riding publicly;
   // the bridge knows its own channel id, so it recomputes and compares.
-  if (scope[1] !== scopeHash(PUB.inbox, scope[2] || '')) return // scoped to some other channel — not ours
+  const ourScope = scopeHashOrNull(String(PUB.inbox), scope[2] || '')
+  // null = the salt on this grant is not even-length hex, so it decodes to no subject and binds
+  // to nothing. Ignored like any other foreign scope, and never thrown out of the handler.
+  if (ourScope === null || scope[1] !== ourScope) return // scoped to some other channel — not ours
   if (cap !== 'admit' && cap !== 'admit+read') return
   // Already revoked, and we simply saw the two events in the order the relay chose to serve them.
   // Refused loudly rather than silently: admitting here is what seated a revoked key in the roster,
@@ -1219,7 +1223,7 @@ function buildConsentPrefill() {
   const salt = randomBytes(16).toString('hex')
   return {
     kind: 440, created_at: Math.floor(Date.now() / 1000),
-    tags: [['p', BRIDGE_PK], ['da-scope', scopeHash(PUB.mirrorConsentHiveId, salt), salt], ['da-cap', 'mirror'], ['tos', PUB.mirrorExpectedTosHash || '']],
+    tags: [['p', BRIDGE_PK], ['da-scope', scopeHashSync(String(PUB.mirrorConsentHiveId), salt), salt], ['da-cap', 'mirror'], ['tos', PUB.mirrorExpectedTosHash || '']],
     content: '',
   }
 }

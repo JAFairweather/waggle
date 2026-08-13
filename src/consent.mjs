@@ -15,20 +15,16 @@
 // granted. Only the grantor may revoke their own consent.
 
 import { verifyEvent } from 'nostr-tools/pure'
-import { createHash } from 'node:crypto'
+import { scopeHashOrNull } from './scope_hash.mjs'
 
 export const KIND = { grant: 440, revocation: 441 }
 export const CONSENT_CAP = 'mirror'
 
-// Identical construction to tools/grant.mjs and src/bridge.mjs (scopeHash). If this drifts, a
-// consent scoped to a community will never match the community's own recomputed hash and every
-// consent silently fails closed — so it is written to mirror them literally.
-export function scopeHash(communityId, saltHex) {
-  return createHash('sha256').update(Buffer.concat([
-    Buffer.from('waggle/da-scope/v1'), Buffer.from([0]),
-    Buffer.from(String(communityId)), Buffer.from(saltHex, 'hex'),
-  ])).digest('hex')
-}
+// The sixth hand-written copy, and one #328 did not list. Kept as an export because the suite
+// imports it; the construction now comes from src/scope_hash.mjs so it cannot drift from the
+// issuer. verifyConsent reads its salt off a candidate 440, so a salt that is not even-length hex
+// returns null and matches nothing rather than throwing.
+export const scopeHash = (communityId, saltHex) => scopeHashOrNull(String(communityId), saltHex)
 
 const tagVal = (ev, k) => (ev.tags.find(t => t[0] === k) || [])[1]
 

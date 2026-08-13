@@ -23,6 +23,7 @@
 import { finalizeEvent, getPublicKey, generateSecretKey } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import { createHash, randomBytes } from 'node:crypto'
+import { scopeHashSync } from '../src/scope_hash.mjs'
 import { writeFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
@@ -83,9 +84,7 @@ if (cmd === 'revoke') {
 
 // Build the consent 440 — the SAME shape the bridge's disclosure DM would prefill.
 const salt = randomBytes(16).toString('hex')
-const scopeHash = createHash('sha256').update(Buffer.concat([
-  Buffer.from('waggle/da-scope/v1'), Buffer.from([0]), Buffer.from(HIVE), Buffer.from(salt, 'hex'),
-])).digest('hex')
+const scopeHash = scopeHashSync(HIVE, salt)
 
 // tos hash: from the canonical block (one producer), unless overridden.
 let tosHash = flag('--tos-hash')

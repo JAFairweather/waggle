@@ -31,6 +31,7 @@ import { finalizeEvent, getPublicKey } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import { createHash } from 'node:crypto'
 import { randomBytes } from 'node:crypto'
+import { scopeHashSync } from '../src/scope_hash.mjs'
 
 const arg = (n, d) => { const i = process.argv.indexOf(n); return i > -1 && process.argv[i + 1] ? process.argv[i + 1] : d }
 const die = (m) => { console.error(`propose-admission: ${m}`); process.exit(1) }
@@ -55,9 +56,7 @@ const DRY = !!process.env.DRY_RUN
 // The scope hash — IDENTICAL construction to tools/grant.mjs and the console. If this drifts, the
 // bridge computes a different hash from its own channel id and the admission silently never matches.
 const salt = randomBytes(16).toString('hex')
-const scopeHash = createHash('sha256').update(Buffer.concat([
-  Buffer.from('waggle/da-scope/v1'), Buffer.from([0]), Buffer.from(channel), Buffer.from(salt, 'hex'),
-])).digest('hex')
+const scopeHash = scopeHashSync(channel, salt)
 
 // The UNSIGNED 440 draft. Same shape grant.mjs signs: p=grantee, da-scope=(hash,salt), da-cap=admit.
 const draft = {

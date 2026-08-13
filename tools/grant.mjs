@@ -23,7 +23,8 @@
 // from config/nipda_kinds.json when present (NIPDA_KINDS_PATH to override).
 
 import WebSocket from 'ws'
-import { randomBytes, createHash } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
+import { scopeHashSync, scopeHashOrNull } from '../src/scope_hash.mjs'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, resolve } from 'node:path'
@@ -165,9 +166,7 @@ if (cmd === 'whoami') {
   // the same subject linkable, which is the exact property the salt exists to prevent.
   for (const g of grantees) {
     const salt = randomBytes(16).toString('hex')
-    const hash = createHash('sha256').update(Buffer.concat([
-      Buffer.from('waggle/da-scope/v1'), Buffer.from([0]), Buffer.from(subject), Buffer.from(salt, 'hex'),
-    ])).digest('hex')
+    const hash = scopeHashSync(subject, salt)
     const ev = await signer.sign({
       kind: NIPDA.grant,
       created_at: Math.floor(Date.now() / 1000),
@@ -214,10 +213,11 @@ if (cmd === 'whoami') {
     if (!filterSubject) return true
     const tag = e.tags.find(t => t[0] === NIPDA.scopeTag)
     if (!tag) return false
-    const recomputed = createHash('sha256').update(Buffer.concat([
-      Buffer.from('waggle/da-scope/v1'), Buffer.from([0]), Buffer.from(filterSubject), Buffer.from(tag[2] || '', 'hex'),
-    ])).digest('hex')
-    return tag[1] === recomputed
+    // The salt is WIRE-SUPPLIED here — anyone can publish a 440 with a salt that is not hex.
+    // A grant nobody can decode a salt for binds to no subject, so it matches nothing; it must
+    // not throw out of a filter and kill the listing.
+    const recomputed = scopeHashOrNull(filterSubject, tag[2] || '')
+    return recomputed !== null && tag[1] === recomputed
   }
   let shown = 0
   for (const e of evs) {
