@@ -61,8 +61,12 @@ const theirSk = generateSecretKey(), theirPk = getPublicKey(theirSk)
   // BOTH DIRECTIONS. A guard that refuses everything passes every assertion above.
   const right = fakeSigner(mineSk)
   const event = await signDmRelayList(right, DM_URLS, minePk, { createdAt: AT })
+  // Verify the WIRE form: fakeSigner returns finalizeEvent's own object, which nostr-tools stamps
+  // with `verifiedSymbol`, and verifyEvent short-circuits on that stamp. Confirmed: without the
+  // roundtrip, `{ ...event, sig: '0'.repeat(128) }` also passes — so the assertion carrying the
+  // "not refuse everything" direction proved only that an object existed. #320.
   test('the CORRECT identity still signs and publishes — the guard is not "refuse everything"',
-    event.kind === 10050 && event.pubkey === minePk && verifyEvent(event))
+    event.kind === 10050 && event.pubkey === minePk && verifyEvent(JSON.parse(JSON.stringify(event))))
   test('and it signed exactly once', right.calls.length === 1)
   test('the Bunker path and the local path produce byte-identical content',
     JSON.stringify(event.tags) === JSON.stringify(buildDmRelayListEvent(mineSk, DM_URLS, AT).tags))

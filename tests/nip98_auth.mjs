@@ -49,7 +49,11 @@ const built = await build({ secretKey: sk, url, method: 'POST', body: JSON.strin
 const ev = built.event
 
 ok('kind is 27235', ev.kind === 27235)
-ok('it is signed by the key given, and verifies', ev.pubkey === pk && verifyEvent(ev))
+// Verify the WIRE form. `build` above returns the finalizeEvent result directly, and nostr-tools
+// stamps `verifiedSymbol` on what it finalizes — verifyEvent short-circuits on that marker, so
+// verifying the object itself asserts nothing about the signature. Confirmed: without the
+// roundtrip, `{ ...ev, sig: '0'.repeat(128) }` also passes. #320.
+ok('it is signed by the key given, and verifies', ev.pubkey === pk && verifyEvent(JSON.parse(JSON.stringify(ev))))
 ok('the u tag is the expected URL', tag(ev, 'u') === url)
 ok('the method tag is upper-cased', tag(ev, 'method') === 'POST')
 ok('a lower-case method is still sent upper-cased',
