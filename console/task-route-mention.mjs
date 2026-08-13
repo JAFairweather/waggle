@@ -104,8 +104,21 @@ export function taskRouteMentioned(body, mention) {
 // one position are all prefixes of one span and are totally ordered by length. That dissolves the
 // awkward case raised in #409 — `MC Claude` against `Claude Ops` in `@MC Claude Ops` — because
 // `Claude Ops` has no `@` in front of it there and is not a candidate at that position at all.
-// Ties are impossible: two mentions matching the same span with the same length are the same
-// mention case-folded, and those are collapsed to one row before the scan.
+// TIES ARE NOT IMPOSSIBLE, AND ARE NOT BROKEN. This first claimed that two mentions matching the
+// same span with the same length must be the same mention case-folded, so the dedup above would
+// already have collapsed them. That is false, found in review of #414. `taskRouteMentionKey` is
+// `toLowerCase()` — Unicode case MAPPING — and the matcher is a regex with `iu` — Unicode simple
+// case FOLDING. Those are different equivalence relations, and where they disagree a same-length
+// pair survives dedup. `Me\u017Fnil` (LATIN SMALL LETTER LONG S) and `Mesnil` are two dedup keys of
+// equal length, each matching the other's at-word; the sweep that found it turned up exactly one
+// such character in U+0020–U+FFFF. Picking a winner with `>` then picked by ARRAY ORDER — the
+// message reached whichever route the operator happened to configure first, and the skip line told
+// the other's owner that a longer name had taken it, which was not true.
+//
+// So every mention of the longest length carries. A tie cannot be broken wrongly if it is not
+// broken, which makes the ordering claim true by construction rather than by an argument about
+// Unicode. This is a strict generalisation of longest-wins, not a different rule: where lengths
+// differ it is unchanged.
 //
 // A mention that loses at one at-word and wins at another IS CARRIED. Suppression is a statement
 // about a single at-word, never about a route, which is why `carried` is resolved before
@@ -132,17 +145,17 @@ export function taskRouteMentionArbitrate(body, mentions) {
   const contested = []
   for (let i = 0; i < text.length; i++) {
     if (text[i] !== '@') continue
-    let winner = null
     const hits = []
     for (const row of rows) {
       row.re.lastIndex = i
-      if (!row.re.test(text)) continue
-      hits.push(row)
-      if (!winner || row.mention.length > winner.mention.length) winner = row
+      if (row.re.test(text)) hits.push(row)
     }
-    if (!winner) continue
-    carried.set(winner.key, winner.mention)
-    for (const row of hits) if (row.key !== winner.key) contested.push({ row, by: winner.mention, at: i })
+    if (!hits.length) continue
+    // EVERY mention of the longest length carries — the tie is not broken. See above.
+    const longest = Math.max(...hits.map(r => r.mention.length))
+    const winners = hits.filter(r => r.mention.length === longest)
+    for (const w of winners) carried.set(w.key, w.mention)
+    for (const row of hits) if (row.mention.length !== longest) contested.push({ row, by: winners[0].mention, at: i })
   }
   const suppressed = new Map()
   for (const { row, by, at } of contested) {

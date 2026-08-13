@@ -177,6 +177,14 @@ const bridgeSk = generateSecretKey()
 const myDude = getPublicKey(generateSecretKey())
 const mcClaude = getPublicKey(generateSecretKey())
 const mcOnly = getPublicKey(generateSecretKey())
+// The tie pair. `Me\u017Fnil` is LATIN SMALL LETTER LONG S — written escaped because it is a
+// letter nobody can tell from `f` or `s` at a glance, and a fixture nobody can read is a fixture
+// nobody can check. It is the ONE character in U+0020–U+FFFF that regex `iu` folds onto an ASCII
+// letter but `String.prototype.toLowerCase()` does not, so these two survive dedup as separate
+// routes of equal length that each match the other's at-word.
+const mesnilLong = getPublicKey(generateSecretKey())
+const mesnilPlain = getPublicKey(generateSecretKey())
+const MESNIL_LONG = 'Me\u017Fnil'
 const crewSk = generateSecretKey(), crew = getPublicKey(crewSk)
 const channel = 'a8186b53-537d-46ad-a7e7-b6486c58970e'
 
@@ -192,6 +200,8 @@ writeFileSync(resolve(dir, 'config.json'), JSON.stringify({ relays: [], recipien
     // with the ambiguity present — a suppression rule is only trustworthy if the cases it must
     // NOT change are checked against it too.
     { participant: mcOnly, sender: crew, channel, mention: 'MC', protocol: 'nvoy-task-carry-v1' },
+    { participant: mesnilLong, sender: crew, channel, mention: MESNIL_LONG, protocol: 'nvoy-task-carry-v1' },
+    { participant: mesnilPlain, sender: crew, channel, mention: 'Mesnil', protocol: 'nvoy-task-carry-v1' },
   ],
 } }))
 process.env.CONFIG_PATH = resolve(dir, 'config.json')
@@ -208,11 +218,13 @@ const { scanReturnLane, PUB, grantSet } = await import('../src/bridge.mjs')
 grantSet.set(myDude, { grantId: '1'.repeat(64), grantor: crew })
 grantSet.set(mcClaude, { grantId: '2'.repeat(64), grantor: crew })
 grantSet.set(mcOnly, { grantId: '3'.repeat(64), grantor: crew })
+grantSet.set(mesnilLong, { grantId: '4'.repeat(64), grantor: crew })
+grantSet.set(mesnilPlain, { grantId: '5'.repeat(64), grantor: crew })
 
-ok('all three routes survive config parsing, spaces and all', PUB.taskRoutes.length === 3,
+ok('all five routes survive config parsing, spaces and all', PUB.taskRoutes.length === 5,
   String(PUB.taskRoutes.length))
 ok("and keep the operator's casing on the way in",
-  PUB.taskRoutes.map(r => r.mention).sort().join('|') === 'MC|MC Claude|My Dude',
+  PUB.taskRoutes.map(r => r.mention).sort().join('|') === `MC|MC Claude|Mesnil|${MESNIL_LONG}|My Dude`,
   PUB.taskRoutes.map(r => r.mention).join('|'))
 
 const journal = () => existsSync(process.env.SEND_JOURNAL_PATH)
@@ -363,6 +375,7 @@ const arb = (body, mentions) => {
   return { won: [...carried.values()].sort(), lost: [...suppressed.values()].map(s => s.mention).sort() }
 }
 const ROUTES = ['MC', 'MC Claude', 'My Dude']
+const ALL_ROUTES = [...ROUTES, MESNIL_LONG, 'Mesnil']
 
 const ARBITRATE = [
   // body                                       won                        suppressed
@@ -395,6 +408,34 @@ ok('the winner does not depend on route order',
 // Size floor — an arbitration over no routes must report nothing rather than everything.
 ok('no routes means nothing carries', arb('@MC Claude', []).won.length === 0)
 
+// TIES ARE NOT BROKEN — the claim this fix originally rested on was false (#414 review).
+// `taskRouteMentionKey` folds with `toLowerCase()` (Unicode case MAPPING); the matcher folds with
+// regex `iu` (Unicode simple case FOLDING). Two different equivalence relations, so a same-length
+// pair CAN survive dedup and reach the comparison. Breaking that tie by `>` broke it by array
+// order: the message went to whichever route was configured first, and the other's owner was told
+// a longer name had taken it — a false reason for a delivery to the wrong participant.
+ok('a same-length pair survives dedup, so the tie is real and not a hypothetical',
+  taskRouteMentionKey(MESNIL_LONG) !== taskRouteMentionKey('Mesnil') &&
+  MESNIL_LONG.length === 'Mesnil'.length &&
+  taskRouteMentioned('@Mesnil please look', MESNIL_LONG) &&
+  taskRouteMentioned(`@${MESNIL_LONG} please look`, 'Mesnil'))
+
+{
+  const forward = arb('@Mesnil please look at this.', [MESNIL_LONG, 'Mesnil'])
+  const reverse = arb('@Mesnil please look at this.', ['Mesnil', MESNIL_LONG])
+  ok('a tie carries to BOTH rather than to one of them',
+    forward.won.length === 2 && forward.lost.length === 0, JSON.stringify(forward))
+  ok('  …and the outcome does not depend on the order they were configured in',
+    forward.won.join('|') === reverse.won.join('|'), `${forward.won.join('|')} vs ${reverse.won.join('|')}`)
+}
+
+// The generalisation must not have loosened the rule it generalises: a genuinely longer name
+// still takes the at-word, with the collision pair present in the route set.
+ok('longest still wins when the lengths actually differ',
+  arb('@MC Claude — please look at this.', ALL_ROUTES).won.join('|') === 'MC Claude' &&
+  arb('@MC Claude — please look at this.', ALL_ROUTES).lost.join('|') === 'MC',
+  JSON.stringify(arb('@MC Claude — please look at this.', ALL_ROUTES)))
+
 // --- end to end, through the real scanReturnLane -----------------------------------------------
 to = await carriedBy('@MC Claude — please look at this.')
 ok('#407 live repro: the at-word reaches ONLY the longer route',
@@ -407,6 +448,11 @@ ok('and the shorter route still reaches its own agent',
 to = await carriedBy('@MC and @MC Claude are two different agents')
 ok('two at-words in one message reach two different agents',
   to.length === 2 && to.join('|') === [short(mcOnly), short(mcClaude)].sort().join('|'), to.join('|'))
+
+to = await carriedBy('@Mesnil please look at this.')
+ok('end to end: a tie reaches BOTH agents, so neither is intercepted',
+  to.length === 2 && to.join('|') === [short(mesnilLong), short(mesnilPlain)].sort().join('|'), to.join('|'))
+
 
 // The suppression must be READABLE. A short route that quietly stops receiving presents as the
 // return lane being flaky, which is the failure this repo keeps paying for — so assert the reason,
