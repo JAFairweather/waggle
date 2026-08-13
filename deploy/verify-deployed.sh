@@ -32,6 +32,12 @@ cd "$REPO"
 
 # Canonical ship list — MUST mirror deploy.sh's rsync set. Dirs expand to the tracked
 # files at REF, so the "should match" set is defined by git, not by whatever is on disk.
+#
+# `console/` is deliberately absent and must stay absent (#412). The console is not served
+# from this host — there is no HTTP listener on it — so adding it here would report drift
+# for files that are correctly not present. It is published separately and by hand from a
+# checkout on another host, which means a green run here says nothing about whether a
+# console change is live. See deploy/README.md, "console/ is not covered by this".
 SHIP='src tests tools package.json package-lock.json config.example.json deploy/tripwire-alarm-bunker.conf deploy/waggle-tripwire-drill.service deploy/setup-tripwire-alarm.sh'
 PATHS=$(git ls-tree -r --name-only "$REF" -- $SHIP) \
   || { echo "  ✗ not a valid git ref: $REF"; exit 2; }
