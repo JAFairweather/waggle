@@ -17,7 +17,7 @@
 // Run: node tests/deploy_runner.mjs   (exit 0 = pass, 1 = fail)
 
 import { execFileSync, execSync } from 'node:child_process'
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -96,9 +96,28 @@ catch {
 // Report the absence instead, carrying the tick's output, and return a value no sha and no
 // content regex can match. The assertion is unchanged and absence is still a failure — it is now
 // a legible one, and the checks after it still run.
+//
+// #410 made the absence legible. It did not make it DIAGNOSABLE, and those are different: an
+// absent watermark has two causes that print identically and want opposite investigations.
+// Either the tick refused and deliberately wrote nothing — a real finding, and its output says
+// why — or the tree is not on disk at all, in which case the tick's output is beside the point
+// and no amount of reading it will help. #378 has been chased down the first road twice.
+// So say which one it is, out of the filesystem rather than out of the reader's assumption.
 const readOrReport = (path, tick) => {
   if (existsSync(path)) return readFileSync(path, 'utf8')
-  console.error(`  ↳ ${path} does not exist. The runner tick that should have written it said:`)
+  const dir = dirname(path)
+  let where
+  if (!existsSync(dir)) {
+    where = `Its directory ${dir} IS NOT THERE EITHER, so the tree went away — this is not a refusal, and the tick output below is not the explanation.`
+  } else {
+    let entries = null
+    try { entries = readdirSync(dir) } catch { /* listed below as unreadable */ }
+    where = entries === null
+      ? `Its directory ${dir} exists but could not be listed.`
+      : `Its directory ${dir} exists and holds ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} [${entries.slice(0, 12).join(' ') || 'empty'}], so the tree is intact and the tick refused.`
+  }
+  console.error(`  ↳ ${path} does not exist. ${where}`)
+  console.error('    The runner tick that should have written it said:')
   console.error(((tick && tick.out) || '(no output captured)').replace(/^/gm, '      '))
   return ''
 }
@@ -109,9 +128,35 @@ const probe = mkdtempSync(join(tmpdir(), 'wb-runner-probe-'))
 writeFileSync(join(probe, 'present'), 'a-sha\n')
 check(readOrReport(join(probe, 'present'), { out: '' }).trim() === 'a-sha',
   'watermark reader returns file content when the file is there')
-console.log('  (the next two lines are this suite exercising its own absence reporter — not a failure)')
-check(readOrReport(join(probe, 'absent'), { out: 'stub tick output' }) === '',
+
+// Capture rather than print: the reporter's message is the thing an operator acts on, so assert
+// the REASON it gives and not merely that it declined to throw. A reporter that always says
+// "the tree went away" and one that always says "the tick refused" both pass a bare !throw check.
+const saidWhenReading = (path, tick) => {
+  const said = []
+  const real = console.error
+  console.error = (...a) => said.push(a.join(' '))
+  try { return { value: readOrReport(path, tick), said: said.join('\n') } }
+  finally { console.error = real }
+}
+
+const gone = saidWhenReading(join(probe, 'absent'), { out: 'stub tick output' })
+check(gone.value === '',
   'watermark reader reports an absent file instead of throwing ENOENT and killing the suite')
+check(/exists and holds \d+ entr/.test(gone.said) && /the tick refused/.test(gone.said),
+  'absent file in a tree that IS there -> says the tree is intact, so the tick is what to read')
+check(gone.said.includes('stub tick output'),
+  'and it still carries the tick output, which is the explanation in that case')
+
+// The other direction, which is the whole point: the same absence with the tree removed must
+// NOT say the tick refused, or #378 gets chased down the tick-output road a third time.
+const vanished = join(probe, 'no-such-tree', 'DEPLOYED_SHA')
+const reaped = saidWhenReading(vanished, { out: 'stub tick output' })
+check(reaped.value === '', 'a watermark under a missing tree is reported, not thrown')
+check(/IS NOT THERE EITHER/.test(reaped.said) && /not a refusal/.test(reaped.said),
+  'NEGATIVE CONTROL — tree absent -> names the tree, and says the tick output is NOT the explanation')
+check(!/the tick refused/.test(reaped.said),
+  'NEGATIVE CONTROL — and does not also claim the tick refused; the two diagnoses are exclusive')
 rmSync(probe, { recursive: true, force: true })
 
 const work = mkdtempSync(join(tmpdir(), 'wb-runner-'))
