@@ -3492,13 +3492,19 @@ async function scanReturnLane(msgs, opts = {}) {
     // must not take an at-word from one that is.
     const contestants = recipients.filter(r => !r.dynamic && !!r.mention &&
       (!r.managedTaskRoute || r.scan_channel === String(opts.channel || '').toLowerCase()))
-    const { carried: namedHere, suppressed: shadowed } =
+    const { carried: namedHere, suppressed: shadowed, nearMissed } =
       taskRouteMentionArbitrate(body, contestants.map(r => r.mention))
     // Named, not dropped silently. This says only who took the at-word — a route can also fail to
     // carry for reasons that have nothing to do with naming, and this line does not claim otherwise.
-    if (shadowed.size && rlDropOnce(m.id)) {
+    if ((shadowed.size || nearMissed.size) && rlDropOnce(m.id)) {
       for (const { mention, by, at } of shadowed.values())
         log(`RETURN skip[longer-name]: ${String(m.id).slice(0, 12)}… @${mention} does not take the at-word at ${at} — @${by} is longer`)
+      // A DIFFERENT reason, under its own heading (#415). Losing to another route and losing to the
+      // word itself are two things an operator does two different things about: the first is a
+      // naming collision to resolve, the second is usually somebody typing a name that is not
+      // anyone's. Collapsing them into one line would report a name clash that does not exist.
+      for (const { mention, word, at } of nearMissed.values())
+        log(`RETURN skip[longer-word]: ${String(m.id).slice(0, 12)}… @${mention} does not take the at-word at ${at} — ${word} continues past it`)
     }
     let carried = false
     // No break: one message fans out to EVERY matching recipient, each deduped on its own

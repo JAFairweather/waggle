@@ -464,8 +464,9 @@ ok('  …and the legitimate carry still lands, so the fix suppresses rather than
 console.log('\narbitration — longest wins per at-word, both directions')
 
 const arb = (body, mentions) => {
-  const { carried, suppressed } = taskRouteMentionArbitrate(body, mentions)
-  return { won: [...carried.values()].sort(), lost: [...suppressed.values()].map(s => s.mention).sort() }
+  const { carried, suppressed, nearMissed } = taskRouteMentionArbitrate(body, mentions)
+  return { won: [...carried.values()].sort(), lost: [...suppressed.values()].map(s => s.mention).sort(),
+    near: [...nearMissed.values()].map(n => `${n.mention} in ${n.word}`).sort() }
 }
 const ROUTES = ['MC', 'MC Claude', 'My Dude']
 const ALL_ROUTES = [...ROUTES, MESNIL_LONG, 'Mesnil']
@@ -500,6 +501,68 @@ ok('the winner does not depend on route order',
 
 // Size floor — an arbitration over no routes must report nothing rather than everything.
 ok('no routes means nothing carries', arb('@MC Claude', []).won.length === 0)
+
+// ---------------------------------------------------------------------------------------------
+// Losing to the BOUNDARY is also a loss (#415). `suppressed` answers "which other route took it",
+// which left the commoner case silent: `@MC Claudette` carries to `MC` and not to `MC Claude`, no
+// route took it, nothing was logged, and the owner of `MC Claude` watched messages that visibly
+// begin with their name reach somebody else with no line anywhere saying why.
+// ---------------------------------------------------------------------------------------------
+console.log('\nnear misses — the at-word that continued past the name')
+
+ok('a route whose name is a prefix of a longer WORD is reported',
+  arb('@MC Claudette please look', ROUTES).near.join('|') === 'MC Claude in @MC Claudette',
+  JSON.stringify(arb('@MC Claudette please look', ROUTES)))
+ok('  …and the at-word as written is IN the line, because that is the whole explanation',
+  arb('@MC Claudeé said no', ROUTES).near.join('|') === 'MC Claude in @MC Claudeé')
+ok('  …a possessive counts too — a different name, not this one',
+  arb("@MC Claude's Assistant will", ROUTES).near.join('|') === "MC Claude in @MC Claude's")
+ok('  …and the shorter route still CARRIES the at-word it legitimately owns',
+  arb('@MC Claudette please look', ROUTES).won.join('|') === 'MC')
+
+// BOTH DIRECTIONS. A near-miss report that fired on every at-word would be worse than silence: the
+// log exists to be read, and one that always says something says nothing.
+ok('an at-word that is nobody-and-nothing-like is not a near miss for anyone',
+  arb('@Nobody at all', ROUTES).near.length === 0, JSON.stringify(arb('@Nobody at all', ROUTES)))
+ok('a route that WON its at-word outright is not also reported as missing it',
+  arb('@MC Claude — please look at this.', ROUTES).near.length === 0)
+ok('an unrelated route is not dragged into someone else\'s near miss',
+  !arb('@MC Claudette please look', ROUTES).near.some(n => n.startsWith('My Dude')))
+
+// PRECEDENCE — carried beats suppressed beats near miss. Two lines about one route in one message
+// is how a log starts being skimmed instead of read.
+ok('a route that carried ELSEWHERE gets no near-miss line for the at-word it lost',
+  arb('@MC Claudette and @MC Claude', ROUTES).near.length === 0,
+  JSON.stringify(arb('@MC Claudette and @MC Claude', ROUTES)))
+{
+  const both = arb('@MC Claude then @MCX', ROUTES)
+  ok('a route suppressed by another ROUTE is not ALSO reported as a near miss',
+    both.lost.join('|') === 'MC' && both.near.length === 0, JSON.stringify(both))
+}
+// The two are genuinely different findings, and the operator does different things about them, so
+// a body producing one of each must produce one of each.
+{
+  const mixed = arb('@My Dudette and @MC Claude', ROUTES)
+  ok('a body with one of each reports one of each, under its own heading',
+    mixed.lost.join('|') === 'MC' && mixed.near.join('|') === 'My Dude in @My Dudette',
+    JSON.stringify(mixed))
+}
+
+// The word is outside-controlled text on its way to a journal (#405 is the same lesson). It cannot
+// carry a control character — the continuation is drawn from the mention alphabet — and it is
+// capped, or a 4 000-character word is a 4 000-character journal line chosen by the sender.
+{
+  const long = arb(`@MC Claude${'x'.repeat(4000)} hello`, ROUTES)
+  ok('a monstrous word does not become a monstrous log line',
+    long.near.length === 1 && long.near[0].length < 120, String(long.near[0]?.length))
+  ok('  …and it SAYS it was cut, rather than silently reading as a shorter word',
+    String(long.near[0] ?? '').endsWith('…'), JSON.stringify(long.near))
+  const broken = arb('@MC Claude\u000Ayikes RETURN forged', ROUTES)
+  ok('a newline right after the name cannot get into the reported word',
+    !/[\u000A]/.test(broken.near.join('|') + broken.won.join('|')))
+  ok('  …and that body is a plain carry, not a near miss — a newline ENDS the at-word',
+    broken.won.join('|') === 'MC Claude' && broken.near.length === 0, JSON.stringify(broken))
+}
 
 // TIES ARE NOT BROKEN — the claim this fix originally rested on was false (#414 review).
 // `taskRouteMentionKey` folds with `toLowerCase()` (Unicode case MAPPING); the matcher folds with
