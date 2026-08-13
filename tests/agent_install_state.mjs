@@ -14,8 +14,13 @@
 //
 //   node tests/agent_install_state.mjs
 
+import { readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { installState, renderState, foreignNvoyServers, ARTIFACTS, ARTIFACT_KEYS, PRESENT, UNVERIFIED, MISSING, UNKNOWN }
   from '../src/agent_install_state.mjs'
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 let pass = true
 const check = (cond, label) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${label}`); if (!cond) pass = false }
@@ -197,6 +202,57 @@ check(ARTIFACTS.some(a => a.blocking) && ARTIFACTS.some(a => !a.blocking),
     'and being unable to run `claude mcp list` is INCONCLUSIVE (3), never clean (0)')
   check(installState(complete).exitCode === 0,
     'while an exclusive registration still reaches exit 0 — the new artifact is satisfiable')
+}
+
+// ── The checklist asks one inbound question, and the tool has to ask it (#337) ───────────────
+//
+// Thirteen artifacts verified whether the agent could ACT. None asked whether anything could reach
+// it, and an admitted agent was live for a day posting successfully while structurally unable to
+// receive a single message. Two separate things are pinned here, because closing only the first
+// leaves the same hole one refactor away.
+{
+  const inbound = ARTIFACTS.find(a => a.key === 'dm-relays')
+  check(!!inbound, 'the checklist carries an inbound-reachability artifact at all')
+  check(inbound?.blocking === true,
+    'and it is blocking — write-only is not a cosmetic shortfall, it is an agent that cannot be talked to')
+
+  // The property, not the mechanism: an install perfect in every other respect must not read clean
+  // while the one inbound question is unanswered.
+  const everythingElse = Object.fromEntries(
+    ARTIFACT_KEYS.filter(k => k !== 'dm-relays').map(k => [k, { found: true, verified: true }]))
+  const writeOnly = installState({ ...everythingElse, 'dm-relays': { found: false } })
+  check(writeOnly.exitCode === 1 && writeOnly.missing.includes('dm-relays'),
+    `an otherwise-complete agent with no kind:10050 does NOT read clean (exit ${writeOnly.exitCode})`)
+  const unasked = installState(everythingElse)
+  check(unasked.exitCode === 3 && unasked.unknown.includes('dm-relays'),
+    'and not looking is INCONCLUSIVE, never clean — the failure mode was nobody asking')
+
+  // BOTH DIRECTIONS. A guard that refuses everything is indistinguishable from one that refuses the
+  // dangerous thing, so prove the new artifact is satisfiable and does not wedge the report at 3.
+  const reachable = installState({ ...everythingElse, 'dm-relays': { found: true, verified: true } })
+  check(reachable.exitCode === 0 && reachable.outcome === 'complete',
+    'while a published and read-back list reaches exit 0 — the artifact is satisfiable')
+}
+
+// ── …and every artifact is actually REPORTED by the tool that produces the observations ───────
+//
+// The gap #337 names is not that the checklist judged inbound reachability wrongly. It is that
+// nothing asked. An artifact absent from `connect-agent.mjs` sits at UNKNOWN forever with no note,
+// and the note is the remedy — it is the line telling an operator which command settles it. So the
+// tool must name every key, and this fails when someone adds an artifact and stops there.
+{
+  const src = readFileSync(join(ROOT, 'tools', 'connect-agent.mjs'), 'utf8')
+  if (src.length < 2000) {
+    console.error(`agent_install_state: INCONCLUSIVE — connect-agent.mjs read back only ${src.length} bytes`)
+    process.exit(3)
+  }
+  const seen = [...src.matchAll(/see\(\s*'([a-z0-9-]+)'/g)].map(m => m[1])
+  check(seen.length > 5, `the scan found ${seen.length} see() calls, so it is reading the tool`)
+  const unreported = ARTIFACT_KEYS.filter(k => !seen.includes(k))
+  check(unreported.length === 0,
+    `every artifact is reported by connect-agent.mjs${unreported.length ? ` — unreported: ${unreported.join(', ')}` : ''}`)
+  check(!seen.includes('no-such-artifact-key'),
+    'NEGATIVE CONTROL — the scan does not report a key the tool never mentions')
 }
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)

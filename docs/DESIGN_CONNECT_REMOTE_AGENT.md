@@ -30,8 +30,8 @@ Three suites cover the new code — `capability_vocabulary`, `connect_plan`, `ag
 each with a negative control that fires. **None of it has run in production**, and a green suite is
 not a live proof.
 
-The short version: **an agent is not one artifact, it is eleven**, spread across two machines, three
-checkouts and a public relay network. Nine of the eleven have no tool that creates them. Every
+The short version: **an agent is not one artifact, it is fourteen**, spread across two machines,
+three checkouts and a public relay network. Nine of the fourteen have no tool that creates them. Every
 omission fails the same way — silently, with the agent appearing to work. That is the problem to
 solve, and convenience is not the reason to solve it.
 
@@ -57,8 +57,16 @@ produce this artifact*; a documented instruction to type something by hand is no
 | 11 | Runtime state directories | agent root | **nothing** — the channel dies on the missing one |
 | 12 | MCP-channel keypair | `mcp-channel/id_ed25519` | **nothing** |
 | 13 | Registration as an MCP server | Claude Code user config | **nothing** |
+| 14 | kind 10050 inbound DM relay list | public relays | `tools/publish-dm-relay-list.mjs` ✅ (Bunker path added #381) — **but no step invokes it** |
 
-Thirteen, not eleven; the count grew twice while writing this, which is itself the finding.
+Fourteen. It was eleven when this document was started: the count grew twice while it was being
+written and again afterwards, which is itself the finding.
+
+Row 14 is the one that broke the pattern. Every other artifact here is something the agent needs in
+order to **act**; that one is the only thing that lets anything **reach** it, and it was absent from
+the inventory entirely until #337 — after an admitted agent spent a day posting successfully into
+the channel while structurally unable to receive a single message. The tool existed. No step ran it,
+and nothing asked.
 
 ### The failure signature is always the same
 
@@ -234,7 +242,7 @@ properties matter more than the layout:
 
 ## Part IV — Architecture
 
-**"Connect Remote Agent" is one workflow with one job: make the thirteen artifacts, verify each one,
+**"Connect Remote Agent" is one workflow with one job: make the fourteen artifacts, verify each one,
 and refuse to continue when it cannot.**
 
 ### Principles
@@ -248,7 +256,7 @@ and refuse to continue when it cannot.**
    wrong-identity pairing survived precisely because its guard could not execute and the step around
    it looked fine.
 4. **Default closed, and resumable.** The flow is interrupted constantly in practice — a Bunker to
-   click, a name to register. It must be re-enterable and report exactly which of the thirteen are
+   click, a name to register. It must be re-enterable and report exactly which of the fourteen are
    present, which are missing, and which are present but unverified. Three states, never two.
 5. **Nothing the wizard writes is a template string.** Placeholder text must be structurally
    incapable of reaching a signature.
