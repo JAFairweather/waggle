@@ -286,16 +286,54 @@ for n in "${PRS[@]}"; do
     continue
   fi
 
+  # CHILDREN FIRST, and never --delete-branch while one exists.
+  #
+  # Deleting the head branch of a PR that is the BASE of another open PR CLOSES that
+  # other PR outright — GitHub's auto-retarget does not win the race. This cost nvoy
+  # #187: merging #185 with --delete-branch deleted its branch, #187 was closed rather
+  # than retargeted, and it had to be restored by recreating the branch, reopening,
+  # retargeting and deleting the branch again. Reported as "timed out waiting for
+  # retarget", which is the symptom and not the cause.
+  #
+  # So the retarget is done EXPLICITLY, after the merge and before the delete, rather
+  # than left to GitHub.
+  children=$(gh pr list --repo "$REPO" --state open --base "$head" --json number --jq '.[].number' 2>/dev/null || true)
+  delete_flag="--delete-branch"
+  if [ -n "$children" ]; then
+    warn "  '$head' is the base of open PR(s): $(echo "$children" | tr '\n' ' ')"
+    say  "    they will be retargeted to $DEFAULT_BRANCH after this merge, then the branch is deleted"
+    delete_flag=""
+  fi
+
   # --subject/--body explicitly: without them `gh pr merge --squash` opens an editor,
   # and whether that blocks depends on GIT_EDITOR, which differs between shells.
   say "  merging…"
-  if gh pr merge "$n" --repo "$REPO" --squash --delete-branch \
+  if gh pr merge "$n" --repo "$REPO" --squash $delete_flag \
        --subject "$title (#$n)" --body "" 2>&1 | sed 's/^/    /'; then
     good "  merged #$n"
     MERGED+=("#$n $title")
   else
     bad "  merge of #$n failed — stopping so nothing after it lands out of order"
     PROBLEM=1; break
+  fi
+
+  if [ -n "$children" ]; then
+    retarget_failed=0
+    for c in $children; do
+      if gh pr edit "$c" --repo "$REPO" --base "$DEFAULT_BRANCH" >/dev/null 2>&1; then
+        good "    retargeted #$c to $DEFAULT_BRANCH"
+      else
+        bad "    could NOT retarget #$c — leaving '$head' in place so #$c stays open"
+        retarget_failed=1
+      fi
+    done
+    if [ "$retarget_failed" = 0 ]; then
+      gh api -X DELETE "repos/$REPO/git/refs/heads/$head" >/dev/null 2>&1 \
+        && say "    deleted '$head'" \
+        || warn "    '$head' not deleted — harmless, delete it by hand"
+    else
+      PROBLEM=1; break
+    fi
   fi
 done
 
