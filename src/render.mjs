@@ -10,7 +10,54 @@
 //
 // So: NEUTRALISE rather than ENCASE. The escaping below was always what made untrusted text
 // safe; the fence was belt-and-braces charging legibility for it.
-const ZWSP = '​'
+const ZWSP = '\u200B'   // an ESCAPE, never the literal: a character nobody can see in the
+                       // source is a character nobody can review (CLAUDE.md; was literal until #443)
+
+/// Characters that change what the APPROVE SCREEN SAYS without appearing in it (#443).
+///
+/// This is the screen where a human authorises attacker-controlled text, and the header above
+/// states the stakes: a quarantined message has to be READ, because a human is being asked to judge
+/// it. `defuseRefs` and `defuseMarkup` handle what the body can SUMMON and what chrome it can
+/// IMITATE. Neither touches U+202E RIGHT-TO-LEFT OVERRIDE, which reorders the text being judged
+/// while every byte-level check keeps passing, or an unterminated U+2066 isolate, which bleeds into
+/// whatever renders next -- here the provenance line and `approve / follow / mute / reject`.
+///
+/// NOT `INVISIBLE_CLASS` from `relay_refusals.mjs`, which #443 suggested reusing. That class also
+/// carries \p{Zs} and the WHOLE of \p{Cc}, which is right for a journal line -- one line, whitespace
+/// already squeezed to single spaces. Here the string is PROSE inside a quote block: \p{Zs} would
+/// mark every ordinary space and \p{Cc} would mark every newline, which `quoted()` splits on. So TAB,
+/// LF and CR are excluded by hand. Marking them would not make the body safer, it would make it
+/// unreadable, and the legibility constraint binds harder on this surface than on the journal.
+///
+/// U+00A0 NO-BREAK SPACE goes with the rest of \p{Zs} rather than being pulled back in, having been
+/// thought about: it already renders as a space, so an approver reading the body sees exactly what
+/// is there, and marking every one of them would be noise on the one screen that must stay legible.
+/// The journal makes the opposite call because it asserts the codepoint IS a space; here nothing
+/// downstream of the render depends on which one it was.
+export const RENDER_INVISIBLE_CLASS =
+  '[\\p{Cf}\\p{Zl}\\p{Zp}\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F]'
+const RENDER_INVISIBLE = new RegExp(RENDER_INVISIBLE_CLASS + '+', 'gu')
+
+/// MARK, do not replace -- the opposite call to the journal's, and deliberately.
+///
+/// A journal line is a diagnostic string, so mapping an invisible to a space costs nothing. A
+/// quarantined body is prose a human is reading for MEANING, and silently swapping in a space says
+/// the note was innocent. The approver's decision turns on the fact that something was hidden
+/// there at all, so the render names it: `[U+202E]`, or `[U+200B x47]` for a run.
+///
+/// Per RUN, not per character, which bounds the blow-up: a body of 100 000 zero-width spaces
+/// becomes one mark rather than 800 000 characters of chrome. Interleaved invisibles still cost
+/// about nine characters each -- stated rather than discovered, and the trade is worth it, because
+/// interleaving IS the pattern worth showing an approver.
+///
+/// MUST RUN BEFORE `defuseRefs` and `defuseMarkup`, which INSERT U+200B themselves. Run after, it
+/// would mark waggle's own zero-width spaces and turn every `@` and every line-leading `#` in the
+/// body into `@[U+200B]`. The call order in `renderQuarantined` is the guard, and it is asserted.
+export const defuseInvisible = (s) => String(s).replace(RENDER_INVISIBLE, (run) => {
+  const cp = run.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')
+  const size = [...run].length
+  return size > 1 ? `[U+${cp} x${size}]` : `[U+${cp}]`
+})
 // A zero-width space after @ and nostr: — the reference RENDERS but never resolves to a real
 // ping. Applied to every reposted body, vouched or not: nobody gets to summon a member.
 export const defuseRefs = (s) => String(s)
@@ -30,8 +77,8 @@ export const quoted = (s) => String(s).replace(/\r/g, '').split('\n').map(l => `
 // lines of instructions, which is backwards for a screen whose only job is a human decision.
 export function renderQuarantined({ body, mention = '', name, npub, when, claim = '', why, id }) {
   return `${mention}⏳ **QUARANTINED** — external Nostr reply, held out of every channel until you approve it.\n\n` +
-    quoted(defuseMarkup(defuseRefs(body))) + '\n\n' +
-    `**from** ${name ? `**${name}** · ` : ''}\`${npub}\`  ·  ${when}${claim}  ·  _${why}_\n` +
+    quoted(defuseMarkup(defuseRefs(defuseInvisible(body)))) + '\n\n' +
+    `**from** ${name ? `**${defuseInvisible(name)}** · ` : ''}\`${npub}\`  ·  ${when}${claim}  ·  _${why}_\n` +
     `Reply **approve** · **follow** · **mute** · **reject** — or \`waggle-approve ${id}\``
 }
 
