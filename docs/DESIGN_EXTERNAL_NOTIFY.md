@@ -89,10 +89,35 @@ the existing `1059` forward is. Both converge on the same terminus: sealed deliv
 
 Detection currently ends at a file. Something must **start a session**. Options, ranked:
 
-- **(a) Run the actor on nave.pub — recommended.** The box never sleeps and already holds an agent
-  runtime and an API key. The watcher, on a gated wake, spawns `claude -p` with a **fixed prompt**
-  (§5 — the fixed prompt is *what makes it safe*). This is the only option that makes "event-driven"
-  true: no human, no laptop, no page.
+- **(a) Run the actor on the container host — recommended, but it is not free (#419).** The watcher,
+  on a gated wake, spawns `claude -p` with a **fixed prompt** (§5 — the fixed prompt is *what makes
+  it safe*). This is the only option that makes "event-driven" true: no human, no laptop, no page.
+
+  This option used to read "the box never sleeps and already holds an agent runtime and an API key",
+  which asked for a decision on a premise nobody had checked. Measured 2026-08-13:
+
+  | claim | verdict |
+  |---|---|
+  | it is one box | **no** — the container host and the bridge box are different machines |
+  | the box never sleeps | yes, both are always-on servers |
+  | already holds an agent runtime | **yes, on the container host** — 12 containers, `/etc/nvoy`, two live instance manifests |
+  | already holds an API key | **no** for a Claude actor |
+
+  **Two machines, and the option only makes sense on one of them.** The bridge box runs waggle
+  itself and has no Docker and no `/etc/nvoy`. The container host runs the nvoy participant
+  runtimes. An actor spawning `claude -p` belongs on the container host; naming one hostname as
+  though it were also the bridge is what made the premise look already-satisfied.
+
+  **There is no Anthropic credential anywhere on the container host.** A search of `/etc/nvoy` for
+  any `ANTHROPIC_*` or `CLAUDE_*` variable name returns nothing. Both instance compose files
+  reference `OPENAI_API_KEY` and nothing else — including the Claude-named instance's. Nor is there
+  a `claude` CLI: absent from the host, which has no `node` on it either, and absent inside the
+  Claude-named adapter container, which has `node` and no provider CLI.
+
+  So (a) is not "switch it on". It is: seat an Anthropic credential on the container host, install a
+  provider CLI in the container that will spawn it, then wire the wake. Each is a decision on its
+  own terms, and the credential is an operator action — §5's whole premise is that the actor runs
+  unattended, so the key sits on the box full-time.
 - (b) Ship the queue to wherever an actor lives (the pull pattern the tripwire already uses for
   journals). Keeps today's shape; still needs something to notice the file changed.
 - (c) Keep the human in the loop — today's behaviour. Honest, and not event-driven.
@@ -145,13 +170,19 @@ wake/payload split (and the author gate) — that is the exploit with a delivery
 | # | Work | Owner | Gate |
 |---|---|---|---|
 | 1 | `scan_channels` config + separate `pollScanChannels` + p-tag reply detection + author gate + **content-free wake split** | the bridge engineer | ship as one PR; the split is non-negotiable |
-| 2 | Layer 3(a): watcher spawns `claude -p` with a fixed prompt on nave.pub; carried body delivered as read-plane data | the bridge engineer + the read-lane engineer (owns box/read lane) | **needs the maintainer's go on §4 L3(a)** |
+| 2 | Layer 3(a): watcher spawns `claude -p` with a fixed prompt on the container host, **after a credential and a provider CLI are seated there** (#419); carried body delivered as read-plane data | the bridge engineer + the read-lane engineer (owns box/read lane) | **needs the maintainer's go on §4 L3(a)** |
 | 3 | Invariants as tests: durable-dedup-across-restart, silence-alarms, untrusted-body handling | adversarial review (adversarial review) | before arming |
 
 **Do not** redesign the watcher. **Do not** ship Layer 1 without §5. Arm nothing until item 3 passes.
 
 ## 8. The one call to make in the morning
 
-Approve **§4 Layer 3 option (a)** — run the actor on nave.pub with a fixed-prompt wake. Everything else
-is mechanical and safe by construction once §5 is in. That single yes turns "detected" into "acted" and
-makes `@claude` in `#connector` mean something for the first time.
+Approve **§4 Layer 3 option (a)** — run the actor on the container host with a fixed-prompt wake.
+Once §5 is in, the wiring is mechanical and safe by construction.
+
+**It is not a single yes, and §4 says why (#419).** The version of this section that claimed it was
+rested on the container host already holding an API key, which it does not for a Claude actor. The
+yes being asked for is really three: seat an Anthropic credential on that box, put a provider CLI in
+the container, then arm the wake. The first is an operator action and the one to weigh — an
+unattended actor means the key lives on the box full-time, which is a standing credential to protect
+rather than a config line to add.
