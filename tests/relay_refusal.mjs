@@ -37,7 +37,7 @@ process.env.SEND_JOURNAL_PATH = join(dir, 'send-journal.log')
 process.env.BUZZ_PRIVATE_KEY = 'c'.repeat(64)   // returnLaneSend refuses to seal with no bridge key
 delete process.env.WB_STUB_SEND          // the stub short-circuits the publisher entirely
 
-const { refusalKey, refusalLedger, explainSendRefusals } = await import('../src/relay_refusals.mjs')
+const { refusalKey, refusalLedger, explainSendRefusals, defuseJournalText, REFUSAL_TEXT_MAX } = await import('../src/relay_refusals.mjs')
 const { publishWrapToRelayList, relayRefusals, returnLaneSend, PUB } = await import('../src/bridge.mjs')
 
 let fails = 0
@@ -318,5 +318,88 @@ const ok = (n, c) => { console.info(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) 
     !!line && !/stale-history\.invalid/.test(line))
 }
 
-console.info(`\n${fails ? `RELAY REFUSAL FAIL — ${fails}` : 'RELAY REFUSAL PASS — the reason survives, the repeat is quiet, and a change speaks'}`)
+// -- bounded and defused, and still readable (#405) --------------------------------------------
+// #374's whole point is that the relay's own words reach an operator. Nothing bounded or
+// sanitised them. The journal is read by a human AND by the tripwire, so a relay can put a line
+// break plus a plausible `RELAY[buzz] ok ->` into a reason and write a sentence in the bridge's
+// mouth; or send a megabyte; or send an escape sequence. On the return lane the relay set comes
+// from the recipient's own kind:10050, so whoever chooses the relay chooses the text.
+//
+// BOTH DIRECTIONS, and the positive one is load-bearing: a guard that mangles
+// `pow: 28 bits needed. (12)` hides the exact fault #374 exists to reveal. Every invisible
+// character below is written \uXXXX and never as itself -- a fixture nobody can read is a
+// fixture nobody can check, and a heredoc has silently eaten one of these before.
+{
+  const REAL = 'pow: 28 bits needed. (12)'
+  ok('an ordinary refusal survives byte for byte -- the guard is invisible on the happy path',
+    defuseJournalText(REAL) === REAL)
+  ok('so does a long-but-plausible one, unchanged and untruncated',
+    defuseJournalText('blocked: pubkey not on the allow list for this relay') ===
+      'blocked: pubkey not on the allow list for this relay')
+
+  // Shaped like a real forged journal line, not 'x'.repeat(n).
+  const FORGERY = 'rejected: bad sig\u000A2026-08-13T01:00:00Z RELAY[buzz] ok -> a8186b53: from ad05b00e'
+  const forged = defuseJournalText(FORGERY)
+  ok('a newline cannot synthesise a second journal line',
+    !/[\u000A\u000D]/.test(forged))
+  ok('  ...and the text is still THERE, flattened rather than censored -- what the relay tried is ' +
+    'the actionable part, so a guard that deleted it would cost the operator the finding',
+    forged.includes('rejected: bad sig') && forged.includes('RELAY[buzz] ok'))
+
+  const ESCAPED = defuseJournalText('rate\u001B[2Jlimited')
+  ok('an ESC is removed so a refusal cannot rewrite the operator terminal',
+    !ESCAPED.includes('\u001B'))
+  ok('  ...and what is left is inert but legible, not a hole in the line',
+    ESCAPED === 'rate [2Jlimited')
+
+  ok('NUL, DEL and C1 go the same way as CR and LF -- the whole range, not the ones abused so far',
+    defuseJournalText('a\u0000b\u007Fc\u0085d') === 'a b c d')
+
+  const HUGE = defuseJournalText('x'.repeat(50000))
+  ok('a megabyte reason does not become a megabyte journal line',
+    HUGE.length < REFUSAL_TEXT_MAX + 40)
+  ok('  ...and the line SAYS it truncated and by how much -- assert the reason, not merely that ' +
+    'something was trimmed, because 50000 characters is itself the news',
+    /\(truncated, 50000 chars\)$/.test(HUGE))
+
+  ok('a reason of nothing but line breaks empties out, so the caller reports (no reason given)',
+    defuseJournalText('\u000D\u000A\u000A') === '')
+  ok('null and undefined do not throw and do not print the word null',
+    defuseJournalText(null) === '' && defuseJournalText(undefined) === '')
+
+  // -- through the ledger and the fanout explainer, not only the helper --------------------
+  const lines = []
+  const led = refusalLedger({ log: (m) => lines.push(m) })
+  led.record({ relay: 'wss://relay.invalid', accepted: false, reason: FORGERY })
+  ok('the ledger logged at all -- a capture with nothing in it has proven nothing',
+    lines.length === 1)
+  ok('the ledger line carries no line break either',
+    lines.length === 1 && !/[\u000A\u000D]/.test(lines[0]))
+  ok('  ...and it still names the relay and the reason',
+    lines.length === 1 && /relay\.invalid/.test(lines[0]) && /rejected: bad sig/.test(lines[0]))
+
+  // The relay URL is chosen by the same party as the reason, so defusing one fixes half of it.
+  const led2 = refusalLedger({ log: (m) => lines.push(m) })
+  led2.record({ relay: 'wss://evil.invalid\u000A2026-08-13T01:00:00Z FORGED', accepted: false, reason: 'no' })
+  ok('a relay URL cannot forge a line either',
+    lines.length === 2 && !/[\u000A\u000D]/.test(lines[1]))
+  ok('summary() defuses the relay it prints, not just the reason',
+    !/[\u000A\u000D]/.test(String(led2.summary() || '')))
+
+  // Suppression is keyed on the RAW reason and must not have moved.
+  const led3 = refusalLedger({ log: () => {} })
+  ok('defusing did not change what counts as the same refusal -- bracketed detail still folds, ' +
+    'and a genuinely different reason still speaks',
+    led3.record({ relay: 'r', accepted: false, reason: 'pow: 28 bits needed. (12)' }) === 'logged' &&
+    led3.record({ relay: 'r', accepted: false, reason: 'pow: 28 bits needed. (9)' }) === 'suppressed' &&
+    led3.record({ relay: 'r', accepted: false, reason: 'pow: 32 bits needed. (9)' }) === 'logged')
+
+  const exp = explainSendRefusals([{ relay: 'wss://a.invalid', reason: FORGERY }])
+  ok('explainSendRefusals follows the SAME rule rather than a second one',
+    !/[\u000A\u000D]/.test(exp) && exp.includes('rejected: bad sig'))
+  ok('  ...and an ordinary reason still comes through it untouched',
+    explainSendRefusals([{ relay: 'wss://a.invalid', reason: REAL }]) === 'wss://a.invalid: ' + REAL)
+}
+
+console.info(`\n${fails ? `RELAY REFUSAL FAIL — ${fails}` : 'RELAY REFUSAL PASS — the reason survives, the repeat is quiet, a change speaks, and nothing forges a line'}`)
 process.exit(fails ? 1 : 0)
