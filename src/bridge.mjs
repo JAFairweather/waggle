@@ -762,18 +762,35 @@ function recordWithdrawn(id, durable = false) {
 // WITHDRAWAL — that falls back to the follow-up-tombstone tier — but it is not safe generally:
 // recordPosted files the agent-authored registry row only `if (rec.buzz)`, so a miss on an
 // agent's post also drops it out of stagingByBuzzId and silently kills every reply carry back to
-// that agent (#334). Both call sites that pass an `agent` therefore warn. The scan is
-// deliberately lowercase-only; an uppercase id returns null rather than keying the registry in a
-// case the reader (agentAuthoredBy) would miss.
+// that agent (#334). Both call sites that pass an `agent` therefore warn.
+//
+// A positional scan of the whole blob is NOT a safe fallback, and that was the worse half of this
+// bug. Real stdout is `{"accepted":true,"event_id":"…","mention_pubkeys":[…],"message":""}`, and
+// `mention_pubkeys` entries are lowercase 64-hex too. Any stdout whose id field is missing or
+// unrecognised would therefore return a MENTION PUBKEY: truthy, so neither no-id warning fires,
+// a registry row is filed under a key no reply can ever e-tag, and the journal records a pubkey
+// as a sent event id. That does not merely lose the carry — it answers #334's "is the registry
+// being fed?" with a false yes, sending the reader to the wrong conclusion.
 function parseBuzzEventId(stdout) {
   const s = String(stdout || '')
+  let parsedJson = false
   try {
     const j = JSON.parse(s)
+    parsedJson = true
     const v = j.event_id || j.id || j.event
-    if (typeof v === 'string' && /^[0-9a-f]{64}$/.test(v)) return v
-  } catch { /* not JSON — fall through to scan */ }
-  const m = s.match(/\b[0-9a-f]{64}\b/)
-  return m ? m[0] : null
+    // Case-insensitive, then normalised: recordPosted keys the registry lowercase and
+    // agentAuthoredBy reads it lowercase, so an uppercase id is the same id, not a different one.
+    if (typeof v === 'string' && /^[0-9a-f]{64}$/i.test(v)) return v.toLowerCase()
+  } catch { /* not JSON — a preamble can precede a JSON body; fall through */ }
+  // A parsed object with no recognised id field is a known shape that lacks one, not a blob to
+  // grep. Refusing here is what keeps a sibling pubkey from being mistaken for an event id.
+  if (parsedJson) return null
+  // Non-JSON: anchor on the field NAME first, so a preamble that breaks JSON.parse still resolves
+  // the real id rather than whichever 64-hex run happens to appear first.
+  const field = s.match(/"(?:event_id|id|event)"\s*:\s*"([0-9a-f]{64})"/i)
+  if (field) return field[1].toLowerCase()
+  const m = s.match(/\b[0-9a-f]{64}\b/i)
+  return m ? m[0].toLowerCase() : null
 }
 
 // --- Lane-2 rate caps (annex §4.1.1; C3-approved shipping defaults) ----------
