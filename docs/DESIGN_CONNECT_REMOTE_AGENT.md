@@ -30,8 +30,8 @@ Three suites cover the new code — `capability_vocabulary`, `connect_plan`, `ag
 each with a negative control that fires. **None of it has run in production**, and a green suite is
 not a live proof.
 
-The short version: **an agent is not one artifact, it is fourteen**, spread across two machines,
-three checkouts and a public relay network. Nine of the fourteen have no tool that creates them. Every
+The short version: **an agent is not one artifact, it is fifteen**, spread across two machines,
+three checkouts and a public relay network. Nine of the fifteen have no tool that creates them. Every
 omission fails the same way — silently, with the agent appearing to work. That is the problem to
 solve, and convenience is not the reason to solve it.
 
@@ -58,15 +58,26 @@ produce this artifact*; a documented instruction to type something by hand is no
 | 12 | MCP-channel keypair | `mcp-channel/id_ed25519` | **nothing** |
 | 13 | Registration as an MCP server | Claude Code user config | **nothing** |
 | 14 | kind 10050 inbound DM relay list | public relays | `tools/publish-dm-relay-list.mjs` ✅ (Bunker path added #381) — **but no step invokes it** |
+| 15 | Proof that the registered server answers as THIS agent | the running session | `tools/connect-agent.mjs --whoami` ✅ (#338) — the operator captures `nvoy_whoami` and the tool compares |
 
-Fourteen. It was eleven when this document was started: the count grew twice while it was being
-written and again afterwards, which is itself the finding.
+Fifteen. It was eleven when this document was started: the count has grown four times since, twice
+while it was being written, which is itself the finding.
 
 Row 14 is the one that broke the pattern. Every other artifact here is something the agent needs in
 order to **act**; that one is the only thing that lets anything **reach** it, and it was absent from
 the inventory entirely until #337 — after an admitted agent spent a day posting successfully into
 the channel while structurally unable to receive a single message. The tool existed. No step ran it,
 and nothing asked.
+
+Row 15 is not a thing you make; it is a thing you prove, and it is here because the other fourteen
+can all be correct while the session acts as someone else. An agent was handed a session whose
+attached MCP server answered `whoami` with a different agent's identity — it would have read that
+identity's sealed inbox and posted under its key, and nothing would have errored. The Bunker path
+(rows 1–2) has refused that class since day one, via `EXPECT_PUBKEY` in `relay-send`,
+`publish-dm-relay-list` and the profile publishes. Registration had no equivalent, so the same
+defect moved one layer up from Pair to Bind and found nothing waiting.
+
+Registered is not sole — #380 closed that half. Sole is not yours; #338 closes this one.
 
 ### The failure signature is always the same
 
@@ -242,7 +253,7 @@ properties matter more than the layout:
 
 ## Part IV — Architecture
 
-**"Connect Remote Agent" is one workflow with one job: make the fourteen artifacts, verify each one,
+**"Connect Remote Agent" is one workflow with one job: make the fifteen artifacts, verify each one,
 and refuse to continue when it cannot.**
 
 ### Principles
@@ -256,7 +267,7 @@ and refuse to continue when it cannot.**
    wrong-identity pairing survived precisely because its guard could not execute and the step around
    it looked fine.
 4. **Default closed, and resumable.** The flow is interrupted constantly in practice — a Bunker to
-   click, a name to register. It must be re-enterable and report exactly which of the fourteen are
+   click, a name to register. It must be re-enterable and report exactly which of the fifteen are
    present, which are missing, and which are present but unverified. Three states, never two.
 5. **Nothing the wizard writes is a template string.** Placeholder text must be structurally
    incapable of reaching a signature.

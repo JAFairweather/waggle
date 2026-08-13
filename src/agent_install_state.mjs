@@ -70,6 +70,14 @@ export const ARTIFACTS = [
     why: 'How a new session becomes this agent. Needs the instance root set explicitly; the default path does not exist here.' },
   { key: 'mcp-exclusive', title: 'No other nvoy server registered', blocking: true,
     why: 'Registered is not sole. A generically-named server alongside carries the tools that sign, bound to somebody else.' },
+  // #338. Sole is not YOURS. An agent was handed a session whose attached server answered `whoami`
+  // with a different agent's identity — it would have read that identity's sealed inbox and posted
+  // under its key, and neither would have errored, because a wrong-identity binding signs and seals
+  // perfectly. The Bunker path has refused this since day one via EXPECT_PUBKEY. The MCP path had
+  // no equivalent, so the same class of defect moved one layer up from Pair to Bind and found no
+  // guard there.
+  { key: 'mcp-identity', title: 'The server answers as THIS agent', blocking: true,
+    why: 'Registered is not sole, and sole is not yours. Proven by whoami equalling the minted key — never by the registration existing.' },
   { key: 'channel-answers', title: 'Channel server answers', blocking: true,
     why: 'Registered is not running. Proven by initialize + tools/list, not by the registration existing.' },
 ]
@@ -168,6 +176,82 @@ export function foreignNvoyServers(listOutput, name) {
     if (!found.includes(server)) found.push(server)
   }
   return found
+}
+
+// Does the registered MCP server answer as the agent we just minted? (#338)
+//
+// This is the MCP path's `EXPECT_PUBKEY`. `nvoy_whoami` returns `{ npub, pubkey, relays, metadata }`
+// (nvoy `mcp/src/app.ts`); the operator captures that and hands it here, because this repo's checker
+// opens no sockets and the channel server holds its own lock.
+//
+// Three answers, and the third is the one that matters. `null` — nobody looked, or nobody said what
+// to expect — must NEVER be reachable by the same path as `true`. The failure this exists to catch
+// is a guard that passes because the comparison was never supplied: that is precisely how a session
+// ran for a day answering as somebody else.
+//
+// Pure, and both arguments are untrusted text. Returns the resolved key alongside the verdict so a
+// PASS can print WHO it matched — a guard that passes in silence is indistinguishable from a guard
+// that is not there.
+export function boundIdentity(whoamiOutput, expected) {
+  const unknown = reason => ({ match: null, resolved: null, reason })
+  if (typeof whoamiOutput !== 'string' || whoamiOutput.trim() === '') return unknown('nothing captured from the server — INCONCLUSIVE, not absent')
+
+  const want = normalizeKey(expected)
+  // Deliberately checked BEFORE parsing. With no expectation there is no comparison to make, and
+  // reporting "the server answered" as a pass is the whole defect.
+  if (!want) return unknown('no expected key given, so there is nothing to compare against')
+
+  const resolved = whoamiPubkey(whoamiOutput)
+  if (!resolved) return unknown('no identity found in the captured output — check it is the whole `nvoy_whoami` result')
+
+  return resolved === want
+    ? { match: true, resolved, reason: `answers as ${resolved.slice(0, 12)}…, which is the minted key` }
+    : { match: false, resolved, reason: `answers as ${resolved.slice(0, 12)}…, NOT the minted ${want.slice(0, 12)}… — this session would sign as someone else` }
+}
+
+// npub or 64-hex in, lowercase hex out, or null. Hand-decoded rather than imported so this module
+// stays free of runtime dependencies; bech32's checksum is not verified here because the value is
+// only ever compared against another value normalized the same way — a corrupt npub cannot match a
+// good one, and cannot be mistaken for "nobody looked" either, since it returns null.
+function normalizeKey(value) {
+  const v = String(value ?? '').trim().toLowerCase()
+  if (/^[0-9a-f]{64}$/.test(v)) return v
+  if (!/^npub1[023456789acdefghjklmnpqrstuvwxyz]{58}$/.test(v)) return null
+  const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l'
+  let acc = 0, bits = 0
+  const out = []
+  for (const ch of v.slice(5, -6)) {
+    const d = CHARSET.indexOf(ch)
+    if (d < 0) return null
+    acc = (acc << 5) | d; bits += 5
+    if (bits >= 8) { bits -= 8; out.push((acc >> bits) & 0xff) }
+  }
+  if (out.length !== 32) return null
+  return out.map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+// The JSON field first, because it is the contract. The loose scan is a fallback for output that
+// has been reformatted by a client on its way to the operator's clipboard — a real path, since a
+// human is carrying this between two tools.
+function whoamiPubkey(text) {
+  try {
+    const found = pickKey(JSON.parse(text))
+    if (found) return found
+  } catch { /* not JSON, or wrapped in a client's own envelope — fall through */ }
+  const m = /"(?:pubkey|npub)"\s*:\s*"([^"]+)"/.exec(text) || /\b(npub1[023456789acdefghjklmnpqrstuvwxyz]{58})\b/.exec(text)
+  return m ? normalizeKey(m[1]) : null
+}
+
+// MCP results arrive wrapped — `{content:[{type:'text',text:'{…}'}]}` — so walk into strings too.
+function pickKey(value, depth = 0) {
+  if (depth > 6) return null
+  if (typeof value === 'string') { try { return pickKey(JSON.parse(value), depth + 1) } catch { return null } }
+  if (!value || typeof value !== 'object') return null
+  if (Array.isArray(value)) { for (const v of value) { const f = pickKey(v, depth + 1); if (f) return f } return null }
+  const direct = normalizeKey(value.pubkey) || normalizeKey(value.npub)
+  if (direct) return direct
+  for (const v of Object.values(value)) { const f = pickKey(v, depth + 1); if (f) return f }
+  return null
 }
 
 // Render for a terminal. Kept here rather than in the CLI so the suite can assert that an

@@ -25,6 +25,10 @@
 //   node tools/connect-agent.mjs --name oliver --pubkey <64-hex> --owner <64-hex>
 //   node tools/connect-agent.mjs --name oliver --check      # changes nothing
 //
+// --whoami <path>    the `nvoy_whoami` result captured from the session under test, compared
+//                    against --pubkey. This is the MCP path's EXPECT_PUBKEY (#338): registered is
+//                    not sole, and sole is not YOURS. Without it the binding reads UNCHECKED.
+//
 // --from <instance>  mirror an existing agent's manifest for the fields this repo cannot derive
 //                    (grantors, task carriers, relays). Mirroring is not understanding: the
 //                    copied values are reported, and docs/DESIGN_CONNECT_REMOTE_AGENT.md §II
@@ -34,7 +38,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { foreignNvoyServers, installState, renderState } from '../src/agent_install_state.mjs'
+import { boundIdentity, foreignNvoyServers, installState, renderState } from '../src/agent_install_state.mjs'
 
 const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (process.argv[i + 1] || '') }
 const has = n => process.argv.includes(n)
@@ -189,6 +193,23 @@ see('mcp-exclusive', foreign === null ? null : foreign.length === 0, foreign !==
       ? `nvoy-${name} is the only nvoy server registered`
       : `also registered: ${foreign.join(', ')} — these carry the tools that SIGN, and not as ${name}. Remove with \`claude mcp remove <name>\` before acting.`)
 if (foreign?.length) warn.push(`${foreign.join(', ')} would sign as another identity from this session`)
+
+// Sole is not YOURS (#338). Nothing here can call the server — the channel holds its own lock — so
+// the operator captures `nvoy_whoami` from the session under test and passes the file. Reported
+// UNKNOWN without it, never as a pass: an unsupplied comparison reading green is the defect.
+const whoamiPath = flag('--whoami')
+let captured = null
+if (whoamiPath) {
+  try { captured = readFileSync(whoamiPath, 'utf8') } catch { captured = null }
+  if (captured === null) warn.push(`could not read ${whoamiPath} — the binding is UNCHECKED, not clean`)
+}
+const bind = boundIdentity(captured, pubkey)
+const bindRemedy = !pubkey
+  ? ' — pass --pubkey <64-hex>'
+  : captured === null ? ' — call nvoy_whoami in the session under test, save the result, and pass --whoami <path>' : ''
+see('mcp-identity', bind.match, bind.match === true, bind.match === null ? bind.reason + bindRemedy : bind.reason)
+if (bind.match === false) warn.push(`this session answers as ${bind.resolved.slice(0, 12)}… — do not send, do not read; it is not ${name}`)
+
 see('channel-answers', registered === true ? true : null, false, 'registered is not running — prove with an initialize + tools/list handshake')
 
 // ── Report ──────────────────────────────────────────────────────────────────────────────────
