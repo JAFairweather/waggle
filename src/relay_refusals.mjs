@@ -67,6 +67,24 @@ export function defuseJournalText(value, max = REFUSAL_TEXT_MAX) {
 
 /// Everything outside brackets, lowercased and squeezed: the part of a refusal that is about the
 /// relay's rule rather than about this particular event.
+///
+/// COMPUTED FROM THE RAW REASON, deliberately — and the consequence runs the opposite way to the
+/// one it is tempting to write down. JS `\s` does not cover NUL, ESC or most of C0, so a control
+/// character SURVIVES the squeeze and VARIES the key, while `defuseJournalText` maps it to a space
+/// so every one of those lines renders identically. Two reasons differing only by an invisible
+/// character are therefore two refusals that both log, and the second prints
+///
+///     RELAY REFUSAL CHANGED …: pow: 28 bits needed. — was "pow: 28 bits needed."
+///
+/// a changed line where nothing visible changed. Defusing before the comparison instead does not
+/// fix it: a NUL walked along the string still yields 401 lines from 500 sends, because inserting a
+/// space mid-word is a genuinely different string after the squeeze. Both measured in the #420
+/// review, which is why the decision stands and this paragraph replaces the justification that
+/// claimed a suppression that does not happen.
+///
+/// The root is not the control character. `defuseJournalText` bounds the LENGTH of a line; nothing
+/// bounds the COUNT, and 500 sends of freely varied wording is 500 lines with no invisible
+/// character anywhere. That predates this module and needs a per-relay cap in a window (#422).
 export function refusalKey(reason) {
   return String(reason ?? '')
     .replace(/\([^)]*\)/g, ' ')        // per-event detail: the achieved difficulty, a byte count, an id
