@@ -37,10 +37,10 @@ Claude is the archetype. Today neither works end-to-end, and the failure is at b
 
 | Claim | Evidence @ `718aa7c` / live box |
 |---|---|
-| Mentions have no path at all | `scanReturnLane` runs **only** from `pollCommands()` over `PUB.staging` (`bridge.mjs:909→914`). `staging_inbox` on the box resolves to `waggle-test` (`a8186b53`), **not** `#connector` (`73f80d38`). The scan reads the quarantine room, never the working room. |
-| `return_lane` was dead until tonight | It no-ops on an empty guard (`:883`); it was unset on the live box until the read-lane restart at **02:01:21Z**. |
+| Mentions have no path at all | `scanReturnLane` runs **only** from `pollCommands()` over `PUB.staging` (`bridge.mjs:909→914`). `staging_inbox` on the bridge box resolves to `waggle-test` (`a8186b53`), **not** `#connector` (`73f80d38`). The scan reads the quarantine room, never the working room. |
+| `return_lane` was dead until tonight | It no-ops on an empty guard (`:883`); it was unset on the live bridge box until the read-lane restart at **02:01:21Z**. |
 | No author gate on the carry-out | `scanReturnLane` (`:881–908`) filters only skip-self (`:889`) and the `@name` word-boundary match — no `grantors.includes(from)`, unlike `processGrantEvent:380`. Safe only because `staging` holds pre-gated content. |
-| Detection is solved; **action is not** | The wake-watcher (durable dedup, 48h backfill, per-arrival grant check) writes to a **queue file on nave.pub**. Nothing that can *act* lives on that box. The queue accumulates; it drains nowhere. A human gets paged — and only for DMs, not the mentions this team actually uses. |
+| Detection is solved; **action is not** | The wake-watcher (durable dedup, 48h backfill, per-arrival grant check) writes to a **queue file on nave.pub** — the watcher service's spool volume, on the same host as the participant runtimes. Nothing there **is wired to act on it**: the queue accumulates and drains nowhere. (This line used to say nothing that can act *lives* on that box, which #419 measured as false — that host runs 12 containers and two live instance manifests. What it lacks is an Anthropic credential and a provider CLI, not compute.) A human gets paged — and only for DMs, not the mentions this team actually uses. |
 
 The honest one-line summary: **the room is wrong, the sender is ungated, and nothing acts.**
 
@@ -70,7 +70,7 @@ same shape to fleet-channel mentions and replies — nothing new-in-kind, one do
 **Three seams, all required together:**
 
 1. **`scan_channels` as explicit config** (resolved at boot like `inbox`/`staging`; `scan_channels`
-   key is currently **absent** on the box — the clean seam). Defaults to empty, **never** implicitly
+   key is currently **absent** on the bridge box — the clean seam). Defaults to empty, **never** implicitly
    `staging`.
 2. **A separate `pollScanChannels()`** poll, distinct from `pollCommands()`. `pollCommands` keeps
    reading *only* `staging` for signed approval commands. Working-channel traffic must **never** reach
@@ -89,7 +89,7 @@ the existing `1059` forward is. Both converge on the same terminus: sealed deliv
 
 Detection currently ends at a file. Something must **start a session**. Options, ranked:
 
-- **(a) Run the actor on the container host — recommended, but it is not free (#419).** The watcher,
+- **(a) Run the actor on nave.pub — recommended, but it is not free (#419).** The watcher,
   on a gated wake, spawns `claude -p` with a **fixed prompt** (§5 — the fixed prompt is *what makes
   it safe*). This is the only option that makes "event-driven" true: no human, no laptop, no page.
 
@@ -98,26 +98,33 @@ Detection currently ends at a file. Something must **start a session**. Options,
 
   | claim | verdict |
   |---|---|
-  | it is one box | **no** — the container host and the bridge box are different machines |
-  | the box never sleeps | yes, both are always-on servers |
-  | already holds an agent runtime | **yes, on the container host** — 12 containers, `/etc/nvoy`, two live instance manifests |
-  | already holds an API key | **no** for a Claude actor |
+  | nave.pub never sleeps | yes — an always-on server |
+  | already holds an agent runtime | yes — 12 containers, `/etc/nvoy`, two live instance manifests |
+  | already holds an API key | **no**, for a Claude actor — and this is the row that carries the option |
 
-  **Two machines, and the option only makes sense on one of them.** The bridge box runs waggle
-  itself and has no Docker and no `/etc/nvoy`. The container host runs the nvoy participant
-  runtimes. An actor spawning `claude -p` belongs on the container host; naming one hostname as
-  though it were also the bridge is what made the premise look already-satisfied.
+  **The host was named correctly; two of the properties claimed about it were not.** `nave.pub` is
+  the container host, in this section and in §2, and it holds the wake-watcher's spool volume as well
+  as the runtimes — so the queue and any actor are co-located and (a) involves no cross-machine hop.
+  What was wrong was the API-key claim here, and §2's "nothing that can *act* lives on that box",
+  which the container inventory directly contradicts. Both are corrected.
 
-  **There is no Anthropic credential anywhere on the container host.** A search of `/etc/nvoy` for
-  any `ANTHROPIC_*` or `CLAUDE_*` variable name returns nothing. Both instance compose files
-  reference `OPENAI_API_KEY` and nothing else — including the Claude-named instance's. Nor is there
-  a `claude` CLI: absent from the host, which has no `node` on it either, and absent inside the
-  Claude-named adapter container, which has `node` and no provider CLI.
+  **There is no Anthropic credential on the container host, and the credentials directory is what
+  proves it.** Provider keys on that host are *files*, named `<instance>.<provider>-api-key`. The
+  directory holds five entries: a Bunker URI and a NIP-46 client key for each of the two instances,
+  plus `codex-jaf.openai-api-key`. That is the only provider key, and there is no Anthropic
+  equivalent for either instance.
+
+  (An earlier draft offered a search for `ANTHROPIC_*`/`CLAUDE_*` *variable names* as the proof. That
+  search returns nothing, but it never could have matched a file under this naming convention, so it
+  did not establish the claim it was cited for.)
+
+  Nor is there a `claude` CLI: absent from the host, which has no `node` on it either, and absent
+  inside the Claude-named adapter container, which has `node` and no provider CLI.
 
   So (a) is not "switch it on". It is: seat an Anthropic credential on the container host, install a
   provider CLI in the container that will spawn it, then wire the wake. Each is a decision on its
   own terms, and the credential is an operator action — §5's whole premise is that the actor runs
-  unattended, so the key sits on the box full-time.
+  unattended, so the key sits on nave.pub full-time.
 - (b) Ship the queue to wherever an actor lives (the pull pattern the tripwire already uses for
   journals). Keeps today's shape; still needs something to notice the file changed.
 - (c) Keep the human in the loop — today's behaviour. Honest, and not event-driven.
@@ -177,12 +184,19 @@ wake/payload split (and the author gate) — that is the exploit with a delivery
 
 ## 8. The one call to make in the morning
 
-Approve **§4 Layer 3 option (a)** — run the actor on the container host with a fixed-prompt wake.
-Once §5 is in, the wiring is mechanical and safe by construction.
+Approve **§4 Layer 3 option (a)** — run the actor on nave.pub with a fixed-prompt wake. Once §5 is
+in, the wiring is mechanical and safe by construction.
 
 **It is not a single yes, and §4 says why (#419).** The version of this section that claimed it was
-rested on the container host already holding an API key, which it does not for a Claude actor. The
-yes being asked for is really three: seat an Anthropic credential on that box, put a provider CLI in
-the container, then arm the wake. The first is an operator action and the one to weigh — an
-unattended actor means the key lives on the box full-time, which is a standing credential to protect
-rather than a config line to add.
+rested on that host already holding an API key, which it does not for a Claude actor. The yes being
+asked for is really three: seat an Anthropic credential there, put a provider CLI in the container,
+then arm the wake. The first is an operator action and the one to weigh — an unattended actor means
+the key lives on nave.pub full-time, which is a standing credential to protect rather than a config
+line to add.
+
+**Approve it knowing the blast radius, which is not empty today.** That host already holds a provider
+key with no consumer (`codex-jaf.openai-api-key`, `root:root 600`, no running worker — #428), the
+session state of every hosted agent, and root via the management path. Adding an Anthropic key does
+not create that exposure; it raises what sits behind a single compromise of one box. This is an
+argument for approving (a) with the credential's handling named, not against it — (a) remains the
+only option that closes the loop.
