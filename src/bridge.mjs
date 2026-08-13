@@ -758,8 +758,13 @@ function recordWithdrawn(id, durable = false) {
     if (dirFd !== null) { try { closeSync(dirFd) } catch {} }
   }
 }
-// The buzz CLI's stdout carries the created event id (JSON or plain text); without it a
-// later withdrawal falls back to the follow-up-tombstone tier, so a miss is safe.
+// The buzz CLI's stdout carries the created event id (JSON or plain text). A miss is safe for
+// WITHDRAWAL — that falls back to the follow-up-tombstone tier — but it is not safe generally:
+// recordPosted files the agent-authored registry row only `if (rec.buzz)`, so a miss on an
+// agent's post also drops it out of stagingByBuzzId and silently kills every reply carry back to
+// that agent (#334). Both call sites that pass an `agent` therefore warn. The scan is
+// deliberately lowercase-only; an uppercase id returns null rather than keying the registry in a
+// case the reader (agentAuthoredBy) would miss.
 function parseBuzzEventId(stdout) {
   const s = String(stdout || '')
   try {
@@ -1869,8 +1874,12 @@ async function forwardPublic(ev, why, dest, quarantine) {
     log(`PUBLIC[buzz] ok -> ${quarantine ? 'STAGING' : 'inbox'} ${dest}: kind1 ${ev.id.slice(0, 12)}… by ${author}… (${why})`)
     // A7: record the repost so the author's later kind:5 can withdraw it. A null buzz id
     // (stdout didn't carry one) degrades to the follow-up-tombstone tier — logged, safe.
+    // Safe for withdrawal, that is. Where this post is an AGENT's, the same miss also keeps it
+    // out of stagingByBuzzId and silently costs every reply carry back to them (#334), so the
+    // warning has to name that consequence too or it sends the reader to the wrong tier.
     const buzzId = parseBuzzEventId(stdout)
-    if (!buzzId) err(`A7 warn[no-id]: could not capture buzz event id for ${ev.id.slice(0, 12)}… — withdrawal will use follow-up tier`)
+    if (!buzzId) err(`A7 warn[no-id]: could not capture buzz event id for ${ev.id.slice(0, 12)}… — withdrawal will use follow-up tier` +
+      (agent ? '; replies to this post cannot be carried back to the agent' : ''))
     recordPosted({ id: ev.id, author: ev.pubkey, buzz: buzzId, dest, q: !!quarantine, ts: nowSec, agent })
     journalSend(buzzId, { kind: 9, dest, lane: 'public' })
   }).catch(e => {
@@ -3195,6 +3204,12 @@ async function postRelay(ev, sender, dest, wantCh, body) {
     // transient failure retries. Residual: a crash after this post but before the mark re-posts on
     // restart — kind:9 has no idempotency key, so the dup-on-crash residual stands (§6).
     const buzzId = parseBuzzEventId(so)
+    // This lane always carries `agent: sender`, so a null id costs more here than a withdrawal
+    // tier: recordPosted only files the registry row `if (rec.buzz)`, so the post never enters
+    // stagingByBuzzId and a member's reply to it can never be carried back (#334). The send
+    // itself succeeded, which is why this is otherwise invisible — the agent simply stops
+    // hearing replies to that message, with nothing in the journal to say why.
+    if (!buzzId) err(`RELAY warn[no-id]: no buzz event id for wrap ${ev.id.slice(0, 12)}… from ${sender.slice(0, 12)}… — replies to this post cannot be carried back`)
     markRelaySeen(ev.id)
     recordPosted({ id: ev.id, author: sender, buzz: buzzId, dest, q: false, ts: nowSec, agent: sender })
     journalSend(buzzId, { kind: 9, dest, lane: 'relay' })

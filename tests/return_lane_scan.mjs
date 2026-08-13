@@ -63,7 +63,7 @@ process.env.FORWARD_MODE = 'buzz'
 process.env.WB_STUB_SEND = '1'
 process.env.WB_NO_BOOT = '1'
 
-const { scanReturnLane, recordPosted, PUB, grantSet } = await import('../src/bridge.mjs')
+const { scanReturnLane, recordPosted, parseBuzzEventId, PUB, grantSet } = await import('../src/bridge.mjs')
 
 let fails = 0
 const ok = (n, c) => { console.log(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) fails++ }
@@ -153,5 +153,41 @@ ok('the same reply is not carried twice', d.length === 0)
 d = await scanDelta([{ id: 'rep2', pubkey: crew, content: 'unrelated thread post', tags: [['e', 'parenta', '', 'root']] }])
 ok('a root-tag to an agent post does NOT route (only reply-marked parents)', d.length === 0)
 
-console.log(fails ? `\nRETURN LANE SCAN FAIL — ${fails}` : '\nRETURN LANE SCAN PASS — gate, p-tag, fan-out, echo (3 forms + shared guard), reply-detection')
+// --- what feeds the registry: parseBuzzEventId (#334) -----------------------------------------
+// The registry above is only populated `if (rec.buzz)`. That id comes from parsing the buzz CLI's
+// stdout, and the parser had no coverage at all. Its own comment reasons about withdrawal only —
+// "a miss is safe" — but a miss ALSO means no registry row, and therefore no reply carry, which is
+// the routing this suite exists to prove. Assert both directions: the forms that must parse, and
+// the forms that must not be mistaken for an id.
+const HEX = 'a'.repeat(64)
+ok('a JSON event_id parses', parseBuzzEventId(`{"event_id":"${HEX}"}`) === HEX)
+ok('a JSON id parses', parseBuzzEventId(`{"id":"${HEX}"}`) === HEX)
+ok('a bare id in plain stdout parses', parseBuzzEventId(`posted ok ${HEX}\n`) === HEX)
+ok('JSON carrying a non-id field still finds the id by scan', parseBuzzEventId(`{"note":"sent","x":"${HEX}"}`) === HEX)
+ok('empty stdout yields no id rather than a guess', parseBuzzEventId('') === null)
+ok('stdout with no id yields no id', parseBuzzEventId('posted ok, no identifier here') === null)
+// A 65-char hex run is not a 64-char id with a stray neighbour; the word boundaries must refuse it
+// rather than silently truncating to something that keys the registry wrongly.
+ok('an over-long hex run is refused, not truncated', parseBuzzEventId('f'.repeat(65)) === null)
+// Documents a real fragility rather than endorsing it: the scan is lowercase-only, so an uppercase
+// id from the CLI returns null and silently costs the reply carry below. recordPosted lowercases
+// on write, so accepting it would be safe — see the PR.
+ok('an UPPERCASE id is not recognised (known gap, silently costs the reply carry)',
+  parseBuzzEventId(HEX.toUpperCase()) === null)
+
+// The consequence, asserted as behaviour rather than inferred: a post whose id failed to parse is
+// recorded with buzz:null, so it never enters stagingByBuzzId and a genuine reply to it cannot be
+// carried. This is the failure the warning added in src/bridge.mjs makes visible.
+recordPosted({ id: 'orig-null', author: claude, buzz: parseBuzzEventId('posted, but the id was not printed'),
+  dest: 'chan', q: false, ts: 0, agent: claude })
+d = await scanDelta([{ id: 'rep-null', pubkey: crew, content: 'replying to that', tags: [['e', 'parentnull', '', 'reply']] }])
+ok('a reply to a post whose id never parsed is silently NOT carried', d.length === 0)
+// Positive control for the line above — same shape, id parsed, carry happens. Without this, the
+// assertion cannot tell "the null id broke it" from "replies stopped working entirely".
+recordPosted({ id: 'orig-ok', author: claude, buzz: parseBuzzEventId(`{"event_id":"${'b'.repeat(64)}"}`),
+  dest: 'chan', q: false, ts: 0, agent: claude })
+d = await scanDelta([{ id: 'rep-ok', pubkey: crew, content: 'replying to that', tags: [['e', 'b'.repeat(64), '', 'reply']] }])
+ok('the identical reply IS carried once the id parsed', d.length === 1 && d[0]?.why === 'reply')
+
+console.log(fails ? `\nRETURN LANE SCAN FAIL — ${fails}` : '\nRETURN LANE SCAN PASS — gate, p-tag, fan-out, echo (3 forms + shared guard), reply-detection, id-parse')
 process.exit(fails ? 1 : 0)
