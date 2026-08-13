@@ -172,7 +172,7 @@ for _n in "${PRS[@]}"; do
 done
 parent_is_queued() { case " $QUEUED_HEADS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
-MERGED=(); SKIPPED=(); PROBLEM=0
+MERGED=(); SKIPPED=(); MERGED_TIPS=(); PROBLEM=0
 
 for n in "${PRS[@]}"; do
   say "${BOLD}── PR #$n${OFF}"
@@ -232,7 +232,24 @@ for n in "${PRS[@]}"; do
       say "    number, so the first one merges clean and every other one conflicts on all four."
       say
       say "      git fetch origin && git checkout $head"
-      say "      git rebase origin/$DEFAULT_BRANCH        # resolve, then READ the diff:"
+      # If this run squash-merged the branch this one was stacked on, a plain rebase is the
+      # WRONG advice: it replays commits whose content is already upstream and they conflict
+      # with their own squashed selves. Cut from the parent's pre-merge tip instead.
+      stacked_on=""
+      for entry in "${MERGED_TIPS[@]:-}"; do
+        [ -n "$entry" ] || continue
+        if git merge-base --is-ancestor "${entry#* }" "origin/$head" 2>/dev/null; then
+          stacked_on="$entry"; break
+        fi
+      done
+      if [ -n "$stacked_on" ]; then
+        say "      # this run squash-merged '${stacked_on%% *}', which this branch was stacked on."
+        say "      # A plain rebase would replay commits already upstream and conflict with"
+        say "      # their own squashed selves. Cut from that branch's pre-merge tip:"
+        say "      git rebase --onto origin/$DEFAULT_BRANCH ${stacked_on#* }"
+      else
+        say "      git rebase origin/$DEFAULT_BRANCH        # resolve, then READ the diff:"
+      fi
       say "      git diff origin/$DEFAULT_BRANCH...HEAD"
       say "      npm test && git push --force-with-lease"
       say
@@ -297,6 +314,12 @@ for n in "${PRS[@]}"; do
   #
   # So the retarget is done EXPLICITLY, after the merge and before the delete, rather
   # than left to GitHub.
+  # A squash-merge rewrites the parent's commits into ONE new commit, so a child branch
+  # still carries the originals and `git rebase origin/main` tries to replay them. They
+  # conflict against their own squashed selves. The cure is `rebase --onto` with the
+  # parent's PRE-MERGE tip as the cut point, which is knowable only here — record it.
+  merged_tip=$(gh pr view "$n" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
+
   children=$(gh pr list --repo "$REPO" --state open --base "$head" --json number --jq '.[].number' 2>/dev/null || true)
   delete_flag="--delete-branch"
   if [ -n "$children" ]; then
@@ -312,6 +335,7 @@ for n in "${PRS[@]}"; do
        --subject "$title (#$n)" --body "" 2>&1 | sed 's/^/    /'; then
     good "  merged #$n"
     MERGED+=("#$n $title")
+    [ -n "$merged_tip" ] && MERGED_TIPS+=("$head $merged_tip")
   else
     bad "  merge of #$n failed — stopping so nothing after it lands out of order"
     PROBLEM=1; break
