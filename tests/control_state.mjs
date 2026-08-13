@@ -545,9 +545,15 @@ t('#416   …and the reason says what would happen, so the operator is not left 
   !lookalike.ok && /reach the other/.test(lookalike.reason))
 t('#416   …and nothing was written — a refusal that still persisted the row is the defect itself',
   JSON.parse(readFileSync(CFG, 'utf8')).public.task_routes.filter(r => r.participant === impostor).length === 0)
+// A CROSS-SCRIPT lookalike is ADMITTED, and that is deliberate (#426). A script-mixing rule refused
+// it here until the #421 review measured what it bought: nothing at delivery, because the matcher
+// does not fold across scripts either, so this row cannot take a message addressed to `MC Claude`.
+// What it cost was real names — `Nikos \u03A0\u03B1\u03C0\u03AC\u03C2` and `\u0414enis` were refused, retroactively, by the
+// function that re-validates already-deployed config. The residual is a human PASTING the Cyrillic
+// spelling, which is a compose-time hazard and is #426.
 const mixedScript = await applyTask(taskBody('upsert', impostor, taskChannel, 'M\u0421 Claude'), now + 24)
-t('#416 a Cyrillic letter inside a Latin name is refused by the grammar, before any comparison',
-  !mixedScript.ok && /Cyrillic or Greek/.test(mixedScript.reason), mixedScript.reason)
+t('#426 a cross-script lookalike is admitted — it cannot intercept, and refusing it broke real names',
+  mixedScript.ok, mixedScript.reason)
 // BOTH DIRECTIONS. A guard asserted only to refuse cannot be told apart from one that refuses
 // everything — the 2026-08-01 outage in this repo was exactly that shape, and it was green.
 const otherChannel = await applyTask(taskBody('upsert', impostor, secondTaskChannel, 'MC \uFF23laude'), now + 25)
@@ -563,6 +569,7 @@ const unrelated = await applyTask(taskBody('upsert', impostor, taskChannel, 'Den
 t('#416 and an ordinary unrelated name still gets through after all of that', unrelated.ok, unrelated.reason)
 for (const [i, [p, channel, mention]] of [[impostor, secondTaskChannel, 'MC \uFF23laude'],
   [impostor, secondTaskChannel, 'My Dude'], [impostor, taskChannel, 'Dennis'],
+  [impostor, taskChannel, 'M\u0421 Claude'],   // admitted above (#426), so it has to come back out
   [participant, taskChannel, 'MC \uFF23laude']].entries()) {
   await applyTask(taskBody('remove', p, channel, mention), now + 29 + i)
 }

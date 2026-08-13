@@ -101,14 +101,6 @@ const REFUSE = [
   ['A'.repeat(TASK_ROUTE_MENTION_MAX + 1), /longer than 32/],
   [null, /must be text/],
   [42, /must be text/],
-  // SCRIPT MIXING (#416). Written as escapes for a reason that is not the usual one: these
-  // characters are perfectly visible, and that is the problem — the lookalike and the real name
-  // are the same picture, so a literal here would be a fixture no reviewer could check by reading
-  // it. The escape is the only thing that makes the Cyrillic letter legible AS Cyrillic.
-  ['Me\u0455nil', /Cyrillic or Greek/],     // U+0455 dze, the twin of Latin s
-  ['\u0410pple', /Cyrillic or Greek/],      // Cyrillic A leading an otherwise Latin word
-  ['Dennis\u0430', /Cyrillic or Greek/],    // U+0430, the twin of Latin a
-  ['\u039Cy Dude', /Cyrillic or Greek/],    // Greek Mu, the twin of Latin M
 ]
 for (const [input, reasonRe] of REFUSE) {
   const problem = taskRouteMentionProblem(input)
@@ -184,13 +176,38 @@ console.log('\nconfusable routes are refused at admission, not at arbitration')
     taskRouteMentionConflict('', existing, { channel: CH, participant: IMPOSTOR }) === null &&
     taskRouteMentionConflict(null, existing, { channel: CH, participant: IMPOSTOR }) === null)
 
-  // The gap, asserted rather than described. A wholly-Cyrillic lookalike is NOT caught by the
-  // skeleton — no normalisation folds `ѕ` onto `s`. It is caught one layer up by the grammar,
-  // and this pair is what stops the two guards being confused for one another.
-  ok('the skeleton does NOT fold a Cyrillic twin — stated, so nobody assumes it does',
-    taskRouteMentionSkeleton('Me\u0455nil') !== taskRouteMentionSkeleton('Mesnil'))
-  ok('  …and the grammar is what refuses it, before the conflict check is ever reached',
-    /Cyrillic or Greek/.test(taskRouteMentionProblem('Me\u0455nil') || ''))
+  // A CROSS-SCRIPT LOOKALIKE IS ADMITTED, AND CANNOT INTERCEPT (#416, #426).
+  //
+  // Written as escapes for a reason that is not the usual one: these characters are perfectly
+  // visible, and that is the problem — the lookalike and the real name are the same picture, so a
+  // literal here would be a fixture no reviewer could check by reading it. The escape is the only
+  // thing that makes the Cyrillic letter legible AS Cyrillic.
+  //
+  // A script-mixing rule refused all four of these at the grammar. It was removed under review
+  // because it prevented no interception and refused real names (`Nikos \u03A0\u03B1\u03C0\u03AC\u03C2`, `\u0414enis`).
+  // These assertions are what replaces it: each is a legal name, and none of them can take a
+  // message aimed at its Latin twin, because the matcher does not fold across scripts either.
+  const TWINS = [
+    ['Me\u0455nil', 'Mesnil'],       // U+0455 dze, the twin of Latin s
+    ['\u0410pple', 'Apple'],        // Cyrillic A leading an otherwise Latin word
+    ['Dennis\u0430', 'Dennisa'],   // U+0430, the twin of Latin a
+    ['\u039Cy Dude', 'My Dude'],     // Greek Mu, the twin of Latin M
+  ]
+  for (const [twin, latin] of TWINS) {
+    ok(`a cross-script lookalike is a legal NAME: ${JSON.stringify(twin)}`,
+      taskRouteMentionProblem(twin) === null, String(taskRouteMentionProblem(twin)))
+    ok('  …and the skeleton does NOT fold it — no normalisation folds one script onto another',
+      taskRouteMentionSkeleton(twin) !== taskRouteMentionSkeleton(latin))
+    ok('  …so it is admitted beside its twin rather than refused',
+      taskRouteMentionConflict(twin, [{ channel: CH, participant: REAL, mention: latin }],
+        { channel: CH, participant: IMPOSTOR }) === null)
+    // The direction that matters: being admitted is only safe because it cannot take the at-word.
+    // Both directions, because a matcher that reached NEITHER would pass a one-sided assertion.
+    ok('  …and a body addressed to the Latin name does NOT reach it',
+      taskRouteMentioned(`@${latin} ship it`, twin) === false)
+    ok('  …while the Latin name itself still carries — the guard is not refusing everything',
+      taskRouteMentioned(`@${latin} ship it`, latin) === true)
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
