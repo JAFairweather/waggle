@@ -127,18 +127,52 @@ export function refusalKey(reason) {
     .trim()
 }
 
+/// A cap on LOGGED LINES per relay per window (#422). Separate from `cap` below, and answering a
+/// different attack: `cap` bounds how many relays the ledger REMEMBERS, and does nothing about how
+/// many lines one of them can cause.
+///
+/// The suppression in `record()` is keyed on the reason, and genuinely different is the relay's
+/// choice. 500 sends whose wording it varies by a request id or a counter is 500 journal lines,
+/// with nothing invalid and no invisible character anywhere in them, on a box whose journals the
+/// tripwire reads. Measured on `main` at `0efe7cd1` in the #420 review, where the ledger stayed at
+/// one row throughout — exactly as designed, and why a better key is not the fix.
+///
+/// THE CAP MUST NEVER BE SILENT. A ledger that quietly stops writing is indistinguishable from a
+/// relay that stopped refusing, which is the #374 failure one level up. Three things say it:
+///
+///   1. the line that TRIPS the cap names it, so there is no gap between the last logged refusal
+///      and the operator knowing why the next one is missing. Once per window — repeating it per
+///      withheld line would be the flood again, in the bridge's own voice;
+///   2. the window ROLL reports the count that was withheld;
+///   3. `summary()` carries the running count, because a flood that STOPS never rolls its window,
+///      and the periodic report is then the only surface that would ever mention it.
+///
+/// The reason is still RECORDED when a line is capped — only the per-line news is withheld, so
+/// `rows()` and `summary()` show the current reason. The cap costs the operator timeliness, never
+/// fact. It cannot be made free: a relay already at its cap whose reason then changes to something
+/// genuinely actionable has that one line folded into a count. That is the trade, and it is why the
+/// cap is per relay rather than global — a flooding relay must not eat a quiet one's line.
+const LINES_PER_WINDOW = 10
+const WINDOW_SECONDS = 3600
+
 /// A bounded per-relay ledger. Keyed on the relay, so it is bounded by the size of the relay set no
 /// matter how inventive the messages get; `cap` is a backstop for a caller that fans out to a list
 /// built from something an outsider controls.
 ///
 /// `log` is injected rather than imported so the suppression rule can be driven with no journal.
-export function refusalLedger({ cap = 64, log = () => {} } = {}) {
-  const rows = new Map()   // relay -> { refused, accepted, reason, key, firstAt, lastAt }
+export function refusalLedger({
+  cap = 64,
+  log = () => {},
+  linesPerWindow = LINES_PER_WINDOW,
+  windowSeconds = WINDOW_SECONDS,
+} = {}) {
+  const rows = new Map()   // relay -> { refused, accepted, reason, key, firstAt, lastAt, window* }
 
   const row = (relay) => {
     let r = rows.get(relay)
     if (!r) {
-      r = { relay, refused: 0, accepted: 0, reason: null, key: null, firstAt: null, lastAt: null }
+      r = { relay, refused: 0, accepted: 0, reason: null, key: null, firstAt: null, lastAt: null,
+        windowStart: null, windowLogged: 0, windowWithheld: 0 }
       // Insertion-ordered eviction. Dropping the OLDEST rather than refusing to add: a full ledger
       // must not make a newly-added relay invisible, which would hide exactly the relay whose
       // behaviour nobody has seen yet.
@@ -179,6 +213,25 @@ export function refusalLedger({ cap = 64, log = () => {} } = {}) {
       r.reason = defuseJournalText(reason)
       const shown = r.reason || '(no reason given)'
       const shownRelay = defuseJournalText(url)
+
+      // The window rolls on the first refusal that falls outside it, and reports what it withheld
+      // on the way out (#422).
+      if (r.windowStart === null || at - r.windowStart >= windowSeconds) {
+        if (r.windowWithheld > 0) {
+          log(`RELAY REFUSAL FLOOD ENDED ${shownRelay}: ${r.windowWithheld} further changed reason(s) were counted, not logged, in the preceding ${windowSeconds}s (#422)`)
+        }
+        r.windowStart = at
+        r.windowLogged = 0
+        r.windowWithheld = 0
+      }
+      if (r.windowLogged >= linesPerWindow) {
+        r.windowWithheld++
+        if (r.windowWithheld === 1) {
+          log(`RELAY REFUSAL FLOOD ${shownRelay}: ${linesPerWindow} changed reasons logged within ${windowSeconds}s — further ones are counted, not logged, until the window rolls (#422). Latest: ${shown}`)
+        }
+        return 'capped'
+      }
+      r.windowLogged++
       log(was === null
         ? `RELAY REFUSED ${shownRelay}: ${shown} — first time; further identical refusals are counted, not logged (#374)`
         : `RELAY REFUSAL CHANGED ${shownRelay}: ${shown} — was "${was || '(no reason given)'}"; ${r.refused} refusal(s) from this relay so far`)
@@ -193,7 +246,14 @@ export function refusalLedger({ cap = 64, log = () => {} } = {}) {
     summary() {
       const bad = [...rows.values()].filter(r => r.refused > 0)
       if (!bad.length) return null
-      return bad.map(r => `${defuseJournalText(r.relay)}: refused ${r.refused} of ${r.refused + r.accepted} — ${r.reason || '(no reason given)'}`).join(' · ')
+      return bad.map(r => {
+        // The flood's count travels with the periodic report, not only with the window roll: a
+        // relay that floods and then goes quiet never rolls, so this is the only place it surfaces.
+        const withheld = r.windowWithheld > 0
+          ? ` (+${r.windowWithheld} changed reason(s) counted, not logged — flooding, #422)`
+          : ''
+        return `${defuseJournalText(r.relay)}: refused ${r.refused} of ${r.refused + r.accepted} — ${r.reason || '(no reason given)'}${withheld}`
+      }).join(' · ')
     },
 
     size() { return rows.size },
