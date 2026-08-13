@@ -52,13 +52,46 @@
 /// cutting it to 200 reports a hostile relay as a chatty one.
 export const REFUSAL_TEXT_MAX = 200
 
+/// Everything that can change what a line LOOKS like without being visible in it (#423).
+///
+/// Named by Unicode category rather than by codepoint — the same principle as the original C0/C1
+/// range, and the reason that one has held. Naming what may pass stays correct when somebody finds
+/// a control nobody had listed.
+///
+///   \p{Cc}  the 65 C0/C1/DEL controls this function already collapsed
+///   \p{Cf}  format characters: U+202E RIGHT-TO-LEFT OVERRIDE and the U+2066-U+2069 isolates,
+///           which REORDER the line with no C0 or C1 character anywhere in it; plus the zero-width
+///           set (U+200B, U+200C, U+200D, U+2060, U+FEFF), U+00AD SOFT HYPHEN and the bidi marks
+///   \p{Zl}  U+2028 LINE SEPARATOR
+///   \p{Zp}  U+2029 PARAGRAPH SEPARATOR
+///   \p{Zs}  the space separators, including U+00A0 NO-BREAK SPACE
+///
+/// U+202E is the one with teeth. The journal is text an operator reads and acts on — the premise
+/// the whole of #405 rests on — and an override reorders it while every byte-level check keeps
+/// passing. An unterminated isolate does the same to whatever prints on the line AFTER this one.
+///
+/// U+00A0 is here having been thought about rather than collapsed reflexively: it already renders
+/// as a space, so mapping it to one costs nothing visible, and "already looks fine" is not the same
+/// as "is a space". The suite asserts it now IS one.
+///
+/// EVERYTHING BECOMES A SPACE, including the zero-width characters, where deleting them would look
+/// tidier. Deleting can JOIN two tokens into one that never existed; spacing can only ever separate.
+/// A visible extra space is honest, and a fabricated word is not.
+///
+/// The cost, stated rather than discovered: an emoji sequence joined by U+200D comes apart into its
+/// components. A relay refusal is not where emoji families belong, and ZWJ is itself a way to hide
+/// what a string contains, so the trade is deliberate — but the ordinary case is the constraint, and
+/// `pow: 28 bits needed. (12)` and non-ASCII relay wording are both asserted to survive intact.
+// Exported as the SOURCE STRING, not as a compiled /g regex: the suite sweeps the plane against
+// this exact class, and a /g regex carries `lastIndex` between calls, so a shared one would
+// report a different answer on the second character it was asked about (#423).
+export const INVISIBLE_CLASS = '[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\\p{Zs}]'
+const INVISIBLE = new RegExp(`${INVISIBLE_CLASS}+`, 'gu')
+
 export function defuseJournalText(value, max = REFUSAL_TEXT_MAX) {
   const raw = String(value ?? '')
-  // C0 (U+0000-U+001F: CR, LF, TAB, ESC, NUL), DEL (U+007F), and C1 (U+0080-U+009F, which some
-  // terminals still act on). Whole ranges rather than the characters anyone has abused so far —
-  // naming what may pass is what stays correct when someone finds a new one.
   const flat = raw
-    .replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ')
+    .replace(INVISIBLE, ' ')
     .replace(/ {2,}/g, ' ')
     .trim()
   if (flat.length <= max) return flat
