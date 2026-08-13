@@ -414,7 +414,12 @@ ok('no routes means nothing carries', arb('@MC Claude', []).won.length === 0)
 // pair CAN survive dedup and reach the comparison. Breaking that tie by `>` broke it by array
 // order: the message went to whichever route was configured first, and the other's owner was told
 // a longer name had taken it — a false reason for a delivery to the wrong participant.
-ok('a same-length pair survives dedup, so the tie is real and not a hypothetical',
+// This guard is DIAGNOSIS, not non-vacuity. The tie assertions below cannot pass vacuously —
+// `won.length === 2` is unsatisfiable unless two rows survive dedup and both match at that at-word.
+// What it buys is that a future fixture edit or fold change fails as "the fixture stopped being a
+// tie" rather than as a bare "a tie carries to BOTH", which is otherwise a puzzle. Proven by
+// degrading the precondition four ways: it fires in all four, and never alone.
+ok('the fixture is still a genuine tie — same length, distinct keys, each matching the other',
   taskRouteMentionKey(MESNIL_LONG) !== taskRouteMentionKey('Mesnil') &&
   MESNIL_LONG.length === 'Mesnil'.length &&
   taskRouteMentioned('@Mesnil please look', MESNIL_LONG) &&
@@ -450,7 +455,11 @@ ok('two at-words in one message reach two different agents',
   to.length === 2 && to.join('|') === [short(mcOnly), short(mcClaude)].sort().join('|'), to.join('|'))
 
 to = await carriedBy('@Mesnil please look at this.')
-ok('end to end: a tie reaches BOTH agents, so neither is intercepted',
+// Carrying to both fixes the MUTE and the ORDER DEPENDENCE. It does not fix interception, and the
+// name of this assertion used to say it did (#414 re-read). `@Mesnil` still reaches `Me\u017Fnil`, an
+// agent nobody named; what changed is that it no longer reaches it EXCLUSIVELY. Arbitration cannot
+// tell an impostor from a legitimate namesake — that closes at admission, not here (#416).
+ok('end to end: a tie reaches BOTH agents, so the real agent is not displaced',
   to.length === 2 && to.join('|') === [short(mesnilLong), short(mesnilPlain)].sort().join('|'), to.join('|'))
 
 
