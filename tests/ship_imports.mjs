@@ -65,16 +65,29 @@ check(!shipped('console/nip98.mjs') && !shipped('console/scope-hash.mjs') && !sh
 
 // ── Extract every relative target a file reaches for ─────────────────────────────────────────────
 //
-// Static import/export, and `new URL('./x', import.meta.url)`, which several suites use to read a
-// file rather than import it and which fails on the box for exactly the same reason. Dynamic
-// `import(expr)` with a computed specifier is not covered and cannot be, statically.
-const RELATIVE_FROM = /(?:^|\n)\s*(?:import[^\n]*?from|export[^\n]*?from|import)\s*\(?\s*['"](\.[^'"]+)['"]/g
+// Static import/export, dynamic `import()` with a literal specifier, and
+// `new URL('./x', import.meta.url)`, which several suites use to read a file rather than import it
+// and which fails on the box for exactly the same reason. Only a COMPUTED dynamic specifier is
+// outside this, and that one cannot be resolved statically by anything.
+//
+// The forms are matched separately rather than by one line-anchored alternation. The previous
+// pattern used `[^\n]*?from`, which cannot cross a newline, so a multi-line import — house style
+// here, 13 files use it — put its `from` on a line starting `} from …` and was never walked. Same
+// for `const { x } = await import('./y')`, which only matched when `import(` began the line. Both
+// spellings got a live cross-boundary import past this suite. No defect was hidden, because every
+// such target happened to be on the ship list; what was missing was the guarantee, and a reviewer
+// reading SHIP IMPORTS PASS could not tell which spelling had been in play.
+//
+// What bounds each pattern is the excluded quote: `[^;'"]*?` cannot cross a string literal, so a
+// from-clause search starting at one `import` can never run forward and capture the NEXT
+// statement's specifier. That is what makes spanning newlines safe here.
+const STATIC_FROM = /\b(?:import|export)\b[^;'"]*?\bfrom\s*['"](\.[^'"]+)['"]/g
+const BARE_IMPORT = /\bimport\s*['"](\.[^'"]+)['"]/g          // side-effect: import './x.mjs'
+const DYNAMIC_IMPORT = /\bimport\s*\(\s*['"](\.[^'"]+)['"]\s*\)/g
 const RELATIVE_URL = /new URL\(\s*['"](\.\.?\/[^'"]+)['"]\s*,\s*import\.meta\.url\s*\)/g
 
-export const relativeTargets = (source) => [
-  ...[...source.matchAll(RELATIVE_FROM)].map(m => m[1]),
-  ...[...source.matchAll(RELATIVE_URL)].map(m => m[1]),
-]
+export const relativeTargets = (source) => [...new Set([STATIC_FROM, BARE_IMPORT, DYNAMIC_IMPORT, RELATIVE_URL]
+  .flatMap(re => [...source.matchAll(re)].map(m => m[1])))]
 
 const walk = (dir) => readdirSync(dir, { withFileTypes: true })
   .flatMap(e => e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)])
@@ -110,24 +123,53 @@ check(missing.length === 0,
 // Everything above is satisfied by a check that finds nothing, including one that CANNOT find
 // anything. These make it fail on purpose and then pass on purpose, so a zero above means the tree
 // is clean rather than the extractor being broken.
-const SYNTHETIC_BAD = `
-import { nip98Template } from '../console/nip98.mjs'
-export { scopeHash } from "../console/scope-hash.mjs"
-const page = readFileSync(new URL('../console/index.html', import.meta.url), 'utf8')
-`
-const badFound = relativeTargets(SYNTHETIC_BAD)
-check(badFound.length === 3, `NEGATIVE CONTROL — the extractor finds all three cross-boundary forms (found ${badFound.length})`)
-check(badFound.every(spec => !shipped(relative(REPO, resolve(join(REPO, 'tools'), spec)))),
-  '  …and each one is classified as off-boundary, so a zero above is a clean tree and not a dead check')
+// One crossing, every spelling. Asserted form by form rather than by a total, because a count says
+// "3 of 3" without saying WHICH three, and the gap this closes was three specific forms silently
+// absent from a passing suite. Each entry is the same off-boundary target written a different way.
+const CROSSING = '../console/scope-hash.mjs'
+const FORMS = [
+  ['single-line static import', `import { scopeHash } from '${CROSSING}'`],
+  ['MULTI-LINE static import', `import {\n  scopeHash,\n} from '${CROSSING}'`],
+  ['multi-line default + named', `import defaultThing, {\n  scopeHash,\n} from '${CROSSING}'`],
+  ['namespace import', `import * as sh from '${CROSSING}'`],
+  ['single-line export-from', `export { scopeHash } from "${CROSSING}"`],
+  ['MULTI-LINE export-from', `export {\n  scopeHash,\n} from '${CROSSING}'`],
+  ['export-star', `export * from '${CROSSING}'`],
+  ['side-effect import, no binding', `import '${CROSSING}'`],
+  ['dynamic import, leading await', `const { scopeHash } = await import('${CROSSING}')`],
+  ['dynamic import, in an expression', `const p = Promise.all([import('${CROSSING}')])`],
+  ['dynamic import, bare at line start', `import('${CROSSING}')`],
+  ['new URL, in an expression', `const page = readFileSync(new URL('${CROSSING}', import.meta.url), 'utf8')`],
+]
+const missedForms = FORMS.filter(([, src]) => !relativeTargets(src).includes(CROSSING)).map(([name]) => name)
+check(missedForms.length === 0,
+  `NEGATIVE CONTROL — the extractor finds the crossing in all ${FORMS.length} spellings` +
+  (missedForms.length ? ` — MISSED: ${missedForms.join(', ')}` : ''))
+check(relativeTargets(FORMS.map(([, s]) => s).join('\n')).length === 1,
+  '  …and reports it once, not once per spelling, so the offender list stays readable')
+check(!shipped(relative(REPO, resolve(join(REPO, 'tools'), CROSSING))),
+  '  …and that target really is off-boundary, so a zero above is a clean tree and not a dead check')
 
+// The honest limit, asserted rather than claimed in prose: a COMPUTED specifier is not covered and
+// cannot be. Pinning it means the header cannot quietly drift into overstating coverage again.
+check(relativeTargets("const m = await import('../console/' + name + '.mjs')").length === 0,
+  'a computed dynamic specifier is NOT covered — stated as a measured limit, not an assumption')
+
+// Both directions. Everything above asserts that it FINDS things; an extractor that returns every
+// string literal it sees would satisfy all of it while making the walk useless.
 const SYNTHETIC_GOOD = `
 import { scopeHashSync } from '../src/scope_hash.mjs'
-import { defuseJournalText } from './render.mjs'
+import {
+  defuseJournalText,
+} from './render.mjs'
+const { forwardPublic } = await import('../src/bridge.mjs')
 `
 const goodFound = relativeTargets(SYNTHETIC_GOOD)
-check(goodFound.length === 2, `NEGATIVE CONTROL — it finds ordinary in-tree imports too (found ${goodFound.length})`)
+check(goodFound.length === 3, `NEGATIVE CONTROL — it finds ordinary in-tree imports too, multi-line and dynamic included (found ${goodFound.length})`)
 check(goodFound.every(spec => shipped(relative(REPO, resolve(join(REPO, 'tools'), spec)))),
   '  …and passes them, so the rule refuses the boundary rather than refusing every import')
+check(relativeTargets("import { readFileSync } from 'node:fs'\nimport { join } from 'node:path'").length === 0,
+  '  …and bare-specifier imports are not relative targets, so the from-clause search cannot run past one statement into the next')
 
 // The specific regression. Asserting only "nothing is off-boundary" would still pass if this file
 // were deleted, so name the fix.
