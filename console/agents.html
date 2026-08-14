@@ -148,7 +148,16 @@ function validState(ev, bridge) {
 function draw(state) {
   const list = $('list'); list.textContent = ''
   if (!state.agents.length) {
-    list.appendChild(el('p', 'note', 'Nobody is in this hive yet. Letting someone in is a decision that widens what they can reach — the table below says exactly how far.'))
+    // This list is the waggle lifecycle roster, and nothing else writes to it. A 440 grant admits a
+    // key to the community without creating a row here (#321; #392 calls it `grant_no_row`), so an
+    // empty roster is not evidence that nobody is in the hive — only that nobody was seated through
+    // this page. The old sentence said "Nobody is in this hive yet", which is the line that made
+    // this look broken to an owner who had just granted someone.
+    const note = el('p', 'note', 'No agent has been seated through this page. That is not the same as an empty hive: a 440 grant lets a key act without creating a row here, so check ')
+    const link = el('a', null, 'Access'); link.href = '/console/'
+    note.appendChild(link)
+    note.appendChild(document.createTextNode(' for keys that already hold one. Seating an agent here is a decision that widens what it can reach — the table below says exactly how far.'))
+    list.appendChild(note)
     return
   }
   for (const a of state.agents) {
