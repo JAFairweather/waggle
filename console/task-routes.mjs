@@ -117,10 +117,16 @@ function forgetPicked() {
   clearIfOurs('route-sender', 'sender')
   clearIfOurs('route-mention', 'mention')
 }
-// On an edit to the bridge field. Cosmetic on its own — `routing.mjs` also writes that field
-// programmatically, which fires no event — which is why the refusal in `manage()` is the guard and
+// On an edit to the bridge field. Cosmetic on its own, because a programmatic write to that field
+// fires no `input`/`change` event at all — which is why the refusal in `manage()` is the guard and
 // this is the courtesy. Both are needed: without the clearing the select still SHOWS the old agent,
 // and the select is the operator's only evidence of what they chose.
+//
+// The mechanism used to be attributed to `routing.mjs`. That is the wrong file: `routing.mjs` is
+// loaded by `routing.html`, while this module is loaded only by `config.html`. The programmatic
+// writer that ships on THIS page is config.html's own `if(saved){$('bridge').value=saved}`, and it
+// runs at page init — before these listeners attach and before any pick exists, so it cannot strand
+// one. Form restore, autofill and any future writer still justify the guard (#440 review).
 function forgetRoster() {
   roster = null
   fillPicker($('route-participant-pick'), [], 'Load the roster to choose an admitted agent')
@@ -194,24 +200,51 @@ $('bridge').addEventListener('change', forgetRoster)
 // it has to match is not (#404), so the label is a guess and the typed value is an answer.
 $('route-participant-pick').onchange = event => {
   const option = event.target.selectedOptions[0]
-  if (!event.target.value) return
+  // Back to the placeholder row. One rule for both pickers, and it is the file's existing one:
+  // clear what WE guessed, keep what the operator typed. Returning here left the previous key in
+  // the field while the select read "Choose an admitted agent".
+  if (!event.target.value) {
+    clearIfOurs('route-participant', 'participant')
+    clearIfOurs('route-mention', 'mention')
+    return
+  }
   $('route-participant').value = event.target.value
   picked.participant = event.target.value
-  const label = (option.textContent || '').split(' — ')[0]
-  if (!label || label === 'unnamed agent') return
+  const label = (option.textContent || '').split(' — ')[0].trim()
+  // An unnamed agent has no suggestion to make, and RETURNING here was the same bug one level down:
+  // the key had already been written and the mention had not, so the previous pick's label stayed
+  // beside the new agent's key — a route reading `@Dennis for npub1…` while waking someone else,
+  // which is the exact failure this picker exists to prevent (#440 review). Clear our own guess
+  // instead of leaving it; an answer the operator typed still survives.
+  if (label === 'unnamed agent') {
+    const current = $('route-mention').value.trim()
+    if (!current || current === picked.mention) $('route-mention').value = ''
+    picked.mention = null
+    return
+  }
   // Suggest UNLESS the operator has typed something — which is only the same rule as "suggest when
   // empty" on the FIRST pick (#440). Changing your mind in a dropdown is the most ordinary thing an
   // operator does, and the empty-only rule left the first agent's label sitting beside the second
   // agent's key: a route whose mention names one agent and wakes another, reading as correct.
   // Overwrite our own guess; never an answer.
+  //
+  // Both sides of the comparison are trimmed. `LABEL` permits a trailing space, so an untrimmed
+  // guess never round-trips equal to `field.value.trim()` and the picker reads its own suggestion
+  // back as the operator's answer — the same "assumes the field returns the guess byte-identical"
+  // root cause as the blocker above.
   const current = $('route-mention').value.trim()
   if (current && current !== picked.mention) return
   $('route-mention').value = label
   picked.mention = label
 }
+// Blank clears, on BOTH pickers. The participant picker used to return on blank, leaving the
+// previous key in the field while the select read "Choose an admitted agent" — which contradicts
+// the rule the rest of this file is built on, that the select is the operator's only evidence of
+// what they chose (#440 review).
 $('route-sender-pick').onchange = event => {
+  if (!event.target.value) { clearIfOurs('route-sender', 'sender'); return }
   $('route-sender').value = event.target.value
-  picked.sender = event.target.value || null
+  picked.sender = event.target.value
 }
 $('route-add').onclick = () => manage('upsert')
 $('route-remove').onclick = () => manage('remove')

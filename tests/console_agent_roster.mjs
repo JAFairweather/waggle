@@ -206,7 +206,9 @@ globalThis.confirm = () => false
 
 const secretOne = generateSecretKey(), secretTwo = generateSecretKey()
 const BRIDGE_ONE = getPublicKey(secretOne), BRIDGE_TWO = getPublicKey(secretTwo)
-const AGENT_A = key('12'), AGENT_B = key('34'), AGENT_C = key('56')
+// AGENT_D carries no label. §6 was written to catch a rule change behaviourally and every agent in
+// it was named, so the one branch still holding the blocker was never entered (#440 review).
+const AGENT_A = key('12'), AGENT_B = key('34'), AGENT_C = key('56'), AGENT_D = key('78')
 const controlState = (secret, bridge, agents) => finalizeEvent({
   kind: 30078,
   created_at: Math.floor(Date.now() / 1000),
@@ -217,6 +219,7 @@ served = [
   controlState(secretOne, BRIDGE_ONE, [
     { pubkey: AGENT_A, status: 'admitted', label: 'My Dude' },
     { pubkey: AGENT_B, status: 'admitted', label: 'Dennis' },
+    { pubkey: AGENT_D, status: 'admitted', label: null },
   ]),
   controlState(secretTwo, BRIDGE_TWO, [{ pubkey: AGENT_C, status: 'admitted', label: 'Kerouac' }]),
 ]
@@ -227,41 +230,109 @@ const field = (id) => el(id).value
 const status = () => el('routest').textContent
 const setBridge = (value, fireEvent) => { el('bridge').value = value; if (fireEvent) el('bridge').fire('input') }
 async function loadRoster() { await el('route-roster').onclick(); }
-function choose(selectId, optionIndex) {
-  const select = el(selectId)
-  const option = select.children[optionIndex]
-  if (!option) inconclusive(`${selectId} has no option at index ${optionIndex} — the roster never loaded`)
+function fire(select, option) {
   select.value = option.value
   select.selectedOptions = [option]
   select.onchange({ target: select })
 }
+// By KEY, not by index. `rosterAgents` sorts by status then label, so adding one agent renumbers
+// every option and a test written on indices silently starts asserting about a different row —
+// which is how adding the unnamed agent turned six passing assertions red without any of them
+// being wrong about the behaviour.
+function choose(selectId, pubkey) {
+  const select = el(selectId)
+  const option = select.children.find(o => o.value === pubkey)
+  if (!option) inconclusive(`${selectId} offers no option for ${pubkey.slice(0, 8)}… — the roster never loaded`)
+  fire(select, option)
+}
+// The placeholder row, which carries no key.
+function chooseBlank(selectId) {
+  const select = el(selectId)
+  fire(select, select.children[0])
+}
 
 setBridge(BRIDGE_ONE)
 await loadRoster()
-check(el('route-participant-pick').children.length === 3,
+check(el('route-participant-pick').children.length === 4,
   `the roster loaded through the real handler (${el('route-participant-pick').children.length - 1} agent(s) offered)`)
-if (el('route-participant-pick').children.length !== 3) inconclusive('the picker never filled, so nothing below is exercised')
+if (el('route-participant-pick').children.length !== 4) inconclusive('the picker never filled, so nothing below is exercised')
 
 // -- the change of mind. This is the bug: the second pick used to leave the FIRST label behind.
-choose('route-participant-pick', 1)
+choose('route-participant-pick', AGENT_B)
 const firstPick = { participant: field('route-participant'), mention: field('route-mention') }
 check(firstPick.participant === AGENT_B && firstPick.mention === 'Dennis',
   `picking suggests the agent's label (${firstPick.mention}) alongside its key`)
-choose('route-participant-pick', 2)
+choose('route-participant-pick', AGENT_A)
 check(field('route-participant') === AGENT_A, 'changing the pick updates the key')
 check(field('route-mention') === 'My Dude',
   `and the mention follows it (${field('route-mention')}) — a suggestion left behind names one agent and wakes another`)
 
+// -- the UNNAMED agent, which is where the blocker survived. `validAgent` accepts `label: null` and
+//    `agentOptionText` renders it, so this is a first-class roster row — and picking it used to
+//    return after writing the key and before reconciling the mention, leaving the previous agent's
+//    label beside it. `@Dennis for npub1…` reads correct, and the npub is the one thing a person
+//    cannot check.
+choose('route-participant-pick', AGENT_D)
+check(field('route-participant') === AGENT_D, 'picking the unnamed agent updates the key')
+check(field('route-mention') === '',
+  `and CLEARS the previous agent's label rather than leaving it (${JSON.stringify(field('route-mention'))}) — the blocker`)
+
+// -- both directions: unnamed → labelled suggests again, so this clears the guess rather than
+//    disabling the suggestion.
+choose('route-participant-pick', AGENT_B)
+check(field('route-participant') === AGENT_B && field('route-mention') === 'Dennis',
+  `NEGATIVE CONTROL — picking a labelled agent after an unnamed one suggests again (${field('route-mention')})`)
+
+// -- and an ANSWER still survives the unnamed pick. Clearing our own guess must not clear a handle
+//    the operator typed, or this fix trades one silent overwrite for another.
+el('route-mention').value = 'Typed By Hand'
+choose('route-participant-pick', AGENT_D)
+check(field('route-participant') === AGENT_D && field('route-mention') === 'Typed By Hand',
+  `NEGATIVE CONTROL — a typed handle survives picking the unnamed agent (${field('route-mention')})`)
+el('route-mention').value = ''
+
 // -- and the other direction, which is the property #404 put there: a TYPED handle is an answer.
+choose('route-participant-pick', AGENT_A)
 el('route-mention').value = 'My Dude With A Space'
-choose('route-participant-pick', 1)
+choose('route-participant-pick', AGENT_B)
 check(field('route-participant') === AGENT_B, 'a typed mention does not stop the key from updating')
 check(field('route-mention') === 'My Dude With A Space',
   `a handle the operator typed survives a later pick (${field('route-mention')})`)
 
+// -- back to the placeholder row, which is the same bug one step sideways: the handler returned
+//    early and left the previous key in the field while the select read "Choose an admitted agent".
+//    Run here on purpose — a PICKED key and a TYPED mention are both already in place, so one
+//    sequence shows the rule cutting both ways.
+chooseBlank('route-participant-pick')
+check(field('route-participant') === '', 'the placeholder row clears the key the picker wrote')
+check(field('route-mention') === 'My Dude With A Space',
+  `NEGATIVE CONTROL — and leaves the handle the operator typed (${field('route-mention')})`)
+
+// -- and it clears a suggestion the picker made, which the sequence above cannot show because the
+//    mention there was typed.
+el('route-mention').value = ''
+choose('route-participant-pick', AGENT_B)
+if (field('route-mention') !== 'Dennis') inconclusive('the pick wrote no suggestion, so clearing one proves nothing')
+chooseBlank('route-participant-pick')
+check(field('route-participant') === '' && field('route-mention') === '',
+  `the placeholder row clears the suggestion too (${JSON.stringify(field('route-mention'))})`)
+
+// -- the sender picker has the same placeholder branch and had the same defect. It makes no
+//    suggestion, so only the key is in play.
+choose('route-sender-pick', AGENT_A)
+if (field('route-sender') !== AGENT_A) inconclusive('the sender picker never wrote a key, so clearing it proves nothing')
+chooseBlank('route-sender-pick')
+check(field('route-sender') === '', 'the sender picker clears the key it wrote when the pick is undone')
+choose('route-sender-pick', AGENT_A)
+el('route-sender').value = AGENT_C               // typed over the pick — an answer, not our guess
+chooseBlank('route-sender-pick')
+check(field('route-sender') === AGENT_C,
+  `NEGATIVE CONTROL — a key typed over the sender pick survives the placeholder row (${field('route-sender').slice(0, 8)}…)`)
+el('route-sender').value = ''
+
 // -- editing the bridge field clears what the picker put there, and only that.
 el('route-mention').value = ''
-choose('route-participant-pick', 1)
+choose('route-participant-pick', AGENT_B)
 setBridge(BRIDGE_TWO, true)
 check(field('route-participant') === '' && field('route-mention') === '',
   'editing the bridge field clears the key and label the picker wrote')
@@ -274,7 +345,7 @@ check(el('route-participant-pick').children.length === 1,
 // reached and a mutation that wiped the field unconditionally still passed.
 setBridge(BRIDGE_ONE, true)
 await loadRoster()
-choose('route-participant-pick', 1)
+choose('route-participant-pick', AGENT_B)
 el('route-participant').value = AGENT_C          // typed over the pick — an answer, not our guess
 setBridge(BRIDGE_TWO, true)
 check(field('route-participant') === AGENT_C,
@@ -282,12 +353,15 @@ check(field('route-participant') === AGENT_C,
 check(field('route-mention') === '',
   'while the label the picker did write, in the same sequence, is still cleared')
 
-// -- the guard. `routing.mjs` writes the bridge field programmatically, which fires no event, so
-//    the clearing above cannot be the protection. manage() has to refuse.
+// -- the guard. A programmatic write to the bridge field fires no event at all, so the clearing
+//    above cannot be the protection. manage() has to refuse. (This used to name `routing.mjs` as
+//    the writer. Wrong file: routing.mjs is loaded by routing.html, and task-routes.mjs ships only
+//    on config.html, whose own inline `if(saved){$('bridge').value=saved}` runs at page init —
+//    before any listener attaches or any pick exists. The guard stands; the attribution did not.)
 el('route-participant').value = ''
 setBridge(BRIDGE_ONE, true)
 await loadRoster()
-choose('route-participant-pick', 1)
+choose('route-participant-pick', AGENT_B)
 el('route-channel').value = 'a8186b53-1111-2222-3333-444455556666'
 setBridge(BRIDGE_TWO, false)                     // moved underneath the panel, no event
 await el('route-add').onclick()
