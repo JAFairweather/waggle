@@ -2467,6 +2467,19 @@ const relayRefusals = refusalLedger({ log: err })
 // same OK frames, below.
 const powDemands = powTargets()
 
+// The cap firing must be VISIBLE, but it is a standing condition rather than an event: nos.lol asks
+// 28 against a cap of 16 and will be in recipient DM relay lists, so announcing it on every send is
+// a permanent `err` line on a box the tripwire reads. Same discipline as the refusal ledger (#374):
+// say it once, and say it again only when that relay's demand actually changes. Nothing is lost by
+// staying quiet in between — the refusal this decision causes is a real relay answer, and
+// `relayRefusals` counts every one of those.
+const powOverCapSaid = new Map()   // relay -> the demand last announced as over cap
+function powOverCapToSay(overCap) {
+  const fresh = overCap.filter(url => powOverCapSaid.get(url) !== powDemands.demandFor(url))
+  for (const url of fresh) powOverCapSaid.set(url, powDemands.demandFor(url))
+  return fresh
+}
+
 function publishWrapToRelayList(wrap, relays, mkSocket, onRefusal) {
   if (process.env.WB_STUB_SEND) return Promise.resolve(relays.length || 1)
   // All-settled-with-a-count: per-relay OK-true is the ONLY landing signal. A relay that opens but
@@ -3063,8 +3076,11 @@ async function returnLaneSend(toHex, descriptor, meta, publish = publishWrapToRe
     // each bit doubles the cost, and that relay refuses either way.
     const powPlan = powDemands.targetFor(recipientRelays || PUB.relays || [])
     // The cap firing is a decision to let a relay refuse us, so it is said out loud rather than left
-    // to be inferred from a message that never arrives.
-    if (powPlan.overCap.length) err(`POW over cap: ${powPlan.overCap.join(', ')} demand more than ${powPlan.cap} bits — publishing without proof-of-work, expect a refusal`)
+    // to be inferred from a message that never arrives — once per relay per demand, see
+    // powOverCapToSay. It is deliberately NOT routed through relayRefusals: no relay said this, we
+    // did, and a ledger of relay answers that contains our own decisions cannot be read either way.
+    const overCapFresh = powOverCapToSay(powPlan.overCap)
+    if (overCapFresh.length) err(`POW over cap: ${overCapFresh.join(', ')} demand more than ${powPlan.cap} bits — publishing without proof-of-work, expect a refusal. Said once per relay until its demand changes.`)
     const { wrap, accepted, bytes, pow } = await sealAndWrap({ template: descriptor.template, to: toHex, slots: descriptor.slots, powTarget: powPlan.target }, publisher)
     // A mine that did not happen must not read as one that did. Both outcomes are logged with the
     // difficulty actually reached, because "we mined" and "we meant to" are the two states this

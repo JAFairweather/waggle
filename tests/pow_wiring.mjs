@@ -115,6 +115,16 @@ console.log('\n2. off the event loop, with the control that proves the measureme
     (await mineAsync(template, 4, { workerUrl: new URL('./no-such-worker.mjs', import.meta.url) })).code === 'worker_failed')
   ok('and so is one whose constructor throws outright — the other branch, and the one that hid a fallback',
     (await mineAsync(template, 4, { workerUrl: {} })).code === 'worker_failed')
+
+  // The third refusal branch, and the one that matters most on a loaded box: a worker that starts
+  // and never answers. 14 bits is ~16k hashes and the budget is 1ms, so the timer wins by orders of
+  // magnitude rather than by a race. Left uncovered, a `timed_out` that resolved as `mined: true`
+  // or hung forever would look identical to a slow relay.
+  const late = await mineAsync(template, 14, { timeoutMs: 1 })
+  ok('a worker that does not answer in time is refused as timed_out, not awaited forever',
+    late.mined === false && late.code === 'timed_out', `${late.code}/${late.mined}`)
+  ok('  …and says the worker was terminated, because the alternative is a thread holding a core',
+    /terminated/.test(late.reason || ''), late.reason)
 }
 
 // ── 3. Mined BEFORE the signature ────────────────────────────────────────────────────────────
@@ -285,6 +295,47 @@ console.log('\n4. bridge.mjs actually connects the two — learn from a refusal,
         !!wrap && verifyEvent(wrap))
     } finally {
       speak()
+      PUB.relays = savedRelays
+    }
+  }
+
+  // ── 4c. the over-cap line is a standing condition, not a per-send event ──────────────────────
+  //
+  // nos.lol asks 28 against a cap of 16 and is in recipient DM relay lists, so an undeduped line
+  // here is a permanent `err` on every sealed send, on a box the tripwire reads. Suppression is
+  // asserted in BOTH directions: a guard that only proves it goes quiet cannot tell "says it once"
+  // from "says it once and then never again, including when the demand changes" — and the second is
+  // silence arriving exactly when the news does.
+  {
+    const savedRelays = PUB.relays
+    const OVER = 'wss://over-cap-relay.invalid'
+    PUB.relays = [OVER]
+    const descriptor = { template: 'return_carry', slots: { mention: 'someone', why: 'mention', body: 'over cap', author: null } }
+    const said = []
+    const realLog = console.log, realErr = console.error
+    const capture = () => { console.log = (...a) => said.push(a.join(' ')); console.error = (...a) => said.push(a.join(' ')) }
+    const release = () => { console.log = realLog; console.error = realErr }
+    const overCapLines = () => said.filter(l => l.includes('POW over cap') && l.includes(OVER)).length
+    const send = async () => { capture(); try { await returnLaneSend('a'.repeat(64), descriptor, {}, async () => 1) } finally { release() } }
+
+    try {
+      powDemands.record({ relay: OVER, accepted: false, reason: `pow: ${POW_CAP + 12} bits needed. (4)` })
+      await send()
+      ok('a relay demanding more than the cap is named the first time — the decision to let it refuse us is not silent',
+        overCapLines() === 1, `${overCapLines()} line(s)`)
+
+      await send()
+      await send()
+      ok('  …and NOT on every send after that — three sends, one line',
+        overCapLines() === 1, `${overCapLines()} line(s)`)
+
+      // The direction that makes the suppression safe rather than just quiet.
+      powDemands.record({ relay: OVER, accepted: false, reason: `pow: ${POW_CAP + 20} bits needed. (4)` })
+      await send()
+      ok('  BOTH DIRECTIONS — a CHANGED demand speaks again, so going quiet is not going deaf',
+        overCapLines() === 2, `${overCapLines()} line(s)`)
+    } finally {
+      release()
       PUB.relays = savedRelays
     }
   }

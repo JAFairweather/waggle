@@ -524,8 +524,10 @@ export async function sealAndWrap({ template, to, slots, powTarget = null, mine 
   if (Number.isInteger(powTarget) && powTarget > 0) {
     // getEventHash needs the author, and finalizeEvent would only fill it in later — mining against
     // a template with no pubkey would produce a nonce for an id the signed event never has.
-    const template = { ...wrapTemplate, pubkey: getPublicKey(wsk) }
-    pow = await mine(template, powTarget)
+    // Not named `template`: that identifier is this function's catalogue-NAME parameter, and a
+    // second meaning for it is the one place in this path a reader has to stop and check which.
+    const mineable = { ...wrapTemplate, pubkey: getPublicKey(wsk) }
+    pow = await mine(mineable, powTarget)
     if (pow.mined) wrapTemplate = { ...wrapTemplate, tags: pow.event.tags }
   }
 
