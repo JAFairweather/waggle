@@ -193,6 +193,25 @@ ok('JSON with NO id field refuses rather than returning a mention pubkey',
 ok('a non-JSON preamble still anchors on the field name, not on the first hex run',
   parseBuzzEventId(`warning: slow relay\n{"mention_pubkeys":["${MENTION}"],"event_id":"${ID}"}`) === ID)
 
+// The preamble case with NO id, which the `parsedJson` guard cannot reach — it only covers a string
+// that parsed WHOLE. One stray stderr line ahead of the body defeated it, the field anchor found
+// nothing, and the bare scan returned mention_pubkeys[0]. Both inputs are shapes a FAILED send
+// actually produces, which is the path a lost id lives on (#448 review).
+ok('preamble + JSON body with NO id must not yield a mention pubkey',
+  parseBuzzEventId(`warning: slow relay\n{"accepted":false,"mention_pubkeys":["${MENTION}"],"message":"relay refused"}`) === null)
+ok('preamble + JSON error shape must not yield a mention pubkey',
+  parseBuzzEventId(`note: retrying\n{"error":"relay_error","mention_pubkeys":["${MENTION}"]}`) === null)
+
+// BOTH DIRECTIONS. A guard that refused anything containing a brace would satisfy the two above and
+// break the plain-stdout path, which has no brace at all — and break the preamble-WITH-id case,
+// which must still resolve.
+ok('  NEGATIVE CONTROL — a bare id with no JSON around it still parses through the same path',
+  parseBuzzEventId(`posted ok ${ID}\n`) === ID)
+ok('  NEGATIVE CONTROL — a preamble followed by a body that DOES carry an id still resolves it',
+  parseBuzzEventId(`warning: slow relay\n{"accepted":true,"mention_pubkeys":["${MENTION}"],"event_id":"${ID}"}`) === ID)
+ok('  NEGATIVE CONTROL — a preamble and a bare id, no body, still scans',
+  parseBuzzEventId(`warning: slow relay\nposted ${ID}`) === ID)
+
 // The consequence, asserted as behaviour rather than inferred: a post whose id failed to parse is
 // recorded with buzz:null, so it never enters stagingByBuzzId and a genuine reply to it cannot be
 // carried. This is the failure the warning added in src/bridge.mjs makes visible.

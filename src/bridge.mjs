@@ -789,6 +789,17 @@ function parseBuzzEventId(stdout) {
   // the real id rather than whichever 64-hex run happens to appear first.
   const field = s.match(/"(?:event_id|id|event)"\s*:\s*"([0-9a-f]{64})"/i)
   if (field) return field[1].toLowerCase()
+  // The same refusal as `parsedJson`, on the path that guard cannot reach. It only covers a string
+  // that parsed WHOLE; one stray `warning: slow relay` line ahead of the body defeats it, and when
+  // the body carries no id the anchor above misses too, so the bare scan below returns the first
+  // 64-hex run in the string — `mention_pubkeys[0]` on a refusal. Exactly the false yes this
+  // function exists to refuse, reachable by one line of stderr landing in stdout (#448 review).
+  //
+  // A preamble that broke JSON.parse still leaves a JSON BODY in the string, and that body is a
+  // known shape that lacks an id, not a blob to grep. A bare id in plain stdout has no `{`, so it
+  // falls through to the scan untouched.
+  const body = s.slice(s.indexOf('{'), s.lastIndexOf('}') + 1)
+  if (body) { try { JSON.parse(body); return null } catch { /* not a body either — scan */ } }
   const m = s.match(/\b[0-9a-f]{64}\b/i)
   return m ? m[0].toLowerCase() : null
 }
