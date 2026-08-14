@@ -14,8 +14,15 @@
 //
 //   node tests/agent_install_state.mjs
 
+import { readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { installState, renderState, foreignNvoyServers, ARTIFACTS, ARTIFACT_KEYS, PRESENT, UNVERIFIED, MISSING, UNKNOWN }
   from '../src/agent_install_state.mjs'
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 let pass = true
 const check = (cond, label) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${label}`); if (!cond) pass = false }
@@ -197,6 +204,119 @@ check(ARTIFACTS.some(a => a.blocking) && ARTIFACTS.some(a => !a.blocking),
     'and being unable to run `claude mcp list` is INCONCLUSIVE (3), never clean (0)')
   check(installState(complete).exitCode === 0,
     'while an exclusive registration still reaches exit 0 — the new artifact is satisfiable')
+}
+
+// ── The checklist asks one inbound question, and the tool has to ask it (#337) ───────────────
+//
+// Every artifact on the checklist verified whether the agent could ACT. None asked whether anything
+// could reach it, and an admitted agent was live for a day posting successfully while structurally
+// unable to receive a single message. Two separate things are pinned here, because closing only the
+// first leaves the same hole one refactor away.
+//
+// (No count in that sentence on purpose. This PR's own thesis is that the artifact count drifted
+// three times without anyone noticing, and a prose count is exactly the thing that drifts.)
+{
+  const inbound = ARTIFACTS.find(a => a.key === 'dm-relays')
+  check(!!inbound, 'the checklist carries an inbound-reachability artifact at all')
+  check(inbound?.blocking === true,
+    'and it is blocking — write-only is not a cosmetic shortfall, it is an agent that cannot be talked to')
+
+  // The property, not the mechanism: an install perfect in every other respect must not read clean
+  // while the one inbound question is unanswered.
+  const everythingElse = Object.fromEntries(
+    ARTIFACT_KEYS.filter(k => k !== 'dm-relays').map(k => [k, { found: true, verified: true }]))
+  const writeOnly = installState({ ...everythingElse, 'dm-relays': { found: false } })
+  check(writeOnly.exitCode === 1 && writeOnly.missing.includes('dm-relays'),
+    `an otherwise-complete agent with no kind:10050 does NOT read clean (exit ${writeOnly.exitCode})`)
+  const unasked = installState(everythingElse)
+  check(unasked.exitCode === 3 && unasked.unknown.includes('dm-relays'),
+    'and not looking is INCONCLUSIVE, never clean — the failure mode was nobody asking')
+
+  // BOTH DIRECTIONS. A guard that refuses everything is indistinguishable from one that refuses the
+  // dangerous thing, so prove the new artifact is satisfiable and does not wedge the report at 3.
+  const reachable = installState({ ...everythingElse, 'dm-relays': { found: true, verified: true } })
+  check(reachable.exitCode === 0 && reachable.outcome === 'complete',
+    'while a published and read-back list reaches exit 0 — the artifact is satisfiable')
+}
+
+// ── …and every artifact is actually REPORTED by the tool that produces the observations ───────
+//
+// The gap #337 names is not that the checklist judged inbound reachability wrongly. It is that
+// nothing asked. An artifact absent from `connect-agent.mjs` sits at UNKNOWN forever with no note,
+// and the note is the remedy — it is the line telling an operator which command settles it. So the
+// tool must name every key, and this fails when someone adds an artifact and stops there.
+{
+  const src = readFileSync(join(ROOT, 'tools', 'connect-agent.mjs'), 'utf8')
+  if (src.length < 2000) {
+    console.error(`agent_install_state: INCONCLUSIVE — connect-agent.mjs read back only ${src.length} bytes`)
+    process.exit(3)
+  }
+  const seen = [...src.matchAll(/see\(\s*'([a-z0-9-]+)'/g)].map(m => m[1])
+  check(seen.length > 5, `the scan found ${seen.length} see() calls, so it is reading the tool`)
+  const unreported = ARTIFACT_KEYS.filter(k => !seen.includes(k))
+  check(unreported.length === 0,
+    `every artifact has a see() call in connect-agent.mjs${unreported.length ? ` — unreported: ${unreported.join(', ')}` : ''}`)
+  check(!seen.includes('no-such-artifact-key'),
+    'NEGATIVE CONTROL — the scan does not report a key the tool never mentions')
+
+  // …and the scan above is weaker than the property it is written for. It matches SOURCE TEXT, so
+  // commenting a see() call out, or moving one behind a branch that never runs, leaves it green
+  // while the tool reports nothing for that artifact — the exact silence this is here to prevent.
+  //
+  // So run the tool. `--check` writes nothing (!CHECK guards every mkdirSync/writeFileSync) and
+  // renders every row, so the property becomes what an operator would actually see. The text scan
+  // stays above because it gives the better failure message: a key name, not a missing line.
+  const probeRoot = mkdtempSync(join(tmpdir(), 'wb-connect-probe-'))
+  let rendered = null
+  try {
+    // Exit is non-zero by design here — nothing is installed under a fresh root — so capture rather
+    // than throw. It shells out to `claude mcp list`, which connect-agent catches on absence.
+    rendered = execFileSync(process.execPath,
+      [join(ROOT, 'tools', 'connect-agent.mjs'), '--name', 'probe', '--check', '--root', probeRoot],
+      { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch (e) {
+    rendered = typeof e?.stdout === 'string' ? e.stdout : null
+    // A tool that could not run at all has told us nothing about which artifacts it reports.
+    // That is INCONCLUSIVE, not a pass — being unable to check is not the same as being fine.
+    if (e?.signal || e?.code === 'ETIMEDOUT') rendered = null
+  }
+  if (rendered === null || rendered.length < 500) {
+    console.error(`agent_install_state: INCONCLUSIVE — connect-agent.mjs --check produced ${rendered === null ? 'no output' : `only ${rendered.length} bytes`}`)
+    console.error('  This is NOT an all-clear: the tool was never observed reporting anything.')
+    rmSync(probeRoot, { recursive: true, force: true })
+    process.exit(3)
+  }
+  // Assert the NOTE, not the title. renderState prints a row for every entry in ARTIFACTS whether
+  // or not the tool observed it, so "the title appears" is true even when the see() call is gone —
+  // a check written that way passes the very mutation it exists to catch, which was measured here
+  // rather than reasoned about. What the tool actually contributes is the note, and that is also
+  // the operator-facing remedy: the line saying which command settles the row. An artifact nobody
+  // asked about renders bare —
+  //
+  //   [ - ] Inbound DM relay list (kind 10050) UNKNOWN
+  //
+  // against a row that was asked about and legitimately cannot be answered here —
+  //
+  //   [ - ] Name in the directory              UNKNOWN  — not checked here — resolve <name>@…
+  //
+  // so "carries a note" separates "the tool asked" from "the tool never mentioned it", which
+  // scanning for UNKNOWN cannot do: four artifacts are legitimately UNKNOWN in a --check run.
+  const rows = new Map(ARTIFACTS.map(a => [a.key, rendered.split('\n').find(l => l.includes(a.title))]))
+  const missingRow = ARTIFACTS.filter(a => !rows.get(a.key)).map(a => a.key)
+  check(missingRow.length === 0,
+    `and every artifact is RENDERED by a real --check run${missingRow.length ? ` — absent: ${missingRow.join(', ')}` : ''}`)
+  const noteless = ARTIFACTS
+    .filter(a => rows.get(a.key) && !/—\s*\S/.test(rows.get(a.key).slice(rows.get(a.key).indexOf(a.title) + a.title.length)))
+    .map(a => a.key)
+  check(noteless.length === 0,
+    'and every rendered row carries the tool\'s note, so the tool ASKED about it' +
+    `${noteless.length ? ` — silent: ${noteless.join(', ')}` : ''}`)
+  check(!rendered.includes('No such artifact, invented for this check'),
+    'NEGATIVE CONTROL — the run does not render a title the tool never had')
+  // `--check` is what makes running it safe in a suite. Prove that rather than trusting the flag.
+  check(readdirSync(probeRoot).length === 0,
+    'NEGATIVE CONTROL — and --check wrote nothing into the probe root, so running the tool is side-effect free')
+  rmSync(probeRoot, { recursive: true, force: true })
 }
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)

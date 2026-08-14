@@ -88,6 +88,13 @@ see('nip05', null, false, 'not checked here — resolve <name>@<host>/.well-know
 see('profile', null, false, 'not checked here — a kind 0 fetched back BY ID from a fresh connection')
 see('admit-grant', null, false,
   pubkey ? 'not checked here — cold-read the 440 per relay and report EOSE/ERROR/TIMEOUT separately' : 'no --pubkey given')
+// The inbound half (#337). Named here rather than left silent because the note IS the remedy: an
+// operator who cannot see this question does not know to ask it, which is how an agent shipped
+// write-only and only the bridge's own journal knew.
+see('dm-relays', null, false,
+  pubkey
+    ? 'not checked here — publish with tools/publish-dm-relay-list.mjs (prefer NVOY_BUNKER), which cold-reads it back by id'
+    : 'no --pubkey given, so nothing to look up')
 
 // ── The manifest. Six tools read it; nothing writes it. This is that nothing. ────────────────
 const instDir = join(HERE, 'instances')

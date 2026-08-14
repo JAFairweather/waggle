@@ -1,6 +1,6 @@
 // agent_install_state.mjs — what does this agent still need, and what is merely CLAIMED to be done?
 //
-// Seating an agent produces thirteen artifacts across two machines, three checkouts and a public
+// Seating an agent produces fifteen artifacts across two machines, three checkouts and a public
 // relay network. Nine of them have no tool that creates them, and every omission fails the same
 // way: silently, with the agent appearing to work. A wrong-identity pairing signs and seals
 // perfectly. A denied nip44 permission is byte-identical to an empty inbox. A missing kind 0
@@ -53,6 +53,13 @@ export const ARTIFACTS = [
     why: 'Without it the agent renders as a bare key everywhere. It works perfectly and has no name.' },
   { key: 'admit-grant', title: 'Admitted to the channel', blocking: true,
     why: 'The door. Enforced by the bridge, re-read periodically — so it can stop applying without anything failing.' },
+  // #337. Every other artifact here asks whether the agent can ACT. This is the only one that asks
+  // whether anything can reach it, and it was missing from a fourteen-item checklist that verified
+  // nothing inbound. An agent was admitted, posted successfully, and was structurally incapable of
+  // receiving a single message — the bridge had been logging `RETURN not sent — no valid kind:10050
+  // recipient DM relay list` since its first attempt, and nothing in the agent's own tooling said so.
+  { key: 'dm-relays', title: 'Inbound DM relay list (kind 10050)', blocking: true,
+    why: 'The only inbound path an external key has, because the community relay will not serve it. Without one the agent is write-only, and an empty inbox looks identical to an inbox that cannot exist.' },
   { key: 'manifest', title: 'Runtime manifest', blocking: true,
     why: 'Six tools read it and none write it. Every field is validated; one bad field refuses the whole runtime.' },
   { key: 'state-dirs', title: 'Runtime directories', blocking: true,
