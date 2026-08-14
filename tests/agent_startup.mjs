@@ -14,7 +14,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { installState } from '../src/agent_install_state.mjs'
+import { MISSING, PRESENT, UNKNOWN, installState } from '../src/agent_install_state.mjs'
 import { secretInText, startupDoc } from '../src/agent_startup.mjs'
 import { RUNTIMES } from '../src/mcp_runtimes.mjs'
 
@@ -35,6 +35,12 @@ check(secretInText("your key is " + "a".repeat(64)) === null,
   "NEGATIVE CONTROL — a 64-hex PUBLIC key is not a secret")
 check(secretInText("bunker://abc?relay=wss://x") === "a bunker:// pairing URI",
   "and a real pairing URI still is, named rather than merely refused")
+// The OTHER NIP-46 pairing URI. Missed by the first cut, in a tool whose whole domain is NIP-46
+// pairings — an operator who can paste a bunker:// into --channel can paste a nostrconnect://.
+check(secretInText("nostrconnect://a1b2?relay=wss://r&secret=deadbeef") === "a nostrconnect:// pairing URI",
+  "and so is the other pairing URI, named as itself rather than lumped in with bunker://")
+check(secretInText("connect to nostrconnect and see") === null,
+  "NEGATIVE CONTROL — the bare word is not the scheme; the sweep matches the URI, not the topic")
 
 const PUB = 'a'.repeat(64)
 const CHAN = 'a8186b53-537d-46ad-a7e7-b6486c58970e'
@@ -139,6 +145,32 @@ const noReport = startupDoc({ agent: 'oliver', pubkey: PUB })
 check(/no install state was supplied — nothing here is confirmed/.test(noReport),
   'no install state says so, rather than rendering an empty list that reads as "all clear"')
 check(noReport.includes('do not get read'), 'and the non-negotiable rules survive even with no state to report')
+// The negative half. `state` and `open` are two filters over the same rows, and EMPTY rows satisfies
+// both — so the document said "nothing here is confirmed" and "every artifact above is confirmed"
+// twenty lines apart. Asserting only that the first line is PRESENT could never see it.
+check(!/Every artifact above is confirmed/.test(noReport),
+  'and is NOT also told everything is confirmed — the two branches are exclusive, not merely ordered')
+
+// A claim about THIS AGENT must be rendered from its own row. Both of these read as flat fact
+// before, in the section that reads as authoritative, for an agent holding neither.
+const unpaired = startupDoc({ agent: 'oliver', pubkey: PUB, report: { rows: [
+  { key: 'bunker-uri', title: 'Bunker pairing', state: MISSING },
+  { key: 'admit-grant', title: 'Admitted to the channel', state: UNKNOWN },
+] } })
+check(/\*\*Yours:\*\* MISSING/.test(unpaired),
+  'an agent with no pairing is told so where the pairing is described, not twenty lines below it')
+check(/\*\*Your admission:\*\* never checked/.test(unpaired),
+  'and an unverified admission is named as unverified, not asserted as "you post in"')
+check(!/\*\*You hold a NIP-46 pairing, not a key\.\*\*/.test(unpaired),
+  'NEGATIVE CONTROL — the flat second-person claim is GONE, not merely supplemented by a state line')
+check(/Agents here hold a NIP-46 pairing, not a key/.test(unpaired) && /re-pairs to the same identity/.test(unpaired),
+  'while the design statement still stands — it is true of the system whatever this install looks like')
+const paired = startupDoc({ agent: 'oliver', pubkey: PUB, report: { rows: [
+  { key: 'bunker-uri', title: 'Bunker pairing', state: PRESENT },
+  { key: 'admit-grant', title: 'Admitted to the channel', state: PRESENT },
+] } })
+check(/\*\*Yours:\*\* confirmed/.test(paired) && /\*\*Your admission:\*\* confirmed/.test(paired),
+  'NEGATIVE CONTROL — a genuinely paired, genuinely admitted agent is told plainly that it is')
 
 // ── 6. The tool, not the function ───────────────────────────────────────────────────────────
 console.log('\n6. what connect-agent actually writes')

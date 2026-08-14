@@ -25,6 +25,10 @@ import { MISSING, PRESENT, UNKNOWN, UNVERIFIED } from './agent_install_state.mjs
 // because the failure that matters is what reaches the file.
 const SECRET_SHAPES = [
   [/bunker:\/\//i, 'a bunker:// pairing URI'],
+  // The OTHER NIP-46 pairing URI, and the same credential class. Missing it in a tool whose whole
+  // domain is NIP-46 pairings was the gap: an operator who can paste a `bunker://` into `--channel`
+  // can paste a `nostrconnect://` just as easily.
+  [/nostrconnect:\/\//i, 'a nostrconnect:// pairing URI'],
   [/\bnsec1[02-9ac-hj-np-z]+/i, 'an nsec'],
   [/\bncryptsec1[02-9ac-hj-np-z]+/i, 'an encrypted nsec'],
   [/-----BEGIN [A-Z ]*PRIVATE KEY/, 'a private key block'],
@@ -63,10 +67,18 @@ export function startupDoc({ agent, pubkey, channel, runtimeLabel, briefPath = '
   const rows = report?.rows || []
   const row = key => rows.find(r => r.key === key) || null
   const say = key => { const r = row(key); return r ? `${r.title}: ${SAYS[r.state] || r.state}${r.note ? ` — ${r.note}` : ''}` : null }
+  // The state phrase alone, for sentences that must carry it inline. A claim ABOUT THIS AGENT that
+  // has a row in the report must be rendered from that row — the invariant section is for things
+  // true of the system whatever this install looks like, and mixing the two is how a document tells
+  // an agent it holds a pairing it does not have. Absent row reads as never-checked, never as fine.
+  const stateOf = key => { const r = row(key); return r ? (SAYS[r.state] || r.state) : SAYS[UNKNOWN] }
 
   // Only the rows an agent's own behaviour depends on. A wall of install state is a wall nobody
   // reads, and this file competes for the top of a context window.
-  const DEPENDS_ON = ['signer-identity', 'dm-relays', 'admit-grant', 'mcp-registration', 'mcp-exclusive', 'mcp-identity', 'profile']
+  // `bunker-uri` and `bunker-client` are here because the document now makes a claim from each. A
+  // sentence rendered from a row whose row the reader never sees is a sentence they cannot check.
+  const DEPENDS_ON = ['bunker-uri', 'bunker-client', 'signer-identity', 'dm-relays', 'admit-grant',
+    'mcp-registration', 'mcp-exclusive', 'mcp-identity', 'profile']
   const state = DEPENDS_ON.map(say).filter(Boolean)
   const open = rows.filter(r => DEPENDS_ON.includes(r.key) && r.state !== PRESENT)
 
@@ -86,15 +98,17 @@ export function startupDoc({ agent, pubkey, channel, runtimeLabel, briefPath = '
   if (runtimeLabel) out.push(`- **Runtime:** ${runtimeLabel}`)
   if (pubkey) out.push(`- **You act as this key:** \`${pubkey}\``)
   if (channel) out.push(`- **Your channel:** \`${channel}\``)
-  out.push(`- **You hold a NIP-46 pairing, not a key.** Your signing identity lives in the owner's`)
-  out.push(`  Bunker and is reached through that pairing. This is the mechanism, not a limitation`)
-  out.push(`  worked around: a restart, a compaction or a new instance re-pairs to the same identity.`)
-  out.push(`  Never print the pairing, and never ask anyone for a key — yours or anyone else's.`)
+  out.push(`- **Agents here hold a NIP-46 pairing, not a key.** The signing identity lives in the`)
+  out.push(`  owner's Bunker and is reached through that pairing, so a restart, a compaction or a new`)
+  out.push(`  instance re-pairs to the same identity. That is the design, not a limitation worked around.`)
+  out.push(`  **Yours:** ${stateOf('bunker-uri')}.`)
+  out.push(`  Never print a pairing, and never ask anyone for a key — yours or anyone else's.`)
   out.push('')
   out.push('## What you can and cannot do')
   out.push('')
-  out.push(`**You post in as a first-class member.** Notes you sign with your own key cross into the`)
-  out.push(`community. The write half is exact.`)
+  out.push(`**An admitted agent posts in as a first-class member.** Notes signed with its own key cross`)
+  out.push(`into the community, and that write half is exact.`)
+  out.push(`**Your admission:** ${stateOf('admit-grant')}. Until it is confirmed you do not post in at all.`)
   out.push('')
   out.push(`**You do not get read.** The community relay refuses to authenticate an outside key at`)
   out.push(`NIP-42 time, before any channel is consulted. What reaches you is the **return lane —`)
@@ -119,7 +133,11 @@ export function startupDoc({ agent, pubkey, channel, runtimeLabel, briefPath = '
     out.push(`your inbound relay list is not published, **nothing can reach you** — an agent once spent`)
     out.push(`a day posting successfully while structurally unable to receive a single message, and`)
     out.push(`only the bridge's own journal knew.`)
-  } else {
+  } else if (state.length) {
+    // `state.length` is load-bearing, not tidiness. `state` and `open` are two filters over the same
+    // rows, and EMPTY rows satisfies both: zero rows means zero non-PRESENT rows. Without this guard
+    // a document with no install state said "nothing here is confirmed" and "every artifact above is
+    // confirmed" twenty lines apart — rule 2 broken inside the function that enforces rule 2.
     out.push(`Every artifact above is confirmed. That is a statement about what was checked, not a`)
     out.push(`promise about the network — prove a publish by fetching it back from a fresh connection.`)
   }
