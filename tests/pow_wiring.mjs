@@ -167,5 +167,128 @@ console.log('\n3. mined before the signature, so the id everything keys on is th
     refused.pow.code === 'over_cap')
 }
 
+// ── 4. THE WIRING — the two lines this PR is named for ───────────────────────────────────────
+//
+// Sections 1–3 drive `pow_targets.mjs` in isolation and `sealAndWrap` with a target the TEST hands
+// in. Neither says `bridge.mjs` connects them, and review proved the gap by mutation: neutering both
+// call sites at once —
+//
+//     src/bridge.mjs:2499   const learned = powDemands.record({...})  ->  const learned = null
+//     src/bridge.mjs:3056   powTarget: powPlan.target                 ->  powTarget: null
+//
+// — left `npm test` at exit 0 with the same assertion count. Correct modules, tested, reachable only
+// through two lines nothing exercised. That is the same defect class #346 exists to close, one layer
+// up, so it is closed here the same way: by driving the real functions.
+//
+// The load-bearing assertion is the second one. It is the only one in the repo that fails when the
+// miner stops being called.
+console.log('\n4. bridge.mjs actually connects the two — learn from a refusal, then mine to it')
+{
+  const { mkdtempSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { verifyEvent } = await import('nostr-tools/pure')
+
+  // bridge.mjs boots on import; the same env fence tests/relay_refusal.mjs uses.
+  const dir = mkdtempSync(join(tmpdir(), 'wb-pow-wiring-'))
+  process.env.WB_NO_BOOT = '1'
+  process.env.FORWARD_MODE = 'dryrun'
+  process.env.SEEN_PATH = join(dir, 'seen.log')
+  process.env.PUB_WATERMARK_PATH = join(dir, 'watermark')
+  process.env.SEND_JOURNAL_PATH = join(dir, 'send-journal.log')
+  process.env.BUZZ_PRIVATE_KEY = 'c'.repeat(64)   // returnLaneSend refuses to seal with no bridge key
+  delete process.env.WB_STUB_SEND                 // the stub short-circuits the publisher entirely
+
+  const { publishWrapToRelayList, powDemands, returnLaneSend, PUB } = await import('../src/bridge.mjs')
+
+  // ── 4a. the LEARN half: a pow refusal arriving on a real socket reaches the demand store ────
+  {
+    const made = []
+    const mkSocket = (url) => {
+      const h = {}
+      const s = {
+        url, closed: false, sent: [],
+        on(ev, fn) { (h[ev] ||= []).push(fn); return this },
+        send(payload) { this.sent.push(payload) },
+        close() { this.closed = true },
+        emit(ev, ...a) { for (const fn of h[ev] || []) fn(...a) },
+        frame(o) { this.emit('message', { toString: () => JSON.stringify(o) }) },
+      }
+      made.push(s)
+      return s
+    }
+    const wrap = { id: 'a'.repeat(64), kind: 1059, content: 'x', tags: [], pubkey: 'b'.repeat(64), created_at: 1, sig: 'c'.repeat(128) }
+    const DEMANDER = 'wss://learn-demander.invalid'
+    const OTHER = 'wss://learn-other.invalid'
+    const ACCEPTER = 'wss://learn-accepter.invalid'
+
+    const p = publishWrapToRelayList(wrap, [DEMANDER, OTHER, ACCEPTER], mkSocket)
+    made[0].emit('open'); made[1].emit('open'); made[2].emit('open')
+    made[0].frame(['OK', wrap.id, false, 'pow: 12 bits needed. (4)'])
+    made[1].frame(['OK', wrap.id, false, 'blocked: not on the allow list'])
+    // An accept whose message mentions pow. `duplicate: have this event` is the healthiest answer a
+    // relay gives, and a store keyed on "the message says pow" would mine for a relay that is happy.
+    made[2].frame(['OK', wrap.id, true, 'duplicate: have this event, pow ok'])
+    await p
+
+    ok('the REAL publisher teaches the demand store what a relay asked for',
+      powDemands.demandFor(DEMANDER) === 12, String(powDemands.demandFor(DEMANDER)))
+    ok('  BOTH DIRECTIONS — a refusal for some other reason teaches it nothing',
+      powDemands.demandFor(OTHER) === null, String(powDemands.demandFor(OTHER)))
+    ok('  BOTH DIRECTIONS — an ACCEPT that mentions pow teaches it nothing either',
+      powDemands.demandFor(ACCEPTER) === null, String(powDemands.demandFor(ACCEPTER)))
+  }
+
+  // ── 4b. the MINE half: a known demand puts real work on the wrap that is actually published ──
+  //
+  // THE assertion. `powTarget: powPlan.target -> powTarget: null` is invisible to every other test
+  // in this repo and fails here. Asserted on the wrap the publisher RECEIVED, not on a return value:
+  // what a relay sees is the only thing that settles whether the miner ran.
+  {
+    const savedRelays = PUB.relays
+    const MINE_FOR = 'wss://mine-for-this.invalid'
+    PUB.relays = [MINE_FOR]
+    const captured = []
+    const capturingPublish = async (wrap) => { captured.push(wrap); return 1 }
+    const descriptor = { template: 'return_carry', slots: { mention: 'someone', why: 'mention', body: 'hello there', author: null } }
+
+    const realLog = console.log, realErr = console.error
+    const hush = () => { console.log = () => {}; console.error = () => {} }
+    const speak = () => { console.log = realLog; console.error = realErr }
+
+    try {
+      // NEGATIVE CONTROL FIRST, and it is not optional: an unconditional mine would satisfy every
+      // assertion below while ignoring the demand store entirely. "Mines when asked" and "always
+      // mines" are the two states this section exists to tell apart.
+      hush()
+      await returnLaneSend('a'.repeat(64), descriptor, {}, capturingPublish)
+      speak()
+      ok('NEGATIVE CONTROL — with nothing demanded, the published wrap carries no nonce tag',
+        captured.length === 1 && !captured[0].tags.some(t => t[0] === 'nonce'),
+        JSON.stringify(captured[0]?.tags))
+
+      // Now teach it, through the same public entry point the socket path uses.
+      powDemands.record({ relay: MINE_FOR, accepted: false, reason: 'pow: 12 bits needed. (4)' })
+      hush()
+      await returnLaneSend('a'.repeat(64), descriptor, {}, capturingPublish)
+      speak()
+
+      const wrap = captured[1]
+      ok('the send published a wrap at all — a capture that caught nothing proves nothing',
+        !!wrap && wrap.kind === 1059)
+      ok('THE WIRING — a demand this bridge learned puts a committed target on the published wrap',
+        !!wrap && wrap.tags.find(t => t[0] === 'nonce')?.[2] === '12',
+        JSON.stringify(wrap?.tags?.find(t => t[0] === 'nonce')))
+      ok('  …and the work is REAL — the signed id a relay hashes meets the demand',
+        !!wrap && powDifficulty(wrap.id) >= 12, `${wrap ? powDifficulty(wrap.id) : '?'} bits`)
+      ok('  …and the wrap is still a valid signed event after mining',
+        !!wrap && verifyEvent(wrap))
+    } finally {
+      speak()
+      PUB.relays = savedRelays
+    }
+  }
+}
+
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
 process.exit(pass ? 0 : 1)
