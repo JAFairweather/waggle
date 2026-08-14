@@ -3,13 +3,15 @@
 # merge-queue.sh — merge a stack of PRs in order, and refuse to guess.
 #
 #   ./tools/merge-queue.sh nvoy   185 187
-#   ./tools/merge-queue.sh waggle 420 441 442 --go
+#   ./tools/merge-queue.sh waggle 420 441 442 --reviewed 420,441,442 --go
 #
 # Plans by default. Nothing is mutated without --go, because merging waggle `main`
 # deploys: the pull-based runner ships the first CI-green commit it finds, within
 # minutes, with no human step in between.
 #
 # What it will NOT do, on purpose:
+#   * merge a PR that is not named on --reviewed. The list is written by a human who
+#     has read the verdict; this script cannot judge one and does not try
 #   * merge a PR with a conflict (DIRTY) — a rebase can silently revert a change,
 #     and that has happened in this repo, so a human reads the result
 #   * merge a PR whose base is not `main` — a stacked PR merged early lands in its
@@ -24,21 +26,26 @@
 set -euo pipefail
 
 # ── arguments ────────────────────────────────────────────────────────────────────
-GO=0; NO_UPDATE=0; REPO=""; PRS=()
+GO=0; NO_UPDATE=0; REPO=""; PRS=(); REVIEWED=""; WANT_REVIEWED=0
 for arg in "$@"; do
+  if [ "$WANT_REVIEWED" = 1 ]; then REVIEWED="$REVIEWED ${arg//,/ }"; WANT_REVIEWED=0; continue; fi
   case "$arg" in
     --go)        GO=1 ;;
     --no-update) NO_UPDATE=1 ;;
-    -h|--help)   sed -n '2,20p' "$0"; exit 0 ;;
+    --reviewed)  WANT_REVIEWED=1 ;;
+    --reviewed=*) REVIEWED="$REVIEWED ${arg#--reviewed=}"; REVIEWED="${REVIEWED//,/ }" ;;
+    -h|--help)   sed -n '2,24p' "$0"; exit 0 ;;
     [0-9]*)      PRS+=("$arg") ;;
     *)           REPO="$arg" ;;
   esac
 done
+[ "$WANT_REVIEWED" = 0 ] || { echo "--reviewed needs a list of PR numbers" >&2; exit 1; }
+is_reviewed() { case " $REVIEWED " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 case "$REPO" in
   waggle) REPO="JAFairweather/waggle" ;;
   nvoy)   REPO="JAFairweather/nvoy" ;;
-  "")     echo "usage: $0 <waggle|nvoy|owner/repo> <pr>... [--go] [--no-update]" >&2; exit 1 ;;
+  "")     echo "usage: $0 <waggle|nvoy|owner/repo> <pr>... [--reviewed 1,2] [--go] [--no-update]" >&2; exit 1 ;;
 esac
 [ ${#PRS[@]} -gt 0 ] || { echo "no PR numbers given" >&2; exit 1; }
 
@@ -148,6 +155,24 @@ wait_for() {          # wait_for <label> <seconds> <command...>
   printf '\033[2K\r'
   return 0
 }
+
+# The last comment on a PR, as `author<TAB>date<TAB>first non-empty line`, or the
+# __NONE__ sentinel when nobody has commented.
+#
+# Comments, not `reviews`. On this repo the crew posts through the maintainer's own
+# account, so GitHub records no formal review and `reviewDecision` is empty on every
+# PR — including the ones with a written verdict. A script that read `reviewDecision`
+# would report a fully reviewed backlog as unreviewed, and one that treated empty as
+# "no objection" would merge on a verdict nobody gave.
+_last_comment_once() {
+  gh pr view "$1" --repo "$REPO" --json comments \
+    --jq 'if (.comments | length) == 0 then "__NONE__"
+          else (.comments | last) as $c
+             | [($c.author.login // "?"), ($c.createdAt // "")[0:10],
+                (($c.body | split("\n") | map(select(test("\\S"))) | first) // "(empty)")[0:120]]
+             | @tsv end' 2>/dev/null
+}
+last_comment() { retry _last_comment_once "$1"; }
 
 ci_is_settled() { local v; v=$(ci_verdict "$1") || return 1; [ "$v" != pending ]; }
 base_is_default() { local b; b=$(pr_facts "$1" | cut -f3) || return 1; [ "$b" = "$DEFAULT_BRANCH" ]; }
@@ -296,6 +321,32 @@ for n in "${PRS[@]}"; do
           say "    ${DIM}a suite that never ran and a suite that passed look identical from here${OFF}"
           PROBLEM=1; break ;;
   esac
+
+  # Review. CI green is not a review — every fixture in an 18-suite green run once used a
+  # name with no space in it, and the bug was a name with a space. This gate exists because
+  # the script above reads no review state at all: on 2026-08-13 a drain built on it was one
+  # run away from merging five PRs carrying open blocking findings, one deploy each.
+  #
+  # It surfaces the last comment and then refuses unless the PR is named on --reviewed. It
+  # deliberately does NOT pattern-match the comment for an approval word: the verdicts here
+  # are prose, several PRs were re-read and only the LAST verdict counts, and a regex that
+  # guessed wrong would fail in the one direction that ships. The list is written by whoever
+  # read the thread; the script's job is to make that reading unskippable, not to do it.
+  comment=$(last_comment "$n") || { bad "  could not read the comments on #$n — INCONCLUSIVE, not merging"; PROBLEM=1; break; }
+  if [ "$comment" = "__NONE__" ]; then
+    warn "  no comments at all — nobody has written a verdict on this one"
+  else
+    IFS=$'\t' read -r c_author c_date c_line <<<"$comment"
+    say "  last comment: ${BOLD}$c_author${OFF} $c_date — $c_line"
+  fi
+  if ! is_reviewed "$n"; then
+    bad "  not named on --reviewed — refusing."
+    say "    Read the verdict, then say so explicitly:"
+    say "      ${DIM}gh pr view $n --repo $REPO --json comments --jq '.comments[-1].body'${OFF}"
+    say "      $0 $(printf '%s ' "$@" | sed 's/ *$//') --reviewed $n"
+    PROBLEM=1; break
+  fi
+  good "  named on --reviewed"
 
   if [ "$GO" != 1 ]; then
     good "  WOULD MERGE (squash, delete branch)"
