@@ -22,6 +22,7 @@ import { verifyEvent, nip19 } from 'nostr-tools'
 import { consoleSigner } from './signer-session.mjs'
 import { stableControlSigner } from './stable-control-signer.mjs'
 import { newestFreshControlState, requireFreshControlState } from './control-state-freshness.mjs'
+import { loadBridgeKey, rememberBridgeKey } from './bridge-key-store.mjs'
 import { CONSENT_STATES } from './consent-vocabulary.mjs'   // the one list, checked against src/ (#389)
 
 const RELAYS = ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub', 'wss://jskitty.com/nostr']
@@ -166,7 +167,6 @@ async function load() {
   activeBridge = null; activeState = null; setModeration(false)
   try {
     const bridge = hex($('bridge').value)
-    localStorage.setItem('waggle-following-bridge', bridge)   // shared with the other console pages
     st.textContent = 'Reading signed state from relays…'
     const rs = await Promise.all(RELAYS.map(u => query(u, { kinds: [30078], authors: [bridge], '#d': ['waggle-control-state'], limit: 2 })))
     const answered = rs.filter(r => r.answered).length
@@ -179,6 +179,7 @@ async function load() {
     const winner = newestFreshControlState(states)
     if (!winner) throw Error('No fresh valid signed state was found. The owner may have left control-state publishing off.')
     activeBridge = bridge; activeState = winner; setModeration(true)
+    rememberBridgeKey(bridge, winner)
     draw(winner)
     st.className = 'status ok'
     st.textContent = `Verified signed state from ${new Date(winner.observed_at * 1000).toLocaleString()} · ${answered}/${RELAYS.length} relays answered.`
@@ -233,5 +234,5 @@ async function moderate(action) {
 
 $('load').onclick = load
 for (const button of document.querySelectorAll('.moderation')) button.onclick = () => moderate(button.dataset.action)
-const saved = localStorage.getItem('waggle-following-bridge')
+const saved = loadBridgeKey()
 if (saved) { $('bridge').value = saved; load() }
