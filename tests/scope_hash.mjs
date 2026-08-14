@@ -181,5 +181,59 @@ for (const [name, subject] of [['an agent pubkey', OLIVER], ['a channel uuid', C
     'and the real construction still agrees, so the controls are not passing because everything differs')
 }
 
+// ── THE NODE OWNER, AND THE TWO COPIES HELD TOGETHER (#328) ─────────────────────────────────
+// Six hand-written node copies of this construction became one: src/scope_hash.mjs. It cannot be
+// merged with console/scope-hash.mjs, because the deploy ship list is `src tests tools …` and does
+// not include console/ (deploy/deploy-runner.sh:63) — shipped code importing from there would fail
+// to load on the box. So two copies remain BY NECESSITY, and this section is what stops them
+// drifting: both are compared against the longhand `reference` above and against each other.
+{
+  const node = await import('../src/scope_hash.mjs')
+
+  for (const [name, subject] of [['an agent pubkey', OLIVER], ['a channel uuid', CHANNEL]]) {
+    check(node.scopeHashSync(subject, SALT) === reference(subject, SALT),
+      `${name}: src/scope_hash.mjs matches the independent longhand implementation`)
+    check(node.scopeHashSync(subject, SALT) === await scopeHash(subject, SALT),
+      `${name}: src/scope_hash.mjs and console/scope-hash.mjs agree — the two copies are bound`)
+  }
+  check(node.SCOPE_LABEL === SCOPE_LABEL, 'both copies carry the same domain label')
+  check(Buffer.from(node.scopePreimage(OLIVER, SALT)).equals(Buffer.from(scopePreimage(OLIVER, SALT))),
+    'and the same preimage, byte for byte — the label, the separator, and the order of subject and salt')
+
+  // The strongest single assertion in this file, now applied to the node copy too: a grant that
+  // was signed and published before any of this refactor existed.
+  check(node.scopeHashSync(OLIVER, '5463a4e15781cbc705aedafa0423b08d')
+        === 'b6c00312269a4dab018e32de4102ffcdb57434d18c88d84619fd1030ee809911',
+    'LIVE VECTOR — the node copy recomputes a grant that is signed and on the relays right now')
+
+  // The malformed-salt behaviour change. The five old copies used `Buffer.from(saltHex, "hex")`,
+  // which decodes what it can and drops the rest — so these three salts all became zero bytes and
+  // hashed IDENTICALLY, while the console threw on two of them. Two of the six copies take their
+  // salt off the wire, so this was reachable: a grant the bridge resolved and the console did not.
+  const oldWay = s => createHash('sha256').update(Buffer.concat([
+    Buffer.from('waggle/da-scope/v1'), Buffer.from([0]), Buffer.from(OLIVER), Buffer.from(s, 'hex')])).digest('hex')
+  check(oldWay('') === oldWay('zz') && oldWay('zz') === oldWay('ZZZZ'),
+    'THE DEFECT — under the old construction an empty, a non-hex and a longer non-hex salt all hash the SAME')
+  for (const bad of ['zz', 'ZZZZ', 'abc']) {
+    let threw = false
+    try { node.scopeHashSync(OLIVER, bad) } catch { threw = true }
+    check(threw, `  …and src/scope_hash.mjs now refuses a malformed salt (${JSON.stringify(bad)}) instead`)
+  }
+
+  // scopeHashOrNull is what the two WIRE-FACING callers use — tools/grant.mjs `list --agent` and
+  // the bridge's grant handler. A malformed salt there is hostile input, not a bug in our code, so
+  // it must mean "matches nothing" and must never throw out of a filter or an event handler.
+  for (const bad of ['zz', 'ZZZZ', 'abc']) {
+    check(node.scopeHashOrNull(OLIVER, bad) === null,
+      `  …and scopeHashOrNull returns null for ${JSON.stringify(bad)} rather than throwing`)
+  }
+  // Both directions. Without these, an OrNull that returned null unconditionally would satisfy
+  // every assertion above while making the bridge ignore every grant ever issued.
+  check(node.scopeHashOrNull(OLIVER, SALT) === node.scopeHashSync(OLIVER, SALT),
+    'NEGATIVE CONTROL — a well-formed salt still returns the real hash through scopeHashOrNull')
+  check(node.scopeHashOrNull(OLIVER, '') === node.scopeHashSync(OLIVER, ''),
+    'and an EMPTY salt is well-defined, not malformed — it must keep working, not become null')
+}
+
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
 process.exit(pass ? 0 : 1)

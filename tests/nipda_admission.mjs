@@ -83,7 +83,29 @@ const forged = grant(grantorSk, strangerPk, CHAN); forged.sig = (forged.sig[0] =
 processGrantEvent(forged)
 check(!grantSet.has(strangerPk), 'forged-signature grant dropped')
 
+// A grant whose SALT is not even-length hex (#328). The salt rides publicly in the tag, so this is
+// ordinary wire input that anyone can publish — and the old construction fed it to
+// `Buffer.from(saltHex, 'hex')`, which decodes what it can and drops the rest, so '', 'zz' and
+// 'ZZZZ' all became zero bytes and hashed identically. The console threw on two of those three,
+// which is the reader-drift failure #328 names: resolvable here, unresolvable there, no error on
+// either side. Now such a salt decodes to no subject, so the grant binds to nothing.
+//
+// The load-bearing half is that it must not THROW. This runs inside the grant event handler, and
+// an exception out of it on a tag anyone can publish is a read-lane outage.
+for (const badSalt of ['zz', 'ZZZZ', 'abc']) {
+  const bad = wire(finalizeEvent({
+    kind: 440, created_at: now(),
+    tags: [['p', strangerPk], ['da-scope', 'f'.repeat(64), badSalt], ['da-cap', 'admit']], content: '',
+  }, grantorSk))
+  let threw = null
+  try { processGrantEvent(bad) } catch (e) { threw = e }
+  check(threw === null, `malformed salt ${JSON.stringify(badSalt)} does not throw out of the grant handler`)
+  check(!grantSet.has(strangerPk), `  …and does not admit — the salt decodes to no subject`)
+}
+
 // The real grant admits the stranger; the reply now routes to the community inbox.
+// Also the negative control for the six assertions above: a handler that ignored every grant would
+// satisfy all of them while admitting nobody, ever.
 const g = grant(grantorSk, strangerPk, CHAN)
 processGrantEvent(g)
 check(grantSet.has(strangerPk), 'valid grant admits the participant')
