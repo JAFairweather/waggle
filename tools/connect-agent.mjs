@@ -42,6 +42,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { boundIdentity, installState, renderState } from '../src/agent_install_state.mjs'
+import { exportTemplate, importTemplate } from '../src/agent_manifest_transfer.mjs'
 import { RUNTIMES, channelStanza, cliRuntimes, exclusivityVerdict, foreignServers, isMine, registrationHelp, runtime } from '../src/mcp_runtimes.mjs'
 import { startupDoc } from '../src/agent_startup.mjs'
 
@@ -60,6 +61,7 @@ const pubkey = flag('--pubkey').toLowerCase()
 const owner = flag('--owner').toLowerCase()
 const from = flag('--from')
 const channel = flag('--channel')
+const fromFile = flag('--from-file')
 
 // Shape-check the two operator-pasted values HERE, at the boundary, before anything renders them
 // (#466 review §3). Both have a known shape, so an allowlist is available and an allowlist is
@@ -122,36 +124,85 @@ see('dm-relays', null, false,
 // ── The manifest. Six tools read it; nothing writes it. This is that nothing. ────────────────
 const instDir = join(HERE, 'instances')
 const manifestPath = join(instDir, `${name}.json`)
+// --export is the other half of --from-file and runs on the machine that already works. It reads
+// this agent's manifest and writes what may cross a boundary: authorisation and policy, never the
+// identity and never a path. It exits here rather than falling through to the install report — the
+// question "what should I carry to the Pi" has nothing to do with what is installed on this host.
+if (has('--export')) {
+  if (!existsSync(manifestPath)) die(`--export needs an existing manifest: ${manifestPath} is absent`)
+  let src
+  try { src = JSON.parse(readFileSync(manifestPath, 'utf8')) }
+  catch (e) { die(`${manifestPath} is not valid JSON: ${e.message}`) }
+  let out
+  try { out = exportTemplate(src) } catch (e) { die(e.message) }
+  const body = JSON.stringify(out.template, null, 2) + '\n'
+  const dest = flag('--out')
+  if (dest) {
+    writeFileSync(dest, body, { mode: 0o644, flag: 'wx' })
+    console.log(`wrote ${dest} (mode 644 — this is a public artifact: relay URLs and public keys, nothing else)`)
+  } else {
+    process.stdout.write(body)
+  }
+  // Named, not counted. "9 fields dropped" tells the operator nothing about whether the right ones
+  // went; the list is what lets them see that no key and no path is in the file they are about to
+  // copy to another machine.
+  console.error(`\nleft behind (per-machine or per-agent, and must not travel): ${out.dropped.join(', ')}`)
+  console.error(`seat it on the other host with: --name <agent> --pubkey <64-hex> --from-file <this file>`)
+  process.exit(0)
+}
 // `--startup` on its own writes the startup file and installs nothing: an operator pointing a Pi
 // at an agent root should not have to satisfy the manifest step to get the file its runtime reads
 // at session start. The manifest still reports MISSING below, so nothing is hidden by skipping it.
-const STARTUP_ONLY = has('--startup') && !pubkey && !from
+const STARTUP_ONLY = has('--startup') && !pubkey && !from && !fromFile
 if (!existsSync(manifestPath) && !CHECK && !STARTUP_ONLY) {
   if (!pubkey || !HEX64.test(pubkey)) die('writing a manifest needs --pubkey <64-hex>')
+  // Two sources, and they are not the same operation. `--from` mirrors a sibling on this
+  // filesystem, uids and all, because a second agent on one machine really does share that host.
+  // `--from-file` crosses a machine boundary, where a mirrored uid declares a privilege separation
+  // the new host may not have — so the template carried none and importTemplate refuses one that
+  // did. See src/agent_manifest_transfer.mjs.
   const source = from ? join(ROOT, from, 'instances', `${from}.json`) : null
-  if (!source || !existsSync(source)) {
-    die(`no manifest and nothing to mirror. Pass --from <instance> naming an agent that already works.\n`
+  if (!fromFile && (!source || !existsSync(source))) {
+    die(`no manifest and nothing to mirror. Either --from <instance> naming an agent that already\n`
+      + `  works on THIS machine, or --from-file <path> with a template exported from one (see --export).\n`
       + `  This repo cannot derive grantors, task carriers or the relay list; see docs/DESIGN_CONNECT_REMOTE_AGENT.md §II.`)
   }
-  const m = JSON.parse(readFileSync(source, 'utf8'))
-  m.id = name
-  m.pubkey = pubkey
-  m.state_dir = join(HERE, 'state')
-  m.runtime_dir = join(HERE, 'runtime')
-  m.spool_dir = join(HERE, 'spool')
-  m.bunker_uri_ref = uriPath
-  m.bunker_client_ref = clientPath
+  let m
+  if (fromFile) {
+    if (!existsSync(fromFile)) die(`--from-file ${fromFile} does not exist`)
+    let template
+    try { template = JSON.parse(readFileSync(fromFile, 'utf8')) }
+    catch (e) { die(`--from-file ${fromFile} is not valid JSON: ${e.message}`) }
+    try {
+      const r = importTemplate(template, {
+        name, pubkey,
+        stateDir: join(HERE, 'state'), runtimeDir: join(HERE, 'runtime'), spoolDir: join(HERE, 'spool'),
+        uriPath, clientPath,
+      })
+      m = r.manifest
+      warn.push(...r.warnings)
+    } catch (e) { die(e.message) }
+  } else {
+    m = JSON.parse(readFileSync(source, 'utf8'))
+    m.id = name
+    m.pubkey = pubkey
+    m.state_dir = join(HERE, 'state')
+    m.runtime_dir = join(HERE, 'runtime')
+    m.spool_dir = join(HERE, 'spool')
+    m.bunker_uri_ref = uriPath
+    m.bunker_client_ref = clientPath
+    // Everything Part II of the design doc records as copied-without-understanding, said out loud
+    // at the moment it is copied — a register nobody reads is not a register.
+    warn.push(`mirrored relays: ${(m.relays || []).join(', ')} — an agent's whole authorisation depends on these`)
+    const ghosts = [m.watcher_uid, m.broker_uid, m.adapter_uid].filter(u => Number.isInteger(u))
+    if (ghosts.length) warn.push(`mirrored uids ${ghosts.join('/')} declare a privilege separation this tool has not confirmed exists`)
+  }
   if (owner && HEX64.test(owner) && !(m.grantors || []).includes(owner)) {
-    warn.push(`--owner is not in the mirrored grantors list; approvals you sign will be ignored by this runtime`)
+    warn.push(`--owner is not in the ${fromFile ? 'imported' : 'mirrored'} grantors list; approvals you sign will be ignored by this runtime`)
   }
   mkdirSync(instDir, { recursive: true, mode: 0o700 })
   writeFileSync(manifestPath, JSON.stringify(m, null, 2) + '\n', { mode: 0o600, flag: 'wx' })
-  did.push(`wrote ${manifestPath} (mirrored from ${from})`)
-  // Everything Part II of the design doc records as copied-without-understanding, said out loud
-  // at the moment it is copied — a register nobody reads is not a register.
-  warn.push(`mirrored relays: ${(m.relays || []).join(', ')} — an agent's whole authorisation depends on these`)
-  const ghosts = [m.watcher_uid, m.broker_uid, m.adapter_uid].filter(u => Number.isInteger(u))
-  if (ghosts.length) warn.push(`mirrored uids ${ghosts.join('/')} declare a privilege separation this tool has not confirmed exists`)
+  did.push(`wrote ${manifestPath} (${fromFile ? `imported from ${fromFile}` : `mirrored from ${from}`})`)
 }
 let manifestOk = false, manifestNote = `absent: ${manifestPath}`
 // The pubkey the manifest already holds. `--startup` on a Pi is run without `--pubkey` — the
