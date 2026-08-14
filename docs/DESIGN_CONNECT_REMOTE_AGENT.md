@@ -74,8 +74,8 @@ produce this artifact*; a documented instruction to type something by hand is no
 | 9 | `task` grant (kind 440) | public relays | `tools/grant.mjs` ✅, **with an inverted UI label** (§III.1) |
 | 10 | Runtime manifest `instances/<id>.json` | agent root | `tools/connect-agent.mjs` ✅ — writes with `wx`, so it never overwrites one |
 | 11 | Runtime state directories | agent root | `tools/connect-agent.mjs` ✅ — each with its own mode |
-| 12 | MCP-channel keypair | `mcp-channel/id_ed25519` | `tools/connect-agent.mjs` ✅ — `ssh-keygen -t ed25519`, mode 600 |
-| 13 | Registration as an MCP server | the host runtime's own config | `tools/connect-agent.mjs --stanza` ✅ (#464) — one stanza, rendered per runtime; the operator still types it |
+| 12 | MCP-channel keypair | `mcp-channel/id_ed25519` — **but the stanza names `credentials/claude-channel-ssh`** | `tools/connect-agent.mjs` mints one and names the other (#474) |
+| 13 | Registration as an MCP server | the host runtime's own config | `tools/connect-agent.mjs --stanza --channel-host <host>` ✅ (#464, #472) — one stanza, rendered per runtime; the operator still types it |
 | 14 | kind 10050 inbound DM relay list | public relays | `tools/publish-dm-relay-list.mjs` ✅ (Bunker path added #381) — **but no step invokes it** |
 | 15 | Proof that the registered server answers as THIS agent | the running session | `tools/connect-agent.mjs --whoami` ✅ (#338) — the operator captures `nvoy_whoami` and the tool compares |
 | 16 | Startup file the runtime reads at session start | `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` | `tools/connect-agent.mjs --startup` — in review (#467) |
@@ -126,6 +126,42 @@ unreadable* (INCONCLUSIVE), and *answered* (a list, possibly empty). What each C
 was run, not assumed — including `gemini mcp`, which returns `Unknown argument: mcp`, which is why
 Gemini is given a config stanza and no command line.
 
+### Row 13 is an ssh call to the broker, not a local server
+
+For most of this document's life the stanza was a **local spawn** — `<node> <path>/claude-channel.mjs`.
+That is not what a registration is any more, and #472 is the correction: the broker runs on a host,
+and the entry is an `ssh` invocation to it carrying a per-agent key.
+
+The reason this went unnoticed is worth stating alongside the others in §I: the local entry does not
+fail. It spawns, it answers `initialize`, and the runtime lists it as connected. Nothing in the name
+distinguishes a working `nvoy-<agent>` from a retired one — the difference is entirely in the command
+printed beside it, which no check read. So `src/channel_registration.mjs` reports three states and not
+two: **ssh**, **local** (registered, retired, unreachable), and **unknown** (registered, command
+unreadable). `unknown` is the answer for anything the parsers do not recognise, because `ssh` is the
+verdict that lets an entry pass as healthy and it has to be earned.
+
+Two properties of the stanza are refusals rather than preferences, and a stanza missing either is
+worse than none:
+
+- **There is no default host.** `--stanza` refuses and exits non-zero without `--channel-host`. A
+  stanza pointing nowhere registers cleanly, lists as connected, and fails at spawn — the same
+  signature as the defect it would be replacing.
+- **Every ssh flag is load-bearing.** Drop `IdentitiesOnly=yes` and the connection can succeed as the
+  wrong principal, which is row 15's failure arriving one layer lower. Drop `BatchMode=yes` and a
+  password prompt inside a runtime-spawned server becomes a hang with no error. The vector is
+  asserted against a live registration that answered a handshake — flag for flag, in order — because
+  "the flags are all there somewhere" is a weaker claim than an empty diff.
+
+**Rows 12 and 13 do not currently agree** (#474). The tool mints `mcp-channel/id_ed25519`; the stanza
+names `credentials/claude-channel-ssh`. Nothing consumes the first and nothing mints the second, so a
+fresh agent run end to end gets a registration pointing at a private key that was never created.
+`mc-claude` works only because its credentials pair was made separately, by hand. The tool now
+*reports* the absence, which is better than silence and is not the same as the tool working.
+
+Two parts of row 12 can never be local steps, whatever #474 decides: `known_hosts` is the broker's
+host key and comes from the broker doctor, and the public half has to reach the broker's
+`authorized_keys` under its forced command. Both are on the other box.
+
 It closes it by a weaker proof than the Bunker path's, and the two should not be read as equivalent.
 `publish_relay_list.mjs` compares `EXPECT_PUBKEY` against a key derived from the **live signer,
 in-process, immediately before signing**. `--whoami` compares against a **file**: a capture the
@@ -149,6 +185,10 @@ Every one of the gaps above produces an agent that *looks* configured:
 - A **missing runtime state directory** kills the channel with `ENOENT` on a path no document
   mentions.
 - An **inverted grant** verifies, is live, and authorises the opposite of what was intended.
+- A **registration in the retired local form** spawns, answers `initialize`, and prints
+  `✔ Connected` — while the identity's channel is on the broker host and nothing reaches it. This
+  one is the sharpest of the set, because every surface an agent can see reports health. Two
+  identities on the maintainer's machine sat in that state, listed as connected, for a day.
 
 This is why the fix is a wizard and not more prose. **Prose cannot be CI-tested.** Every stall we
 hit was an instruction that had drifted from the code, and every one was found by *executing* it,
@@ -171,7 +211,7 @@ the source. Recorded here so the wizard's authors know which values are *decisio
 | `grantors` | the maintainer's key | The bridge's `config.public.grantors`; correct and understood. |
 | `task_carriers` | the bridge key + one channel | The carrier that relays signed instructions. Understood. |
 | `broker_mode` | `local` | The desktop path; `remote` requires a keyless manifest. |
-| `delivery_mode` | `notify_only` | Required by `claude-channel.mjs`, which refuses anything else. |
+| `delivery_mode` | `notify_only` | Required by `claude-channel.mjs`, which refuses anything else. Established against the **local** server; not re-verified against the broker. |
 | `worker_enabled` | `false` | `true` demands a digest-pinned worker image; out of scope. |
 
 ### 2. Values copied with **no** understanding — the open register
@@ -192,9 +232,16 @@ the source. Recorded here so the wizard's authors know which values are *decisio
   numbers forward as though they mean something.
 - **`broker_adapter_gid: 20` (`staff`), `worker_handoff_gid: 12` (`everyone`).** Two stock macOS
   groups standing in for a handoff boundary. `everyone` is not a boundary.
-- **Two checkouts of the same toolchain.** The registered MCP server points at
-  `…/nvoy-macos-desktop-binder/mcp/tools/`, not the other tree. They are not obviously in sync.
-  Pointing a new agent at the wrong one is silent.
+- **`broker_mode: local` on an agent whose broker is remote.** `mc-claude`'s manifest still says
+  `local` while its registration ssh's to the broker host and answers handshakes there. Either the
+  field means something narrower than its name, or it is stale on a working agent. We do not know
+  which, and a wizard must not copy it forward on the assumption that a working agent's manifest is
+  self-consistent.
+- **Two checkouts of the same toolchain.** Registrations in the retired local form point at
+  `…/nvoy-macos-desktop-binder/mcp/tools/`, not the other tree, and the two are not obviously in
+  sync. Pointing a new agent at the wrong one is silent. The ssh form retires the question rather
+  than answering it — there is no local checkout in the command at all — but the local entries this
+  describes are still registered on the maintainer's machine, so it is not yet historical.
 
 ### 3. Things that are simply undocumented
 
