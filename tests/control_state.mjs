@@ -531,8 +531,50 @@ t('#404 an invisible character is refused and NAMED by codepoint, not left to be
 const stillRouting = await applyTask(taskBody('upsert', participant, secondTaskChannel, 'My Dude'), now + 22)
 t('#404 and a legitimate spaced name still gets through after all four refusals', stillRouting.ok &&
   PUB.returnLane.some(route => route.managedTaskRoute && route.mention === 'My Dude'))
+// #416 — interception closes at admission. At this point `MC Claude` routes to `participant` in
+// taskChannel, and `My Dude` routes to the same participant in secondTaskChannel. A second admitted
+// agent now tries to take delivery of the first one's messages by choosing a name that renders the
+// same. Every lookalike below is an ESCAPE, because a literal is a fixture nobody can check: the
+// whole attack is that the two spellings are one picture.
+const impostor = getPublicKey(generateSecretKey())
+grantSet.set(impostor, { grantId: '2'.repeat(64), grantor: getPublicKey(watchedSk) })
+const lookalike = await applyTask(taskBody('upsert', impostor, taskChannel, 'MC \uFF23laude'), now + 23)
+t('#416 a fullwidth twin of an existing route is refused for a different agent',
+  !lookalike.ok && /confusable with @MC Claude/.test(lookalike.reason), lookalike.reason)
+t('#416   …and the reason says what would happen, so the operator is not left with "invalid"',
+  !lookalike.ok && /reach the other/.test(lookalike.reason))
+t('#416   …and nothing was written — a refusal that still persisted the row is the defect itself',
+  JSON.parse(readFileSync(CFG, 'utf8')).public.task_routes.filter(r => r.participant === impostor).length === 0)
+// A CROSS-SCRIPT lookalike is ADMITTED, and that is deliberate (#426). A script-mixing rule refused
+// it here until the #421 review measured what it bought: nothing at delivery, because the matcher
+// does not fold across scripts either, so this row cannot take a message addressed to `MC Claude`.
+// What it cost was real names — `Nikos \u03A0\u03B1\u03C0\u03AC\u03C2` and `\u0414enis` were refused, retroactively, by the
+// function that re-validates already-deployed config. The residual is a human PASTING the Cyrillic
+// spelling, which is a compose-time hazard and is #426.
+const mixedScript = await applyTask(taskBody('upsert', impostor, taskChannel, 'M\u0421 Claude'), now + 24)
+t('#426 a cross-script lookalike is admitted — it cannot intercept, and refusing it broke real names',
+  mixedScript.ok, mixedScript.reason)
+// BOTH DIRECTIONS. A guard asserted only to refuse cannot be told apart from one that refuses
+// everything — the 2026-08-01 outage in this repo was exactly that shape, and it was green.
+const otherChannel = await applyTask(taskBody('upsert', impostor, secondTaskChannel, 'MC \uFF23laude'), now + 25)
+t('#416 the same lookalike in a channel where the real name does not route is admitted',
+  otherChannel.ok, otherChannel.reason)
+const sameName = await applyTask(taskBody('upsert', impostor, secondTaskChannel, 'My Dude'), now + 26)
+t('#416 an IDENTICAL name for a second agent is still allowed — the operator can see that one',
+  sameName.ok, sameName.reason)
+const ownRename = await applyTask(taskBody('upsert', participant, taskChannel, 'MC \uFF23laude'), now + 27)
+t('#416 an agent may re-spell its OWN name — that is a rename, not interception',
+  ownRename.ok, ownRename.reason)
+const unrelated = await applyTask(taskBody('upsert', impostor, taskChannel, 'Dennis'), now + 28)
+t('#416 and an ordinary unrelated name still gets through after all of that', unrelated.ok, unrelated.reason)
+for (const [i, [p, channel, mention]] of [[impostor, secondTaskChannel, 'MC \uFF23laude'],
+  [impostor, secondTaskChannel, 'My Dude'], [impostor, taskChannel, 'Dennis'],
+  [impostor, taskChannel, 'M\u0421 Claude'],   // admitted above (#426), so it has to come back out
+  [participant, taskChannel, 'MC \uFF23laude']].entries()) {
+  await applyTask(taskBody('remove', p, channel, mention), now + 29 + i)
+}
 for (const [i, channel] of [taskChannel, secondTaskChannel].entries()) {
-  await applyTask(taskBody('remove', participant, channel, i === 0 ? 'MC Claude' : 'My Dude'), now + 23 + i)
+  await applyTask(taskBody('remove', participant, channel, i === 0 ? 'MC Claude' : 'My Dude'), now + 40 + i)
 }
 t('#404 both spaced routes remove cleanly, leaving the config as it was found',
   JSON.parse(readFileSync(CFG, 'utf8')).public.task_routes.length === 0)

@@ -26,7 +26,8 @@ import { resolve } from 'node:path'
 import { getPublicKey, generateSecretKey, finalizeEvent } from 'nostr-tools/pure'
 
 import { taskRouteMentionProblem, taskRouteMention, taskRouteMentionKey, TASK_ROUTE_MENTION_MAX,
-  taskRouteMentioned, taskRouteMentionMatcher, taskRouteMentionArbitrate }
+  taskRouteMentioned, taskRouteMentionMatcher, taskRouteMentionArbitrate,
+  taskRouteMentionSkeleton, taskRouteMentionConflict }
   from '../src/task_route_mention.mjs'
 
 let fails = 0
@@ -54,6 +55,14 @@ const ACCEPT = [
   ['Dr. Who 3', 'Dr. Who 3'],
   ['José Ramírez', 'José Ramírez'],   // non-ASCII letters are letters
   ['A'.repeat(TASK_ROUTE_MENTION_MAX), 'A'.repeat(TASK_ROUTE_MENTION_MAX)],
+  // A name in one non-Latin script is a NAME (#416). The script rule below refuses Latin MIXED
+  // with Cyrillic or Greek; paired here so that rule cannot quietly become "refuses foreign".
+  ['Денис', 'Денис'],             // Denis, wholly Cyrillic
+  ['Δήμητρα', 'Δήμητρα'],  // Dimitra, wholly Greek
+  ['クロード', 'クロード'],                         // Katakana: never confusable with Latin
+  ['Meſnil', 'Meſnil'],   // U+017F long s — a legal name on its own; #416 refuses it only
+                                    // as a SECOND route beside a real `Mesnil`, which is the conflict
+                                    // check, not the grammar. Storing it proves the two are separate.
 ]
 for (const [input, stored] of ACCEPT) {
   ok(`accepts ${JSON.stringify(input)}`, taskRouteMentionProblem(input) === null,
@@ -116,6 +125,90 @@ ok('two spellings of one name compare equal',
   taskRouteMentionKey('MC Claude') === taskRouteMentionKey('mc claude'))
 ok('two different names do NOT compare equal',
   taskRouteMentionKey('MC Claude') !== taskRouteMentionKey('My Dude'))
+
+// ---------------------------------------------------------------------------------------------
+// 1b. Confusable admission (#416). #414 made `@Mesnil` carry to a long-s twin as well, which fixed
+// the mute and left interception open: the twin still receives everything addressed to the real
+// name, just no longer exclusively. Arbitration cannot close that — it cannot tell an impostor
+// from a namesake, and refusing on suspicion mutes real agents — so the refusal is at UPSERT.
+// ---------------------------------------------------------------------------------------------
+console.log('\nconfusable routes are refused at admission, not at arbitration')
+
+{
+  const CH = 'c'.repeat(64), REAL = 'a'.repeat(64), IMPOSTOR = 'b'.repeat(64)
+  const existing = [{ channel: CH, participant: REAL, mention: 'Mesnil', sender: 's', protocol: 'p' }]
+  const at = (mention, participant = IMPOSTOR, channel = CH) =>
+    taskRouteMentionConflict(mention, existing, { channel, participant })
+
+  // The skeleton, on its own. Both directions: it must fold the twins TOGETHER and leave two
+  // genuinely different crew names APART, or "refuses the dangerous thing" is indistinguishable
+  // from "refuses everything" — the 2026-08-01 failure, restated.
+  ok('the long s folds onto a plain s',
+    taskRouteMentionSkeleton('Meſnil') === taskRouteMentionSkeleton('Mesnil'))
+  ok('so does the fi ligature, fullwidth text and a stripped accent',
+    taskRouteMentionSkeleton('ﬁnn') === taskRouteMentionSkeleton('finn') &&
+    taskRouteMentionSkeleton('ＭＣ Claude') === taskRouteMentionSkeleton('MC Claude') &&
+    taskRouteMentionSkeleton('Mésnil') === taskRouteMentionSkeleton('Mesnil'))
+  ok('two real crew names stay apart under the skeleton',
+    taskRouteMentionSkeleton('My Dude') !== taskRouteMentionSkeleton('MC Claude') &&
+    taskRouteMentionSkeleton('Dennis') !== taskRouteMentionSkeleton('Denise'))
+
+  // The refusal, through the exported check.
+  ok('a long-s twin of an existing route is refused for a different agent', at('Meſnil') !== null)
+  ok('  …and the reason names BOTH names, because the operator\'s next move is to compare them',
+    /@Meſnil/u.test(at('Meſnil') || '') && /@Mesnil/.test(at('Meſnil') || ''),
+    JSON.stringify(at('Meſnil')))
+  ok('  …and says what the consequence is, not merely that it is invalid',
+    /reach the other/.test(at('Meſnil') || ''))
+
+  // Every direction the check must NOT fire in. Each of these is a way the guard could be
+  // "working" while actually refusing everything, which is the shape that shipped an outage here.
+  ok('an unrelated name in the same channel is admitted', at('My Dude') === null)
+  ok('the SAME agent may re-spell its own name — that is a rename, not interception',
+    at('Meſnil', REAL) === null)
+  ok('an identical mention for a different agent is still allowed — the operator can SEE that ' +
+    'they typed the same name twice; a lookalike is the thing they cannot see',
+    at('Mesnil') === null && at('mesnil') === null)
+  ok('a lookalike in a DIFFERENT channel is not this channel\'s problem',
+    at('Meſnil', IMPOSTOR, 'd'.repeat(64)) === null)
+  ok('no existing routes, no conflict', taskRouteMentionConflict('Meſnil', [], { channel: CH, participant: IMPOSTOR }) === null)
+  ok('an empty or absent mention does not throw and does not conflict',
+    taskRouteMentionConflict('', existing, { channel: CH, participant: IMPOSTOR }) === null &&
+    taskRouteMentionConflict(null, existing, { channel: CH, participant: IMPOSTOR }) === null)
+
+  // A CROSS-SCRIPT LOOKALIKE IS ADMITTED, AND CANNOT INTERCEPT (#416, #426).
+  //
+  // Written as escapes for a reason that is not the usual one: these characters are perfectly
+  // visible, and that is the problem — the lookalike and the real name are the same picture, so a
+  // literal here would be a fixture no reviewer could check by reading it. The escape is the only
+  // thing that makes the Cyrillic letter legible AS Cyrillic.
+  //
+  // A script-mixing rule refused all four of these at the grammar. It was removed under review
+  // because it prevented no interception and refused real names (`Nikos \u03A0\u03B1\u03C0\u03AC\u03C2`, `\u0414enis`).
+  // These assertions are what replaces it: each is a legal name, and none of them can take a
+  // message aimed at its Latin twin, because the matcher does not fold across scripts either.
+  const TWINS = [
+    ['Me\u0455nil', 'Mesnil'],       // U+0455 dze, the twin of Latin s
+    ['\u0410pple', 'Apple'],        // Cyrillic A leading an otherwise Latin word
+    ['Dennis\u0430', 'Dennisa'],   // U+0430, the twin of Latin a
+    ['\u039Cy Dude', 'My Dude'],     // Greek Mu, the twin of Latin M
+  ]
+  for (const [twin, latin] of TWINS) {
+    ok(`a cross-script lookalike is a legal NAME: ${JSON.stringify(twin)}`,
+      taskRouteMentionProblem(twin) === null, String(taskRouteMentionProblem(twin)))
+    ok('  …and the skeleton does NOT fold it — no normalisation folds one script onto another',
+      taskRouteMentionSkeleton(twin) !== taskRouteMentionSkeleton(latin))
+    ok('  …so it is admitted beside its twin rather than refused',
+      taskRouteMentionConflict(twin, [{ channel: CH, participant: REAL, mention: latin }],
+        { channel: CH, participant: IMPOSTOR }) === null)
+    // The direction that matters: being admitted is only safe because it cannot take the at-word.
+    // Both directions, because a matcher that reached NEITHER would pass a one-sided assertion.
+    ok('  …and a body addressed to the Latin name does NOT reach it',
+      taskRouteMentioned(`@${latin} ship it`, twin) === false)
+    ok('  …while the Latin name itself still carries — the guard is not refusing everything',
+      taskRouteMentioned(`@${latin} ship it`, latin) === true)
+  }
+}
 
 // ---------------------------------------------------------------------------------------------
 // 2. The join. `console/task-route-mention.mjs` is a copy because the page cannot import src/.

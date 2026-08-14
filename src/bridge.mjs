@@ -49,7 +49,7 @@ import { fileURLToPath } from 'node:url'
 // Extracted leaf modules (#154). Each is dependency-free of config and ambient state, which is why
 // these four came out first — the split is staged, not big-bang.
 import { LANE_IDS, LANES, RELEASED } from './lanes.mjs'   // the trust gradient's one source (#282)
-import { taskRouteMention, taskRouteMentionProblem, taskRouteMentionKey, taskRouteMentionArbitrate } from './task_route_mention.mjs'   // #404, #408, #409
+import { taskRouteMention, taskRouteMentionProblem, taskRouteMentionKey, taskRouteMentionArbitrate, taskRouteMentionConflict } from './task_route_mention.mjs'   // #404, #408, #409, #416
 import { log, err } from './log.mjs'
 import { markLatency } from './latency.mjs'
 import { durableSet, durableQueue } from './stores.mjs'
@@ -2917,6 +2917,14 @@ function applyTaskRouteCommand({ author, createdAt, body, id }) {
   }
   if (createdAt <= PUB.taskRouteCommandAt) return { ok: false, reason: 'superseded command' }
   if (body.action === 'upsert' && !grantSet.has(route.participant)) return { ok: false, reason: 'participant is not admitted' }
+  // Interception closes HERE, not at arbitration (#416). Arbitration cannot tell an impostor from a
+  // legitimate namesake, and refusing a carry on suspicion mutes real agents — so `@Mesnil` carries
+  // to `Meſnil` as well (#414), and the only place a lookalike can be stopped is before it becomes a
+  // route at all. `remove` is not checked: taking a route away cannot intercept anything.
+  if (body.action === 'upsert') {
+    const clash = taskRouteMentionConflict(route.mention, PUB.taskRoutes, route)
+    if (clash) return { ok: false, reason: `invalid task route: ${clash}` }
+  }
   // Mentions compare case-folded (the matcher's `i` flag folds too), so re-upserting `@mc claude`
   // over `@MC Claude` is the same route, not a second row that fires alongside it.
   const same = value => value.participant === route.participant && value.sender === route.sender &&

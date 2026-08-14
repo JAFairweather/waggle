@@ -34,6 +34,19 @@ const STARTS_WELL = /^[\p{L}\p{N}]/u
 
 const codepoint = ch => `U+${ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`
 
+// NO SCRIPT-MIXING RULE HERE, and that is a decision, not an omission (#416, #426).
+//
+// One was written and removed under review. Refusing a mention that mixes Latin with Cyrillic or
+// Greek sounds like the obvious hardening and prevents nothing: cross-script never folds in the
+// matcher, so `@Max` in a body cannot reach a route spelled `Мах` — the only spelling that DOES
+// intercept is one the skeleton below already refuses. What the rule caught instead was
+// `Nikos Παπάς`, `Σigma bot` and `Дenis`, and it caught them in the function that re-validates
+// deployed config, so a name that routed yesterday would have stopped routing on merge.
+//
+// It cannot be moved to the conflict check either: that compares skeletons, and no normalisation
+// folds Cyrillic onto Latin, so the rule would never fire there. The remaining case — a human
+// pasting `@Мах` at a route named `Max` — is a compose-time hazard, not interception, and is #426.
+
 // null when the value is a usable mention, otherwise the reason — and the reason is the product.
 // `!ok` cannot tell a correct refusal from a correct refusal with a misleading message, and this
 // message is the entire content of the console's error line. An invisible character in particular
@@ -63,6 +76,70 @@ export function taskRouteMention(value) {
 // The COMPARISON key. Folded the same way the matcher's `i` flag folds, so `@MC Claude` and
 // `@mc claude` are one route rather than two rows that both fire.
 export const taskRouteMentionKey = value => String(value == null ? '' : value).toLowerCase()
+
+// THE CONFUSABILITY SKELETON (#416) — deliberately NOT the comparison key above.
+//
+// These are two different questions and folding them into one would be a delivery change dressed
+// as a hardening. `taskRouteMentionKey` answers "is this the same route", and it must stay exactly
+// as tight as the matcher's `i` flag: widen it and two rows collapse in the arbitration report
+// while both still carry in `scanReturnLane`, which is worse than leaving it alone, because the
+// test output then reads like a delivery fix that did not happen (measured in #416).
+//
+// The skeleton answers a different question — "would an operator reading the console see these as
+// the same name" — and it is used ONLY to refuse a new route at admission. Nothing routes on it.
+//
+// NFKD, drop the combining marks, back to NFKC: that folds `Meſnil` (U+017F long s), `ﬁnn` (the fi
+// ligature), fullwidth `ＭＣ` and `Mésnil` onto their plain forms. It does NOT fold a Cyrillic `ѕ`
+// onto a Latin `s` — no normalisation does, they are different letters.
+//
+// That is complete against interception, and the completeness was measured rather than argued: a
+// sweep of U+0020–U+10FFFF found ZERO characters that the matcher folds onto an ASCII letter but
+// this skeleton does not fold the same way (#421 review). A lookalike the matcher can be fooled by
+// is a lookalike this refuses. What is left over is a name written in another script that an
+// operator might mis-type — a compose-time hazard, not a delivery one, tracked as #426.
+export function taskRouteMentionSkeleton(value) {
+  return String(value == null ? '' : value)
+    .replace(/^@/, '')
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Does admitting this mention put a lookalike of an existing route in front of a DIFFERENT agent?
+// Returns the reason, or null. The reason is the product: this is the console's error line, and the
+// operator's next move is to look at the two names side by side, so both are in it.
+//
+// Scoped to one channel and to a different participant, which is the narrowest thing that closes
+// the interception in #416:
+//
+//   - SAME participant, lookalike spelling — that is the agent renaming itself. Not interception.
+//   - IDENTICAL mention, different participant — deliberately still allowed, and it IS interception:
+//     a second `Max` takes a share of every `@Max`. It stays allowed because of who authored the
+//     name, not because anyone can see it. Two identical rows in a rendered route list are no more
+//     distinguishable than `Max` and `Мах`. The difference is that upsert is approver-signed and
+//     participant-admitted, so a duplicate requires an approver to type a name they already know —
+//     which is exactly the knowledge a lookalike denies them. Authorship at typing time is the line,
+//     not visibility at reading time (#421 review).
+//
+// Manual `return_lane` entries are not consulted: they are unmanaged config, edited by hand and by
+// definition not going through this path (#416 leaves that as a separate question).
+export function taskRouteMentionConflict(mention, routes, { channel, participant } = {}) {
+  const skeleton = taskRouteMentionSkeleton(mention)
+  if (!skeleton) return null
+  const key = taskRouteMentionKey(String(mention == null ? '' : mention).replace(/^@/, ''))
+  for (const route of routes || []) {
+    if (channel !== undefined && route?.channel !== channel) continue
+    if (route?.participant === participant) continue
+    const other = String(route?.mention == null ? '' : route.mention)
+    if (taskRouteMentionKey(other) === key) continue          // identical, not confusable — see above
+    if (taskRouteMentionSkeleton(other) !== skeleton) continue
+    return `@${String(mention).replace(/^@/, '')} is confusable with @${other}, already routed to a different agent in this channel — the two render alike, so a message meant for one would reach the other`
+  }
+  return null
+}
 
 // THE MATCHER (#408). Lives here, next to the alphabet it depends on, rather than as a regex
 // literal in scanReturnLane — the defect this replaces was precisely those two drifting apart.
