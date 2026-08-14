@@ -40,7 +40,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { boundIdentity, installState, renderState } from '../src/agent_install_state.mjs'
-import { channelStanza, cliRuntimes, foreignServers, isMine, registrationHelp, stanzaJson } from '../src/mcp_runtimes.mjs'
+import { channelStanza, cliRuntimes, foreignServers, isMine, registrationHelp } from '../src/mcp_runtimes.mjs'
 
 const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (process.argv[i + 1] || '') }
 const has = n => process.argv.includes(n)
