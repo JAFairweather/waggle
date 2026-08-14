@@ -110,6 +110,44 @@ export function makeLocalSigner(raw, label = 'BUZZ_PRIVATE_KEY') {
   })
 }
 
+// A signer's `pubkey` is only what the pairing CLAIMS. What proves custody is a signature that
+// verifies against the key you expected — and a bunker answers every sign_event as an INDEPENDENT
+// round trip, so proving the first one proves nothing about the fourth. A bunker holding more than
+// one identity, a session paired to the wrong one, or an owner tapping a different account on the
+// second approval prompt all land in the same place: one checked signature and the rest trusted.
+//
+// So the check is a wrapper rather than a call site. Every event the signer returns is verified and
+// compared against one pinned key, which is the only shape that cannot be applied to some of the
+// signatures and not the others. Errors carry the caller's exit code: 1 is a custody mismatch (bad
+// input — the wrong identity), 2 is a signature that does not verify at all (a broken signer).
+export function withPinnedCustody(signer, expect = '') {
+  const pinned = String(expect || '').trim().toLowerCase()
+  if (pinned && !/^[0-9a-f]{64}$/.test(pinned)) throw new Error('pinned pubkey must be 64-character hex')
+  let signatures = 0
+  const fail = (message, code) => { const e = new Error(message); e.exitCode = code; throw e }
+  return Object.freeze({
+    pubkey: signer.pubkey, remote: signer.remote, pinned,
+    get signatures() { return signatures },
+    async signEvent(event) {
+      const signed = await signer.signEvent(event)
+      const n = ++signatures
+      const where = `signature ${n} (kind:${event && event.kind})`
+      // verifyEvent THROWS on a malformed event rather than returning false, and an event straight
+      // off a bunker is untrusted input. Letting that throw escape would surface as a crash instead
+      // of the named refusal this exists to give.
+      let valid = false
+      try { valid = !!signed && verifyEvent(signed) } catch { valid = false }
+      if (!valid) fail(`the signer returned ${where} that does not verify — nothing published`, 2)
+      if (pinned && signed.pubkey !== pinned)
+        fail(`CUSTODY MISMATCH on ${where}: the signer signed as ${signed.pubkey}, not ${pinned}. Nothing published.`, 1)
+      return signed
+    },
+    nip44Encrypt: (peer, plaintext) => signer.nip44Encrypt(peer, plaintext),
+    nip44Decrypt: (peer, ciphertext) => signer.nip44Decrypt(peer, ciphertext),
+    close: () => signer.close(),
+  })
+}
+
 export function loadNostrSigner(env = process.env, deps = {}) {
   const uriFile = String(env.WAGGLE_BUNKER_URI_FILE || '').trim()
   const clientFile = String(env.WAGGLE_NIP46_CLIENT_NSEC_FILE || '').trim()

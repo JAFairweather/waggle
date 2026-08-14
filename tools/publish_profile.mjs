@@ -30,6 +30,13 @@
 // signature that verifies against the expected key, which this tool has in hand anyway — so it
 // checks it, names it as the evidence, and refuses on a mismatch. Set EXPECT_PUBKEY to arm it.
 //
+// THE CHECK COVERS EVERY SIGNATURE, NOT THE FIRST. A real run signs four times — trio kind:0,
+// community kind:0, and the NIP-98 headers for the push and the read-back — and to a bunker each is
+// an independent round trip that can answer as a different identity. So the comparison lives in
+// `withPinnedCustody`, which wraps the signer: there is no call site to forget. Checking only the
+// first one let the community-bound copy — the one that writes the `users` row an at-word resolves
+// against — be signed by another key while the tool printed CUSTODY PROVEN and exited 0.
+//
 //   WAGGLE_BUNKER_URI_FILE=<path> WAGGLE_NIP46_CLIENT_NSEC_FILE=<path> \
 //   BUZZ_RELAY_URL=<same value the buzz CLI uses> BUZZ_AUTH_TAG='["auth","…"]' \
 //   EXPECT_PUBKEY=<64-hex> node tools/publish_profile.mjs
@@ -50,7 +57,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { verifyEvent } from 'nostr-tools/pure'
 import { DEFAULT_PUBLIC_RELAYS as TRIO } from '../src/relays.mjs'
-import { loadNostrSigner } from '../src/nostr_signer.mjs'
+import { loadNostrSigner, withPinnedCustody } from '../src/nostr_signer.mjs'
 
 const args = process.argv.slice(2)
 const flag = (n) => { const i = args.indexOf(n); return i === -1 ? null : args[i + 1] }
@@ -59,6 +66,13 @@ const now = () => Math.floor(Date.now() / 1000)
 const say = (m) => console.error(m)
 const die = (m, code = 1) => { console.error(`publish_profile: ${m}`); process.exit(code) }
 const hash = (s) => createHash('sha256').update(s).digest('hex')
+
+// Every signature in this tool goes through here. The custody wrapper throws, and an uncaught throw
+// at top level exits 1 with a stack trace and no stated reason — the exact failure shape this PR was
+// sent back for. This turns it into a named refusal carrying its own exit code.
+const sign = async (template) => {
+  try { return await signer.signEvent(template) } catch (e) { return die(e.message, e.exitCode || 2) }
+}
 
 // ── the relay round trips ────────────────────────────────────────────────────────────────────
 // Two separate functions on purpose. A push that returns OK and a read that returns the event are
@@ -138,7 +152,12 @@ async function readBackCommunity(signer, pubkey) {
       kind: 27235, created_at: now(), content: '',
       tags: [['u', url], ['method', 'GET']],
     })
-  } catch (e) { return { reachable: false, why: `could not sign the read: ${e.message}` } }
+  } catch (e) {
+    // A custody failure is not an unreadable relay. Letting it degrade to INCONCLUSIVE would report
+    // "could not check" for a signer that answered as the wrong identity, which is a stated result.
+    if (e.exitCode) die(e.message, e.exitCode)
+    return { reachable: false, why: `could not sign the read: ${e.message}` }
+  }
   let r
   try {
     r = await fetch(url, {
@@ -165,16 +184,41 @@ async function readBackCommunity(signer, pubkey) {
 
 const dryRun = has('--dry-run')
 const contentFile = flag('--content-file')
+const community = !!(process.env.BUZZ_RELAY_URL && process.env.BUZZ_AUTH_TAG)
 
-let signer
-try { signer = loadNostrSigner(process.env) } catch (e) { die(e.message) }
+let loaded
+try { loaded = loadNostrSigner(process.env) } catch (e) { die(e.message) }
+// loadNostrSigner RETURNS NULL when nothing is configured — it does not throw, so the catch above
+// never sees it. Without this line the next dereference is an unhandled TypeError, which exits 1
+// and looks exactly like a refusal while naming nothing.
+if (!loaded)
+  die('no signer configured. Set WAGGLE_BUNKER_URI_FILE and WAGGLE_NIP46_CLIENT_NSEC_FILE for a bunker, or BUZZ_PRIVATE_KEY for a local key.')
 
 const expect = (process.env.EXPECT_PUBKEY || '').toLowerCase()
 if (expect && !/^[0-9a-f]{64}$/.test(expect)) die('EXPECT_PUBKEY must be 64-character hex')
 
+// From here on nothing signs through the bare signer: `signer` verifies and pubkey-checks EVERY
+// event, so a later signature cannot go unchecked by being forgotten at a call site.
+const signer = withPinnedCustody(loaded, expect)
+
+// The identity to READ against. `signer.pubkey` is the claim; `expect` is the identity you meant.
+// Prefer the latter, because the adoption read runs BEFORE anything is signed and so cannot be
+// keyed on a proven value — and unlike the read-backs it does not degrade safely: adopting from a
+// key that never authorised it republishes its content under the key that did.
+const readAs = expect || signer.pubkey
+
 say(`publish_profile: signing via ${signer.remote ? 'a remote signer (NIP-46)' : 'a local key'} as ${signer.pubkey}`)
 if (signer.remote && !expect)
   say('  note: EXPECT_PUBKEY is unset, so the custody check below proves a signature but not that it is the identity you meant.')
+
+// Say the signature count before the first one, and say it for a local key too — the number is a
+// property of the run, not of the backend, so a test can hold it in place either way. On a bunker
+// each of these is a SEPARATE approval prompt with a 60s timeout, and an operator who thinks it is
+// one tap walks away and the run dies on a signature nobody was there to give.
+const signatureCount = dryRun ? (community ? 2 : 1) : (community ? 4 : 1)
+say(`  this run makes ${signatureCount} signature${signatureCount === 1 ? '' : 's'}${
+  signatureCount === 4 ? ' — trio kind:0, community kind:0, then the NIP-98 headers for the push and the read-back' : ''}${
+  signer.remote ? ', and each one is a separate bunker approval. Stay at the prompt.' : '.'}`)
 
 // Adopt the existing profile unless one was handed in. Reading first also means a run that cannot
 // see the trio at all stops here rather than publishing a face nobody asked for.
@@ -184,8 +228,8 @@ if (contentFile) {
   try { JSON.parse(content) } catch { die('--content-file must hold the JSON body of a kind:0 (an object)') }
   say(`  content adopted from ${contentFile}`)
 } else {
-  say('  reading the existing kind:0 off the trio to adopt its content verbatim…')
-  const seen = await Promise.all(TRIO.map(u => readBackWs(u, signer.pubkey)))
+  say(`  reading the existing kind:0 off the trio to adopt its content verbatim, as ${readAs}…`)
+  const seen = await Promise.all(TRIO.map(u => readBackWs(u, readAs)))
   const answered = seen.filter(s => s.answered).length
   const newest = seen.map(s => s.newest).filter(Boolean).sort((a, b) => b.created_at - a.created_at)[0]
   for (const s of seen)
@@ -199,22 +243,21 @@ if (contentFile) {
 // Two events, same content. The community copy carries the auth tag, which is why its id differs —
 // stated here because "one profile" and "one event" are not the same claim.
 const created_at = now()
-const trioEvent = await signer.signEvent({ kind: 0, created_at, tags: [], content })
+const trioEvent = await sign({ kind: 0, created_at, tags: [], content })
 
-if (!verifyEvent(trioEvent)) die('the signer returned an event that does not verify — nothing published', 2)
-if (expect && trioEvent.pubkey !== expect)
-  die(`CUSTODY MISMATCH: the signer signed as ${trioEvent.pubkey}, not ${expect}. Nothing published.`, 1)
 say(`  CUSTODY PROVEN: a signature by ${trioEvent.pubkey} verifies${expect ? ' and equals EXPECT_PUBKEY' : ''}.`)
 say(`    This is the pubkey-comparison evidence #308 state 2 asks for — a signature from where the key lives,`)
 say('    not a manifest value or an npub read off a screen. Narrow: it proves custody right now, nothing later.')
+say('    It covers every signature this run makes, not the first — each one is a separate bunker round trip.')
 
-const community = process.env.BUZZ_RELAY_URL && process.env.BUZZ_AUTH_TAG
+// After this point the PROVEN key is the one to read against, not the claimed one.
+const proven = trioEvent.pubkey
+
 let communityEvent = null
 if (community) {
   const authTag = (() => { try { return JSON.parse(process.env.BUZZ_AUTH_TAG) } catch { return die('BUZZ_AUTH_TAG must be a JSON array, e.g. \'["auth","…"]\'') } })()
   if (!Array.isArray(authTag)) die('BUZZ_AUTH_TAG must be a JSON array')
-  communityEvent = await signer.signEvent({ kind: 0, created_at, tags: [authTag], content })
-  if (!verifyEvent(communityEvent)) die('the signer returned a community copy that does not verify', 2)
+  communityEvent = await sign({ kind: 0, created_at, tags: [authTag], content })
 }
 
 say('')
@@ -230,7 +273,8 @@ const pushed = await Promise.all(TRIO.map(u => pushWs(u, trioEvent)))
 for (const p of pushed) say(`  ${p.url.replace('wss://', '').padEnd(22)} ${p.note}`)
 let communityPush = null
 if (communityEvent) {
-  try { communityPush = await pushCommunity(signer, communityEvent) } catch (e) { communityPush = { status: 0, text: e.message } }
+  try { communityPush = await pushCommunity(signer, communityEvent) }
+  catch (e) { if (e.exitCode) die(e.message, e.exitCode); communityPush = { status: 0, text: e.message } }
   say(`  community relay        ${communityPush.status} ${communityPush.text}`)
 }
 
@@ -239,7 +283,7 @@ if (communityEvent) {
 say('')
 say('== cold read-back ==')
 const want = hash(content)
-const back = await Promise.all(TRIO.map(u => readBackWs(u, signer.pubkey)))
+const back = await Promise.all(TRIO.map(u => readBackWs(u, proven)))
 let trioConfirmed = 0, trioSilent = 0
 for (const b of back) {
   const match = b.newest && hash(b.newest.content) === want
@@ -250,7 +294,7 @@ for (const b of back) {
 
 let communityVerdict = 'skipped'
 if (communityEvent) {
-  const r = await readBackCommunity(signer, signer.pubkey)
+  const r = await readBackCommunity(signer, proven)
   if (!r.reachable) { communityVerdict = 'INCONCLUSIVE'; say(`  community relay        INCONCLUSIVE — ${r.why}`) }
   else if (r.newest && hash(r.newest.content) === want) { communityVerdict = 'confirmed'; say('  community relay        CONFIRMED') }
   else { communityVerdict = 'absent'; say(`  community relay        ${r.newest ? 'serves a DIFFERENT profile' : 'not found'}`) }
