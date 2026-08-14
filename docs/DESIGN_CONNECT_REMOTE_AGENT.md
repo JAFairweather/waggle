@@ -79,6 +79,16 @@ defect moved one layer up from Pair to Bind and found nothing waiting.
 
 Registered is not sole — #380 closed that half. Sole is not yours; #338 closes this one.
 
+It closes it by a weaker proof than the Bunker path's, and the two should not be read as equivalent.
+`publish_relay_list.mjs` compares `EXPECT_PUBKEY` against a key derived from the **live signer,
+in-process, immediately before signing**. `--whoami` compares against a **file**: a capture the
+operator took at some earlier point, with no freshness and no binding to the session under test. It
+passes forever once taken, including after the registration changes underneath it. Row 15 reaching
+PRESENT — "present and observed doing its job" — therefore rests on a `readFileSync`. That is worth
+far more than nothing, and it is not the same guarantee; the freshness gap is #462. The tool must not
+open the channel itself, because the channel server holds its own lock and a second connection
+orphans it.
+
 ### The failure signature is always the same
 
 Every one of the gaps above produces an agent that *looks* configured:

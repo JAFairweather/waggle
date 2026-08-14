@@ -19,7 +19,7 @@ import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { npubEncode } from 'nostr-tools/nip19'
+import { npubEncode, decode as nip19decode } from 'nostr-tools/nip19'
 import { installState, renderState, foreignNvoyServers, boundIdentity, ARTIFACTS, ARTIFACT_KEYS, PRESENT, UNVERIFIED, MISSING, UNKNOWN }
   from '../src/agent_install_state.mjs'
 
@@ -372,16 +372,67 @@ check(ARTIFACTS.some(a => a.blocking) && ARTIFACTS.some(a => !a.blocking),
   check(boundIdentity(JSON.stringify({ npub: NPUB }), THEIRS).match === false,
     'NEGATIVE CONTROL — decoding does not make every npub match; a different key still refuses')
 
-  // The decoder is hand-rolled so the module stays dependency-free, which makes it a place a bug
-  // can live unseen: every assertion above compares two values this same code produced, so a
-  // decoder that is wrong in a consistent way agrees with itself perfectly. Check it against the
-  // library instead, across the whole byte range rather than one lucky key.
+  // A round trip across the byte range. Every assertion above compares two values this same path
+  // produced, so a normalizer that is wrong in a consistent way agrees with itself perfectly.
   let disagreed = 0
   for (let i = 0; i < 128; i++) {
     const hex = Array.from({ length: 32 }, (_, j) => ((i * 31 + j * 7) % 256).toString(16).padStart(2, '0')).join('')
     if (boundIdentity(JSON.stringify({ npub: npubEncode(hex) }), hex).match !== true) disagreed++
   }
-  check(disagreed === 0, `the hand-rolled bech32 agrees with nip19 on 128 keys (${disagreed} disagreed)`)
+  check(disagreed === 0, `npub↔hex round-trips on 128 keys (${disagreed} disagreed)`)
+
+  // MALFORMED INPUT — the gap the 128 keys above cannot see, because every one of them is
+  // well-formed (#451 review).
+  //
+  // The old decoder read `v.slice(5, -6)` and never looked at the six characters it discarded. Those
+  // six ARE the checksum: the only part of a bech32 string that can detect corruption was the only
+  // part it threw away. Flip one of them, leave the data untouched, and a string `nip19.decode`
+  // refuses outright decoded to the same clean 32 bytes and printed a green tick — on the artifact
+  // whose whole job is to refuse what it cannot vouch for.
+  //
+  // Corrupt the DATA part instead and the refusal was confidently wrong the other way: "answers as
+  // …, NOT the minted … — this session would sign as someone else", said about a capture that got
+  // mangled between two clipboards. Both are asserted, and both assert the REASON: `match === null`
+  // alone cannot tell a correct refusal from a correct refusal that sends the operator hunting for
+  // an impostor who does not exist.
+  const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l'
+  const flip = (s, i) => {
+    const at = i < 0 ? s.length + i : i
+    return s.slice(0, at) + CHARSET[(CHARSET.indexOf(s[at]) + 1) % CHARSET.length] + s.slice(at + 1)
+  }
+  const BAD_SUM = flip(NPUB, -3)    // inside the six checksum characters — data part untouched
+  const BAD_DATA = flip(NPUB, 10)   // inside the data part
+
+  // FIXTURE GUARD. A probe that loses its own input has told you nothing: if these strings were
+  // still valid npubs, every assertion below would pass while exercising nothing.
+  const refused = s => { try { nip19decode(s); return false } catch { return true } }
+  check(refused(BAD_SUM) && refused(BAD_DATA) && !refused(NPUB) && BAD_SUM !== NPUB && BAD_DATA !== NPUB,
+    'FIXTURE — nip19 refuses both corrupted npubs and accepts the clean one, so these cases test what they claim')
+
+  const badSum = boundIdentity(JSON.stringify({ npub: BAD_SUM }), MINE)
+  check(badSum.match === null,
+    'an npub that fails its CHECKSUM is UNKNOWN — the six characters the old decoder discarded were the only ones that could catch it')
+  check(/does not decode/.test(badSum.reason) && !/someone else/.test(badSum.reason),
+    '  ...and the reason says garbled capture, not impostor')
+
+  const badData = boundIdentity(JSON.stringify({ npub: BAD_DATA }), MINE)
+  check(badData.match === null && /does not decode/.test(badData.reason),
+    'an npub whose DATA is corrupt is UNKNOWN too — not a confident "this session would sign as someone else"')
+
+  const badExpected = boundIdentity(JSON.stringify({ pubkey: MINE }), BAD_SUM)
+  check(badExpected.match === null && /expected key/.test(badExpected.reason),
+    'and a corrupt --pubkey is UNKNOWN rather than a match — the EXPECTED side is decoded too, which is how the checksum flip got its green tick')
+
+  check(boundIdentity(JSON.stringify({ npub: NPUB.slice(0, -4) }), MINE).match === null,
+    'a truncated npub is UNKNOWN — nothing about it is readable, so nothing about it is reported')
+
+  // BOTH DIRECTIONS. A normalizer that returned null for every npub would satisfy all four of those
+  // and break every real check, which is the shape that gets a guard switched off.
+  const impostor = boundIdentity(JSON.stringify({ npub: npubEncode(THEIRS) }), MINE)
+  check(impostor.match === false && /sign as someone else/.test(impostor.reason),
+    'NEGATIVE CONTROL — a WELL-FORMED npub for a different key still reads as an impostor, so this refuses the garbled input rather than all input')
+  check(boundIdentity(JSON.stringify({ npub: npubEncode(MINE) }), MINE).match === true,
+    '  ...and the matching one still passes')
 
   // MCP results reach a human wrapped in an envelope. Failing to read through it would report
   // UNKNOWN for a session that did answer, and UNKNOWN is the state operators learn to skip past.
