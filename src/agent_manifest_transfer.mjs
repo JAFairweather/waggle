@@ -58,6 +58,31 @@ export function relayFault(v) {
 }
 
 /**
+ * A task carrier, as production actually spells it.
+ *
+ * `{ pubkey, channels: [...] }`, not a bare key. This was validated as a plain hex list, so
+ * `--export` from a real working agent produced a template that `--from-file` refused: the tool
+ * could not consume its own output, and the whole point of the pair is the round trip.
+ *
+ * Nothing in the suite caught it because every fixture in it was a bare 64-hex string. The
+ * fixtures did not resemble production, which is the same failure that put a name with a space
+ * into a live outage here — the assertions were all true about a manifest shape that does not
+ * exist on any machine.
+ *
+ * The bare-key form is still accepted. It may be what an older manifest holds, and refusing a
+ * carrier that a running agent is using would be this function inventing a policy rather than
+ * validating a value. A carrier with no channels is refused either way: it names a key that
+ * carries nothing, which is indistinguishable at runtime from having no carrier at all.
+ */
+const isCarrier = x => {
+  if (HEX64.test(String(x))) return true
+  if (!x || typeof x !== 'object' || Array.isArray(x)) return false
+  if (!HEX64.test(String(x.pubkey || ''))) return false
+  return Array.isArray(x.channels) && x.channels.length > 0 && x.channels.every(c => typeof c === 'string' && c.trim() !== '')
+}
+const isCarrierList = v => Array.isArray(v) && v.length > 0 && v.every(isCarrier)
+
+/**
  * Reduce a working manifest to what may cross a machine boundary.
  *
  * Returns `{ template, dropped }` — `dropped` names every field left behind, because a transfer
@@ -115,7 +140,7 @@ export function importTemplate(template, host) {
     throw new Error(`template is missing ${missing.join(', ')} — this repo cannot derive ${missing.length === 1 ? 'it' : 'them'}, and an agent seated without ${missing.length === 1 ? 'it' : 'them'} looks configured and is not`)
   }
   if (!isHexList(template.grantors)) throw new Error('template grantors must be a non-empty list of 64-hex keys')
-  if (!isHexList(template.task_carriers)) throw new Error('template task_carriers must be a non-empty list of 64-hex keys')
+  if (!isCarrierList(template.task_carriers)) throw new Error('template task_carriers must be a non-empty list of carriers — each a 64-hex key, or {pubkey, channels:[…]} with at least one channel')
   // The reason, not only the refusal. `must be a non-empty list of wss:// URLs` about a URL that
   // IS a wss:// URL sends the operator hunting for a typo in a string whose fault is the token on
   // the end of it.

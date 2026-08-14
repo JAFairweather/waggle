@@ -68,7 +68,13 @@ export const ARTIFACTS = [
   { key: 'state-dirs', title: 'Runtime directories', blocking: true,
     why: 'Five of them, two with non-default modes. Nothing creates them and nothing lists them.' },
   { key: 'channel-key', title: 'Channel keypair', blocking: true,
-    why: 'The MCP channel transport.' },
+    why: 'The MCP channel transport. Minted at the path the registration names — the two used to disagree, so a fresh agent got a correct stanza pointing at a key nothing had created (#474).' },
+  // Its own row, not folded into the keypair. The private half is mintable here; neither of these
+  // is, and a green key row beside a missing host key is exactly how a fresh agent reads as ready.
+  { key: 'channel-host-key', title: "The broker's host key", blocking: true,
+    why: "StrictHostKeyChecking refuses an unknown host, so without this the channel will not connect. It is the broker's host key and comes from the broker doctor on that box — it cannot be minted here, and this tool will never write one." },
+  { key: 'channel-authorized', title: 'The public half is seated on the broker', blocking: true,
+    why: "The other box's authorized_keys, under its forced command. Nothing on this machine can see it, so it is UNKNOWN until an operator confirms it — never assumed from the key existing here." },
   { key: 'mcp-registration', title: 'Registered as an MCP server', blocking: true,
     why: 'How a new session becomes this agent. Needs the instance root set explicitly; the default path does not exist here.' },
   { key: 'mcp-exclusive', title: 'No other nvoy server registered', blocking: true,
