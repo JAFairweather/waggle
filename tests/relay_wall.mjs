@@ -100,10 +100,17 @@ const ADMITTED = { observed: OBSERVED.authenticated, detail: '' }
   ok('  …flagged for a human, because it may mean the wall is down', silent.needsHuman === true)
   ok('  …and it does not report the wall as up', !/is enforcing/i.test(silent.reason))
 
+  // `needsHuman` drives "⚠ this one needs a human, not a retry", so it is a ROUTING decision sitting
+  // on top of the verdict, and it needs both directions like anything else. Asserting only that
+  // `noChallenge` pages someone leaves `needsHuman: true` — page on everything — passing the whole
+  // suite: every relay restart and network blip becomes an alarm, which is how an alarm stops being
+  // read at all. The fail-open direction is covered above; this is the same fault on the other axis.
   for (const bad of [OBSERVED.unreachable, OBSERVED.timedOut, OBSERVED.error]) {
     const v = wallVerdict({ mustBeRefused: { observed: bad }, mustBeAdmitted: ADMITTED })
     ok(`must-be-refused '${bad}' -> inconclusive, not a pass`, v.state === 'inconclusive' && v.exitCode === 3)
     ok(`  …and '${bad}' is explicitly not called evidence the wall is up`, /not evidence/i.test(v.reason))
+    ok(`  …and '${bad}' is a retry, NOT a page — a transport fault is not the wall coming down`,
+      v.needsHuman === false, String(v.needsHuman))
   }
 
   ok('a missing must-be-refused result is inconclusive, not a pass',
