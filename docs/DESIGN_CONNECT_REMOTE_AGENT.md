@@ -62,7 +62,7 @@ produce this artifact*; a documented instruction to type something by hand is no
 | 10 | Runtime manifest `instances/<id>.json` | agent root | `tools/connect-agent.mjs` ✅ — writes with `wx`, so it never overwrites one |
 | 11 | Runtime state directories | agent root | `tools/connect-agent.mjs` ✅ — each with its own mode |
 | 12 | MCP-channel keypair | `mcp-channel/id_ed25519` | `tools/connect-agent.mjs` ✅ — `ssh-keygen -t ed25519`, mode 600 |
-| 13 | Registration as an MCP server | **the runtime's own config**, not Claude Code's | `tools/connect-agent.mjs --stanza` — in review (#465) |
+| 13 | Registration as an MCP server | the host runtime's own config | `tools/connect-agent.mjs --stanza` ✅ (#464) — one stanza, rendered per runtime; the operator still types it |
 | 14 | kind 10050 inbound DM relay list | public relays | `tools/publish-dm-relay-list.mjs` ✅ (Bunker path added #381) — **but no step invokes it** |
 | 15 | Proof that the registered server answers as THIS agent | the running session | `tools/connect-agent.mjs --whoami` ✅ (#338) — the operator captures `nvoy_whoami` and the tool compares |
 | 16 | Startup file the runtime reads at session start | `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` | `tools/connect-agent.mjs --startup` — in review (#467) |
@@ -76,7 +76,7 @@ is the reason the goal names three runtimes: Codex reads `AGENTS.md` and registe
 there is a settings-file edit. A tool that emits one Claude Code command is not runtime-neutral, it
 is Claude Code with the others unimplemented.
 
-**Ten of the sixteen have a merged tool, and two more are in review.** The four with none are all
+**Eleven of the sixteen have a merged tool, and one more is in review.** The four with none are all
 deliberate, not backlog. Rows 2, 3 and 4 are the
 credential and the permissions on it — the administrator seats those, and no session should be able
 to. Row 5 is a directory this repo does not write. Row 14 has a tool and no step that calls it,
@@ -97,6 +97,21 @@ identity's sealed inbox and posted under its key, and nothing would have errored
 defect moved one layer up from Pair to Bind and found nothing waiting.
 
 Registered is not sole — #380 closed that half. Sole is not yours; #338 closes this one.
+
+And "sole" was answered by asking one runtime with the wrong question (#464). The check shelled out
+to `claude mcp list`, so on a Codex box or a Pi it reported `could not run` forever and the
+registration could never be verified at all — the runtimes this design exists to serve were the
+ones it could not see. Worse, the name test matched `nvoy` and `nvoy-…` only, and the channel
+registered on the maintainer's machine is spelled `nvoy_codex_jaf`. The guard reported
+`nvoy-<name> is the only nvoy server registered` with a foreign signing channel beside it.
+
+Both are fixed in `src/mcp_runtimes.mjs`: the server is described **once** — command, args, env —
+and each runtime renders it, so Claude Code and Codex cannot answer the same question differently.
+Every runtime installed on the host is asked, and the report keeps three outcomes apart that were
+previously two: *not installed* (not this host's runtime, not a failure), *installed but
+unreadable* (INCONCLUSIVE), and *answered* (a list, possibly empty). What each CLI actually does
+was run, not assumed — including `gemini mcp`, which returns `Unknown argument: mcp`, which is why
+Gemini is given a config stanza and no command line.
 
 It closes it by a weaker proof than the Bunker path's, and the two should not be read as equivalent.
 `publish_relay_list.mjs` compares `EXPECT_PUBKEY` against a key derived from the **live signer,

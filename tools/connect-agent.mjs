@@ -24,6 +24,7 @@
 //
 //   node tools/connect-agent.mjs --name oliver --pubkey <64-hex> --owner <64-hex>
 //   node tools/connect-agent.mjs --name oliver --check      # changes nothing
+//   node tools/connect-agent.mjs --name oliver --check --stanza   # how to register, per runtime
 //
 // --whoami <path>    the `nvoy_whoami` result captured from the session under test, compared
 //                    against --pubkey. This is the MCP path's EXPECT_PUBKEY (#338): registered is
@@ -38,7 +39,8 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { boundIdentity, foreignNvoyServers, installState, renderState } from '../src/agent_install_state.mjs'
+import { boundIdentity, installState, renderState } from '../src/agent_install_state.mjs'
+import { channelStanza, cliRuntimes, foreignServers, isMine, registrationHelp, stanzaJson } from '../src/mcp_runtimes.mjs'
 
 const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (process.argv[i + 1] || '') }
 const has = n => process.argv.includes(n)
@@ -170,29 +172,73 @@ const keyOk = existsSync(keyPath) && mode(keyPath) === 0o600 && existsSync(`${ke
 see('channel-key', existsSync(keyPath), keyOk, existsSync(keyPath) ? (keyOk ? 'mode 600, with its public half' : `mode ${mode(keyPath)?.toString(8)}`) : 'absent')
 
 // ── MCP registration. Reported, never written: it edits the operator's own config, and this tool
-// prints the exact command rather than reaching into it. ────────────────────────────────────
-let registered = null, regNote = '', mcpList = null
-try {
-  mcpList = execFileSync('claude', ['mcp', 'list'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30000 })
-  registered = new RegExp(`^nvoy-${name}:`, 'm').test(mcpList)
-  regNote = registered
-    ? 'registered — note that "Failed to connect" here is EXPECTED while the real channel holds the lock'
-    : `not registered. Run:\n      claude mcp add nvoy-${name} -s user -e NVOY_INSTANCE_ROOT=${instDir} -- <node> <path>/claude-channel.mjs --instance ${name}`
-} catch { mcpList = null; registered = null; regNote = 'could not run `claude mcp list` — INCONCLUSIVE, not absent' }
+// prints the exact command rather than reaching into it.
+//
+// Every runtime installed on this host is asked, not just Claude Code (#464, #333 §1). Three
+// outcomes, kept apart on purpose:
+//   not installed  — not one of this host's runtimes. Not a failure, and NOT inconclusive.
+//   unreadable     — installed, asked, could not be understood. INCONCLUSIVE.
+//   answered       — a list, possibly empty. Empty means nothing is registered, and says so.
+// Collapsing the first two is how a Codex box reported "could not run `claude mcp list`" forever
+// while its own registration sat there, readable, unasked. ──────────────────────────────────
+const stanza = channelStanza({
+  agent: name, command: '<node>', args: ['<path>/claude-channel.mjs'], instanceRoot: instDir,
+})
+const probes = []
+for (const rt of cliRuntimes()) {
+  let out = null, installed = true
+  try {
+    out = execFileSync(rt.bin, rt.listArgs, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30000 })
+  } catch (e) {
+    // ENOENT is the binary not being here at all. A non-zero exit ran and failed, which is a
+    // different thing and stays INCONCLUSIVE.
+    installed = e?.code !== 'ENOENT'
+    out = null
+  }
+  probes.push({ rt, installed, names: installed ? rt.parse(out) : null })
+}
+const answered = probes.filter(p => p.installed && Array.isArray(p.names))
+const unreadable = probes.filter(p => p.installed && p.names === null)
+const hosts = answered.filter(p => p.names.some(n => isMine(n, name))).map(p => p.rt.label)
+
+let registered = null, regNote = ''
+if (answered.length === 0) {
+  registered = null
+  regNote = unreadable.length
+    ? `${unreadable.map(p => `\`${p.rt.bin} ${p.rt.listArgs.join(' ')}\``).join(', ')} could not be read — INCONCLUSIVE, not absent`
+    : 'no MCP host CLI on this machine — register from the stanza (--stanza) and prove it with an initialize + tools/list handshake'
+} else if (hosts.length) {
+  registered = true
+  const caveat = answered.find(p => p.rt.listCaveat && hosts.includes(p.rt.label))?.rt.listCaveat
+  regNote = `registered in ${hosts.join(', ')}${caveat ? ` — ${caveat}` : ''}`
+} else {
+  registered = false
+  regNote = `not registered in ${answered.map(p => p.rt.label).join(', ')}. Run:\n`
+    + answered.map(p => `      ${p.rt.add(stanza)}`).join('\n')
+}
+if (unreadable.length && answered.length) {
+  regNote += `\n      (${unreadable.map(p => p.rt.label).join(', ')} is installed but could not be read — UNCHECKED)`
+}
 see('mcp-registration', registered, false, regNote)
 
 // Registered is not SOLE. #338: the acting tools live on a generically-named server that is not
 // instance-bound, so a correct `nvoy-<name>` alongside a bare `nvoy` still signs as somebody else.
 // This is the MCP path's EXPECT_PUBKEY — the Bunker path hard-stops on a key mismatch, and until
 // now this one had no guard at all.
-const foreign = foreignNvoyServers(mcpList, name)
+//
+// Asserted across every runtime that answered, and labelled with which one, because "remove it"
+// is a different command in each. It also now sees `nvoy_other` and not only `nvoy-other`: the
+// hyphen-only test reported sole occupancy with an underscore-spelled channel beside it (#464).
+const foreign = answered.length === 0
+  ? null
+  : answered.flatMap(p => foreignServers(p.names, name).map(s => ({ rt: p.rt, server: s })))
 see('mcp-exclusive', foreign === null ? null : foreign.length === 0, foreign !== null && foreign.length === 0,
   foreign === null
-    ? 'could not run `claude mcp list` — INCONCLUSIVE, not absent'
+    ? (unreadable.length ? 'no runtime could be read — INCONCLUSIVE, not absent' : 'no MCP host CLI on this machine to ask — UNKNOWN, not clean')
     : foreign.length === 0
-      ? `nvoy-${name} is the only nvoy server registered`
-      : `also registered: ${foreign.join(', ')} — these carry the tools that SIGN, and not as ${name}. Remove with \`claude mcp remove <name>\` before acting.`)
-if (foreign?.length) warn.push(`${foreign.join(', ')} would sign as another identity from this session`)
+      ? `nvoy-${name} is the only nvoy server registered in ${answered.map(p => p.rt.label).join(', ')}`
+      : `also registered: ${foreign.map(f => `${f.server} (${f.rt.label})`).join(', ')} — these carry the tools that SIGN, and not as ${name}. Remove with \`${foreign.map(f => f.rt.remove(f.server))[0]}\` before acting.`)
+if (foreign?.length) warn.push(`${foreign.map(f => f.server).join(', ')} would sign as another identity from this session`)
 
 // Sole is not YOURS (#338). Nothing here can call the server — the channel holds its own lock — so
 // the operator captures `nvoy_whoami` from the session under test and passes the file. Reported
@@ -219,5 +265,19 @@ if (CHECK) console.log(`\n(--check: nothing was changed)`)
 console.log(`\n${name} — ${HERE}\n`)
 console.log(renderState(report))
 if (warn.length) { console.log(`\ncarried forward without understanding:`); for (const w of warn) console.log(`  ! ${w}`) }
+
+// --stanza prints the registration for EVERY runtime, labelled, including the neutral JSON for a
+// host with no CLI to run — a Pi, a headless box, anything self-hosted. Printed on request rather
+// than always, because an unrequested wall of config is how the one line that mattered gets missed.
+if (has('--stanza')) {
+  console.log(`\nregister the channel — pick your runtime, not the first block you see:`)
+  for (const h of registrationHelp(stanza)) {
+    console.log(`\n  ${h.label}`)
+    if (h.kind === 'cli') console.log(`    ${h.line}`)
+    else console.log(`    ${h.config}\n` + h.json.split('\n').map(l => `    ${l}`).join('\n'))
+  }
+  console.log(`\n  <node> and <path> are this host's node and its nvoy checkout. Nothing above is secret;`)
+  console.log(`  the pairing is delivered to the installer on stdin and never appears in a paste block (#333).`)
+}
 console.log(`\nexit ${report.exitCode} (${report.outcome})`)
 process.exit(report.exitCode)
