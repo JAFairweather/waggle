@@ -62,6 +62,48 @@ export function exitFor(status) {
   return EXIT.NETWORK
 }
 
+/**
+ * WHICH KEY SIGNS — and a refusal to guess (#477).
+ *
+ * #367 decides that every key which goes on the relay is bunker-held, and #366 establishes that a
+ * `relay_members` row cannot be removed without the key's cooperation. Put together: signing a
+ * claim as the wrong identity writes PERMANENT state under a key nobody chose, and the tool reports
+ * success while doing it.
+ *
+ * So an ambiguous configuration is refused rather than resolved by precedence. A silent preference
+ * — "a pairing wins over --key", or the reverse — is exactly the shape that puts the wrong key on
+ * the relay quietly. There is no default here: one source, named explicitly, or an error.
+ *
+ * Pure: it takes strings and returns a verdict, so both directions can be asserted without a key
+ * file, a bunker or a socket. It does not import the signer backend — `src/` may not (egress ban).
+ *
+ * @returns {{kind: 'bunker'|'local'}|{error: string}}
+ */
+export function chooseSigningSource({ keyArg = null, uriFile = '', clientFile = '' } = {}) {
+  const key = String(keyArg || '').trim()
+  const uri = String(uriFile || '').trim()
+  const client = String(clientFile || '').trim()
+  const pairing = !!uri || !!client
+
+  if (key && pairing) {
+    return { error: '--key and a bunker pairing are BOTH configured, and this tool will not pick one.\n' +
+      '  A claim writes a relay_members row that cannot be removed without that key (#366), so\n' +
+      '  signing as the wrong identity is permanent. Unset WAGGLE_BUNKER_URI_FILE and\n' +
+      '  WAGGLE_NIP46_CLIENT_NSEC_FILE, or drop --key.' }
+  }
+  if (pairing) {
+    if (!uri || !client) {
+      return { error: `only ${uri ? 'WAGGLE_BUNKER_URI_FILE' : 'WAGGLE_NIP46_CLIENT_NSEC_FILE'} is set. ` +
+        'A NIP-46 pairing needs both:\n' +
+        '  WAGGLE_BUNKER_URI_FILE (the bunker URI) and WAGGLE_NIP46_CLIENT_NSEC_FILE (the client key).' }
+    }
+    return { kind: 'bunker' }
+  }
+  if (key) return { kind: 'local' }
+  return { error: 'no signing key. Either pass --key <path>, or set WAGGLE_BUNKER_URI_FILE and\n' +
+    '  WAGGLE_NIP46_CLIENT_NSEC_FILE to sign through a bunker pairing (#477).' }
+}
+
 /** Local check of the relay's mint bounds. Returns null when fine, else the operator's message. */
 export function checkMintBounds(ttl, uses) {
   if (!Number.isFinite(ttl) || ttl <= 0) return '--ttl must be a positive number of seconds'

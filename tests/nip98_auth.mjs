@@ -12,7 +12,8 @@
 import { createHash } from 'node:crypto'
 import { generateSecretKey, getPublicKey, verifyEvent, finalizeEvent } from 'nostr-tools/pure'
 import { nip98Template, nip98Header, expectedUrl } from '../src/nip98.mjs'
-import { refusal, exitFor, checkMintBounds, EXIT, CLAIM_RATE_LIMIT, MIN_TTL_SECS, MAX_TTL_SECS, MAX_USES }
+import { withPinnedCustody } from '../src/nostr_signer.mjs'
+import { refusal, exitFor, checkMintBounds, chooseSigningSource, EXIT, CLAIM_RATE_LIMIT, MIN_TTL_SECS, MAX_TTL_SECS, MAX_USES }
   from '../src/relay_invite.mjs'
 
 // src/nip98.mjs does not sign — the key stays with the caller, which is the console's signer
@@ -164,6 +165,86 @@ ok('building without a url is refused, naming why the url matters', /tenant host
   ok('NEGATIVE CONTROL — the default 3600/1 is accepted', checkMintBounds(3600, 1) === null)
   ok('and both boundaries are inclusive, not off by one',
     checkMintBounds(MIN_TTL_SECS, 1) === null && checkMintBounds(MAX_TTL_SECS, MAX_USES) === null)
+}
+
+// ── Which key signs (#477) ────────────────────────────────────────────────────────────────────
+// The tool could only sign with a key read off disk, so a bunker-held identity — the one class
+// #367 requires — could not claim the invite that would admit it. The chooser is the new decision,
+// and the failure it must never have is picking silently: a claim writes a relay_members row that
+// cannot be removed without that key (#366), so the wrong signer here is permanent state.
+{
+  ok('a --key path alone chooses the local file',
+    chooseSigningSource({ keyArg: '~/.nvoy/agent.nsec' }).kind === 'local')
+  ok('a complete pairing alone chooses the bunker',
+    chooseSigningSource({ uriFile: '/run/uri', clientFile: '/run/client' }).kind === 'bunker')
+
+  // THE ONE THAT MATTERS. Precedence either way is a tool that quietly admits an identity nobody
+  // chose, and reports success doing it.
+  const both = chooseSigningSource({ keyArg: '/k', uriFile: '/run/uri', clientFile: '/run/client' })
+  ok('--key AND a pairing is refused, not resolved by precedence', !both.kind && !!both.error)
+  ok('…and the refusal says which state is at stake, not just "ambiguous"',
+    /#366|cannot be removed/.test(both.error))
+  ok('…and names both things to unset, so it is actionable',
+    /WAGGLE_BUNKER_URI_FILE/.test(both.error) && /--key/.test(both.error))
+
+  // Half a pairing is its own mistake and must not fall back to "no key configured", which would
+  // send the operator to add a --key they did not want.
+  for (const [half, missing] of [[{ uriFile: '/u' }, 'WAGGLE_NIP46_CLIENT_NSEC_FILE'],
+                                 [{ clientFile: '/c' }, 'WAGGLE_BUNKER_URI_FILE']]) {
+    const r = chooseSigningSource(half)
+    ok(`half a pairing is refused and names the missing ${missing}`, !r.kind && r.error.includes(missing))
+  }
+
+  const none = chooseSigningSource({})
+  ok('no source at all is refused', !none.kind && !!none.error)
+  ok('…and offers BOTH routes, so the bunker path is discoverable from the error',
+    /--key/.test(none.error) && /WAGGLE_BUNKER_URI_FILE/.test(none.error))
+
+  // Whitespace-only values are what an unset-but-exported env var looks like. Treating '' as
+  // "configured" would make an empty export refuse a perfectly good --key.
+  ok('an empty pairing env does not count as configured',
+    chooseSigningSource({ keyArg: '/k', uriFile: '  ', clientFile: '' }).kind === 'local')
+}
+
+// ── A remote signer's event must still make a valid NIP-98 header ─────────────────────────────
+// This is the composition #477 actually adds: nip98Template builds, a NIP-46 signer returns the
+// signed event over the wire as JSON, and the header must carry something buzz-auth verifies. A
+// bunker's answer arrives as `JSON.parse(...)` with no local provenance, so the stub does the same
+// roundtrip — which also strips nostr-tools' verifiedSymbol and makes verifyEvent below real (#320).
+{
+  const remoteSk = generateSecretKey()
+  const remote = { pubkey: getPublicKey(remoteSk), remote: true,
+    signEvent: async (e) => JSON.parse(JSON.stringify(finalizeEvent(e, remoteSk))),
+    nip44Encrypt: async () => '', nip44Decrypt: async () => '', close() {} }
+
+  const pinned = withPinnedCustody(remote, remote.pubkey)
+  const claimBody = JSON.stringify({ code: 'abc', policy_receipt: 'r' })
+  const { template, body } = await nip98Template({ url, method: 'POST', body: claimBody })
+  const signedRemote = await pinned.signEvent(template)
+  const remoteHeader = nip98Header(signedRemote)
+
+  const back = JSON.parse(Buffer.from(remoteHeader.slice(6), 'base64').toString('utf8'))
+  ok('a bunker-signed template produces a header that verifies', verifyEvent(back))
+  ok('…signed by the agent identity, not by whatever built the template', back.pubkey === remote.pubkey)
+  ok('…and its payload tag still hashes the exact body being sent', tag(back, 'payload') ===
+    createHash('sha256').update(Buffer.from(body, 'utf8')).digest('hex'))
+
+  // Two signatures per claim where a join policy applies (accept-policy, then the claim), and a
+  // bunker treats each as an independent round trip. Proving the first proves nothing about the
+  // second, so the wrapper has to check every one — assert the counter, not just the last event.
+  await pinned.signEvent((await nip98Template({ url, method: 'POST', body: '{}' })).template)
+  ok('every signature in the run is checked, not only the first', pinned.signatures === 2)
+
+  // NEGATIVE CONTROL — the pin has to be able to FAIL, or "every signature verified" is a message
+  // the tool prints unconditionally. A bunker holding more than one identity is the real case.
+  const impostor = generateSecretKey()
+  const swapped = withPinnedCustody({ ...remote,
+    signEvent: async (e) => JSON.parse(JSON.stringify(finalizeEvent(e, impostor))) }, remote.pubkey)
+  let custody = null
+  try { await swapped.signEvent((await nip98Template({ url, body: '{}' })).template) } catch (e) { custody = e }
+  ok('NEGATIVE CONTROL — a signer answering as a different key is caught', /CUSTODY MISMATCH/.test(String(custody?.message)))
+  ok('…and it exits 1 (wrong identity), not 2 (broken signer)', custody?.exitCode === EXIT.INPUT)
+  ok('…and says nothing was published, because nothing was', /Nothing published/.test(String(custody?.message)))
 }
 
 console.log(fails ? `\nNIP-98 AUTH FAIL — ${fails}` : '\nNIP-98 AUTH PASS — the envelope matches what buzz-auth verifies')

@@ -21,6 +21,22 @@
 //       --key ~/.nvoy/agent.nsec --code-file ~/.nvoy/invite.code \
 //       [--accept-terms --confirm-age]
 //
+// A BUNKER-HELD KEY CAN CLAIM (#477). This tool shipped signing only with `finalizeEvent` over a
+// key read from disk — so the one class of identity #367 mandates, an agent whose key lives in the
+// owner's Bunker and never on this host, could not claim the invite that would admit it. The whole
+// chain above was reachable by every key except the ones it was built for. `--key` still works, for
+// the owner minting and for a direct-nsec agent; a NIP-46 pairing is now the alternative:
+//
+//   WAGGLE_BUNKER_URI_FILE=… WAGGLE_NIP46_CLIENT_NSEC_FILE=… BUZZ_RELAY_URL=… \
+//       node tools/relay-invite.mjs claim --code-file ~/.nvoy/invite.code --accept-terms
+//
+// ONE SOURCE, NEVER A PREFERENCE. `--key` and a pairing together is refused rather than resolved by
+// precedence — see `chooseSigningSource` in ../src/relay_invite.mjs for why that refusal is the
+// safe behaviour and a silent winner is not. Every signature is verified and pinned to one identity
+// (`withPinnedCustody`), because a bunker answers each `sign_event` as an independent round trip:
+// proving the accept-policy signature proves nothing about the claim signature that follows it.
+// Set EXPECT_PUBKEY to pin explicitly; unset, it pins to the pairing's own advertised key.
+//
 // THE JOIN POLICY IS NOT OPTIONAL WHERE ONE IS CONFIGURED. The v2 claim path refuses without a
 // `policy_receipt` whenever the deployment has a join policy, and the community relay has one
 // today with age attestation required — so `claim` without it is a guaranteed
@@ -49,9 +65,9 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'no
 import { dirname, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { nip19 } from 'nostr-tools'
-import { getPublicKey, finalizeEvent } from 'nostr-tools/pure'
 import { nip98Template, nip98Header, expectedUrl } from '../src/nip98.mjs'
-import { refusal, checkMintBounds } from '../src/relay_invite.mjs'
+import { loadBunkerSignerFiles, makeLocalSigner, withPinnedCustody } from '../src/nostr_signer.mjs'
+import { refusal, checkMintBounds, chooseSigningSource } from '../src/relay_invite.mjs'
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
@@ -73,31 +89,83 @@ const USAGE = `usage:
                                                      [--accept-terms] [--confirm-age]
 
   --accept-terms   accept this deployment's join policy (required where one is configured)
-  --confirm-age    attest, as a person, that the age requirement is met. Never inferred.`
+  --confirm-age    attest, as a person, that the age requirement is met. Never inferred.
+
+  Instead of --key, sign through a NIP-46 pairing — the only way a bunker-held identity can
+  claim, and the shape #367 requires (#477). Set BOTH, and do not also pass --key:
+    WAGGLE_BUNKER_URI_FILE=<path>  WAGGLE_NIP46_CLIENT_NSEC_FILE=<path>
+    EXPECT_PUBKEY=<64-hex>         optional; pins which identity may sign.`
 
 if (!cmd || !['mint', 'claim'].includes(cmd)) die(USAGE)
 
 // --- the signing key: from a file, mode-checked, never echoed -----------------------------------
-function readSecret(pathArg) {
-  if (!pathArg) die(`--key <path> is required. The key is read from a file, never from argv.\n${USAGE}`)
+// Returns the file's TEXT, not a decoded key — `makeLocalSigner` does the decoding, and this stays
+// the place that checks the file itself, which a signer built from an env var has no path to check.
+function readKeyText(pathArg) {
   const p = expand(pathArg)
   if (!existsSync(p)) die(`no key file at ${p}`)
   const mode = statSync(p).mode & 0o777
   // A world- or group-readable key file is a finding, not a warning to scroll past.
   if (mode & 0o077) die(`${p} is mode ${mode.toString(8)} — a signing key must be 0600. Fix it before using this.`, 1)
   const raw = readFileSync(p, 'utf8').trim()
-  if (/^nsec1/i.test(raw)) { try { return nip19.decode(raw).data } catch { die(`${p} does not contain a decodable nsec`) } }
-  if (/^[0-9a-f]{64}$/i.test(raw)) return Buffer.from(raw.toLowerCase(), 'hex')
+  // Decoded here and thrown away, only so the failure names the file. `makeLocalSigner`'s own
+  // message is about a credential, and the operator needs to know WHICH file is wrong.
+  if (/^nsec1/i.test(raw)) { try { nip19.decode(raw) } catch { die(`${p} does not contain a decodable nsec`) } return raw }
+  if (/^[0-9a-f]{64}$/i.test(raw)) return raw.toLowerCase()
   die(`${p} holds neither an nsec nor a 64-character hex key`)
 }
 
-async function post(path, bodyObj, secret) {
+/**
+ * The one signer for this run — local file or bunker pairing, chosen explicitly, custody pinned.
+ *
+ * `what` names the state this run will write, so an identity mismatch is refused in the operator's
+ * terms rather than as a hex comparison.
+ */
+async function buildSigner(what) {
+  const keyArg = arg('key')
+  const uriFile = String(process.env.WAGGLE_BUNKER_URI_FILE || '').trim()
+  const clientFile = String(process.env.WAGGLE_NIP46_CLIENT_NSEC_FILE || '').trim()
+
+  const choice = chooseSigningSource({ keyArg, uriFile, clientFile })
+  if (choice.error) die(`${choice.error}\n\n${USAGE}`)
+
+  let base
+  try {
+    base = choice.kind === 'bunker'
+      ? loadBunkerSignerFiles(uriFile, clientFile)
+      : makeLocalSigner(readKeyText(keyArg), expand(keyArg))
+  } catch (e) { die(`could not load the signing key: ${e.message}`) }
+
+  const expect = String(process.env.EXPECT_PUBKEY || '').trim().toLowerCase()
+  if (expect && !/^[0-9a-f]{64}$/.test(expect)) die('EXPECT_PUBKEY must be a 64-character hex pubkey')
+  if (expect && expect !== base.pubkey) {
+    // Refused BEFORE the first round trip. A claim inserts a relay_members row that cannot be
+    // removed without that key's cooperation (#366), so the wrong identity here is permanent.
+    try { base.close() } catch { /* nothing published; the pool going down quietly is fine */ }
+    die(`EXPECT_PUBKEY does not match the ${choice.kind === 'bunker' ? 'pairing' : 'key file'}:\n` +
+      `  expected ${expect}\n  signer is ${base.pubkey}\n` +
+      `  Refusing before signing — ${what} writes state under whichever key signs.`)
+  }
+  // Pinning to the signer's OWN pubkey when EXPECT_PUBKEY is unset is not a no-op: a bunker holding
+  // several identities can answer sign_event as one the pairing never advertised, and every
+  // signature after the first is a fresh chance to. Unpinned, the tool would verify each signature
+  // and still not notice they came from different keys.
+  return withPinnedCustody(base, expect || base.pubkey)
+}
+
+async function post(path, bodyObj, signer) {
   const url = expectedUrl(process.env.BUZZ_RELAY_URL, path)
   // src/nip98.mjs deliberately does not sign — the console signs through the operator's own
-  // signer and this tool signs with a key from a file, so neither can be baked into the builder.
-  // It lives in console/ because the page is its other caller; see the header there.
+  // signer and this tool signs with a key from a file or a bunker pairing, so none of them can be
+  // baked into the builder. It lives in console/ because the page is its other caller.
   const { template, body } = await nip98Template({ url, method: 'POST', body: JSON.stringify(bodyObj) })
-  const header = nip98Header(finalizeEvent(template, secret))
+  let signed
+  // A custody mismatch or an unverifiable signature carries its own exit code from the wrapper (1
+  // and 2). Anything else — a bunker timeout, a refused approval — is the signer failing to sign,
+  // which is exit 2 and not a relay result.
+  try { signed = await signer.signEvent(template) }
+  catch (e) { die(e.message, e.exitCode || 2) }
+  const header = nip98Header(signed)
   let res
   try {
     // The SAME string that was hashed. Re-serialising here would sign one set of bytes and send
@@ -127,7 +195,7 @@ async function get(path) {
 
 // --- mint --------------------------------------------------------------------------------------
 if (cmd === 'mint') {
-  const secret = readSecret(arg('key'))
+  const signer = await buildSigner('minting an invite')
   const ttl = Number(arg('ttl', '3600'))
   const uses = Number(arg('uses', '1'))
   // Caught here rather than at the relay: a 400 comes back as exit 2, "relay/network", which
@@ -137,8 +205,8 @@ if (cmd === 'mint') {
   const out = expand(arg('out', '~/.nvoy/relay-invite.code'))
   if (existsSync(out)) die(`${out} already exists. Refusing to overwrite — an invite code file is a bearer secret; move it aside if you mean to replace it.`)
 
-  console.log(`relay-invite: minting as ${nip19.npubEncode(getPublicKey(secret))}`)
-  const { status, json, text } = await post('/api/invites', { ttl_secs: ttl, max_uses: uses }, secret)
+  console.log(`relay-invite: minting as ${nip19.npubEncode(signer.pubkey)} (${signer.remote ? 'bunker pairing' : 'local key file'})`)
+  const { status, json, text } = await post('/api/invites', { ttl_secs: ttl, max_uses: uses }, signer)
 
   if (status === 403) {
     console.error('relay-invite: 403 — this key does not hold owner or admin in relay_members.')
@@ -168,12 +236,13 @@ if (cmd === 'mint') {
   if (json.expires_at) console.log(`  Expires: ${new Date(Number(json.expires_at) * 1000).toISOString()}`)
   if (json.max_uses != null) console.log(`  Uses: ${json.max_uses}`)
   console.log('')
+  signer.close()
   process.exit(0)
 }
 
 // --- claim -------------------------------------------------------------------------------------
 if (cmd === 'claim') {
-  const secret = readSecret(arg('key'))
+  const signer = await buildSigner('a claim')
   const codePath = arg('code-file')
   if (!codePath) die(`--code-file <path> is required. The code is read from a file, never from argv.\n${USAGE}`)
   const cp = expand(codePath)
@@ -181,8 +250,11 @@ if (cmd === 'claim') {
   const code = readFileSync(cp, 'utf8').trim()
   if (!code) die(`${cp} is empty`)
 
-  const joiner = getPublicKey(secret)
-  console.log(`relay-invite: claiming as ${nip19.npubEncode(joiner)}`)
+  console.log(`relay-invite: claiming as ${nip19.npubEncode(signer.pubkey)} (${signer.remote ? 'bunker pairing' : 'local key file'})`)
+  if (signer.remote) {
+    console.log('  Signing through NIP-46 — the bunker will prompt for approval, TWICE where a join')
+    console.log('  policy applies (accept-policy, then the claim). An unanswered prompt times out.')
+  }
 
   // --- the join policy, before the claim ---------------------------------------------------------
   // The v2 claim path refuses without a receipt wherever a policy is configured, so asking first
@@ -218,7 +290,7 @@ if (cmd === 'claim') {
       // Exactly what the operator stated — never derived from needsAge. If the policy requires it
       // the flag was already enforced above, so this is true there; where it is not required this
       // sends false rather than a convenient true.
-      { code, policy_version: version, age_confirmed: flag('confirm-age') }, secret)
+      { code, policy_version: version, age_confirmed: flag('confirm-age') }, signer)
     if (acc.status === 429) die(`429 — ${refusal(acc.status, acc.json, acc.text)}`, 4)
     if (acc.status < 200 || acc.status >= 300)
       die(`accept-policy ${acc.status} — ${refusal(acc.status, acc.json, acc.text)}`,
@@ -236,7 +308,7 @@ if (cmd === 'claim') {
   }
 
   const body = policyReceipt ? { code, policy_receipt: policyReceipt } : { code }
-  const { status, json, text } = await post('/api/invites/claim', body, secret)
+  const { status, json, text } = await post('/api/invites/claim', body, signer)
 
   if (status === 401) die(`401 — the relay rejected the signature: ${refusal(status, json, text)}`, 1)
   if (status === 403 || status === 429) die(`${status} — ${refusal(status, json, text)}`, 4)
@@ -248,6 +320,7 @@ if (cmd === 'claim') {
   console.log('')
   console.log(`  ${status} — ${outcome}`)
   console.log('')
+  console.log(`  ${signer.signatures} signature(s), every one verified against ${signer.pinned.slice(0, 8)}….`)
   console.log('  This key should now be in relay_members. That is NOT the same as having proved it:')
   console.log('  the next step is to publish one kind:0 from this key against the community relay and')
   console.log('  read it back cold. Until that lands, treat AUTH as untested (#357).')
@@ -257,5 +330,6 @@ if (cmd === 'claim') {
   console.log('  The invite code is still on disk and is still a bearer secret. If you are done with it:')
   console.log(`    rm ${cp}`)
   console.log('')
+  signer.close()
   process.exit(0)
 }
