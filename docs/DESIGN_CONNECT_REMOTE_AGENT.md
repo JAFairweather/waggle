@@ -12,28 +12,34 @@ entirely by hand — and then the first slice of the build.
 | `src/agent_install_state.mjs` | **built** — four-state reporting: present / unverified / missing / unknown |
 | `tools/connect-agent.mjs` | **built** — the machine-side half, idempotent, never overwrites |
 | NIP-05 registration | **not built** — the directory is not this repo's to write |
-| kind 0 publication | **not built, and now known to be the critical path** — see below |
+| kind 0 publication | **built (#459), never run** — still the critical path; see below |
 
-**The `kind:0` row is the whole remaining gap (#344).** It was listed here as one missing piece
-among several. It is not: it is the only thing standing between this design and a working
-experience. Buzz resolves an at-word against a `users` row's `display_name`, which only
-`handle_kind0_profile` writes, keyed on `event.pubkey` — and `event.rs` rejects any event whose
-pubkey differs from the authenticated identity, so **waggle cannot publish it on the agent's
-behalf**. The agent's own key must, and the community relay refuses to authenticate an outside key
-at NIP-42 time (`enforce_relay_membership`, ahead of channel membership, on both the websocket and
-HTTP paths). Proven with a live 2×2, not read off the source.
+**The `kind:0` row is the whole remaining gap (#344), and its owner changed.** Buzz resolves an
+at-word against a `users` row's `display_name`, which only `handle_kind0_profile` writes, keyed on
+`event.pubkey` — and `event.rs` rejects any event whose pubkey differs from the authenticated
+identity, so **waggle cannot publish it on the agent's behalf**. The agent's own key must, on that
+relay, and the community relay refuses to authenticate an outside key at NIP-42 time
+(`enforce_relay_membership`, ahead of channel membership, on both the websocket and HTTP paths).
+Proven with a live 2×2, not read off the source. None of that has changed.
 
-So this row is **not a build task**. It is an infrastructure ask, and it is the one thing to raise
-rather than engineer around. Everything else in this design works without it.
+What changed is that there is now a tool. Until #459 every publisher here took `--key <path>` and
+signed locally, so a Bunker-held identity — which is the design (#141) — had no route to the one
+event that names it. `tools/publish_profile.mjs` signs through the Bunker and pushes to both sides
+of the wall.
+
+So this row is **no longer a build task and not yet an infrastructure ask**: it is a deploy and a
+single operator run, needing `BUZZ_RELAY_URL`, an auth tag, and the *path* to a seated pairing.
+State it that way. Reading this row as "not built" invites someone to build it a second time, which
+has happened here before.
 
 Three suites cover the new code — `capability_vocabulary`, `connect_plan`, `agent_install_state` —
 each with a negative control that fires. **None of it has run in production**, and a green suite is
 not a live proof.
 
-The short version: **an agent is not one artifact, it is fifteen**, spread across two machines,
-three checkouts and a public relay network. Nine of the fifteen have no tool that creates them. Every
-omission fails the same way — silently, with the agent appearing to work. That is the problem to
-solve, and convenience is not the reason to solve it.
+The short version: **an agent is not one artifact, it is sixteen**, spread across two machines,
+three checkouts and a public relay network. Four of the sixteen still have no tool, and all four are
+meant not to. Every omission fails the same way — silently, with the agent appearing to work. That
+is the problem to solve, and convenience is not the reason to solve it.
 
 ---
 
@@ -49,19 +55,32 @@ produce this artifact*; a documented instruction to type something by hand is no
 | 3 | NIP-46 client transport key | `credentials/bunker-client` | **nothing** — hand-minted, undocumented until #326 |
 | 4 | Per-method Bunker permissions | the Bunker | operator clicks four toggles; denials are silent |
 | 5 | NIP-05 name | `nave.pub/.well-known/nostr.json` | **nothing** in this repo |
-| 6 | kind 0 profile | public relays (not the community relay) | **nothing** |
+| 6 | kind 0 profile | public relays **and** the community relay | `tools/publish_profile.mjs` ✅ (added #459) — **built, never run**; see below |
 | 7 | Join request → approval | kinds 27493 / 27492 | `tools/` ✅, but see §II.4 |
 | 8 | `admit` grant (kind 440) | public relays | `tools/grant.mjs` ✅ |
 | 9 | `task` grant (kind 440) | public relays | `tools/grant.mjs` ✅, **with an inverted UI label** (§III.1) |
-| 10 | Runtime manifest `instances/<id>.json` | agent root | **nothing** — six tools read it, zero write it |
-| 11 | Runtime state directories | agent root | **nothing** — the channel dies on the missing one |
-| 12 | MCP-channel keypair | `mcp-channel/id_ed25519` | **nothing** |
-| 13 | Registration as an MCP server | Claude Code user config | **nothing** |
+| 10 | Runtime manifest `instances/<id>.json` | agent root | `tools/connect-agent.mjs` ✅ — writes with `wx`, so it never overwrites one |
+| 11 | Runtime state directories | agent root | `tools/connect-agent.mjs` ✅ — each with its own mode |
+| 12 | MCP-channel keypair | `mcp-channel/id_ed25519` | `tools/connect-agent.mjs` ✅ — `ssh-keygen -t ed25519`, mode 600 |
+| 13 | Registration as an MCP server | **the runtime's own config**, not Claude Code's | `tools/connect-agent.mjs --stanza` — in review (#465) |
 | 14 | kind 10050 inbound DM relay list | public relays | `tools/publish-dm-relay-list.mjs` ✅ (Bunker path added #381) — **but no step invokes it** |
 | 15 | Proof that the registered server answers as THIS agent | the running session | `tools/connect-agent.mjs --whoami` ✅ (#338) — the operator captures `nvoy_whoami` and the tool compares |
+| 16 | Startup file the runtime reads at session start | `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` | `tools/connect-agent.mjs --startup` — in review (#467) |
 
-Fifteen. It was eleven when this document was started: the count has grown four times since, twice
-while it was being written, which is itself the finding.
+Sixteen. It was eleven when this document was started: the count grew twice while it was being
+written and three times afterwards, which is itself the finding.
+
+Row 13 said "Claude Code user config" until #464. That was an assumption, not a requirement, and it
+is the reason the goal names three runtimes: Codex reads `AGENTS.md` and registers through
+`codex mcp add`, and the installed Gemini build has no `mcp` subcommand at all, so registration
+there is a settings-file edit. A tool that emits one Claude Code command is not runtime-neutral, it
+is Claude Code with the others unimplemented.
+
+**Ten of the sixteen have a merged tool, and two more are in review.** The four with none are all
+deliberate, not backlog. Rows 2, 3 and 4 are the
+credential and the permissions on it — the administrator seats those, and no session should be able
+to. Row 5 is a directory this repo does not write. Row 14 has a tool and no step that calls it,
+which is a different defect from the others and is why it is called out below.
 
 Row 14 is the one that broke the pattern. Every other artifact here is something the agent needs in
 order to **act**; that one is the only thing that lets anything **reach** it, and it was absent from
@@ -69,7 +88,7 @@ the inventory entirely until #337 — after an admitted agent spent a day postin
 the channel while structurally unable to receive a single message. The tool existed. No step ran it,
 and nothing asked.
 
-Row 15 is not a thing you make; it is a thing you prove, and it is here because the other fourteen
+Row 15 is not a thing you make; it is a thing you prove, and it is here because the other fifteen
 can all be correct while the session acts as someone else. An agent was handed a session whose
 attached MCP server answered `whoami` with a different agent's identity — it would have read that
 identity's sealed inbox and posted under its key, and nothing would have errored. The Bunker path
@@ -263,7 +282,7 @@ properties matter more than the layout:
 
 ## Part IV — Architecture
 
-**"Connect Remote Agent" is one workflow with one job: make the fifteen artifacts, verify each one,
+**"Connect Remote Agent" is one workflow with one job: make the sixteen artifacts, verify each one,
 and refuse to continue when it cannot.**
 
 ### Principles
@@ -277,7 +296,7 @@ and refuse to continue when it cannot.**
    wrong-identity pairing survived precisely because its guard could not execute and the step around
    it looked fine.
 4. **Default closed, and resumable.** The flow is interrupted constantly in practice — a Bunker to
-   click, a name to register. It must be re-enterable and report exactly which of the fifteen are
+   click, a name to register. It must be re-enterable and report exactly which of the sixteen are
    present, which are missing, and which are present but unverified. Three states, never two.
 5. **Nothing the wizard writes is a template string.** Placeholder text must be structurally
    incapable of reaching a signature.
