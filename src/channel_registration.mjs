@@ -146,6 +146,45 @@ export function isRetiredLocalForm(entry) {
 }
 
 /**
+ * Does the registration a runtime is reporting match the vector we would build?
+ *
+ * Form is not correctness. `registeredForm` answers "is this an ssh call"; it cannot answer "is it
+ * an ssh call to the right place". An entry pointing at a previous broker host, or at another
+ * identity's key file, is in the ssh form, connects, and looks healthy — which is #472's whole
+ * failure class one layer over.
+ *
+ * Returns `null` when the comparison could not be made at all, so a caller can keep "they differ"
+ * apart from "nothing was compared". Collapsing those is how a check that never ran reads as a pass.
+ */
+export function sameVector(stdout, server, expectedArgs) {
+  if (!Array.isArray(expectedArgs) || expectedArgs.length === 0) return null
+  if (typeof stdout !== 'string' || !server) return null
+  let actual = null
+  try {
+    const parsed = JSON.parse(stdout)
+    if (Array.isArray(parsed)) {
+      const e = parsed.find(x => x && x.name === server)
+      if (e && Array.isArray(e.args)) actual = e.args.map(String)
+    }
+  } catch { /* not JSON — the text listing below */ }
+  if (!actual) {
+    const line = stdout.split('\n').map(l => l.trim()).find(l => l.startsWith(`${server}:`))
+    if (!line) return null
+    // `<server>: <command> <args…> - <status>`. Drop the command, and drop the status suffix — here
+    // it DOES have to go, because a trailing `- ✔ Connected` would be compared as two more args.
+    // ` - ` with spaces both sides never occurs inside these flags; `-F`, `-T` and `-o` have none.
+    const rest = line.slice(server.length + 1).trim().replace(/\s+-\s+\S.*$/, '')
+    const parts = rest.split(/\s+/).filter(Boolean)
+    // A first token that starts with `-` is not a command, so this line is not the shape assumed
+    // and dropping parts[0] would silently compare a vector against itself minus its first flag.
+    // That is a wrong answer dressed as a real one; null is the honest reading.
+    if (parts.length < 2 || parts[0].startsWith('-')) return null
+    actual = parts.slice(1)
+  }
+  return JSON.stringify(actual) === JSON.stringify(expectedArgs.map(String))
+}
+
+/**
  * Which form is this agent registered in — `'ssh'`, `'local'`, or `'unknown'`?
  *
  * Reads the runtime's own listing rather than a config file, because the listing is what the

@@ -20,12 +20,13 @@
 //     correct refusal from a correct refusal that sends the operator to the wrong place, and the
 //     operator acts on the explanation.
 //   * The listing fixtures are the four servers actually registered on a real machine — two in the
-//     ssh form, two retired, one bare — with their real spellings, underscores and all. `A` and
+//     ssh form, two retired, one bare — with their real spellings, underscores and all, and the
+//     ✔ Connected the retired ones really print. Only the home directory is generalised. `A` and
 //     `B` fixtures are how the last live outage stayed invisible.
 import { strict as assert } from 'node:assert'
 import {
   KEY_FILE, KNOWN_HOSTS_FILE, SSH_BIN, SSH_TEMPLATE,
-  channelCommand, credentialPaths, credentialReport, isRetiredLocalForm, registeredForm,
+  channelCommand, credentialPaths, credentialReport, isRetiredLocalForm, registeredForm, sameVector,
 } from '../src/channel_registration.mjs'
 
 let pass = 0, fail = 0
@@ -35,7 +36,12 @@ const refusal = fn => { try { fn(); return null } catch (e) { return e.message }
 
 console.log('\nchannel_registration\n')
 
-const ROOT = '/Users/fairwja/.nvoy/desktop/mc-claude'
+// An instance root shaped like a real one — the nvoy desktop layout, a hyphenated agent name — but
+// under a generic home rather than one operator's. What section 1 asserts is the template's flag set
+// and its order; the paths are per-machine and substituted from this constant, so pinning a
+// particular `$HOME` into a public repo proved nothing extra and dated the fixture to one laptop.
+const HOME = '/home/agent'
+const ROOT = `${HOME}/.nvoy/desktop/mc-claude`
 const HOST = 'nave.pub'
 
 // ── 1. The stanza, against a real working registration ──────────────────────────────────────
@@ -150,10 +156,10 @@ check(refusal(() => credentialReport({ instanceRoot: ROOT })) !== null,
 // nothing in the NAMES distinguishes them.
 console.log('\n5. registered, and registered in the form that reaches the identity')
 const CLAUDE_LIST = [
-  'nvoy: node /Users/fairwja/Projects/nvoy/mcp/dist/server.js - ✔ Connected',
+  `nvoy: node ${HOME}/Projects/nvoy/mcp/dist/server.js - ✔ Connected`,
   `nvoy-mc-claude: /usr/bin/ssh ${LIVE_ARGS.join(' ')} - ✔ Connected`,
-  'nvoy-oliver: /Users/fairwja/.nvm/versions/node/v22.16.0/bin/node /Users/fairwja/Projects/connect/nvoy-macos-desktop-binder/mcp/tools/claude-channel.mjs --instance oliver - ✔ Connected',
-  'nvoy-lukedog: /Users/fairwja/.nvm/versions/node/v22.16.0/bin/node /Users/fairwja/Projects/connect/nvoy-macos-desktop-binder/mcp/tools/claude-channel.mjs --instance lukedog - ✔ Connected',
+  `nvoy-oliver: ${HOME}/.nvm/versions/node/v22.16.0/bin/node ${HOME}/Projects/connect/nvoy-macos-desktop-binder/mcp/tools/claude-channel.mjs --instance oliver - ✔ Connected`,
+  `nvoy-lukedog: ${HOME}/.nvm/versions/node/v22.16.0/bin/node ${HOME}/Projects/connect/nvoy-macos-desktop-binder/mcp/tools/claude-channel.mjs --instance lukedog - ✔ Connected`,
 ].join('\n')
 
 check(registeredForm(CLAUDE_LIST, 'nvoy-mc-claude') === 'ssh', 'the ssh entry reads as ssh')
@@ -197,6 +203,56 @@ check(isRetiredLocalForm('/usr/bin/node /x/claude-channel.mjs --ssh-nothing'),
 check(!isRetiredLocalForm(''), 'an empty entry is not a retired registration — it is no registration')
 check(!isRetiredLocalForm(null), 'and neither is a missing one')
 check(!isRetiredLocalForm({ command: 'node', args: ['/x/server.js'] }), 'nor is an unrelated local server')
+
+// ── 7. Form is not correctness ───────────────────────────────────────────────────────────────
+// The finding that reopened this PR: an entry can be in the ssh form and still point at a previous
+// broker, or at the other identity's key file. It connects, it prints ✔ Connected, and it is wrong —
+// #472's own failure class one layer over. Every fixture below reads as `ssh` to `registeredForm`.
+console.log('\n7. an ssh entry pointing at the wrong place')
+check(sameVector(CLAUDE_LIST, 'nvoy-mc-claude', LIVE_ARGS) === true,
+  'the live entry matches the vector this tool builds')
+check(sameVector(CLAUDE_LIST, 'nvoy-mc-claude', built.args) === true,
+  'and it matches the one channelCommand actually returns, not just the fixture copy of it')
+
+// The three ways an ssh entry goes wrong. Each differs from the live vector in exactly one field,
+// because a fixture that differs in five would pass a comparison that only ever looked at the first.
+const swap = (find, put) => CLAUDE_LIST.replace(find, put)
+const otherHost = swap('root@nave.pub', 'root@nave-old.pub')
+const otherKey = swap(`-i ${ROOT}/credentials/claude-channel-ssh`, `-i ${HOME}/.nvoy/desktop/oliver/credentials/claude-channel-ssh`)
+const otherUser = swap('root@nave.pub', 'nvoy@nave.pub')
+check(registeredForm(otherHost, 'nvoy-mc-claude') === 'ssh' && sameVector(otherHost, 'nvoy-mc-claude', LIVE_ARGS) === false,
+  'an entry pointing at a previous broker host reads as ssh and does NOT match')
+check(registeredForm(otherKey, 'nvoy-mc-claude') === 'ssh' && sameVector(otherKey, 'nvoy-mc-claude', LIVE_ARGS) === false,
+  'and one carrying another identity key file — the way one agent ends up authenticating as another')
+check(registeredForm(otherUser, 'nvoy-mc-claude') === 'ssh' && sameVector(otherUser, 'nvoy-mc-claude', LIVE_ARGS) === false,
+  'and one under a different account, which the forced command is not seated under')
+// A dropped flag is the quiet one: it still connects. Without IdentitiesOnly, ssh offers every key
+// the agent holds, so the connection can succeed as the wrong principal and look entirely healthy.
+const noIdentitiesOnly = swap('-o IdentitiesOnly=yes ', '')
+check(sameVector(noIdentitiesOnly, 'nvoy-mc-claude', LIVE_ARGS) === false,
+  'and one with IdentitiesOnly dropped — it still connects, which is why nothing else would catch it')
+
+// NEGATIVE CONTROL. Everything above is worthless if the comparison also refuses a correct entry —
+// that is the slot-validator outage in this repo's own history, where a guard rejected the real
+// recipient as readily as the hostile one and every assertion still passed.
+check(sameVector(CODEX_JSON, 'nvoy_codex_jaf', LIVE_ARGS) === true,
+  'NEGATIVE CONTROL — a correct entry in the JSON listing still matches')
+check(sameVector(`nvoy-mc-claude: ${SSH_BIN} ${LIVE_ARGS.join(' ')}`, 'nvoy-mc-claude', LIVE_ARGS) === true,
+  'NEGATIVE CONTROL — and a correct entry with no ✔ status suffix on the line still matches')
+check(sameVector(`nvoy-mc-claude: ${SSH_BIN} ${LIVE_ARGS.join(' ')} - ✗ Failed to connect`, 'nvoy-mc-claude', LIVE_ARGS) === true,
+  'NEGATIVE CONTROL — and one whose status says Failed to connect, which is EXPECTED while the real channel holds the lock')
+
+// null is not false, and this is the distinction the caller acts on: `!null` would report a
+// comparison that never ran as a mismatch, and the operator would go diffing a correct entry.
+console.log('\n7b. and when nothing could be compared at all')
+check(sameVector(CLAUDE_LIST, 'nvoy-mc-claude', null) === null, 'no vector to compare against is null, not false')
+check(sameVector(CLAUDE_LIST, 'nvoy-mc-claude', []) === null, 'and neither is an empty one — that would match nothing and read as a mismatch')
+check(sameVector(CLAUDE_LIST, 'nvoy-notregistered', LIVE_ARGS) === null, 'a server absent from the listing is null')
+check(sameVector(null, 'nvoy-mc-claude', LIVE_ARGS) === null, 'unreadable output is null')
+check(sameVector(`nvoy-mc-claude: ${SSH_BIN} - ✔ Connected`, 'nvoy-mc-claude', LIVE_ARGS) === null,
+  'a line with a command and no arguments is null — nothing was read, so nothing is claimed')
+check(sameVector('nvoy-mc-claude: - ✔ Connected', 'nvoy-mc-claude', LIVE_ARGS) === null,
+  'and a line with no command at all is null, not a comparison against its status text')
 
 console.log(`\n${pass} passed, ${fail} failed`)
 assert.equal(fail, 0, `${fail} assertion(s) failed`)

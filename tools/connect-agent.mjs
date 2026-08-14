@@ -48,7 +48,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { boundIdentity, installState, renderState } from '../src/agent_install_state.mjs'
 import { exportTemplate, importTemplate } from '../src/agent_manifest_transfer.mjs'
-import { channelCommand, credentialReport, registeredForm } from '../src/channel_registration.mjs'
+import { channelCommand, credentialReport, registeredForm, sameVector } from '../src/channel_registration.mjs'
 import { RUNTIMES, channelStanza, cliRuntimes, exclusivityVerdict, foreignServers, isMine, registrationHelp, runtime } from '../src/mcp_runtimes.mjs'
 import { startupDoc } from '../src/agent_startup.mjs'
 
@@ -277,7 +277,10 @@ see('channel-key', existsSync(keyPath), keyOk, existsSync(keyPath) ? (keyOk ? 'm
 let stanza = null, stanzaRefusal = null, credReport = null
 try {
   const cmd = channelCommand({ instanceRoot: HERE, host: channelHost, user: channelUser })
-  stanza = channelStanza({ agent: name, command: cmd.command, args: cmd.args, instanceRoot: instDir })
+  // `verbatim`: the ssh vector is the registration, exactly. Appending `--instance` or an env
+  // entry here would make what --stanza PRINTS differ from what was proven, which is this PR's own
+  // defect one layer up.
+  stanza = channelStanza({ agent: name, command: cmd.command, args: cmd.args, instanceRoot: instDir, verbatim: true })
   credReport = credentialReport({ instanceRoot: HERE, exists: existsSync })
 } catch (e) {
   stanzaRefusal = e.message
@@ -302,7 +305,10 @@ const answered = probes.filter(p => p.installed && Array.isArray(p.names))
 const unreadable = probes.filter(p => p.installed && p.names === null)
 const hosts = answered.filter(p => p.names.some(n => isMine(n, name))).map(p => p.rt.label)
 
-let registered = null, regNote = ''
+// `regVerified` is set in exactly one place below: when the registered vector was read and matched
+// the one this tool builds. Every other path leaves it false, so a registration that exists but was
+// never compared prints `?` — present and unchecked — and not a tick.
+let registered = null, regNote = '', regVerified = false
 if (answered.length === 0) {
   registered = null
   regNote = unreadable.length
@@ -316,7 +322,11 @@ if (answered.length === 0) {
   // a day. UNVERIFIED, never PRESENT.
   const forms = answered
     .filter(p => p.names.some(n => isMine(n, name)))
-    .map(p => ({ rt: p.rt, form: registeredForm(p.raw, p.names.find(n => isMine(n, name))) }))
+    .map(p => {
+      const server = p.names.find(n => isMine(n, name))
+      return { rt: p.rt, server, raw: p.raw, form: registeredForm(p.raw, server) }
+    })
+  const cmdArgs = stanza ? stanza.args : null
   const stale = forms.filter(f => f.form === 'local')
   const opaque = forms.filter(f => f.form === 'unknown')
   const caveat = answered.find(p => p.rt.listCaveat && hosts.includes(p.rt.label))?.rt.listCaveat
@@ -326,11 +336,47 @@ if (answered.length === 0) {
       + `\`claude-channel.mjs\` here and lists as connected, but this identity's channel is on the broker `
       + `host, so nothing reaches it. Re-register from --stanza.`
   } else if (opaque.length === forms.length) {
-    registered = true
-    regNote = `registered in ${hosts.join(', ')}, but the command could not be read — UNVERIFIED, not confirmed`
+    // NOT registered. `unknown` means the command is neither the ssh form nor the retired one, and
+    // most of the time it WAS read — it is simply another shape, like the bare `nvoy` server's local
+    // node spawn. Reporting that as registered inverts the module's own doctrine: `ssh` is the
+    // verdict that has to be earned, and letting not-ssh through as true spends exactly what
+    // `registeredForm` was careful not to give away.
+    registered = false
+    regNote = `registered in ${hosts.join(', ')}, but in neither the ssh form nor the retired one — `
+      + `UNVERIFIED. Compare it against --stanza; a channel that is not the ssh form does not reach the broker.`
   } else {
-    registered = true
-    regNote = `registered in ${hosts.join(', ')} in the ssh form${caveat ? ` — ${caveat}` : ''}`
+    // Form is not correctness. An entry in the ssh form pointing at a previous broker, or at the
+    // other identity's key, is connected, wrong, and healthy-looking — #472's failure class one
+    // layer over. The vector to compare against is already in hand, so the check is free.
+    //
+    // Three outcomes, kept apart on purpose. `sameVector` returns null for "nothing was compared" —
+    // no stanza to compare against, or a listing whose args could not be read — and `!null` would
+    // fold that into "they differ". A check that did not run must not report a verdict either way.
+    const ssh = forms.filter(f => f.form === 'ssh')
+    const checked = ssh.map(f => ({ ...f, vec: sameVector(f.raw, f.server, cmdArgs) }))
+    const mismatched = checked.filter(f => f.vec === false)
+    const unchecked = checked.filter(f => f.vec === null)
+    if (mismatched.length) {
+      registered = false
+      regNote = `registered in ${mismatched.map(f => f.rt.label).join(', ')} in the ssh form, but NOT the `
+        + `one this tool builds — it points at a different host, user or key file. Connected is not `
+        + `connected to the right thing. Diff it against --stanza.`
+    } else if (!cmdArgs) {
+      registered = true
+      regNote = `registered in ${hosts.join(', ')} in the ssh form — not compared against --stanza, because `
+        + `this tool could not build one: ${stanzaRefusal}${caveat ? ` — ${caveat}` : ''}`
+    } else if (unchecked.length === checked.length) {
+      registered = true
+      regNote = `registered in ${hosts.join(', ')} in the ssh form, but its arguments could not be read out of `
+        + `the listing, so nothing compared it to --stanza — UNVERIFIED against the vector${caveat ? ` — ${caveat}` : ''}`
+    } else {
+      registered = true
+      // The one place the vector was actually read and compared. This verifies the REGISTRATION,
+      // not the channel — whether the far side answers is the `channel-answers` row's job, and
+      // promoting this one does not speak for that one.
+      regVerified = true
+      regNote = `registered in ${hosts.join(', ')} in the ssh form, matching --stanza${caveat ? ` — ${caveat}` : ''}`
+    }
   }
 } else {
   registered = false
@@ -344,7 +390,7 @@ if (answered.length === 0) {
 if (unreadable.length && answered.length) {
   regNote += `\n      (${unreadable.map(p => p.rt.label).join(', ')} is installed but could not be read — UNCHECKED)`
 }
-see('mcp-registration', registered, false, regNote)
+see('mcp-registration', registered, regVerified, regNote)
 
 // Registered is not SOLE. #338: the acting tools live on a generically-named server that is not
 // instance-bound, so a correct `nvoy-<name>` alongside a bare `nvoy` still signs as somebody else.
