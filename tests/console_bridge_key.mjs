@@ -9,7 +9,10 @@
 // A split namespace is indistinguishable from a missing feature from the operator's chair, and the
 // natural "fix" for it is a fourth key. So the assertion that matters here is not "agents.html now
 // works"; it is that NO file under console/ names a bridge storage key except the one module that
-// owns it. That is what stops this coming back on the next page.
+// owns it. That is what stops this coming back on the next page — and it only stops it if the scan
+// matches the SHAPE of such a name rather than the two we happen to have found already, because a
+// fourth key gets invented under a name nobody has enumerated. Both scans run; the enumerated one
+// stays because it gives the better failure message when the name IS one we know.
 //
 // The second half is ordering. All four pages wrote the key immediately after parsing the field,
 // before a single relay had answered — so a well-formed key for a hive that does not exist was
@@ -52,18 +55,53 @@ walk(CONSOLE)
 if (files.length < 20) inconclusive(`the console scan found only ${files.length} source files`)
 
 const NAMES = [store.BRIDGE_KEY_STORAGE, ...store.LEGACY_BRIDGE_KEY_STORAGE]
+const sources = new Map(files.map(f => [f, readFileSync(f, 'utf8')]))
+const named = (f) => f.slice(CONSOLE.length + 1)
+
 const offenders = files
   .filter(f => !f.endsWith(STORE))
-  .filter(f => NAMES.some(n => readFileSync(f, 'utf8').includes(n)))
-  .map(f => f.slice(CONSOLE.length + 1))
+  .filter(f => NAMES.some(n => sources.get(f).includes(n)))
+  .map(named)
 check(offenders.length === 0,
-  `only ${STORE} names a bridge storage key (${files.length} console sources scanned` +
+  `only ${STORE} names a KNOWN bridge storage key (${files.length} console sources scanned` +
   `${offenders.length ? `; offenders: ${offenders.join(', ')}` : ''})`)
 
-// NEGATIVE CONTROL — the scan can find the names, so the zero above is a result and not a
-// detector that reads nothing.
-check(NAMES.every(n => readFileSync(join(CONSOLE, STORE), 'utf8').includes(n)),
+// The scan above matches the names we have already discovered, which is strictly weaker than the
+// property this suite claims. `waggle-agents-bridge` is caught today only because #322 found it and
+// wrote it into LEGACY_BRIDGE_KEY_STORAGE — had this suite existed when agents.html was written, it
+// would have passed. The next page does not have to argue with a test to invent a fourth key; it
+// only has to pick a name nobody has enumerated, which is exactly what the last one did.
+//
+// So scan for the SHAPE. Deliberately narrow: `console/` has six other localStorage call sites, all
+// in index.html (an access-list view, a session key, a dismiss key), and none of them match. A
+// broader "any localStorage outside the store" would flag all six and stop being read, which is the
+// failure mode ship_imports reasons about in #433.
+const BRIDGE_KEY_SHAPE = /['"]waggle-[\w-]*bridge[\w-]*['"]/
+const novel = files
+  .filter(f => !f.endsWith(STORE))
+  .filter(f => BRIDGE_KEY_SHAPE.test(sources.get(f)))
+  .map(named)
+check(novel.length === 0,
+  'and no console source names a bridge storage key of ANY name, enumerated or not' +
+  `${novel.length ? `; offenders: ${novel.join(', ')}` : ''}`)
+
+// NEGATIVE CONTROL — both scans can find something, so the two zeroes above are results and not
+// detectors that read nothing.
+check(NAMES.every(n => sources.get(join(CONSOLE, STORE)).includes(n)),
   'NEGATIVE CONTROL — the same scan DOES find every storage name inside the store itself')
+check(BRIDGE_KEY_SHAPE.test(sources.get(join(CONSOLE, STORE))),
+  'NEGATIVE CONTROL — and the shape scan finds one inside the store too')
+
+// The point of the shape scan, stated as a property rather than left to the file walk: it catches a
+// name that appears NOWHERE in NAMES. Asserted on literals rather than by writing into console/, so
+// the check cannot leave the tree dirty — and paired with the benign keys that share the `waggle-`
+// prefix, because a pattern that flags everything and one that flags nothing fail identically.
+const INVENTED = ["'waggle-routing-bridge'", '"waggle-bridge-key"', "'waggle-console-bridge-hex'"]
+check(INVENTED.every(s => BRIDGE_KEY_SHAPE.test(s) && !NAMES.some(n => s.includes(n))),
+  'a storage name no one has enumerated is still caught — the leg the NAMES scan cannot cover')
+const BENIGN = ["'waggle.accesslist.view'", "'waggle-session'", "'waggle-dismissed-notice'", "'bridgekey'"]
+check(BENIGN.every(s => !BRIDGE_KEY_SHAPE.test(s)),
+  'NEGATIVE CONTROL — the console’s other waggle- prefixed keys are NOT flagged, so it refuses the dangerous thing rather than everything')
 
 // ---- 2. every page that takes a bridge key goes through the store ------------------------------
 const pages = readdirSync(CONSOLE).filter(f => f.endsWith('.html')).sort()
