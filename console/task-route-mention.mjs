@@ -84,8 +84,83 @@ export function taskRouteMentionMatcher(mention) {
   return new RegExp(`@${m.replace(RE_ESCAPE, '\\$&')}(?![${MENTION_ALPHABET}])`, 'iu')
 }
 
-// Does this body name this mention? The one question scanReturnLane actually asks.
+// Does this body name this mention? True in isolation — see the arbitration below for what happens
+// when a second route's mention also matches the same at-word.
 export function taskRouteMentioned(body, mention) {
   const re = taskRouteMentionMatcher(mention)
   return !!re && re.test(String(body == null ? '' : body))
+}
+
+// ARBITRATION (#407, #409). A boundary cannot settle `@MC Claude` when both `mc` and `MC Claude`
+// are routed in one channel, because the separator has to be two things at once. A space must
+// TERMINATE a mention, or a route named `My Dude` would never match `@My Dude and …`. A space must
+// also be INTERIOR to a mention, or `MC Claude` could not be a name at all. Both readings of
+// `@MC Claude` are correct — one mention, or `mc` followed by the word "Claude" — so what is
+// missing is arbitration, not a better character class. #411 withheld the space from the boundary
+// deliberately and could not have fixed this; including the space would have broken every spaced
+// mention instead.
+//
+// LONGEST WINS, PER `@` POSITION. Every candidate must begin at the SAME `@`, so the candidates at
+// one position are all prefixes of one span and are totally ordered by length. That dissolves the
+// awkward case raised in #409 — `MC Claude` against `Claude Ops` in `@MC Claude Ops` — because
+// `Claude Ops` has no `@` in front of it there and is not a candidate at that position at all.
+// TIES ARE NOT IMPOSSIBLE, AND ARE NOT BROKEN. This first claimed that two mentions matching the
+// same span with the same length must be the same mention case-folded, so the dedup above would
+// already have collapsed them. That is false, found in review of #414. `taskRouteMentionKey` is
+// `toLowerCase()` — Unicode case MAPPING — and the matcher is a regex with `iu` — Unicode simple
+// case FOLDING. Those are different equivalence relations, and where they disagree a same-length
+// pair survives dedup. `Me\u017Fnil` (LATIN SMALL LETTER LONG S) and `Mesnil` are two dedup keys of
+// equal length, each matching the other's at-word; the sweep that found it turned up exactly one
+// such character in U+0020–U+FFFF. Picking a winner with `>` then picked by ARRAY ORDER — the
+// message reached whichever route the operator happened to configure first, and the skip line told
+// the other's owner that a longer name had taken it, which was not true.
+//
+// So every mention of the longest length carries. A tie cannot be broken wrongly if it is not
+// broken, which makes the ordering claim true by construction rather than by an argument about
+// Unicode. This is a strict generalisation of longest-wins, not a different rule: where lengths
+// differ it is unchanged.
+//
+// A mention that loses at one at-word and wins at another IS CARRIED. Suppression is a statement
+// about a single at-word, never about a route, which is why `carried` is resolved before
+// `suppressed` is answered.
+//
+// Returns { carried, suppressed }: `carried` maps mention key -> mention as written; `suppressed`
+// maps mention key -> { mention, by, at }, naming the longer mention that took the at-word and
+// where. The caller logs from `suppressed` — a route that silently stops receiving a carry it used
+// to receive presents as the return lane being flaky, which is the failure this repo keeps paying
+// for.
+export function taskRouteMentionArbitrate(body, mentions) {
+  const text = String(body == null ? '' : body)
+  const rows = []
+  for (const value of (Array.isArray(mentions) ? mentions : [])) {
+    const m = String(value == null ? '' : value).replace(/^@/, '')
+    if (!m) continue
+    const key = taskRouteMentionKey(m)
+    if (rows.some(row => row.key === key)) continue
+    // Sticky, so a candidate is tested AT the at-word rather than anywhere after it. A non-sticky
+    // test would let a mention later in the body win an at-word it does not start.
+    rows.push({ mention: m, key, re: new RegExp(`@${m.replace(RE_ESCAPE, '\\$&')}(?![${MENTION_ALPHABET}])`, 'iuy') })
+  }
+  const carried = new Map()
+  const contested = []
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '@') continue
+    const hits = []
+    for (const row of rows) {
+      row.re.lastIndex = i
+      if (row.re.test(text)) hits.push(row)
+    }
+    if (!hits.length) continue
+    // EVERY mention of the longest length carries — the tie is not broken. See above.
+    const longest = Math.max(...hits.map(r => r.mention.length))
+    const winners = hits.filter(r => r.mention.length === longest)
+    for (const w of winners) carried.set(w.key, w.mention)
+    for (const row of hits) if (row.mention.length !== longest) contested.push({ row, by: winners[0].mention, at: i })
+  }
+  const suppressed = new Map()
+  for (const { row, by, at } of contested) {
+    if (carried.has(row.key) || suppressed.has(row.key)) continue   // won elsewhere, or already recorded
+    suppressed.set(row.key, { mention: row.mention, by, at })
+  }
+  return { carried, suppressed }
 }
