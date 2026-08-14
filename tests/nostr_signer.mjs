@@ -62,7 +62,61 @@ try {
   ok('Bunker mode signs through NIP-46 as the remote identity', verifyEvent(remoteEvent) && remoteEvent.pubkey === liveBunkerPub)
   const remoteCiphertext = await rpcSigner.nip44Encrypt(peer, 'remote round trip')
   ok('Bunker mode encrypts through NIP-46 without the identity nsec', nip44.decrypt(remoteCiphertext, nip44.getConversationKey(peerKey, liveBunkerPub)) === 'remote round trip')
+  ok('userPubkey() resolves an identity at all', await rpcSigner.userPubkey() === liveBunkerPub)
   rpcSigner.close()
+
+  // THE DISTINGUISHING CASE (#478 review). Above, the remote signer and the identity it holds are
+  // the same key, so nothing there can tell `.pubkey` — the hex out of `bunker://` — from the
+  // identity that actually signs. NIP-46 permits them to differ, and `get_public_key` is the only
+  // thing that resolves the second. Reading the URI hex as the identity dead-ends both ways: pin to
+  // it and every signature is a custody mismatch; name the true key and it is refused for
+  // disagreeing with the pairing. So they are made DIFFERENT here, which is the only arrangement
+  // that can fail.
+  {
+    const signerKey = generateSecretKey(), signerPub = getPublicKey(signerKey)   // what bunker:// names
+    const userKey = generateSecretKey(), userPub = getPublicKey(userKey)         // what it signs as
+    let getPublicKeyCalls = 0, reply = m => m
+    const conv = nip44.getConversationKey(signerKey, getPublicKey(client))
+    class SplitPool {
+      subscribeMany(_r, _f, h) { this.onevent = h.onevent }
+      publish(_r, request) {
+        const m = JSON.parse(nip44.decrypt(request.content, conv))
+        let result
+        if (m.method === 'connect') result = 'ack'
+        else if (m.method === 'get_public_key') { getPublicKeyCalls++; result = userPub }
+        else if (m.method === 'sign_event') result = JSON.stringify(finalizeEvent(JSON.parse(m.params[0]), userKey))
+        const response = finalizeEvent({ kind: 24133, created_at: 1, tags: [['p', getPublicKey(client)]],
+          content: nip44.encrypt(JSON.stringify(reply({ id: m.id, result })), conv) }, signerKey)
+        void Promise.resolve().then(() => this.onevent(response))
+        return []
+      }
+      close() {}
+    }
+    const split = makeBunkerSigner(`bunker://${signerPub}?relay=wss%3A%2F%2Frelay.example&secret=x`,
+      nip19.nsecEncode(client), { Pool: SplitPool })
+
+    ok('.pubkey is the URI hex — the transport address, not the identity', split.pubkey === signerPub)
+    const resolvedId = await split.userPubkey()
+    ok('userPubkey() returns the identity the bunker signs as, not the URI hex',
+      resolvedId === userPub && resolvedId !== split.pubkey)
+    ok('…and it got there by asking get_public_key', getPublicKeyCalls === 1)
+    const splitEvent = await split.signEvent({ kind: 27235, created_at: 3, tags: [], content: '' })
+    ok('…which is the key the signatures actually carry', splitEvent.pubkey === resolvedId)
+    await split.userPubkey()
+    ok('the answer is cached — one prompt per run, not one per signature', getPublicKeyCalls === 1)
+
+    // NEGATIVE CONTROL — a bunker that will not say who it is must be refused, not defaulted back
+    // to the URI hex. Silently falling back is how the dead-end above returns.
+    reply = m => ({ id: m.id, result: 'not-a-pubkey' })
+    const mute = makeBunkerSigner(`bunker://${signerPub}?relay=wss%3A%2F%2Frelay.example&secret=x`,
+      nip19.nsecEncode(client), { Pool: SplitPool })
+    let refusedId = ''
+    try { await mute.userPubkey() } catch (e) { refusedId = e.message }
+    ok('NEGATIVE CONTROL — a malformed get_public_key is refused, not silently defaulted',
+      /malformed pubkey/.test(refusedId) && !/^$/.test(refusedId))
+    ok('…and says why it matters, rather than only that it failed', /cannot establish which identity/.test(refusedId))
+    split.close(); mute.close()
+  }
 
   const alarmKey = generateSecretKey(), recipientKey = generateSecretKey(), recipient = getPublicKey(recipientKey)
   const alarmSigner = makeLocalSigner(Buffer.from(alarmKey).toString('hex'), 'TEST_ALARM_NSEC')

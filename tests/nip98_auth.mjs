@@ -13,7 +13,8 @@ import { createHash } from 'node:crypto'
 import { generateSecretKey, getPublicKey, verifyEvent, finalizeEvent } from 'nostr-tools/pure'
 import { nip98Template, nip98Header, expectedUrl } from '../src/nip98.mjs'
 import { withPinnedCustody } from '../src/nostr_signer.mjs'
-import { refusal, exitFor, checkMintBounds, chooseSigningSource, EXIT, CLAIM_RATE_LIMIT, MIN_TTL_SECS, MAX_TTL_SECS, MAX_USES }
+import { refusal, exitFor, checkMintBounds, chooseSigningSource, EXIT, CLAIM_RATE_LIMIT,
+  MIN_TTL_SECS, MAX_TTL_SECS, MAX_USES, NIP98_WINDOW_SECS, SIGN_TIMEOUT_MS, MAX_SIGN_SKEW_SECS }
   from '../src/relay_invite.mjs'
 
 // src/nip98.mjs does not sign — the key stays with the caller, which is the console's signer
@@ -204,6 +205,24 @@ ok('building without a url is refused, naming why the url matters', /tenant host
   // "configured" would make an empty export refuse a perfectly good --key.
   ok('an empty pairing env does not count as configured',
     chooseSigningSource({ keyArg: '/k', uriFile: '  ', clientFile: '' }).kind === 'local')
+}
+
+// ── The approval window (#478 review) ─────────────────────────────────────────────────────────
+// On the bunker path a human stands between stamping created_at and getting the signature back,
+// and buzz-auth checks it against SERVER time within ±60s. At the signer's default 60s timeout the
+// margin is exactly zero: an approval tapped at 58s returns a signature that verifies locally and
+// the relay refuses as stale — surfaced as "the relay rejected the signature", which sends the
+// operator after their key rather than the prompt they were slow on. These are the numbers that
+// keep that from happening, so a later edit that widens either one has to fail here.
+{
+  ok('the sign timeout is INSIDE the freshness window, not equal to it',
+    SIGN_TIMEOUT_MS / 1000 < NIP98_WINDOW_SECS)
+  ok('the staleness check fires before the relay would refuse',
+    MAX_SIGN_SKEW_SECS < NIP98_WINDOW_SECS)
+  // Both directions: a signature that came back promptly must NOT be refused. A margin of 0 would
+  // satisfy both assertions above and reject every real approval.
+  ok('NEGATIVE CONTROL — a prompt answered in a few seconds is still fresh', MAX_SIGN_SKEW_SECS > 5)
+  ok('…and the timeout leaves room to answer at all', SIGN_TIMEOUT_MS > 5_000)
 }
 
 // ── A remote signer's event must still make a valid NIP-98 header ─────────────────────────────

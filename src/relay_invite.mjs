@@ -20,6 +20,17 @@ export const CLAIM_RATE_LIMIT = 10
 /** Exit codes. 4 exists because "the relay said no" is neither bad input nor a network fault. */
 export const EXIT = { OK: 0, INPUT: 1, NETWORK: 2, INCONCLUSIVE: 3, REFUSED: 4 }
 
+// A NIP-98 event is checked against SERVER time within ±60s (`buzz-auth/src/nip98.rs`), and on the
+// bunker path a human stands between stamping the template and getting it back. At the signer's
+// default 60s timeout the margin is exactly zero: an approval tapped at 58s returns a signature
+// that verifies locally and the relay refuses as stale — reported as "the relay rejected the
+// signature", which sends the operator after their key instead of the prompt they were slow on.
+// So the signing call is capped BELOW the window, and the age of what came back is asserted rather
+// than assumed. Two prompts per claim where a join policy applies, and either one can be the slow one.
+export const NIP98_WINDOW_SECS = 60
+export const SIGN_TIMEOUT_MS = 45_000
+export const MAX_SIGN_SKEW_SECS = 45
+
 const REFUSALS = {
   join_policy_required: 'this deployment has a join policy and the claim carried no receipt.\n' +
     '  Re-run with --accept-terms (and --confirm-age if the policy requires attestation).',
