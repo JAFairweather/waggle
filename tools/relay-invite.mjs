@@ -50,7 +50,7 @@ import { dirname, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { nip19 } from 'nostr-tools'
 import { getPublicKey, finalizeEvent } from 'nostr-tools/pure'
-import { nip98Template, nip98Header, expectedUrl } from '../console/nip98.mjs'
+import { nip98Template, nip98Header, expectedUrl } from '../src/nip98.mjs'
 import { refusal, checkMintBounds } from '../src/relay_invite.mjs'
 
 const argv = process.argv.slice(2)
@@ -93,7 +93,7 @@ function readSecret(pathArg) {
 
 async function post(path, bodyObj, secret) {
   const url = expectedUrl(process.env.BUZZ_RELAY_URL, path)
-  // console/nip98.mjs deliberately does not sign — the console signs through the operator's own
+  // src/nip98.mjs deliberately does not sign — the console signs through the operator's own
   // signer and this tool signs with a key from a file, so neither can be baked into the builder.
   // It lives in console/ because the page is its other caller; see the header there.
   const { template, body } = await nip98Template({ url, method: 'POST', body: JSON.stringify(bodyObj) })

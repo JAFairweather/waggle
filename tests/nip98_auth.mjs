@@ -11,11 +11,11 @@
 
 import { createHash } from 'node:crypto'
 import { generateSecretKey, getPublicKey, verifyEvent, finalizeEvent } from 'nostr-tools/pure'
-import { nip98Template, nip98Header, expectedUrl } from '../console/nip98.mjs'
+import { nip98Template, nip98Header, expectedUrl } from '../src/nip98.mjs'
 import { refusal, exitFor, checkMintBounds, EXIT, CLAIM_RATE_LIMIT, MIN_TTL_SECS, MAX_TTL_SECS, MAX_USES }
   from '../src/relay_invite.mjs'
 
-// console/nip98.mjs does not sign — the key stays with the caller, which is the console's signer
+// src/nip98.mjs does not sign — the key stays with the caller, which is the console's signer
 // in one case and a key file in the other. The test signs exactly as tools/relay-invite.mjs does.
 // It is async because the builder hashes through Web Crypto, so the same file runs in the browser.
 const build = async (opts) => { const { template, body } = await nip98Template(opts); return { event: finalizeEvent(template, opts.secretKey), body } }

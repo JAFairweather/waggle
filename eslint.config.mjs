@@ -24,6 +24,12 @@ export default [
         setTimeout: 'readonly', clearTimeout: 'readonly', setInterval: 'readonly',
         clearInterval: 'readonly', setImmediate: 'readonly', fetch: 'readonly', TextEncoder: 'readonly',
         TextDecoder: 'readonly', WebSocket: 'readonly', crypto: 'readonly',
+        // Global in Node since 16 and in every browser — `src/nip98.mjs` uses btoa to build the
+        // Authorization header, deliberately, so the same file would still run in a page. It was
+        // added when that module moved out of console/ (#432): `npm run lint` covers
+        // `src tools tests` and never console/, so the move put it under the linter for the first
+        // time and this was the one identifier missing.
+        btoa: 'readonly',
       },
     },
     linterOptions: { reportUnusedDisableDirectives: true },
