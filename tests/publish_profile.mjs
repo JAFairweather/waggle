@@ -185,5 +185,80 @@ const run = (env, argv) => {
     passedTo.join(' ') || 'never passed')
 }
 
+// 10. NO CATCH ON A SIGNING PATH MAY SWALLOW A CUSTODY EXIT CODE (#459 re-read).
+//
+//    `withPinnedCustody` throws with an `exitCode`, and two call sites turn a throw from a signing
+//    path into a value: `readBackCommunity` degrades to `{ reachable: false }`, the `pushCommunity`
+//    call site to `{ status: 0 }`. Both re-raise first — and deleting either `if (e.exitCode)
+//    die(...)` left every assertion above green, because all of them sit upstream of the push phase.
+//
+//    No false pass is reachable either way: with both swallowed the run lands on INCONCLUSIVE and
+//    exits 3. What is lost is the verdict. A signer that answered as the WRONG identity on signature
+//    3 or 4 would be reported as "could not check that relay" — the exact conflation between "bad"
+//    and "unknown" the rest of this tool is built to refuse. So it is asserted, not left to the
+//    defending comment beside it.
+//
+//    Structural, deliberately. Reaching those lines needs the push phase, which opens three live
+//    websockets to the trio before the community leg is touched; a suite that dials out to prove a
+//    catch block is a worse trade than a source scan that names which catch is unguarded.
+{
+  const src = readFileSync(join(ROOT, 'tools/publish_profile.mjs'), 'utf8')
+
+  // Brace-matched rather than `[^}]*`. The pushCommunity catch closes over an object literal, so a
+  // lazy negated class stops inside it — and would report the guard present when it had been cut.
+  const block = (s, open) => {                       // `open` indexes the '{'
+    let i = open + 1, depth = 1
+    while (i < s.length && depth > 0) { if (s[i] === '{') depth++; else if (s[i] === '}') depth--; i++ }
+    return { body: s.slice(open + 1, i - 1), end: i }
+  }
+  // A throw that can carry an exitCode originates at a signature or inside a function that takes one.
+  const SIGNING = /\bsignEvent\s*\(|\bpushCommunity\s*\(/
+  const signingCatches = (s) => {
+    const found = []
+    for (const m of s.matchAll(/\btry\s*\{/g)) {
+      const t = block(s, m.index + m[0].length - 1)
+      if (!SIGNING.test(t.body)) continue
+      const c = /^\s*catch\s*\((\w+)\)\s*\{/.exec(s.slice(t.end))
+      if (!c) continue
+      const cb = block(s, t.end + c[0].length - 1)
+      found.push({
+        line: s.slice(0, m.index).split('\n').length,
+        guarded: new RegExp(`\\b${c[1]}\\.exitCode\\b`).test(cb.body),
+      })
+    }
+    return found
+  }
+
+  const sites = signingCatches(src)
+  // Size floor. A walk that finds nothing reports every site guarded, which reads identically to a
+  // tool with no unguarded catch in it.
+  ok('the scan finds every catch on a signing path in the tool', sites.length >= 3,
+    `${sites.length} found`)
+  const swallowing = sites.filter(s => !s.guarded).map(s => `line ${s.line}`)
+  ok('and every one of them consults exitCode before degrading — a custody result is never reported as "could not check"',
+    sites.length >= 3 && swallowing.length === 0, swallowing.join(', ') || 'none')
+
+  // NEGATIVE CONTROL, both directions. The zero above is a property of the tool only if this scan
+  // can return non-zero, and only if it is not simply flagging every catch it sees.
+  const SWALLOWS = `
+try { nip98 = await signer.signEvent(t) }
+catch (e) { return { reachable: false, why: e.message } }
+`
+  const RERAISES = `
+try { p = await pushCommunity(signer, ev) }
+catch (e) { if (e.exitCode) die(e.message, e.exitCode); p = { status: 0, text: e.message } }
+`
+  const UNRELATED = `
+try { content = readFileSync(f, 'utf8') }
+catch (e) { die('--content-file: ' + e.message) }
+`
+  ok('NEGATIVE CONTROL — a signing catch that degrades without checking exitCode IS flagged',
+    signingCatches(SWALLOWS).length === 1 && !signingCatches(SWALLOWS)[0].guarded)
+  ok('  ...and one that re-raises through an object literal is NOT — the brace match reads past it',
+    signingCatches(RERAISES).length === 1 && signingCatches(RERAISES)[0].guarded)
+  ok('  ...and a catch on no signing path is not dragged in, so this refuses the dangerous shape rather than every catch',
+    signingCatches(UNRELATED).length === 0)
+}
+
 console.log(pass ? '\nALL PASS' : '\nSOMETHING FAILED')
 process.exit(pass ? 0 : 1)
