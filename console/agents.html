@@ -91,11 +91,8 @@
 import { verifyEvent, nip19 } from 'nostr-tools'
 import { consoleSigner } from './signer-session.mjs'
 import { newestFreshControlState, requireFreshControlState } from './control-state-freshness.mjs'
-<<<<<<< HEAD
 import { loadBridgeKey, rememberBridgeKey } from './bridge-key-store.mjs'
-=======
 import { STATUSES, statusLabel } from './agent-roster.mjs'
->>>>>>> af505d22 (feat: pick the agent from the signed roster instead of pasting an npub (#413))
 
 const RELAYS = ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub', 'wss://jskitty.com/nostr']
 // WIRE values and what a person reads, both from the module that owns them (#413). They used to be

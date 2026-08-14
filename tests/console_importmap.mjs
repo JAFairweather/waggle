@@ -22,6 +22,7 @@
 //
 //   node tests/console_importmap.mjs
 
+import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -84,6 +85,19 @@ for (const page of pages) {
   if (!moduleBody.trim()) continue
   pagesWithModules++
 
+  // Does the module PARSE? Nothing under tests/ asked that until this branch shipped unresolved
+  // conflict markers inside agents.html's module and stayed green through the whole suite. The
+  // browser stops at the SyntaxError exactly as it stops at an unmapped specifier — no handler
+  // attaches, every button is inert, and the markup still renders perfectly. `.mjs` files are
+  // covered by the lint; a script body inside HTML is read by nothing that parses JavaScript.
+  for (const [i, body] of inline.entries()) {
+    let syntax = null
+    try { execFileSync(process.execPath, ['--input-type=module', '--check'], { input: body, stdio: ['pipe', 'ignore', 'pipe'] }) }
+    catch (e) { syntax = String(e.stderr || e.message).split('\n').find(l => /Error/.test(l)) || 'did not parse' }
+    check(syntax === null,
+      `${page}: inline module ${i + 1} parses` + (syntax ? ` — ${syntax.trim().slice(0, 90)}` : ''))
+  }
+
   const mapMatch = /<script type="importmap">([\s\S]*?)<\/script>/.exec(html)
   const mapped = new Set()
   if (mapMatch) {
@@ -116,6 +130,17 @@ check(control.has('nostr-tools/pool'),
   'which is the transitive hop that made this invisible to eyeballing the page')
 check(!control.has('./vendor/nave-connect.mjs'),
   'and it does not report relative paths as bare specifiers — those resolve without an importmap')
+
+// NEGATIVE CONTROL for the parse check, run through the same call the loop makes. The fixture is
+// the defect verbatim: the conflict markers this branch committed inside agents.html.
+const parses = body => {
+  try { execFileSync(process.execPath, ['--input-type=module', '--check'], { input: body, stdio: ['pipe', 'ignore', 'pipe'] }); return true }
+  catch { return false }
+}
+check(!parses("import { a } from './x.mjs'\n<<<<<<< HEAD\nconst y = 1\n=======\nconst y = 2\n>>>>>>> af505d22\n"),
+  'NEGATIVE CONTROL — an unresolved conflict marker inside a module body is REFUSED')
+check(parses("import { a } from './x.mjs'\nconst y = 1\nexport { y }"),
+  'and a legitimate module still parses, so this is not a check that refuses everything')
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
 process.exit(pass ? 0 : 1)
