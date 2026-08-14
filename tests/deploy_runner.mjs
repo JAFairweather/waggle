@@ -112,9 +112,17 @@ const readOrReport = (path, tick) => {
   } else {
     let entries = null
     try { entries = readdirSync(dir) } catch { /* listed below as unreadable */ }
+    // Three states, not two. An EMPTY directory is neither of the others: the tree has not gone
+    // away, but it is not intact either — it is a tree wiped to its root, or a mountpoint that came
+    // up without its contents. Folding it into the intact branch sends the reader to the tick
+    // output, which is the road #378 has already been chased down twice. This is not hypothetical
+    // for this runner: `deploy-runner@.service:51` documents a window where rsync has landed and
+    // neither the restart nor the DEPLOYED_SHA write has, so a partial tree is a known shape here.
     where = entries === null
       ? `Its directory ${dir} exists but could not be listed.`
-      : `Its directory ${dir} exists and holds ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} [${entries.slice(0, 12).join(' ') || 'empty'}], so the tree is intact and the tick refused.`
+      : entries.length === 0
+        ? `Its directory ${dir} exists but is EMPTY, so the tree is present in name only — the tick output below is not the explanation.`
+        : `Its directory ${dir} exists and holds ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'} [${entries.slice(0, 12).join(' ')}], so the tree is intact and the tick refused.`
   }
   console.error(`  ↳ ${path} does not exist. ${where}`)
   console.error('    The runner tick that should have written it said:')
@@ -157,6 +165,21 @@ check(/IS NOT THERE EITHER/.test(reaped.said) && /not a refusal/.test(reaped.sai
   'NEGATIVE CONTROL — tree absent -> names the tree, and says the tick output is NOT the explanation')
 check(!/the tick refused/.test(reaped.said),
   'NEGATIVE CONTROL — and does not also claim the tick refused; the two diagnoses are exclusive')
+
+// The third state, and the reason it needs its own fixture: an empty directory answers `true` to
+// existsSync and `[]` to readdirSync, so it satisfies the intact branch's condition while being
+// the opposite of intact. Assert it against BOTH of the other two wordings, because the failure
+// mode is not a missing message — it is a confident wrong one.
+const hollow = join(probe, 'hollow-tree')
+mkdirSync(hollow, { recursive: true })
+const emptied = saidWhenReading(join(hollow, 'DEPLOYED_SHA'), { out: 'stub tick output' })
+check(emptied.value === '', 'a watermark under an EMPTY tree is reported, not thrown')
+check(/is EMPTY/.test(emptied.said) && /present in name only/.test(emptied.said),
+  'empty tree -> names the emptiness as the finding, not the tick')
+check(!/the tick refused/.test(emptied.said),
+  'NEGATIVE CONTROL — an empty tree is NOT reported as a refusal; that is the third road #378 gets chased down')
+check(!/IS NOT THERE EITHER/.test(emptied.said),
+  'NEGATIVE CONTROL — nor as a vanished tree; all three diagnoses are mutually exclusive')
 rmSync(probe, { recursive: true, force: true })
 
 const work = mkdtempSync(join(tmpdir(), 'wb-runner-'))
