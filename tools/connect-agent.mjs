@@ -24,9 +24,14 @@
 //
 //   node tools/connect-agent.mjs --name oliver --pubkey <64-hex> --owner <64-hex>
 //   node tools/connect-agent.mjs --name oliver --check      # changes nothing
-//   node tools/connect-agent.mjs --name oliver --check --stanza   # how to register, per runtime
+//   node tools/connect-agent.mjs --name oliver --check --stanza --channel-host <host>  # register
+
 //   node tools/connect-agent.mjs --name oliver --startup --runtime codex   # write AGENTS.md
 //   node tools/connect-agent.mjs --name oliver --check --startup --print   # show it, write nothing
+//
+// --channel-host <h> the broker host the channel ssh's to. No default, and --stanza refuses without
+// --channel-user <u> it (default `root`): the host is deployment state, and a stanza pointing
+//                    nowhere registers cleanly, lists as ✔ Connected, and reaches nobody (#472).
 //
 // --whoami <path>    the `nvoy_whoami` result captured from the session under test, compared
 //                    against --pubkey. This is the MCP path's EXPECT_PUBKEY (#338): registered is
@@ -43,6 +48,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { boundIdentity, installState, renderState } from '../src/agent_install_state.mjs'
 import { exportTemplate, importTemplate } from '../src/agent_manifest_transfer.mjs'
+import { channelCommand, credentialReport, registeredForm } from '../src/channel_registration.mjs'
 import { RUNTIMES, channelStanza, cliRuntimes, exclusivityVerdict, foreignServers, isMine, registrationHelp, runtime } from '../src/mcp_runtimes.mjs'
 import { startupDoc } from '../src/agent_startup.mjs'
 
@@ -62,6 +68,10 @@ const owner = flag('--owner').toLowerCase()
 const from = flag('--from')
 const channel = flag('--channel')
 const fromFile = flag('--from-file')
+// The broker host. No default, deliberately — see `channelCommand`. `root` is the account the
+// forced-command entry is seated under, and is a default because it is not deployment state.
+const channelHost = flag('--channel-host')
+const channelUser = flag('--channel-user') || 'root'
 
 // Shape-check the two operator-pasted values HERE, at the boundary, before anything renders them
 // (#466 review §3). Both have a known shape, so an allowlist is available and an allowlist is
@@ -259,9 +269,19 @@ see('channel-key', existsSync(keyPath), keyOk, existsSync(keyPath) ? (keyOk ? 'm
 //   answered       — a list, possibly empty. Empty means nothing is registered, and says so.
 // Collapsing the first two is how a Codex box reported "could not run `claude mcp list`" forever
 // while its own registration sat there, readable, unasked. ──────────────────────────────────
-const stanza = channelStanza({
-  agent: name, command: '<node>', args: ['<path>/claude-channel.mjs'], instanceRoot: instDir,
-})
+//
+// The registration is an `ssh` invocation to the broker host, not a local spawn (#472). The local
+// form does not fail loudly — it answers `initialize` and prints ✔ Connected while the identity's
+// real channel is elsewhere — so emitting it is worse than emitting nothing. This refuses rather
+// than falls back. `channelStanza` is neutral about the command and needs no change.
+let stanza = null, stanzaRefusal = null, credReport = null
+try {
+  const cmd = channelCommand({ instanceRoot: HERE, host: channelHost, user: channelUser })
+  stanza = channelStanza({ agent: name, command: cmd.command, args: cmd.args, instanceRoot: instDir })
+  credReport = credentialReport({ instanceRoot: HERE, exists: existsSync })
+} catch (e) {
+  stanzaRefusal = e.message
+}
 const probes = []
 for (const rt of cliRuntimes()) {
   let out = null, installed = true
@@ -273,7 +293,10 @@ for (const rt of cliRuntimes()) {
     installed = e?.code !== 'ENOENT'
     out = null
   }
-  probes.push({ rt, installed, names: installed ? rt.parse(out) : null })
+  // `raw` is kept alongside the parsed names because the names alone cannot tell a working
+  // registration from a retired one — both are just `nvoy-<agent>`, and the difference is in the
+  // command the runtime prints beside it.
+  probes.push({ rt, installed, raw: out, names: installed ? rt.parse(out) : null })
 }
 const answered = probes.filter(p => p.installed && Array.isArray(p.names))
 const unreadable = probes.filter(p => p.installed && p.names === null)
@@ -286,13 +309,37 @@ if (answered.length === 0) {
     ? `${unreadable.map(p => `\`${p.rt.bin} ${p.rt.listArgs.join(' ')}\``).join(', ')} could not be read — INCONCLUSIVE, not absent`
     : 'no MCP host CLI on this machine — register from the stanza (--stanza) and prove it with an initialize + tools/list handshake'
 } else if (hosts.length) {
-  registered = true
+  // Registered is not the same as registered in the form that reaches this identity. The retired
+  // local entry spawns, answers `initialize` and lists as ✔ Connected while the identity's channel
+  // is on the broker host — so this row is the only surface that can say otherwise, and folding
+  // `local` into `true` is exactly how two identities on the maintainer's own machine sat wrong for
+  // a day. UNVERIFIED, never PRESENT.
+  const forms = answered
+    .filter(p => p.names.some(n => isMine(n, name)))
+    .map(p => ({ rt: p.rt, form: registeredForm(p.raw, p.names.find(n => isMine(n, name))) }))
+  const stale = forms.filter(f => f.form === 'local')
+  const opaque = forms.filter(f => f.form === 'unknown')
   const caveat = answered.find(p => p.rt.listCaveat && hosts.includes(p.rt.label))?.rt.listCaveat
-  regNote = `registered in ${hosts.join(', ')}${caveat ? ` — ${caveat}` : ''}`
+  if (stale.length) {
+    registered = false
+    regNote = `registered in ${stale.map(f => f.rt.label).join(', ')} in the RETIRED LOCAL FORM — it spawns `
+      + `\`claude-channel.mjs\` here and lists as connected, but this identity's channel is on the broker `
+      + `host, so nothing reaches it. Re-register from --stanza.`
+  } else if (opaque.length === forms.length) {
+    registered = true
+    regNote = `registered in ${hosts.join(', ')}, but the command could not be read — UNVERIFIED, not confirmed`
+  } else {
+    registered = true
+    regNote = `registered in ${hosts.join(', ')} in the ssh form${caveat ? ` — ${caveat}` : ''}`
+  }
 } else {
   registered = false
-  regNote = `not registered in ${answered.map(p => p.rt.label).join(', ')}. Run:\n`
-    + answered.map(p => `      ${p.rt.add(stanza)}`).join('\n')
+  regNote = stanza
+    ? `not registered in ${answered.map(p => p.rt.label).join(', ')}. Run:\n`
+      + answered.map(p => `      ${p.rt.add(stanza)}`).join('\n')
+    // No stanza to offer, and offering the retired one instead is the defect this fixed. Name the
+    // flag: a dead end and a dead end with a way out are not the same message.
+    : `not registered in ${answered.map(p => p.rt.label).join(', ')}, and no command to offer — ${stanzaRefusal}`
 }
 if (unreadable.length && answered.length) {
   regNote += `\n      (${unreadable.map(p => p.rt.label).join(', ')} is installed but could not be read — UNCHECKED)`
@@ -361,14 +408,26 @@ if (warn.length) { console.log(`\ncarried forward without understanding:`); for 
 // host with no CLI to run — a Pi, a headless box, anything self-hosted. Printed on request rather
 // than always, because an unrequested wall of config is how the one line that mattered gets missed.
 if (has('--stanza')) {
+  if (!stanza) {
+    // Refuse, and refuse on stderr with a non-zero exit. Printing the old local block here would be
+    // the whole of #472 back again: it registers cleanly, lists as ✔ Connected, and reaches nobody.
+    console.error(`\nconnect-agent: no channel registration to print — ${stanzaRefusal}`)
+    process.exit(1)
+  }
   console.log(`\nregister the channel — pick your runtime, not the first block you see:`)
   for (const h of registrationHelp(stanza)) {
     console.log(`\n  ${h.label}`)
     if (h.kind === 'cli') console.log(`    ${h.line}`)
     else console.log(`    ${h.config}\n` + h.json.split('\n').map(l => `    ${l}`).join('\n'))
   }
-  console.log(`\n  <node> and <path> are this host's node and its nvoy checkout. Nothing above is secret;`)
-  console.log(`  the pairing is delivered to the installer on stdin and never appears in a paste block (#333).`)
+  console.log(`\n  This is an ssh call to the broker host, not a local server: the identity lives there.`)
+  console.log(`  Nothing above is secret — it names two credential files by path and carries neither.`)
+  console.log(`  The pairing is delivered to the installer on stdin and never appears in a paste block (#333).`)
+  if (credReport && !credReport.ok) {
+    // The stanza is correct and still will not run. Said here rather than left to the install report
+    // because this is the block the operator is about to paste.
+    console.log(`\n  ! ${credReport.note}`)
+  }
 }
 // --startup writes the file this agent's runtime reads before it does anything (#466). Every
 // runtime already reads one and nothing wrote it, so a fully connected agent began every session
