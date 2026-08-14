@@ -61,6 +61,23 @@ export default [
   // never run on the signing UI: the surface where an identifier that does not exist fails in a
   // page, in front of an operator who is approving something, with no test in between.
   //
+  // ⚠ This covers the `.mjs` MODULES under console/ and nothing else. Most of the console's
+  // JavaScript is inline `<script>` in HTML — 1,370 lines across six pages, of which index.html
+  // (839) and connect.html (316) carry the kind 440/441 signing paths this block is written for.
+  // ESLint will not read `.html` without a plugin, so that gap is silent: `npm run lint` exits 0
+  // and reports nothing skipped. Tracked in #460; do not read a green run as "console/ is covered".
+  //
+  // `eslint console` also enumerates 24 files, but 5 are console/vendor/**, which no rule reaches:
+  // the `ignores` above sits in a config object that also has `files`, making it a per-config
+  // ignore rather than a global one, so vendor drops out of that block's rules and is linted by
+  // nothing. Harmless — vendor is clean either way — but the count of modules actually carrying
+  // no-undef is 19. Measured both directions: an undefined identifier in vendor reports 0 errors,
+  // the same line in console/routing.mjs reports 1.
+  //
+  // One consequence to expect: no-undef is now a merge gate for new console/ module code, so a
+  // module that starts using a browser global fails CI until the list below is extended. That is
+  // this block working, not a broken lint.
+  //
   // Three globals, not a blanket browser list, for the same reason the Node block above lists only
   // what the bridge and tools actually use. These are precisely what enabling the lint reported —
   // `document` ×8, `localStorage` ×2, `confirm` ×1, across three files. Add to this list when a
