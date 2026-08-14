@@ -92,6 +92,36 @@ This is the automated form of the manual "sealed tree md5 vs the repo baseline" 
 *Pre-cutover box checks* — prefer this. The regression test `tests/deploy_verify.mjs`
 proves it reports drift on a deliberately stale tree.
 
+### `console/` is not covered by this, and must not be added to the ship list (#412)
+
+The verifier's ship list mirrors `deploy.sh`'s rsync set, and neither includes `console/`.
+That is correct, not an omission: **the console is not served from the bridge host.** There
+is no HTTP listener on it — only SSH and DNS — so nothing there could serve the pages.
+Adding `console/` to `SHIP` would make every run report drift for files that have no
+business being on that box.
+
+Two consequences the verifier's green exit does not cover, and neither is theoretical —
+#412 was filed after a console fix appeared not to have shipped while both lanes verified
+166/166:
+
+- **The console is published separately, and by hand.** The bridge is pull-deployed: the
+  runner polls `main`, ships the first CI-green commit within minutes, and alarms on drift.
+  The console has none of that. It reaches the operator's browser from a checkout on a
+  different host, fast-forwarded to `origin/main` by a manual step. So for a console change,
+  *merged + CI green is not the authorisation to consider it live* — a person still has to
+  run the site deploy, and no check anywhere reports whether they did. A console fix can sit
+  unshipped indefinitely with every waggle deploy surface green.
+- **A stale console is a stale signing surface.** The console signs owner control commands.
+  Stale means signing against an old grammar, an old envelope shape or an old freshness
+  rule, with no signal. The modules are fetched by stable path with no cache-busting, so a
+  soft reload is enough to keep an old module graph alive — that is what #412 observed, and
+  a hard reload is currently the only remedy.
+
+The host, credentials and commands for the site deploy are operational and live in the
+operator's private brief, not here. What belongs here is the boundary: **`deploy.sh`,
+`verify-deployed.sh` and the deploy runner cover `src`, `tests`, `tools` and the tripwire
+units. They say nothing at all about `console/`.**
+
 ## Adding an agent seat (a new sealed-lane recipient)
 
 `add-recipient.sh` wires a new agent into the sealed lanes: it creates a private inbox
