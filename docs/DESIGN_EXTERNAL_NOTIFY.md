@@ -111,8 +111,9 @@ Detection currently ends at a file. Something must **start a session**. Options,
   **There is no Anthropic credential on the container host, and the credentials directory is what
   proves it.** Provider keys on that host are *files*, named `<instance>.<provider>-api-key`. The
   directory holds five entries: a Bunker URI and a NIP-46 client key for each of the two instances,
-  plus `codex-jaf.openai-api-key`. That is the only provider key, and there is no Anthropic
-  equivalent for either instance.
+  plus one OpenAI key belonging to the codex instance. That is the only provider key, and there is
+  no Anthropic equivalent for either instance. (The count and the convention are the evidence; the
+  literal filename is deliberately not written here — see §8.)
 
   (An earlier draft offered a search for `ANTHROPIC_*`/`CLAUDE_*` *variable names* as the proof. That
   search returns nothing, but it never could have matched a file under this naming convention, so it
@@ -195,8 +196,11 @@ the key lives on nave.pub full-time, which is a standing credential to protect r
 line to add.
 
 **Approve it knowing the blast radius, which is not empty today.** That host already holds a provider
-key with no consumer (`codex-jaf.openai-api-key`, `root:root 600`, no running worker — #428), the
-session state of every hosted agent, and root via the management path. Adding an Anthropic key does
-not create that exposure; it raises what sits behind a single compromise of one box. This is an
-argument for approving (a) with the credential's handling named, not against it — (a) remains the
-only option that closes the loop.
+key with no consumer (#428), the session state of every hosted agent, and root via the management
+path. Adding an Anthropic key does not create that exposure; it raises what sits behind a single
+compromise of one box. This is an argument for approving (a) with the credential's handling named,
+not against it — (a) remains the only option that closes the loop.
+
+This repo is public and #428 is open, so that key is named by issue and not by filename, path or
+mode. #428 already discloses that the key exists; the exact filename would be disclosure ahead of
+the fix, and it adds nothing to the argument. Do not put it back before #428 lands.
