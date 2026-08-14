@@ -11,13 +11,38 @@
 // repost of one agent's note pass the signer gate and be re-routed by mention. That is the echo the
 // design excludes, arriving through the config field least likely to be read as a gate.
 //
-// SCOPE, measured rather than assumed. Managed task routes apply a SECOND, per-route signer check
-// (`r.scan_author !== from`), so a bridge-signed message reaches a managed route only if that
-// route's own sender is the bridge key. A LEGACY `return_lane` row has no such check — the global
-// gate is its only signer test, so every legacy recipient is exposed by one bad route elsewhere in
-// the file. Section 3 demonstrates that leg; the first draft of it aimed at a managed route,
-// asserted a carry the second guard was quietly preventing, and FAILED. Left in, it would have
-// shipped a test proving the wrong thing.
+// SCOPE, measured rather than assumed. The exposed class is every return-lane entry with no managed
+// route — legacy `return_lane` rows and admitted-only guest entries alike. Managed routes apply a
+// SECOND, per-route signer check at `bridge.mjs:3447`, gated on `r.managedTaskRoute`. Two kinds of
+// entry do not carry that flag: a legacy row, which sets it `false` at `:442`, and the synthetic
+// `{ dynamic: true }` entry `activeReturnLane` pushes at `:885` for a granted key that no route
+// represents. For both, the global gate is the only signer test, so one bad route elsewhere in the
+// file exposes them.
+//
+// That second kind is why "legacy" was the wrong word here, and the correction is the direction that
+// matters: a dynamic entry is the DEFAULT state of every newly admitted agent until an owner creates
+// a route for them. This is not a residue class in old configs that can wait for a cleanup — it is
+// where agents start. A deployment with a clean modern config and zero legacy rows is exposed.
+//
+// The two kinds are not equally REACHABLE, and the difference is stated rather than glossed.
+// `mentioned` at `:3457` is `ptags.includes(r.npub_hex) || (!r.dynamic && taskRouteMentioned(…))`.
+// An entry with a mention string can be reached by the mention TEXT inside the reposted body, which
+// is the path section 3 drives, and waggle authors that body from untrusted public content. A
+// dynamic entry has no mention string and is excluded from the text path by `!r.dynamic`, so
+// reaching it needs a `p` tag carrying its hex — and `forwardPublic` tags a repost with `BRIDGE_PK`
+// (`:1854`), not with any agent's key. Nothing in this repo puts an agent's `p` tag on a carried
+// post. Whether Buzz adds one server-side when it resolves a live `@Name` in a `liveRefs` body is
+// not answerable from here. So: the mention-string class is live, the dynamic class is gated on that
+// unanswered question. Both are closed by the fix; only the first is demonstrated below.
+//
+// The per-route check has a second door, which does not change any of the above.
+// `(r.scan_author !== from && !repliedTo)` filters on the route's sender ONLY when the message is
+// not a reply, so a bridge-signed reply reaches a managed route whatever that route's sender is
+// (`:3448`, and the code comment at `:3444` names the exception). It carries no extra severity:
+// `repliedTo` bypasses the global gate too at `:3461`, so that path is open with or without the
+// bridge key seated. Section 3 stays on a no-managed-route recipient, which is the leg the seated
+// key actually opens; its first draft aimed at a managed route, asserted a carry the second guard
+// was quietly preventing, and FAILED. Left in, it would have shipped a test proving the wrong thing.
 //
 // Not remotely reachable: both writers need owner input — `public.task_routes` at boot, or an
 // approver-signed console upsert. It is a footgun in a documented invariant, not an open door. Both
@@ -57,11 +82,17 @@ writeFileSync(resolve(dir, 'config.json'), JSON.stringify({ relays: [], recipien
   // The explicit roster also names the bridge key. That path was already filtered; it is here so a
   // regression in EITHER writer is visible from one boot.
   scan_authors: [bridgePk, crew], scan_channels: [],
-  // A legacy, manually-declared recipient. It matters because managed task routes carry a SECOND,
-  // per-route signer check (`r.scan_author !== from`) that a legacy row does not — so for this row
-  // the global gate is the only thing standing between a bridge-signed message and delivery. Found
-  // by a negative control that failed: the first draft asserted a carry that a different guard was
-  // quietly preventing, which would have shipped a test proving the wrong thing.
+  // A manually-declared recipient, standing in for the whole no-managed-route class. It matters
+  // because managed task routes carry a SECOND, per-route signer check (`r.scan_author !== from`)
+  // that an entry with a falsy `managedTaskRoute` does not — so for this row the global gate is the
+  // only thing standing between a bridge-signed message and delivery. Found by a negative control
+  // that failed: the first draft asserted a carry that a different guard was quietly preventing,
+  // which would have shipped a test proving the wrong thing.
+  //
+  // A `return_lane` row is the cheap way to construct that class from a config file. It is NOT the
+  // only member of it — a granted key with no route gets the same treatment from the synthetic
+  // `dynamic: true` entry at `bridge.mjs:885`, and that is where every newly admitted agent starts.
+  // See the SCOPE note at the top: do not read this fixture as "old configs only".
   return_lane: [{ npub_hex: legacy, mention: 'Legacy' }],
   task_routes: [
     { participant: mcClaude, sender: crew, channel, mention: 'MC Claude', protocol: 'nvoy-task-carry-v1' },
@@ -133,8 +164,9 @@ ok('a bridge-signed repost does NOT cross the gate the bridge now builds',
 //
 // This assertion earned its place by failing. The first draft aimed the repost at a managed task
 // route and it did not cross, because managed routes apply their own `scan_author` check on top of
-// the global gate. That is a real second guard and it narrows the finding: the global gate is the
-// ONLY signer check for a legacy recipient, so that is the row the seated key exposes.
+// the global gate. That is a real second guard, and it moves the finding rather than shrinking it:
+// the global gate is the ONLY signer check for a recipient with no managed route, which is a legacy
+// row here and every not-yet-routed admitted agent in production.
 const preFix = [...PUB.scanAuthors, bridgePk]
 const throughBroken = await carriedBy(REPOST, bridgeSk, preFix)
 ok('NEGATIVE CONTROL — through the pre-fix gate the SAME repost crosses to a legacy recipient',
