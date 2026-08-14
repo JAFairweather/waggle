@@ -38,6 +38,7 @@
 // So 16 bits: ~3s measured here, extrapolating to ~15s on the droplet. That still needs to be off
 // the event loop, which is why the caller runs this in a worker. The cap is not a tuning knob.
 
+import { Worker } from 'node:worker_threads'
 import { getEventHash } from 'nostr-tools/pure'
 
 /// The ceiling. Above this we do not mine — we publish without proof-of-work and let the relay
@@ -127,4 +128,75 @@ export function mineSync(template, target, { cap = POW_CAP, maxIterations = 1 <<
   }
   return { mined: false, code: 'exhausted', target: t,
     reason: `no nonce below ${maxIterations} reached ${t} bits — the budget ran out, not the difficulty` }
+}
+
+/// Mine on a worker thread. Same contract as `mineSync` — same result shapes, same codes — with the
+/// hashing off the thread that carries messages (#346).
+///
+/// The cheap refusals are answered HERE, before a thread is spawned: an over-cap ask, a signed
+/// template and a bad target are all decidable from the arguments, and paying ~30ms of thread
+/// startup to be told `over_cap` would make the refusal cost more than the mining it declined. That
+/// is not an optimisation, it is the difference between a cap that protects the box and one that
+/// merely relocates the cost.
+///
+/// Two failure codes exist only on this path:
+///   worker_failed  — the thread errored or exited without answering. NEVER a partial event, and
+///                    never a silent fall back to mining inline: a fallback would reintroduce the
+///                    exact stall the worker exists to prevent, at the moment things are already
+///                    going wrong.
+///   timed_out      — the wall clock ran out. The worker is terminated, because a mine nobody is
+///                    waiting for is a core the box needs back.
+///
+/// `timeoutMs` defaults generously relative to the cap: 16 bits measures ~3s here and ~15s on the
+/// droplet, so 120s is a backstop against a wedged thread, not a difficulty budget. The iteration
+/// budget inside `mineSync` is what bounds the work.
+export async function mineAsync(template, target, { cap = POW_CAP, maxIterations, timeoutMs = 120000, workerUrl } = {}) {
+  const cheap = mineSyncPrecheck(template, target, cap)
+  if (cheap) return cheap
+
+  const url = workerUrl || new URL('./pow_worker.mjs', import.meta.url)
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      // Terminate unconditionally. On the success path the worker has already posted and is about
+      // to exit on its own; on every other path it may not be, and this is the only handle to it.
+      try { worker.terminate() } catch { /* already gone */ }
+      resolve(value)
+    }
+    const timer = setTimeout(() => finish({
+      mined: false, code: 'timed_out', target: Number(target),
+      reason: `no answer from the mining worker within ${timeoutMs}ms — terminated rather than left holding the core`,
+    }), timeoutMs)
+    let worker
+    try {
+      worker = new Worker(url, { workerData: { template, target: Number(target), cap, maxIterations } })
+    } catch (e) {
+      clearTimeout(timer)
+      return resolve({ mined: false, code: 'worker_failed', target: Number(target),
+        reason: `could not start the mining worker: ${e?.message || e}` })
+    }
+    worker.on('message', finish)
+    worker.on('error', e => finish({ mined: false, code: 'worker_failed', target: Number(target),
+      reason: `the mining worker errored: ${e?.message || e}` }))
+    // An exit with no message is the case a naive implementation hangs on forever. `finish` is
+    // idempotent, so arriving here after a successful message is a no-op.
+    worker.on('exit', code => finish({ mined: false, code: 'worker_failed', target: Number(target),
+      reason: `the mining worker exited (${code}) without answering` }))
+  })
+}
+
+/// The refusals both miners share, in the order `mineSync` applies them. Split out so the async path
+/// can answer them without a thread AND give byte-identical reasons — two copies of a refusal string
+/// is two chances for the sync and async paths to explain the same fault differently.
+function mineSyncPrecheck(template, target, cap) {
+  // A zero iteration budget makes mineSync answer its argument checks and then fall straight out of
+  // a loop that never runs. Whether a refusal comes back at all is therefore mineSync's decision,
+  // not a condition restated here — restating it is how the two paths drift.
+  const verdict = mineSync(template, target, { cap, maxIterations: 0 })
+  // `exhausted` is the loop's answer, not an argument's: it means every cheap check passed and the
+  // real work is still to be done. Anything else is a refusal that needed no thread.
+  return verdict.code === 'exhausted' ? null : verdict
 }

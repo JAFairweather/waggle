@@ -66,6 +66,7 @@ import { defuseRefs, defuseMarkup, defuseInvisible, quoted, renderQuarantined, r
 import { hex as concordHex, publicChannel, openChannelWrap } from './concord_lib.mjs'
 import { thinRelaySet } from './relays.mjs'
 import { refusalLedger, explainSendRefusals } from './relay_refusals.mjs'
+import { powTargets } from './pow_targets.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..')
@@ -2461,6 +2462,23 @@ function rlDropOnce(id) {
 // The ledger for #374. `err`, not `log`: a relay refusing our writes is a fault, and it belongs
 // wherever the operator is already looking for faults. One line the first time, then counted.
 const relayRefusals = refusalLedger({ log: err })
+// What each relay has asked us to mine to (#346). The ledger keeps the last REASON per relay, for
+// reporting; this keeps the last NUMBER, because a number is the thing you can act on. Fed from the
+// same OK frames, below.
+const powDemands = powTargets()
+
+// The cap firing must be VISIBLE, but it is a standing condition rather than an event: nos.lol asks
+// 28 against a cap of 16 and will be in recipient DM relay lists, so announcing it on every send is
+// a permanent `err` line on a box the tripwire reads. Same discipline as the refusal ledger (#374):
+// say it once, and say it again only when that relay's demand actually changes. Nothing is lost by
+// staying quiet in between — the refusal this decision causes is a real relay answer, and
+// `relayRefusals` counts every one of those.
+const powOverCapSaid = new Map()   // relay -> the demand last announced as over cap
+function powOverCapToSay(overCap) {
+  const fresh = overCap.filter(url => powOverCapSaid.get(url) !== powDemands.demandFor(url))
+  for (const url of fresh) powOverCapSaid.set(url, powDemands.demandFor(url))
+  return fresh
+}
 
 function publishWrapToRelayList(wrap, relays, mkSocket, onRefusal) {
   if (process.env.WB_STUB_SEND) return Promise.resolve(relays.length || 1)
@@ -2493,6 +2511,10 @@ function publishWrapToRelayList(wrap, relays, mkSocket, onRefusal) {
             // event"]` is the healthiest answer a relay gives, and reading it as one would report
             // the working relays as the broken ones. The boolean decides; the message explains.
             relayRefusals.record({ relay: url, accepted: !!m[2], reason: m[3] })
+            // Same frame, second reader: a proof-of-work refusal carries the target the next wrap
+            // to this relay should be mined to. Everything else it ignores (#346).
+            const learned = powDemands.record({ relay: url, accepted: !!m[2], reason: m[3] })
+            if (learned !== null) log(`POW: ${url} asks for ${learned} bits`)
             if (!m[2] && typeof onRefusal === 'function') onRefusal({ relay: url, reason: m[3] })
             done()
           }
@@ -3048,7 +3070,25 @@ async function returnLaneSend(toHex, descriptor, meta, publish = publishWrapToRe
       : (wrap) => publish(wrap, undefined, collectRefusal)
     // A3 §2.5: the seal/wrap construction and the key both live in nostr_egress.mjs. `descriptor`
     // is {template, slots} — there is no parameter here that could carry a composed sentence.
-    const { wrap, accepted, bytes } = await sealAndWrap({ template: descriptor.template, to: toHex, slots: descriptor.slots }, publisher)
+    // Mine only when a relay in THIS fan-out has actually asked (#346). `targetFor` returns the
+    // highest demand at or below the cap: proof-of-work is monotone, so one wrap at that difficulty
+    // satisfies every relay demanding less, and an over-cap relay must not be allowed to raise it —
+    // each bit doubles the cost, and that relay refuses either way.
+    const powPlan = powDemands.targetFor(recipientRelays || PUB.relays || [])
+    // The cap firing is a decision to let a relay refuse us, so it is said out loud rather than left
+    // to be inferred from a message that never arrives — once per relay per demand, see
+    // powOverCapToSay. It is deliberately NOT routed through relayRefusals: no relay said this, we
+    // did, and a ledger of relay answers that contains our own decisions cannot be read either way.
+    const overCapFresh = powOverCapToSay(powPlan.overCap)
+    if (overCapFresh.length) err(`POW over cap: ${overCapFresh.join(', ')} demand more than ${powPlan.cap} bits — publishing without proof-of-work, expect a refusal. Said once per relay until its demand changes.`)
+    const { wrap, accepted, bytes, pow } = await sealAndWrap({ template: descriptor.template, to: toHex, slots: descriptor.slots, powTarget: powPlan.target }, publisher)
+    // A mine that did not happen must not read as one that did. Both outcomes are logged with the
+    // difficulty actually reached, because "we mined" and "we meant to" are the two states this
+    // whole module exists to keep apart.
+    if (pow) {
+      if (pow.mined) log(`POW mined ${pow.achieved} bits (asked ${pow.target}) in ${pow.iterations} nonces for ${powPlan.satisfies.join(', ')}`)
+      else err(`POW not mined (${pow.code}) for ${powPlan.satisfies.join(', ')} — ${pow.reason}`)
+    }
     // Journal stamped with the accept-count so the durable record is landed-reality, not intent: a
     // 0/N carry is written accepted:0, never a false "sent". The wrap's author is ephemeral and can
     // never trip the tripwire, so this record is a written-down intent — worth making a truthful one;
@@ -4013,7 +4053,7 @@ export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, c
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, defuseInvisible, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, revokedGrants, activeReturnLane, seatGrantee, unseatGrantee, seated, seatingCoverageGap, unseatPending, retryPendingUnseats, UNSEATPENDING_MAX_ATTEMPTS, rosterRole, isElevated, seatingAuthority, ELEVATED_ROLES, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, relayRefusals, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL, rosterChannel, removalChannel }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, defuseInvisible, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, revokedGrants, activeReturnLane, seatGrantee, unseatGrantee, seated, seatingCoverageGap, unseatPending, retryPendingUnseats, UNSEATPENDING_MAX_ATTEMPTS, rosterRole, isElevated, seatingAuthority, ELEVATED_ROLES, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, relayRefusals, powDemands, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL, rosterChannel, removalChannel }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests,
   policyRequests, policyWriterInFlight, remotePolicyGatePublic, processRemotePolicyRequest,
   retryRemotePolicyRequests, __setPolicyWriterRunnerForTests, unframePolicyWriterResponse,

@@ -14,11 +14,12 @@
 // `bridgePubkey()`, `hasBridgeKey()`, `openSealed()`, `sealAndWrap()`.
 //
 // INV-A3-2  exactly one function per transport invokes a signer. This is the Nostr one.
-import { finalizeEvent, generateSecretKey, getEventHash, verifyEvent } from 'nostr-tools/pure'
+import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey, verifyEvent } from 'nostr-tools/pure'
 import * as nip44 from 'nostr-tools/nip44'
 import { loadNostrSigner } from './nostr_signer.mjs'
 import { isConsentState } from './consent_state.mjs'   // the one consent vocabulary (#389)
 import { createHash, randomBytes } from 'node:crypto'
+import { mineAsync } from './pow.mjs'
 
 // --- The key, held here and nowhere else ------------------------------------------------------
 const BRIDGE_SIGNER = loadNostrSigner()
@@ -486,7 +487,7 @@ export async function openRumor(seal) {
 // signed by the BRIDGE key (a NIP-17 seal names its real sender, so it must be); the wrap around
 // it is signed by a THROWAWAY, which is why this traffic never appears on the wire as the poster
 // key — and why the wrap id can never trip the tripwire.
-export async function sealAndWrap({ template, to, slots }, publish) {
+export async function sealAndWrap({ template, to, slots, powTarget = null, mine = mineAsync }, publish) {
   if (!BRIDGE_SIGNER) reject('no bridge signer to seal with')
   if (typeof template !== 'string') reject('sealAndWrap requires a catalogue template name, not a string body')
   const toHex = hex64(to, 'recipient')
@@ -504,11 +505,34 @@ export async function sealAndWrap({ template, to, slots }, publish) {
     content: await BRIDGE_SIGNER.nip44Encrypt(toHex, JSON.stringify(rumor)),
   }, 'NIP-17 seal')
   const wsk = generateSecretKey()
-  const wrap = finalizeEvent({
+  let wrapTemplate = {
     kind: 1059, created_at: fuzzed(), tags: [['p', toHex]],
     content: nip44.encrypt(JSON.stringify(seal), nip44.getConversationKey(wsk, toHex)),
-  }, wsk)
+  }
+
+  // Proof-of-work, when some relay in this fan-out has told us it wants some (#346). It happens
+  // HERE, in the two statements between building the template and signing it, because that is the
+  // only place it can: `wsk` is generated on the line above and dropped on the line below, and a
+  // nonce tag changes the id, so mining any later would need a key that no longer exists. Everything
+  // downstream — journalSend, markRelaySeen, markLatency, the dedup stores — keys on `wrap.id`, and
+  // all of them see it after this point, so none of them can be holding a pre-mining id.
+  //
+  // Default OFF and byte-identical to before when no target is known, which is the state of every
+  // relay that has not refused us. A failure to mine is never fatal: publishing without the work and
+  // being refused is the outcome we already have, and it costs one message instead of the box.
+  let pow = null
+  if (Number.isInteger(powTarget) && powTarget > 0) {
+    // getEventHash needs the author, and finalizeEvent would only fill it in later — mining against
+    // a template with no pubkey would produce a nonce for an id the signed event never has.
+    // Not named `template`: that identifier is this function's catalogue-NAME parameter, and a
+    // second meaning for it is the one place in this path a reader has to stop and check which.
+    const mineable = { ...wrapTemplate, pubkey: getPublicKey(wsk) }
+    pow = await mine(mineable, powTarget)
+    if (pow.mined) wrapTemplate = { ...wrapTemplate, tags: pow.event.tags }
+  }
+
+  const wrap = finalizeEvent(wrapTemplate, wsk)
 
   const accepted = await publish(wrap)
-  return { wrap, accepted, bytes: text.length }
+  return { wrap, accepted, bytes: text.length, pow }
 }
