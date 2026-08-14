@@ -140,10 +140,16 @@ if (!existsSync(manifestPath) && !CHECK && !STARTUP_ONLY) {
   if (ghosts.length) warn.push(`mirrored uids ${ghosts.join('/')} declare a privilege separation this tool has not confirmed exists`)
 }
 let manifestOk = false, manifestNote = `absent: ${manifestPath}`
+// The pubkey the manifest already holds. `--startup` on a Pi is run without `--pubkey` — the
+// manifest is the reason it does not need one — and a startup file that cannot name the agent's own
+// key is a file that cannot be checked against anything. Read it from the artifact rather than
+// demanding the operator retype it.
+let manifestPubkey = null
 if (existsSync(manifestPath)) {
   try {
     const m = JSON.parse(readFileSync(manifestPath, 'utf8'))
     manifestOk = m.id === name && HEX64.test(String(m.pubkey || ''))
+    if (HEX64.test(String(m.pubkey || ''))) manifestPubkey = String(m.pubkey)
     manifestNote = manifestOk
       ? `${m.pubkey.slice(0, 12)}… · ${m.delivery_mode} · relays ${(m.relays || []).length}`
       : 'present but its id or pubkey does not match this agent'
@@ -321,7 +327,8 @@ if (has('--startup')) {
     let body
     try {
       body = startupDoc({
-        agent: name, pubkey, channel: flag('--channel'), runtimeLabel: rt.label, report,
+        agent: name, pubkey: pubkey || manifestPubkey, channel: flag('--channel'),
+        runtimeLabel: rt.label, report,
       })
     } catch (e) { die(e.message) }
     if (has('--print')) console.log(body.split('\n').map(l => `  | ${l}`).join('\n'))

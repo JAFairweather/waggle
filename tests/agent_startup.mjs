@@ -9,10 +9,16 @@
 //      told it was never checked. An agent that believes it is reachable and is not will report
 //      the wall as broken — that exact confusion has cost this project a day more than once.
 import { strict as assert } from 'node:assert'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { installState } from '../src/agent_install_state.mjs'
 import { secretInText, startupDoc } from '../src/agent_startup.mjs'
 import { RUNTIMES } from '../src/mcp_runtimes.mjs'
 
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 let pass = 0, fail = 0
 const check = (cond, what) => { if (cond) { pass++; console.log(`  ok   ${what}`) } else { fail++; console.log(`  FAIL ${what}`) } }
 
@@ -133,6 +139,50 @@ const noReport = startupDoc({ agent: 'oliver', pubkey: PUB })
 check(/no install state was supplied — nothing here is confirmed/.test(noReport),
   'no install state says so, rather than rendering an empty list that reads as "all clear"')
 check(noReport.includes('do not get read'), 'and the non-negotiable rules survive even with no state to report')
+
+// ── 6. The tool, not the function ───────────────────────────────────────────────────────────
+console.log('\n6. what connect-agent actually writes')
+// Everything above tests `startupDoc`, which is handed a pubkey. The tool is not, and that gap
+// shipped a real defect: `--startup` on a Pi is run WITHOUT `--pubkey` — the manifest is the whole
+// reason it does not need one — so the tool passed `undefined` and wrote a file that never named
+// the agent's own key. §2 asserts that key must be in the file. It was, in the fixture, and was not
+// in the artifact. So drive the tool and read what lands.
+const probeRoot = mkdtempSync(join(tmpdir(), 'wb-startup-probe-'))
+const runStartup = (agent, extra = []) => {
+  const args = [join(ROOT, 'tools', 'connect-agent.mjs'), '--name', agent, '--root', probeRoot,
+    '--startup', '--runtime', 'generic', '--print', ...extra]
+  try {
+    return execFileSync(process.execPath, args, { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch (e) { return typeof e?.stdout === 'string' ? e.stdout : null }
+}
+const TOOL_PUB = 'e'.repeat(64)
+mkdirSync(join(probeRoot, 'seated', 'instances'), { recursive: true })
+writeFileSync(join(probeRoot, 'seated', 'instances', 'seated.json'), JSON.stringify({
+  version: 1, id: 'seated', pubkey: TOOL_PUB, grantors: [], task_carriers: [],
+  relays: ['wss://nos.lol'], broker_mode: 'local', delivery_mode: 'notify_only',
+}) + '\n')
+
+const seated = runStartup('seated')
+// A tool that could not run has told us nothing — that is INCONCLUSIVE, not a pass.
+if (seated === null || seated.length < 500) {
+  console.error(`agent_startup: INCONCLUSIVE — connect-agent --startup produced ${seated === null ? 'no output' : `only ${seated.length} bytes`}`)
+  console.error('  This is NOT an all-clear: the tool was never observed writing anything.')
+  rmSync(probeRoot, { recursive: true, force: true })
+  process.exit(3)
+}
+check(seated.includes(TOOL_PUB),
+  'the written file names the key the MANIFEST holds, with no --pubkey on the command line')
+check(/act as this key/.test(seated), 'and says plainly that this is the key the agent acts as')
+
+// The other direction, and the reason this is not just "always print something": with no manifest
+// there is no key, and the file must stay silent rather than invent one. A startup file asserting a
+// key the agent does not hold is worse than one that omits it — the agent would check against it.
+const unseated = runStartup('nomanifest')
+check(unseated !== null && !/act as this key/.test(unseated),
+  'NEGATIVE CONTROL — no manifest, no key line: the tool does not invent one to fill the slot')
+check(unseated !== null && /nomanifest/.test(unseated),
+  'and the file is still written and still addressed to the agent')
+rmSync(probeRoot, { recursive: true, force: true })
 
 console.log(`\n${pass} passed, ${fail} failed`)
 assert.equal(fail, 0, `${fail} assertion(s) failed`)

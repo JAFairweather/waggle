@@ -79,7 +79,11 @@ export function startupDoc({ agent, pubkey, channel, runtimeLabel, briefPath = '
   out.push('')
   out.push('## Who you are')
   out.push('')
-  out.push(`- **Name:** ${agent}${runtimeLabel ? ` — running in ${runtimeLabel}` : ''}`)
+  out.push(`- **Name:** ${agent}`)
+  // Its own line, not "running in ${label}". The generic label is a phrase, not a product name —
+  // "running in Any other MCP host (Raspberry Pi, headless, self-hosted)" is the sentence that
+  // produced, and it is the first line a Pi agent reads.
+  if (runtimeLabel) out.push(`- **Runtime:** ${runtimeLabel}`)
   if (pubkey) out.push(`- **You act as this key:** \`${pubkey}\``)
   if (channel) out.push(`- **Your channel:** \`${channel}\``)
   out.push(`- **You hold a NIP-46 pairing, not a key.** Your signing identity lives in the owner's`)
