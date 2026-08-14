@@ -23,6 +23,20 @@
 //   - `stableControlSigner` actually refuses, with the stale reason in the error. The banner is
 //     undoable by anything that draws a control afterwards; the throw is the half with teeth.
 //   - Every console page loads the guard, so a page added later without it is a red suite.
+//   - The guard is AWAITED before the signer is touched, at both places one is opened or used —
+//     asserted behaviourally, by injecting an assertFresh that throws and checking the signer was
+//     never asked. This is section 10, and it is here because section 9 could not do it: an import
+//     closure cannot tell a page that awaits the guard from one that merely imports it, so §9 passed
+//     with the original defect reinstated (#436 review). §9 still earns its place — it catches a NEW
+//     entry point with no edge to the guard at all — but it is not the cover for the ordering.
+//
+// Two things that will cost you a confusing run:
+//
+//   - Any edit under console/ fails section 1 until `node tools/gen-console-build-id.mjs` is re-run.
+//     That coupling is the point — the committed pair has to match the tree — but it looks like a
+//     staleness bug rather than a stale generated file.
+//   - Section 1 also masks section 9/10 mutations: break a guard, and changed bytes fire section 1
+//     first. Regenerate the build id before reading any mutation result.
 //
 //   node tests/console_staleness.mjs
 
@@ -269,19 +283,115 @@ check(unwired.length === 0, `every console page loads the staleness guard (${pag
   const totalEdges = entries.reduce((n, e) => n + e.closure.size, 0)
   check(totalEdges > 10, `the closure walk resolved ${totalEdges} module edge(s), so it is reading imports`)
 
+  // NEGATIVE CONTROL, and it goes THROUGH the pipeline rather than beside it. The first version was
+  // hand-built with `closure: new Set()` and asserted directly, which reduced it to "does the regex
+  // match a string containing `.signEvent(`" and "is an empty Set empty" — both true by
+  // construction, independent of closureOf, canSign and unguarded. Deleting the detection outright
+  // left it green (#436 review). Pushed in before `canSign` is computed, it is now the same code
+  // path as every real entry: its closure comes from `closureOf`, and it has to come out UNGUARDED.
+  const DECOY = '__decoy__.mjs'
+  const DECOY_SRC = 'export const go = (s) => s.signEvent({})'
+  entries.push({ name: DECOY, src: DECOY_SRC, closure: closureOf(DECOY, DECOY_SRC) })
+
   const canSign = entries.filter(e => SIGN_RE.test(e.src) || [...e.closure].some(c => SIGN_RE.test(readSafe(join(CONSOLE, c)) || '')))
-  check(canSign.length > 0, `found ${canSign.length} entry point(s) that can reach signEvent`)
+  check(canSign.length > 1, `found ${canSign.length - 1} real entry point(s) that can reach signEvent`)
+  check(canSign.some(e => e.name === DECOY),
+    'NEGATIVE CONTROL — the decoy reaches canSign through the real filter, so the detection below is running')
 
   const unguarded = canSign.filter(e => e.name !== GUARD && !e.closure.has(GUARD))
-  check(unguarded.length === 0,
-    `every signing path can reach the staleness guard (${canSign.length} checked${unguarded.length ? `; UNGUARDED: ${unguarded.map(e => e.name).join(', ')}` : ''})`)
+  check(unguarded.some(e => e.name === DECOY),
+    'NEGATIVE CONTROL — and comes out UNGUARDED, so an entry that signs without an edge to the guard is caught')
 
-  // NEGATIVE CONTROL. Everything above is satisfied by a walker that marks everything guarded. A
-  // synthetic entry that signs and imports nothing must come out unguarded, or this check is inert.
-  const decoy = { name: '__decoy__.mjs', src: 'export const go = (s) => s.signEvent({})', closure: new Set() }
-  check(SIGN_RE.test(decoy.src) && !decoy.closure.has(GUARD),
-    'NEGATIVE CONTROL — a signing entry with no guard in its closure is detected as unguarded')
+  const realUnguarded = unguarded.filter(e => e.name !== DECOY)
+  check(realUnguarded.length === 0,
+    `every signing path can reach the staleness guard (${canSign.length - 1} checked${realUnguarded.length ? `; UNGUARDED: ${realUnguarded.map(e => e.name).join(', ')}` : ''})`)
 }
+
+// ---- 10. the guard is AWAITED on the signing path, not merely imported --------------------------
+// Section 9's ceiling, established by breaking it: strip the `await assertConsoleFresh()` call from
+// a page and leave the import, and the closure walk still reports clean. Once every page's graph
+// reaches the guard module, no static import- or text-level check can discriminate — that is
+// structural, not a bug in the walker (#436 review). So the ordering is asserted behaviourally, at
+// the two places a signer is actually opened or used.
+//
+// `assertFresh` is injected, which is why this is socket-free and needs no document.
+const { consoleSigner } = await import('../console/signer-session.mjs')
+const { signFresh } = await import('../console/guarded-signer.mjs')
+
+// 10a. the chokepoint — four of the five signing paths.
+let restoreCalled = false
+const chokepointOpts = (assertFresh) => ({
+  assertFresh,
+  storage: { getItem: () => JSON.stringify({ type: 'nip07' }), removeItem: () => {}, setItem: () => {} },
+  parse: () => ({ type: 'nip07' }),
+  restore: () => { restoreCalled = true; return { signEvent: async () => ({ id: 'signed' }) } },
+  browserSigner: () => ({ signEvent: async () => ({ id: 'browser' }) }),
+})
+const stale = async () => { throw new Error(`stale console: ${OLD} vs ${FRESH}`) }
+
+restoreCalled = false
+const chokeErr = await threw(() => consoleSigner(chokepointOpts(stale)))
+check(chokeErr !== null && /stale console/.test(chokeErr),
+  `consoleSigner REFUSES on a stale page (${chokeErr === null ? 'it returned a signer' : chokeErr})`)
+// The ordering, which is the entire reason the await sits at the top of that function: a session
+// restored first is a Bunker connection opened by a page running code the server has replaced.
+check(restoreCalled === false, '  …and it refuses BEFORE the persisted session is restored')
+
+// NEGATIVE CONTROL — same call, guard resolves. Without this the refusal above cannot be told from
+// a consoleSigner that refuses everything.
+restoreCalled = false
+const chokeOk = await consoleSigner(chokepointOpts(async () => {})).catch(e => e)
+check(chokeOk && !(chokeOk instanceof Error) && typeof chokeOk.signEvent === 'function',
+  'NEGATIVE CONTROL — a CURRENT page still gets a signer back' +
+  (chokeOk instanceof Error ? ` (refused with: ${chokeOk.message})` : ''))
+check(restoreCalled === true, '  …and the session it refused to restore above WAS restored here')
+
+// 10b. the 440/441 path. This is the one section 9 gave no cover to, and the one that broke.
+let signEventCalled = false
+const spy = { signEvent: async (t) => { signEventCalled = true; return { ...t, id: 'signed' } } }
+
+signEventCalled = false
+const freshErr = await threw(() => signFresh({ kind: 440 }, spy, { assertFresh: stale }))
+check(freshErr !== null && /stale console/.test(freshErr),
+  `signFresh REFUSES to sign a 440 on a stale page (${freshErr === null ? 'it signed' : freshErr})`)
+check(signEventCalled === false,
+  '  …and the signer is never ASKED — refusing after the signature is worthless, the signature is the irreversible part')
+
+// NEGATIVE CONTROL — both directions, or "refuses when stale" cannot be told from "refuses always".
+signEventCalled = false
+const signedOk = await signFresh({ kind: 440 }, spy, { assertFresh: async () => {} }).catch(e => e)
+check(!(signedOk instanceof Error) && signedOk?.id === 'signed' && signEventCalled === true,
+  'NEGATIVE CONTROL — on a CURRENT page the same 440 is signed' +
+  (signedOk instanceof Error ? ` (refused with: ${signedOk.message})` : ''))
+
+// And it does not fail open when there is nothing to sign with. A thrown message the operator can
+// act on, not a TypeError on `undefined.signEvent`.
+const noSigner = await threw(() => signFresh({ kind: 440 }, null, { assertFresh: async () => {} }))
+check(noSigner !== null && /sign in first/.test(noSigner), `no signer is a stated refusal (${noSigner})`)
+
+// ---- 11. index.html signs through signFresh and nowhere else ------------------------------------
+// Section 10b asserts signFresh guards. This asserts index.html USES it — otherwise the original
+// defect walks straight back in by someone writing `await signer.signEvent(t)` inline again, with
+// every check above still green. Scoped to this page on purpose: it is the only one that signs
+// without going through consoleSigner.
+//
+// One direct call is allowed, and it is named rather than pattern-matched: the bunker custody
+// challenge, which asks a DIFFERENT signer (the freshly minted key's bunker) to sign a nonce that
+// is never published. Anything else is a new signing path and has to be looked at.
+const indexSrc = readFileSync(join(CONSOLE, 'index.html'), 'utf8')
+if (indexSrc.length < 10000) inconclusive(`index.html read back only ${indexSrc.length} bytes`)
+const CUSTODY_CALL = 'sign: (event) => signer.signEvent(event),'
+const directSigns = indexSrc.split('\n')
+  .map((line, i) => ({ line: line.trim(), n: i + 1 }))
+  .filter(l => /\.signEvent\s*\(/.test(l.line) && l.line !== CUSTODY_CALL)
+check(indexSrc.includes('signFresh(') && indexSrc.includes("from './guarded-signer.mjs'"),
+  'index.html signs its 440/441 through signFresh')
+check(directSigns.length === 0,
+  `and calls signEvent directly nowhere else${directSigns.length ? ` — unguarded call site(s) at line ${directSigns.map(l => l.n).join(', ')}: ${directSigns.map(l => l.line).join(' | ')}` : ''}`)
+// NEGATIVE CONTROL — the allow-listed line is really there, so the check above is not passing
+// because the page stopped signing altogether or the string drifted out from under it.
+check(indexSrc.includes(CUSTODY_CALL),
+  'NEGATIVE CONTROL — the one allowed direct call (the bunker custody challenge) is still present, so the filter is filtering')
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
 process.exit(pass ? 0 : 1)
