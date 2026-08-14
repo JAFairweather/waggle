@@ -313,6 +313,24 @@ const TASK_ROUTE_MESSAGE_TYPE = 'waggle-task-route'
 // case-insensitive and runs against the raw Buzz body, which carries the member's display_name —
 // so a slug is exactly the thing that never matches. Grammar and refusal reasons live in
 // task_route_mention.mjs, shared byte-for-byte with the console.
+// A route's `sender` is not decoration: `installTaskRoutes` unions it straight into
+// PUB.scanAuthors, so it is a WRITER of the return-lane signer gate. The gate's own construction
+// below strips BRIDGE_PK from the explicit roster and from the declared-trust floor — "the bridge's
+// own key is never admitted" — but nothing stripped it here, so a route could put back the one key
+// the gate is documented never to hold. (#340. Same shape as the `authors` filter at parse, whose
+// comment already cites this exclusion as its model; that one was closed, this one was not.)
+//
+// The consequence is not a widened roster, it is an echo: the bridge signs EVERY carried post, so
+// admitting its key means waggle's own repost of one agent's note passes the signer gate and gets
+// re-routed by mention. Refused rather than sanitised — a route whose sender is the bridge can
+// never legitimately fire, and silently dropping just that field would leave a route in the
+// roster that does not do what its row says.
+function taskRouteSenderProblem(sender) {
+  if (!/^[0-9a-f]{64}$/.test(sender)) return null                    // the generic shape fault, already reported as such
+  return sender === String(BRIDGE_PK || '').toLowerCase()
+    ? "sender is the bridge's own key — that key signs every carried post, so the route would re-route waggle's own reposts"
+    : null
+}
 function normalizedTaskRoute(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const participant = String(value.participant || '').toLowerCase()
@@ -322,13 +340,14 @@ function normalizedTaskRoute(value) {
   if (!/^[0-9a-f]{64}$/.test(participant) || !/^[0-9a-f]{64}$/.test(sender) ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(channel) || mention === null ||
       String(value.protocol || TASK_ROUTE_PROTOCOL) !== TASK_ROUTE_PROTOCOL) return null
+  if (taskRouteSenderProblem(sender)) return null
   return Object.freeze({ participant, sender, channel, mention, protocol: TASK_ROUTE_PROTOCOL })
 }
 // A route dropped here is a route that will never fire, and silence is how it stays unnoticed
 // until someone wonders why an @name reaches nobody. Name it, with its reason, at boot.
 const configuredTaskRoutes = Object.freeze((cfg.public?.task_routes || []).map((value, i) => {
   const route = normalizedTaskRoute(value)
-  if (!route) err(`task route: public.task_routes[${i}] ignored — ${taskRouteMentionProblem(value?.mention) || 'invalid participant, sender, channel or protocol'}`)
+  if (!route) err(`task route: public.task_routes[${i}] ignored — ${taskRouteMentionProblem(value?.mention) || taskRouteSenderProblem(String(value?.sender || '').toLowerCase()) || 'invalid participant, sender, channel or protocol'}`)
   return route
 }).filter(Boolean))
 const policyShadowRaw = cfg.public?.policy_shadow || {}
@@ -2912,7 +2931,7 @@ function applyTaskRouteCommand({ author, createdAt, body, id }) {
   // The reason is what the operator acts on. "invalid task route" for a mention fault sent one
   // owner looking at the participant key; the mention grammar says which character and where.
   if (!route) {
-    const why = taskRouteMentionProblem(body.mention)
+    const why = taskRouteMentionProblem(body.mention) || taskRouteSenderProblem(String(body.sender || '').toLowerCase())
     return { ok: false, reason: why ? `invalid task route: ${why}` : 'invalid task route' }
   }
   if (createdAt <= PUB.taskRouteCommandAt) return { ok: false, reason: 'superseded command' }
