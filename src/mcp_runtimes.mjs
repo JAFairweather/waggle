@@ -174,6 +174,7 @@ export const RUNTIMES = [
     id: 'claude',
     label: 'Claude Code',
     kind: 'cli',
+    startupFile: 'CLAUDE.md',
     bin: 'claude',
     listArgs: ['mcp', 'list'],
     parse: parseClaudeList,
@@ -190,6 +191,7 @@ export const RUNTIMES = [
     id: 'codex',
     label: 'Codex CLI',
     kind: 'cli',
+    startupFile: 'AGENTS.md',
     bin: 'codex',
     listArgs: ['mcp', 'list', '--json'],
     parse: parseCodexJson,
@@ -203,6 +205,7 @@ export const RUNTIMES = [
     id: 'gemini',
     label: 'Gemini CLI',
     kind: 'file',
+    startupFile: 'GEMINI.md',
     // Documentation-derived, not executed: this repo has confirmed the CLI has no `mcp`
     // subcommand, and nothing more. The stanza is what to write; whether the runtime read it is
     // proven by a handshake in the session, not by this file existing.
@@ -213,6 +216,9 @@ export const RUNTIMES = [
     id: 'generic',
     label: 'Any other MCP host (Raspberry Pi, headless, self-hosted)',
     kind: 'file',
+    // AGENTS.md is the cross-tool convention; a host that reads something else is pointed at it
+    // by hand, which is why --startup prints the path it wrote rather than assuming it was read.
+    startupFile: 'AGENTS.md',
     config: 'the host\'s own MCP config',
     configKey: 'mcpServers',
   },

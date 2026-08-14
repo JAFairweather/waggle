@@ -25,6 +25,8 @@
 //   node tools/connect-agent.mjs --name oliver --pubkey <64-hex> --owner <64-hex>
 //   node tools/connect-agent.mjs --name oliver --check      # changes nothing
 //   node tools/connect-agent.mjs --name oliver --check --stanza   # how to register, per runtime
+//   node tools/connect-agent.mjs --name oliver --startup --runtime codex   # write AGENTS.md
+//   node tools/connect-agent.mjs --name oliver --check --startup --print   # show it, write nothing
 //
 // --whoami <path>    the `nvoy_whoami` result captured from the session under test, compared
 //                    against --pubkey. This is the MCP path's EXPECT_PUBKEY (#338): registered is
@@ -40,7 +42,8 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { boundIdentity, installState, renderState } from '../src/agent_install_state.mjs'
-import { channelStanza, cliRuntimes, exclusivityVerdict, foreignServers, isMine, registrationHelp } from '../src/mcp_runtimes.mjs'
+import { RUNTIMES, channelStanza, cliRuntimes, exclusivityVerdict, foreignServers, isMine, registrationHelp, runtime } from '../src/mcp_runtimes.mjs'
+import { startupDoc } from '../src/agent_startup.mjs'
 
 const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (process.argv[i + 1] || '') }
 const has = n => process.argv.includes(n)
@@ -105,7 +108,11 @@ see('dm-relays', null, false,
 // ── The manifest. Six tools read it; nothing writes it. This is that nothing. ────────────────
 const instDir = join(HERE, 'instances')
 const manifestPath = join(instDir, `${name}.json`)
-if (!existsSync(manifestPath) && !CHECK) {
+// `--startup` on its own writes the startup file and installs nothing: an operator pointing a Pi
+// at an agent root should not have to satisfy the manifest step to get the file its runtime reads
+// at session start. The manifest still reports MISSING below, so nothing is hidden by skipping it.
+const STARTUP_ONLY = has('--startup') && !pubkey && !from
+if (!existsSync(manifestPath) && !CHECK && !STARTUP_ONLY) {
   if (!pubkey || !HEX64.test(pubkey)) die('writing a manifest needs --pubkey <64-hex>')
   const source = from ? join(ROOT, from, 'instances', `${from}.json`) : null
   if (!source || !existsSync(source)) {
@@ -153,7 +160,7 @@ const DIRS = [
   ['state/.nvoy', 0o755], ['state/outbound', 0o700], ['state/receipts', 0o700],
 ]
 const dirMissing = DIRS.filter(([d]) => !existsSync(join(HERE, d)))
-if (dirMissing.length && !CHECK) {
+if (dirMissing.length && !CHECK && !STARTUP_ONLY) {
   for (const [d, m] of DIRS) if (!existsSync(join(HERE, d))) { mkdirSync(join(HERE, d), { recursive: true, mode: m }); did.push(`created ${d}/ (${m.toString(8)})`) }
 }
 const dirsNow = DIRS.filter(([d]) => existsSync(join(HERE, d)))
@@ -163,7 +170,7 @@ see('state-dirs', dirsNow.length === DIRS.length, dirsNow.length === DIRS.length
 
 // ── Channel keypair ─────────────────────────────────────────────────────────────────────────
 const keyPath = join(HERE, 'mcp-channel', 'id_ed25519')
-if (!existsSync(keyPath) && !CHECK) {
+if (!existsSync(keyPath) && !CHECK && !STARTUP_ONLY) {
   mkdirSync(join(HERE, 'mcp-channel'), { recursive: true, mode: 0o700 })
   execFileSync('ssh-keygen', ['-t', 'ed25519', '-N', '', '-C', `nvoy-mcp-channel ${name}`, '-f', keyPath], { stdio: 'ignore' })
   did.push(`generated ${keyPath}`)
@@ -291,6 +298,41 @@ if (has('--stanza')) {
   }
   console.log(`\n  <node> and <path> are this host's node and its nvoy checkout. Nothing above is secret;`)
   console.log(`  the pairing is delivered to the installer on stdin and never appears in a paste block (#333).`)
+}
+// --startup writes the file this agent's runtime reads before it does anything (#466). Every
+// runtime already reads one and nothing wrote it, so a fully connected agent began every session
+// not knowing its own name, which key it acts as, or that it does not get a read.
+//
+// Built from `report`, so it states what was actually checked and never more. Never overwrites —
+// same contract as every other artifact here: an existing file is left exactly as found and
+// reported, because the operator may have added to it and a silent clobber is unrecoverable.
+if (has('--startup')) {
+  const target = flag('--runtime') || 'claude'
+  const rt = runtime(target)
+  if (!rt) die(`--runtime ${target} is not one of: ${RUNTIMES.map(r => r.id).join(', ')}`)
+  const dest = join(HERE, rt.startupFile)
+  console.log(`\nstartup file — ${rt.label}`)
+  if (existsSync(dest)) {
+    console.log(`  unchanged: ${dest} already exists and was NOT overwritten`)
+    console.log(`  compare it against a fresh one with: ${process.argv[1]} --name ${name} --check --startup --runtime ${target} --print`)
+  } else if (CHECK && !has('--print')) {
+    console.log(`  would write: ${dest}  (--check: nothing was written)`)
+  } else {
+    let body
+    try {
+      body = startupDoc({
+        agent: name, pubkey, channel: flag('--channel'), runtimeLabel: rt.label, report,
+      })
+    } catch (e) { die(e.message) }
+    if (has('--print')) console.log(body.split('\n').map(l => `  | ${l}`).join('\n'))
+    else {
+      mkdirSync(HERE, { recursive: true, mode: 0o700 })
+      writeFileSync(dest, body, { mode: 0o600, flag: 'wx' })
+      console.log(`  wrote ${dest} (mode 600)`)
+    }
+  }
+  console.log(`  point ${rt.label} at ${HERE} so it reads this at session start — registering the MCP`)
+  console.log(`  server does not make a runtime read a file next to it.`)
 }
 console.log(`\nexit ${report.exitCode} (${report.outcome})`)
 process.exit(report.exitCode)
