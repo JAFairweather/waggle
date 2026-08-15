@@ -538,5 +538,7 @@ if (has('--startup')) {
   console.log(`  point ${rt.label} at ${HERE} so it reads this at session start — registering the MCP`)
   console.log(`  server does not make a runtime read a file next to it.`)
 }
-console.log(`\nexit ${report.exitCode} (${report.outcome})`)
+// The ceiling on the exit line too, not only in the headline forty lines up. An operator reading
+// the last line for the verdict is the reason this tool prints one (#492).
+console.log(`\nexit ${report.exitCode} (${report.outcome}${report.atCeiling ? ' — the best result this build can report; every remaining row is settled off this machine' : ''})`)
 process.exit(report.exitCode)

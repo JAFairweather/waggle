@@ -93,6 +93,56 @@ export const ARTIFACTS = [
 
 export const ARTIFACT_KEYS = ARTIFACTS.map(a => a.key)
 
+// ── The ceiling. ─────────────────────────────────────────────────────────────────────────────
+//
+// `connect-agent --check` cannot report `complete` on any machine, however perfectly the agent is
+// installed. It opens no sockets and cannot see the other box, so eleven of the nineteen rows above
+// are hardcoded at their call sites: five report `found: null` and six report `verified: false`, and
+// no branch can move them. `complete` requires zero unknown and zero unverified, so exit 0 is
+// unreachable by construction (#492).
+//
+// Each of those was a reasonable local decision — "not checked here" is honest — and the aggregate
+// consequence lived in a different file from every one of them. An operator running `--check` to
+// completion was chasing an exit code the tool cannot emit, and the natural reading of a permanent
+// exit 3 is "something on my box is still wrong". These two lists are where the aggregate lives, so
+// a reader meets it: adding a key here is visibly a decision to keep exit 0 unreachable.
+//
+// Every reason names what WOULD settle the row and where, because in each case the remedy is off
+// this machine rather than on it.
+
+/// Rows nothing on this machine looks at. Permanently UNKNOWN — never MISSING, because "cannot
+/// check" must not read as "not there" any more than it may read as "fine".
+export const NEVER_CHECKED = Object.freeze({
+  'nip05': 'no sockets here — settled by resolving <name>@<host>/.well-known/nostr.json',
+  'profile': 'no sockets here — settled by fetching the kind 0 back BY ID from a fresh connection',
+  'admit-grant': 'no sockets here — settled by cold-reading the 440 per relay, EOSE/ERROR/TIMEOUT reported separately',
+  'dm-relays': 'no sockets here — settled by tools/publish-dm-relay-list.mjs, which cold-reads it back by id',
+  'channel-authorized': "on the broker's disk — settled by an operator confirming the public half is seated under the forced command",
+})
+
+/// Rows this build can see but never observe DOING their job. Permanently UNVERIFIED once present —
+/// which is the honest answer, and is also why it is not exit 0.
+export const NEVER_VERIFIED = Object.freeze({
+  'identity': 'the key is in the Bunker — settled by EXPECT_PUBKEY on a real send, not by a file being here',
+  'bunker-uri': 'present is not paired — settled by asking the Bunker for the public key',
+  'signer-identity': 'this tool opens no Bunker session — settled by the first send under EXPECT_PUBKEY',
+  'signer-methods': 'permissions are per-method and denials are silent — settled by a decrypt round trip',
+  'channel-host-key': 'present is not RIGHT — settled by StrictHostKeyChecking on first connect',
+  'channel-answers': 'registered is not running — settled by an initialize + tools/list handshake',
+})
+
+/// Is this report already the best one this build can produce? True only when every row still
+/// standing between it and `complete` is one of the two lists above.
+///
+/// Deliberately NOT a property of the outcome. `inconclusive` stays inconclusive; this says whether
+/// the operator can do anything about it from here, which is the question a permanent exit 3 leaves
+/// them guessing at.
+export function ceilingReached({ unverified = [], unknown = [], missing = [] } = {}) {
+  if (missing.length) return false
+  if (!unverified.length && !unknown.length) return false
+  return unknown.every(k => k in NEVER_CHECKED) && unverified.every(k => k in NEVER_VERIFIED)
+}
+
 /**
  * Build the report.
  *
@@ -124,6 +174,9 @@ export function installState(observations = {}) {
   const unverified = by(UNVERIFIED)
   const unknown = by(UNKNOWN)
   const blockingMissing = missing.filter(r => r.blocking)
+  const atCeiling = ceilingReached({
+    unverified: unverified.map(r => r.key), unknown: unknown.map(r => r.key), missing: missing.map(r => r.key),
+  })
 
   // Three outcomes, mapped onto this project's exit convention. INCONCLUSIVE is not a softer
   // failure — it is the honest answer when the tool could not see enough, and it must not be
@@ -138,6 +191,9 @@ export function installState(observations = {}) {
     if (unverified.length) parts.push(`${unverified.length} present but unchecked`)
     if (unknown.length) parts.push(`${unknown.length} not looked at`)
     headline = `${parts.join(', ')} — being unable to check is not the same as being fine.`
+    // Name the ceiling, or the sentence above reads as a local failure. It is the true sentence and
+    // it is exactly the one that sends an operator hunting on a box where there is nothing to find.
+    if (atCeiling) headline += ' Every remaining row is one this build never checks — exit 3 is the best result available here, and the remedy for each is off this machine.'
   } else if (missing.length) {
     outcome = 'runs-unfinished'; exitCode = 3
     headline = `Runs, but ${missing.length} non-blocking piece${missing.length === 1 ? ' is' : 's are'} absent — it works and has no name.`
@@ -147,7 +203,7 @@ export function installState(observations = {}) {
   }
 
   return {
-    outcome, exitCode, headline, rows,
+    outcome, exitCode, headline, rows, atCeiling,
     counts: { present: by(PRESENT).length, unverified: unverified.length, missing: missing.length, unknown: unknown.length },
     missing: missing.map(r => r.key),
     unverified: unverified.map(r => r.key),

@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { npubEncode, decode as nip19decode } from 'nostr-tools/nip19'
-import { installState, renderState, foreignNvoyServers, boundIdentity, ARTIFACTS, ARTIFACT_KEYS, PRESENT, UNVERIFIED, MISSING, UNKNOWN }
+import { installState, renderState, foreignNvoyServers, boundIdentity, ARTIFACTS, ARTIFACT_KEYS, NEVER_CHECKED, NEVER_VERIFIED, PRESENT, UNVERIFIED, MISSING, UNKNOWN }
   from '../src/agent_install_state.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -314,6 +314,12 @@ check(ARTIFACTS.some(a => a.blocking) && ARTIFACTS.some(a => !a.blocking),
     `${noteless.length ? ` — silent: ${noteless.join(', ')}` : ''}`)
   check(!rendered.includes('No such artifact, invented for this check'),
     'NEGATIVE CONTROL — the run does not render a title the tool never had')
+  // The ceiling clause is EARNED, not printed always. A fresh root is missing blocking pieces, so
+  // there is plenty to do here and the tool must not say this is the best it can report (#492).
+  check(/\nexit 1 \(incomplete\)/.test(rendered),
+    'a fresh root exits 1 with a bare outcome — nothing on the exit line claims a ceiling')
+  check(!rendered.includes('best result this build can report'),
+    'NEGATIVE CONTROL — the ceiling clause does NOT appear on a run with real work outstanding')
   // `--check` is what makes running it safe in a suite. Prove that rather than trusting the flag.
   check(readdirSync(probeRoot).length === 0,
     'NEGATIVE CONTROL — and --check wrote nothing into the probe root, so running the tool is side-effect free')
@@ -452,6 +458,118 @@ check(ARTIFACTS.some(a => a.blocking) && ARTIFACTS.some(a => !a.blocking),
     'and one where nobody checked the binding exits 3 — INCONCLUSIVE is not a softer 0')
   check(installState({ ...everythingElse, 'mcp-identity': { found: true, verified: true } }).outcome === 'complete',
     'BOTH DIRECTIONS — a correctly bound agent still reads complete, so the guard has not simply closed the door')
+}
+
+
+// ── The ceiling: exit 0 is unreachable, and that must cost something (#492) ──────────────────
+//
+// `--check` has four outcomes and one of them cannot happen — not "does not happen on a
+// half-finished box", cannot happen, on any machine. Eleven rows are hardcoded at their call sites
+// in tools/connect-agent.mjs: five pass a bare `null` for `found`, six pass a bare `false` for
+// `verified`. `complete` requires zero unknown and zero unverified, so it is unreachable by
+// construction. Each of those was a reasonable local decision; the aggregate lived in a different
+// file from every one of them.
+//
+// Two properties. The report NAMES the ceiling, so a permanent exit 3 does not read as a local
+// failure — and a new bare null or false cannot be added without landing in the allowlist, where a
+// reader meets it.
+{
+  // Split a call's arguments on TOP-LEVEL commas only. `see('bunker-client', nonEmptyFile(p),
+  // nonEmptyFile(p) && mode(p) === 0o600, …)` has commas inside parens and a naive split reads its
+  // second argument as `nonEmptyFile(p)` — which is not a literal, so the row would go unchecked
+  // and the scan would report a clean sweep of a file it had misread.
+  const splitArgs = (src, from) => {
+    const out = []
+    let depth = 0, quote = null, start = from, i = from
+    for (; i < src.length; i++) {
+      const c = src[i], prev = src[i - 1]
+      if (quote) { if (c === quote && prev !== '\\') quote = null; continue }
+      if (c === "'" || c === '"' || c === '`') { quote = c; continue }
+      if ('([{'.includes(c)) { depth++; continue }
+      if (')]}'.includes(c)) { if (depth === 0) { out.push(src.slice(start, i).trim()); return out } depth--; continue }
+      if (c === ',' && depth === 0) { out.push(src.slice(start, i).trim()); start = i + 1 }
+    }
+    return out
+  }
+  const seeCalls = src => {
+    const calls = []
+    const re = /\bsee\(\s*'([^']+)'\s*,/g
+    let m
+    while ((m = re.exec(src))) calls.push({ key: m[1], args: splitArgs(src, m.index + m[0].length) })
+    return calls
+  }
+
+  // POSITIVE CONTROL on the scanner itself, before it is believed about anything. A scanner that
+  // silently found nothing would report every allowlist as complete.
+  const fixture = "see('a', null, false, 'x')\nsee('b', f(p), f(p) && mode(p) === 0o600, `n`)\nsee('c', x === true ? true : null, false, 'y')"
+  const fx = seeCalls(fixture)
+  check(fx.length === 3 && fx.map(c => c.key).join(',') === 'a,b,c', 'the see() scanner finds every call in a fixture')
+  check(fx[0].args[0] === 'null' && fx[0].args[1] === 'false', '  …and reads a bare null and a bare false as literals')
+  check(fx[1].args[1] === 'f(p) && mode(p) === 0o600',
+    '  …and does NOT split an argument on a comma inside parens — a naive split misreads this file and reports it clean')
+  check(fx[2].args[0] === 'x === true ? true : null' && fx[2].args[1] === 'false',
+    '  …and a ternary ending in null is not a bare null: the row can still be observed')
+
+  const toolSrc = readFileSync(join(ROOT, 'tools', 'connect-agent.mjs'), 'utf8')
+  const calls = seeCalls(toolSrc)
+  check(calls.length >= 15, `the scan reads ${calls.length} see() calls out of connect-agent.mjs — a scan that found none would pass silently`)
+
+  const bareNull = calls.filter(c => c.args[0] === 'null').map(c => c.key)
+  const bareFalse = calls.filter(c => c.args[1] === 'false' && c.args[0] !== 'null').map(c => c.key)
+
+  const unlisted = [
+    ...bareNull.filter(k => !(k in NEVER_CHECKED)).map(k => `${k} (found: null)`),
+    ...bareFalse.filter(k => !(k in NEVER_VERIFIED)).map(k => `${k} (verified: false)`),
+  ]
+  check(unlisted.length === 0,
+    `every hardcoded null/false is declared in the allowlist${unlisted.length ? ` — UNDECLARED: ${unlisted.join(', ')}` : ''}`)
+  // Both directions: a stale allowlist entry is its own defect. A key listed here that the tool no
+  // longer hardcodes states that exit 0 is unreachable for a reason that has been fixed.
+  const stale = [
+    ...Object.keys(NEVER_CHECKED).filter(k => !bareNull.includes(k)),
+    ...Object.keys(NEVER_VERIFIED).filter(k => !bareFalse.includes(k)),
+  ]
+  check(stale.length === 0, `and no allowlist entry outlives the call site it describes${stale.length ? ` — STALE: ${stale.join(', ')}` : ''}`)
+  check(Object.keys(NEVER_CHECKED).every(k => ARTIFACT_KEYS.includes(k)) && Object.keys(NEVER_VERIFIED).every(k => ARTIFACT_KEYS.includes(k)),
+    'and every allowlisted key is a real artifact — a typo would allow a row nothing checks')
+  check(Object.values({ ...NEVER_CHECKED, ...NEVER_VERIFIED }).every(r => /settled by/.test(r)),
+    'and every reason names what WOULD settle the row, because the remedy is off this machine')
+
+  // NEGATIVE CONTROL — made to fire. A new bare null on a key nobody allowlisted must be caught.
+  const mutated = toolSrc + "\nsee('mcp-registration', null, false, 'nobody looked')\n"
+  const mutatedBad = seeCalls(mutated).filter(c => c.args[0] === 'null' && !(c.key in NEVER_CHECKED))
+  check(mutatedBad.length === 1 && mutatedBad[0].key === 'mcp-registration',
+    'NEGATIVE CONTROL — a new bare null on an unlisted key is caught, so this check can fail')
+
+  // The allowlist asserted against the `complete` branch: this is the claim that adding a key here
+  // is a decision to keep exit 0 unreachable.
+  const asTheToolSets = { ...complete }
+  for (const k of Object.keys(NEVER_CHECKED)) asTheToolSets[k] = { found: null, verified: false }
+  for (const k of Object.keys(NEVER_VERIFIED)) asTheToolSets[k] = { found: true, verified: false }
+  const best = installState(asTheToolSets)
+  check(best.outcome === 'inconclusive' && best.exitCode === 3,
+    'a PERFECTLY installed agent still exits 3 — exit 0 is unreachable while the allowlist is non-empty')
+  check(best.atCeiling === true && /best result available here/.test(best.headline),
+    '  …and the report says so, instead of leaving a permanent 3 to read as a local failure')
+  check(/remedy for each is off this machine/.test(best.headline),
+    '  …and points off the box, which is where every remaining row is settled')
+  check(renderState(best).includes('best result available here'),
+    '  …and the operator reads it, not just the caller')
+  // The exit line, which is the line an operator reads for the verdict. Asserted at the call site
+  // because producing a live at-the-ceiling run needs a fully installed agent on this machine.
+  check(/exit \$\{report\.exitCode\} \(\$\{report\.outcome\}\$\{report\.atCeiling \?/.test(toolSrc),
+    'and the tool puts it on the exit line too, not only in the headline forty lines up')
+
+  // BOTH DIRECTIONS — the sentence must not appear when there IS something to do here. Otherwise
+  // it is an alarm that always fires, which fails identically to one that never does.
+  const oneRealGap = { ...asTheToolSets, 'manifest': { found: true, verified: false } }
+  const real = installState(oneRealGap)
+  check(real.atCeiling === false && !/best result available/.test(real.headline),
+    'BOTH DIRECTIONS — one row that IS checkable and unverified drops the ceiling sentence entirely')
+  check(installState({ ...asTheToolSets, 'manifest': { found: false } }).atCeiling === false,
+    'and a missing row is never at the ceiling — something is absent and can be created')
+  check(installState(complete).atCeiling === false,
+    'and a report with nothing outstanding is not "the best available" — it is complete')
 }
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
