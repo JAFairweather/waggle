@@ -303,13 +303,26 @@ const AGENT_ROOT = join(probeRoot, AGENT)
 // than a hand-typed copy that can drift from it.
 const toolArgs = channelCommand({ instanceRoot: AGENT_ROOT, host: HOST }).args
 
-// The fake runtime is a node script, not a shell script, and PATH is replaced rather than extended.
-// Replaced, so a real `codex` on the machine cannot answer with the operator's own registrations
-// and make this suite depend on the laptop it runs on. Node, because a `#!/bin/sh` stub that pipes
-// through `cat` needs `cat` on PATH — with PATH stripped it exits 127, the tool reports "could not
-// be read", and every assertion below fails for a reason that is the fixture rather than the code.
+// The fake runtime replaces PATH rather than extending it, so a real `codex` on the machine cannot
+// answer with the operator's own registrations and make this suite depend on the laptop it runs on.
+//
+// The shebang is `#!/bin/sh` and node is a SHELL-QUOTED ARGUMENT, not part of the interpreter line.
+// This was `#!${process.execPath}`, and the kernel splits a shebang at the first space: on this
+// nest node lives under `~/Library/Application Support/Buzz/runtimes/…`, so the interpreter
+// resolved to `/Users/…/Library/Application` and the stub could not exec. With PATH stripped
+// nothing else answered either, the tool honestly reported "no MCP host CLI on this machine", and
+// all five assertions below failed — blaming `connect-agent` for a broken fixture. CI's node has no
+// space in its path, so the suite was green there and red on every machine the crew works on (#472
+// review). `/bin/sh` is resolved by the kernel from an absolute path that has no space, and the
+// stripped PATH — which is the whole point of the harness — costs nothing.
+//
+// Do not reintroduce a `cat` pipe here: with PATH stripped `cat` is not on it, the stub exits 127,
+// and the failure looks identical to the one above.
+const shq = s => `'${String(s).replace(/'/g, "'\\''")}'`
 const runTool = listing => {
-  writeFileSync(join(binDir, 'claude'), `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(listing + '\n')})\n`, { mode: 0o755 })
+  writeFileSync(join(binDir, 'claude'),
+    `#!/bin/sh\nexec ${shq(process.execPath)} -e ${shq(`process.stdout.write(${JSON.stringify(listing + '\n')})`)}\n`,
+    { mode: 0o755 })
   const args = [join(ROOT_DIR, 'tools', 'connect-agent.mjs'), '--name', AGENT, '--root', probeRoot,
     '--check', '--channel-host', HOST]
   try {
@@ -319,10 +332,20 @@ const runTool = listing => {
 const regRow = out => (out.split('\n').find(l => /Registered as an MCP server/.test(l)) || '')
 
 // A tool that produced nothing has told us nothing. Exit 3, not a pass.
+//
+// The UNKNOWN case is checked too, and it is the one that actually bit. A broken fixture does not
+// silence the row — the tool prints an honest `[ - ] … UNKNOWN — no MCP host CLI on this machine`,
+// which is a row, so a guard that only asks whether the row EXISTS waves it through and lets the
+// five assertions below fail one by one as though `connect-agent` had regressed. The harness cannot
+// distinguish "the runtime said nothing useful" from "the tool got it wrong", so it must refuse to
+// judge rather than report the difference as a defect. Every assertion here needs a runtime that
+// answered; if none did, that is INCONCLUSIVE and it is the fixture that is broken.
 const sshOut = runTool(`nvoy-${AGENT}: ${SSH_BIN} ${toolArgs.join(' ')} - ✔ Connected`)
-if (!regRow(sshOut)) {
-  console.error('channel_registration: INCONCLUSIVE — the tool printed no mcp-registration row.')
-  console.error('  This is NOT an all-clear: the verdict was never observed.')
+if (!regRow(sshOut) || /^\[ - \]/.test(regRow(sshOut).trim()) || /UNKNOWN/.test(regRow(sshOut))) {
+  console.error('channel_registration: INCONCLUSIVE — no runtime answered, so the verdict was never observed.')
+  console.error(`  row: ${regRow(sshOut).trim() || '(the tool printed no mcp-registration row at all)'}`)
+  console.error('  This is NOT an all-clear, and it is NOT a defect in connect-agent — it is this')
+  console.error('  harness failing to stand up a fake runtime. Check the `claude` stub in binDir.')
   rmSync(probeRoot, { recursive: true, force: true })
   process.exit(3)
 }
