@@ -243,23 +243,38 @@ check(/anyone may seal mail to this key, and being addressed is not authority/.t
     console.error(`return_lane_inbox: INCONCLUSIVE — agent-inbox.mjs read back only ${src.length} bytes`)
     process.exit(3)
   }
-  const verifyAt = src.indexOf('if (!verifyEvent(wrap))')
-  const dedupAt = src.indexOf('seen.has(wrap.id)')
+  // SCAN THE CODE, NOT THE COMMENTS. Every check below anchors on a literal, and a literal inside a
+  // comment satisfies it just as well — so the #505 defect was restored verbatim with the original
+  // line left above it as a comment, and all 106 suites stayed green (#505 review, second pass). A
+  // bare deletion WAS caught; a deletion with an explanatory comment above it was not, and that is
+  // the worse of the two, because a comment saying what the code used to do is what a real
+  // regression looks like.
+  const code = src.replace(/^\s*\/\/.*$/gm, '')
+  // The stripper is a probe, so it gets its own control: if it silently stopped stripping, every
+  // check below would go back to being satisfiable by prose and nothing would say so.
+  check(!/track\(open\(/.test('  // track(open(m[2]))\n'.replace(/^\s*\/\/.*$/gm, '')),
+    'the comment stripper removes a line comment carrying an anchor — without this the checks below scan prose')
+  check(code.length > 2000, `  …and leaves the code behind — ${code.length} bytes survive stripping`)
+
+  const verifyAt = code.indexOf('if (!verifyEvent(wrap))')
+  const dedupAt = code.indexOf('seen.has(wrap.id)')
   check(verifyAt > 0, 'the tool verifies the wrap event before trusting anything in it')
   check(dedupAt > 0 && verifyAt < dedupAt, '  …and does so BEFORE the dedup, so a forged id cannot take the slot of a real message')
-  check(/track\(open\(/.test(src),
-    '  …and the opener is TRACKED where it is started — an untracked open is the original defect, exactly')
-  check(/await drain\(\)/.test(src), '  …and the read drains before it summarises')
-  check(/ws\.onclose\s*=/.test(src), 'the subscription handles onclose — a cleanly closed relay used to leave --watch deaf and silent')
+  // EXACTLY ONCE, not merely present. Presence alone is satisfied by a disabled call sitting beside
+  // a live one; the count is what distinguishes "the opener is tracked" from "the word appears".
+  check((code.match(/track\(open\(/g) || []).length === 1,
+    '  …and the opener is TRACKED where it is started, exactly once — an untracked open is the original defect')
+  check(/await drain\(\)/.test(code), '  …and the read drains before it summarises')
+  check(/ws\.onclose\s*=/.test(code), 'the subscription handles onclose — a cleanly closed relay used to leave --watch deaf and silent')
   // Presence FIRST. The earlier form of this check compared two indexOf results, and indexOf
   // returns -1 when absent — so deleting the handler outright made it pass, because -1 is less
   // than everything. An ordering assertion that a deletion satisfies is not an assertion.
-  const sigintAt = src.indexOf("process.on('SIGINT'")
-  const readAt = src.indexOf('await Promise.all(RELAYS')
+  const sigintAt = code.indexOf("process.on('SIGINT'")
+  const readAt = code.indexOf('await Promise.all(RELAYS')
   check(sigintAt > 0 && readAt > 0, 'the --watch interrupt handler and the read are both present')
   check(sigintAt > 0 && readAt > 0 && sigintAt < readAt,
     '  …and the handler is installed BEFORE the read that never resolves, or it would never be installed at all')
-  check(/failed: failed \+ stillOpen/.test(src),
+  check(/failed: failed \+ stillOpen/.test(code),
     'what is still in flight when the read ends is added to the failed count — outstanding is INCONCLUSIVE, never clean')
 }
 
