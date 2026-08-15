@@ -19,7 +19,8 @@ import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { installState, renderState, foreignNvoyServers, ARTIFACTS, ARTIFACT_KEYS, PRESENT, UNVERIFIED, MISSING, UNKNOWN }
+import { npubEncode, decode as nip19decode } from 'nostr-tools/nip19'
+import { installState, renderState, foreignNvoyServers, boundIdentity, ARTIFACTS, ARTIFACT_KEYS, PRESENT, UNVERIFIED, MISSING, UNKNOWN }
   from '../src/agent_install_state.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -317,6 +318,140 @@ check(ARTIFACTS.some(a => a.blocking) && ARTIFACTS.some(a => !a.blocking),
   check(readdirSync(probeRoot).length === 0,
     'NEGATIVE CONTROL — and --check wrote nothing into the probe root, so running the tool is side-effect free')
   rmSync(probeRoot, { recursive: true, force: true })
+}
+
+// ── #338 — sole is not YOURS: the MCP path's EXPECT_PUBKEY ───────────────────────────────────
+//
+// Every assertion here is paired. The reported failure was a session answering as another agent
+// and nothing objecting; the failure this test could introduce is a guard that objects to
+// everything, which looks identical from a green suite and takes the working case down with it.
+{
+  // MC Claude and Oliver, the two identities in the incident, as their real key shapes.
+  const MINE = 'ad05b00e'.padEnd(64, '3')
+  const THEIRS = 'ebc6eec1'.padEnd(64, '7')
+  const whoami = pk => JSON.stringify({ npub: 'npub1…', pubkey: pk, relays: ['wss://relay.example'], metadata: null })
+
+  const right = boundIdentity(whoami(MINE), MINE)
+  check(right.match === true, 'a server answering as the minted key passes')
+  check(right.resolved === MINE && right.reason.includes(MINE.slice(0, 12)),
+    'and the PASS names WHO it matched, because a guard that passes in silence is indistinguishable from one that is not there (#338)')
+
+  const wrong = boundIdentity(whoami(THEIRS), MINE)
+  check(wrong.match === false, 'a server answering as a DIFFERENT agent is refused — the reported failure, caught')
+  check(wrong.resolved === THEIRS && wrong.reason.includes(THEIRS.slice(0, 12)) && wrong.reason.includes(MINE.slice(0, 12)),
+    'and the refusal names both keys, so the operator is not left guessing which session they are in')
+
+  // BOTH DIRECTIONS, at the level that matters: not "it refused" but "it refused THIS and not THAT".
+  check(right.match !== wrong.match, 'NEGATIVE CONTROL — the two verdicts differ, so the guard is discriminating and not merely refusing')
+
+  // The three UNKNOWNs. None may reach `true`, and none may reach `false` either: "nobody looked"
+  // sends an operator to fix a binding that may be correct, which is the same false confidence
+  // pointing the other way.
+  check(boundIdentity(null, MINE).match === null, 'nothing captured is UNKNOWN, not a pass')
+  check(boundIdentity('', MINE).match === null, 'and so is an empty capture — a file that read blank has told you nothing')
+  const unasked = boundIdentity(whoami(THEIRS), '')
+  check(unasked.match === null,
+    'CRITICAL — with no expected key there is no comparison, so the verdict is UNKNOWN even though the server answered')
+  check(unasked.match !== true,
+    'NEGATIVE CONTROL — and specifically not a pass: a guard that goes green because nobody supplied the comparison is the whole defect')
+  check(boundIdentity('{"npub":"npub1…"}', MINE).match === null,
+    'output with no readable identity is UNKNOWN — not silently clean')
+
+  // npub and hex are the same key. Comparing the two alphabets as strings would refuse a correct
+  // binding, and a guard that refuses the working case gets switched off.
+  //
+  // The fixture is encoded by nip19 rather than typed, because the first draft of this test used a
+  // hand-invented npub that fails its own checksum. It passed — both sides normalize identically,
+  // so a nonsense string matches a nonsense string — and proved nothing about real input.
+  const NPUB = npubEncode(MINE)
+  const asHex = boundIdentity(JSON.stringify({ npub: NPUB }), NPUB)
+  check(asHex.match === true && asHex.resolved === MINE,
+    'an npub is decoded to hex, so npub-vs-hex compares as the same key rather than as a mismatch')
+  check(boundIdentity(JSON.stringify({ pubkey: MINE }), NPUB).match === true,
+    'and the comparison holds with the alphabets swapped between the two sides')
+  check(boundIdentity(JSON.stringify({ npub: NPUB }), THEIRS).match === false,
+    'NEGATIVE CONTROL — decoding does not make every npub match; a different key still refuses')
+
+  // A round trip across the byte range. Every assertion above compares two values this same path
+  // produced, so a normalizer that is wrong in a consistent way agrees with itself perfectly.
+  let disagreed = 0
+  for (let i = 0; i < 128; i++) {
+    const hex = Array.from({ length: 32 }, (_, j) => ((i * 31 + j * 7) % 256).toString(16).padStart(2, '0')).join('')
+    if (boundIdentity(JSON.stringify({ npub: npubEncode(hex) }), hex).match !== true) disagreed++
+  }
+  check(disagreed === 0, `npub↔hex round-trips on 128 keys (${disagreed} disagreed)`)
+
+  // MALFORMED INPUT — the gap the 128 keys above cannot see, because every one of them is
+  // well-formed (#451 review).
+  //
+  // The old decoder read `v.slice(5, -6)` and never looked at the six characters it discarded. Those
+  // six ARE the checksum: the only part of a bech32 string that can detect corruption was the only
+  // part it threw away. Flip one of them, leave the data untouched, and a string `nip19.decode`
+  // refuses outright decoded to the same clean 32 bytes and printed a green tick — on the artifact
+  // whose whole job is to refuse what it cannot vouch for.
+  //
+  // Corrupt the DATA part instead and the refusal was confidently wrong the other way: "answers as
+  // …, NOT the minted … — this session would sign as someone else", said about a capture that got
+  // mangled between two clipboards. Both are asserted, and both assert the REASON: `match === null`
+  // alone cannot tell a correct refusal from a correct refusal that sends the operator hunting for
+  // an impostor who does not exist.
+  const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l'
+  const flip = (s, i) => {
+    const at = i < 0 ? s.length + i : i
+    return s.slice(0, at) + CHARSET[(CHARSET.indexOf(s[at]) + 1) % CHARSET.length] + s.slice(at + 1)
+  }
+  const BAD_SUM = flip(NPUB, -3)    // inside the six checksum characters — data part untouched
+  const BAD_DATA = flip(NPUB, 10)   // inside the data part
+
+  // FIXTURE GUARD. A probe that loses its own input has told you nothing: if these strings were
+  // still valid npubs, every assertion below would pass while exercising nothing.
+  const refused = s => { try { nip19decode(s); return false } catch { return true } }
+  check(refused(BAD_SUM) && refused(BAD_DATA) && !refused(NPUB) && BAD_SUM !== NPUB && BAD_DATA !== NPUB,
+    'FIXTURE — nip19 refuses both corrupted npubs and accepts the clean one, so these cases test what they claim')
+
+  const badSum = boundIdentity(JSON.stringify({ npub: BAD_SUM }), MINE)
+  check(badSum.match === null,
+    'an npub that fails its CHECKSUM is UNKNOWN — the six characters the old decoder discarded were the only ones that could catch it')
+  check(/does not decode/.test(badSum.reason) && !/someone else/.test(badSum.reason),
+    '  ...and the reason says garbled capture, not impostor')
+
+  const badData = boundIdentity(JSON.stringify({ npub: BAD_DATA }), MINE)
+  check(badData.match === null && /does not decode/.test(badData.reason),
+    'an npub whose DATA is corrupt is UNKNOWN too — not a confident "this session would sign as someone else"')
+
+  const badExpected = boundIdentity(JSON.stringify({ pubkey: MINE }), BAD_SUM)
+  check(badExpected.match === null && /expected key/.test(badExpected.reason),
+    'and a corrupt --pubkey is UNKNOWN rather than a match — the EXPECTED side is decoded too, which is how the checksum flip got its green tick')
+
+  check(boundIdentity(JSON.stringify({ npub: NPUB.slice(0, -4) }), MINE).match === null,
+    'a truncated npub is UNKNOWN — nothing about it is readable, so nothing about it is reported')
+
+  // BOTH DIRECTIONS. A normalizer that returned null for every npub would satisfy all four of those
+  // and break every real check, which is the shape that gets a guard switched off.
+  const impostor = boundIdentity(JSON.stringify({ npub: npubEncode(THEIRS) }), MINE)
+  check(impostor.match === false && /sign as someone else/.test(impostor.reason),
+    'NEGATIVE CONTROL — a WELL-FORMED npub for a different key still reads as an impostor, so this refuses the garbled input rather than all input')
+  check(boundIdentity(JSON.stringify({ npub: npubEncode(MINE) }), MINE).match === true,
+    '  ...and the matching one still passes')
+
+  // MCP results reach a human wrapped in an envelope. Failing to read through it would report
+  // UNKNOWN for a session that did answer, and UNKNOWN is the state operators learn to skip past.
+  const wrapped = JSON.stringify({ content: [{ type: 'text', text: whoami(THEIRS) }] })
+  check(boundIdentity(wrapped, MINE).match === false && boundIdentity(wrapped, THEIRS).match === true,
+    'a whoami wrapped in an MCP content envelope is still read, in both directions')
+
+  // The artifact, and its exit code. Blocking, because a session bound to someone else must not
+  // read as an agent that merely lacks a name.
+  const bind = ARTIFACTS.find(a => a.key === 'mcp-identity')
+  check(!!bind && bind.blocking === true, 'the checklist carries a blocking mcp-identity artifact')
+  const everythingElse = Object.fromEntries(
+    ARTIFACT_KEYS.filter(k => k !== 'mcp-identity').map(k => [k, { found: true, verified: true }]))
+  check(installState({ ...everythingElse, 'mcp-identity': { found: false } }).exitCode === 1,
+    'an otherwise-perfect agent whose server answers as someone else exits 1 — it cannot be used')
+  check(installState(everythingElse).exitCode === 3,
+    'and one where nobody checked the binding exits 3 — INCONCLUSIVE is not a softer 0')
+  check(installState({ ...everythingElse, 'mcp-identity': { found: true, verified: true } }).outcome === 'complete',
+    'BOTH DIRECTIONS — a correctly bound agent still reads complete, so the guard has not simply closed the door')
 }
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
