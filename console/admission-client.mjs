@@ -25,6 +25,7 @@
 // browser blocked by that layer sees a TypeError with no status, which is indistinguishable from
 // the relay being down — so `reachFailure()` names both possibilities rather than picking one.
 import { expectedUrl, nip98Header, nip98Template } from './nip98.mjs'
+import { corsRemedy } from './relay-reach.mjs'
 import {
   MAX_SIGN_SKEW_SECS, NIP98_WINDOW_SECS, SIGN_TIMEOUT_MS,
   acceptOutcome, claimOutcome, mintOutcome, policyGate, policyReadVerdict,
@@ -48,8 +49,7 @@ export function reachFailure(relayUrl, err) {
   const host = String(relayUrl || '').replace(/^[a-z]+:\/\//i, '').split('/')[0] || 'the relay'
   return `the browser could not complete the request to ${host} (${err?.message || err}). ` +
     'Two different things look like this and the browser cannot tell them apart: the relay is ' +
-    'unreachable, or it answered and its CORS policy withheld the response from this page. Check ' +
-    'BUZZ_CORS_ORIGINS on the relay before concluding it is down.'
+    `unreachable, or it answered and its CORS policy withheld the response from this page. ${corsRemedy(globalThis.location?.origin || '')}`
 }
 
 // One signed POST. Returns `{ status, json, text }` — the exact shape every `*Outcome` reads — or
