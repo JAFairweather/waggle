@@ -74,13 +74,26 @@ check(!/\bWaggle\b/.test(good) && !/\bWAGGLE\b/.test(good), 'waggle is lowercase
 console.log('\n2. nothing secret')
 check(secretInText('bunker://abc?relay=wss://x') === 'a bunker:// pairing URI', 'a pairing URI is named, not merely refused')
 check(secretInText('nsec1qqqqqqqqqq') === 'an nsec', 'an nsec is named')
-check(secretInText('the host is 203.0.113.9') === 'an IP address', 'a host IP is named')
-check(secretInText('sk-abcdefghijklmnop01') === 'an API key', 'an API key is named')
+check(secretInText('the host is 203.0.113.9') === 'an IPv4 address', 'a host IP is named — and named as IPv4, which is what the shape detects')
+check(secretInText('sk-abcdefghijklmnop01') === 'an API key or embedded credential', 'an API key is named')
+check(secretInText('ghp_abcdefghijklmnopqrst') === 'an API key or embedded credential', 'a GitHub token is caught')
+check(secretInText('xoxb-1234567890-abcdef') === 'an API key or embedded credential', 'a Slack bot token is caught')
+check(secretInText('AKIAIOSFODNN7EXAMPLE') === 'an API key or embedded credential', 'an AWS access key id is caught')
+check(secretInText('Authorization: Bearer eyJhbGciOi') === 'an API key or embedded credential', 'a bearer header is caught')
+check(secretInText('wss://user:hunter2@relay.example') === 'an API key or embedded credential', 'a credential embedded in a URL is caught')
 // The other direction. A detector that flags everything refuses every legitimate file, and the
 // operator then turns it off — which is worse than not having it.
 check(secretInText(good) === null, 'NEGATIVE CONTROL — a real startup file is clean')
 check(secretInText(`your key is ${PUB}`) === null, 'NEGATIVE CONTROL — a 64-hex PUBLIC key is not a secret and must not be flagged')
 check(secretInText('read docs/AGENT_BRIEF.md') === null, 'NEGATIVE CONTROL — an ordinary path is not flagged')
+// The IPv4 shape is fail-closed: a false positive means NO startup file at all. Anchored octets
+// are the difference between refusing a host address and refusing a version string.
+check(secretInText('waggle 1.400.2.9001 and node 22.999.1.0') === null,
+  'NEGATIVE CONTROL — a dotted quad with out-of-range octets is a version string, not an address')
+check(secretInText('NVOY_INSTANCE_ROOT=/Users/op/.nvoy/desktop') === null,
+  'NEGATIVE CONTROL — a filesystem path in a machine-generated note is not flagged')
+check(secretInText('a relay at wss://relay.example/req') === null,
+  'NEGATIVE CONTROL — an ordinary wss:// URL with no userinfo is not flagged')
 check(good.includes(PUB), 'and the public key is actually in the file — an agent that does not know its own key cannot check anything')
 
 let threw = ''
@@ -214,6 +227,58 @@ check(unseated !== null && !/act as this key/.test(unseated),
   'NEGATIVE CONTROL — no manifest, no key line: the tool does not invent one to fill the slot')
 check(unseated !== null && /nomanifest/.test(unseated),
   'and the file is still written and still addressed to the agent')
+
+// ── 7. The boundary allowlist ───────────────────────────────────────────────────────────────
+console.log('\n7. the two pasted fields are held to a shape before anything renders them')
+// `secretInText` is a denylist over rendered text, and no denylist can be proven complete. The two
+// fields an operator pastes into DO have a shape, so they are checked at the boundary and the
+// smuggling case becomes unreachable rather than caught. Asserted through the tool, because the
+// boundary is in the tool: the exported function still has to accept whatever it is handed.
+const runRaw = (extra = [], name = 'boundary') => {
+  const args = [join(ROOT, 'tools', 'connect-agent.mjs'), '--name', name, '--root', probeRoot,
+    '--startup', '--runtime', 'generic', ...extra]
+  try {
+    const stdout = execFileSync(process.execPath, args, { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'] })
+    return { code: 0, stdout, stderr: '' }
+  } catch (e) {
+    return { code: typeof e?.status === 'number' ? e.status : -1, stdout: String(e?.stdout ?? ''), stderr: String(e?.stderr ?? '') }
+  }
+}
+const smuggled = runRaw(['--print', '--channel', 'bunker://leak?relay=wss://r&secret=deadbeef'])
+check(smuggled.code === 1, 'a bunker:// URI in --channel exits 1 rather than rendering')
+// The REASON matters, not only the refusal. If this reported the sweep's message the boundary did
+// not fire and the guarantee is still the denylist's — same exit code, different property.
+check(/--channel must be a channel uuid/.test(smuggled.stderr),
+  `and is refused at the boundary as a malformed --channel, not caught downstream — ${smuggled.stderr.trim().slice(0, 70)}`)
+check(!/bunker/.test(smuggled.stdout + smuggled.stderr),
+  'and the URI itself is not echoed back at the operator — a refusal that reprints the secret has moved it, not stopped it')
+
+const badKey = runRaw(['--print', '--pubkey', 'nope'])
+check(badKey.code === 1 && /--pubkey must be 64-character hex/.test(badKey.stderr),
+  'a malformed --pubkey is refused on --startup too — its only other check sits in the manifest branch --startup skips')
+
+// Both directions. A boundary that refuses everything refuses every real run.
+// Run against `seated`, which §6 gave a manifest: supplying --pubkey takes the manifest path, and
+// a boundary that refuses a legitimate value would fail here for a reason that is not the manifest.
+const okRun = runRaw(['--print', '--channel', CHAN, '--pubkey', TOOL_PUB], 'seated')
+check(!/must be/.test(okRun.stderr),
+  'NEGATIVE CONTROL — a real uuid and a real 64-hex pubkey are not refused')
+check(okRun.stdout.includes(CHAN),
+  'and the channel reaches the document, so the allowlist is passing the value through rather than dropping it')
+check(okRun.stdout.includes(TOOL_PUB), 'and so does the pubkey')
+
+// §4: the remedy line is a command the operator pastes. Without --root it reads a different agent
+// root, and without --channel it renders a different document — so the comparison it exists for is
+// against the wrong file.
+const writeOnce = runRaw(['--channel', CHAN], 'remedy')
+const again = runRaw(['--channel', CHAN], 'remedy')
+check(/wrote /.test(writeOnce.stdout) && /unchanged:/.test(again.stdout),
+  'the first run writes the file and the second reports it unchanged')
+const remedy = (again.stdout.split('\n').find(l => l.includes('compare it against a fresh one')) || '')
+check(remedy.includes(`--root ${probeRoot}`),
+  `the remedy command carries --root — ${remedy.trim().slice(0, 90)}`)
+check(remedy.includes(`--channel ${CHAN}`), 'and carries --channel, so the fresh file is comparable to the one on disk')
+
 rmSync(probeRoot, { recursive: true, force: true })
 
 console.log(`\n${pass} passed, ${fail} failed`)

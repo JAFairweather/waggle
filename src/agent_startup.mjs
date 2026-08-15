@@ -15,6 +15,14 @@
 //
 //   1. NOTHING SECRET. Public keys, paths and channel ids only. Never a bunker URI, never an nsec,
 //      never a client secret, never a host IP. `assertNoSecrets` is not decoration.
+//
+//      Its BOUND, stated because the next person will otherwise trust it further than it goes: the
+//      sweep catches credentials with a distinguishing SHAPE. A raw 64-hex private key has none —
+//      it is byte-identical to the 64-hex public key this file exists to print — so it is
+//      structurally undetectable here and always will be. What rule 1 guarantees is "no bech32- or
+//      URI-shaped credential", not "nothing secret". The operator-pasted fields are held to a
+//      shape at the boundary in `tools/connect-agent.mjs` instead, where an allowlist is possible;
+//      this sweep is defence in depth over machine-generated note text, which has no shape.
 //   2. NOTHING UNPROVEN STATED AS FACT. The body is built from the install report, so an agent
 //      whose kind:10050 was never checked is told it was never checked — not that it is reachable.
 //      An agent that believes it is reachable and is not will report the wall as broken, and that
@@ -32,8 +40,16 @@ const SECRET_SHAPES = [
   [/\bnsec1[02-9ac-hj-np-z]+/i, 'an nsec'],
   [/\bncryptsec1[02-9ac-hj-np-z]+/i, 'an encrypted nsec'],
   [/-----BEGIN [A-Z ]*PRIVATE KEY/, 'a private key block'],
-  [/\b\d{1,3}(\.\d{1,3}){3}\b/, 'an IP address'],
-  [/\bsk-[A-Za-z0-9_-]{16,}/, 'an API key'],
+  // Octets ANCHORED. The unanchored `\d{1,3}` matched any dotted quad, and this sweep is
+  // fail-closed — `startupDoc` throws and the caller exits 1 — so a false positive means no file at
+  // all, with the operator told the document "contains an IP address" about a version string or a
+  // filesystem path (#466 review §5). Labelled IPv4 because that is what it detects: `2001:db8::1`
+  // reaches disk, and a shape that says 'an IP address' while catching one family is a guard whose
+  // stated reason is wrong.
+  [/\b(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b/, 'an IPv4 address'],
+  // One alternation rather than six entries. None of these is plausible for today's inputs; they
+  // are here because the note text is machine-generated from tools this file does not control.
+  [/\bsk-[A-Za-z0-9_-]{16,}|\bgh[pousr]_[A-Za-z0-9]{16,}|\bgithub_pat_[A-Za-z0-9_]{20,}|\bxox[baprs]-[A-Za-z0-9-]{10,}|\bAKIA[0-9A-Z]{16}\b|Authorization:\s*Bearer\s+\S|[a-z][a-z0-9+.-]*:\/\/[^\s/@]+:[^\s/@]+@/i, 'an API key or embedded credential'],
 ]
 
 /**

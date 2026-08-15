@@ -49,6 +49,7 @@ const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (proc
 const has = n => process.argv.includes(n)
 const die = m => { console.error(`connect-agent: ${m}`); process.exit(1) }
 const HEX64 = /^[0-9a-f]{64}$/i
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const name = flag('--name').toLowerCase()
 if (!/^[a-z0-9][a-z0-9._-]{1,63}$/.test(name)) die('usage: --name <short-stable-id> [--pubkey <64-hex>] [--owner <64-hex>] [--from <instance>] [--check]')
@@ -58,6 +59,19 @@ const HERE = join(ROOT, name)
 const pubkey = flag('--pubkey').toLowerCase()
 const owner = flag('--owner').toLowerCase()
 const from = flag('--from')
+const channel = flag('--channel')
+
+// Shape-check the two operator-pasted values HERE, at the boundary, before anything renders them
+// (#466 review §3). Both have a known shape, so an allowlist is available and an allowlist is
+// bounded: it makes `bunker://…` in `--channel` unreachable by construction rather than caught by
+// a denylist nobody can prove complete. `secretInText` still sweeps the rendered document, but it
+// is now doing the job it CAN do soundly — defence in depth over machine-generated note text,
+// which has no shape to allowlist against.
+//
+// Checked on supply, not on use: `--pubkey`'s only other validation sits inside the manifest
+// branch that `--startup` deliberately skips, so a malformed one reached `startupDoc` untouched.
+if (pubkey && !HEX64.test(pubkey)) die(`--pubkey must be 64-character hex, got ${pubkey.length} character(s)`)
+if (channel && !UUID.test(channel)) die('--channel must be a channel uuid (8-4-4-4-12 hex)')
 
 const obs = {}
 const see = (key, found, verified, note) => { obs[key] = { found, verified, note } }
@@ -320,14 +334,19 @@ if (has('--startup')) {
   console.log(`\nstartup file — ${rt.label}`)
   if (existsSync(dest)) {
     console.log(`  unchanged: ${dest} already exists and was NOT overwritten`)
-    console.log(`  compare it against a fresh one with: ${process.argv[1]} --name ${name} --check --startup --runtime ${target} --print`)
+    // Carries --root and --channel through. Without them the pasted line reads a DIFFERENT agent
+    // root and renders a document with no channel, so the comparison it exists for is against the
+    // wrong file (#466 review §4).
+    const carried = [flag('--root') ? `--root ${flag('--root')}` : '', channel ? `--channel ${channel}` : '']
+      .filter(Boolean).join(' ')
+    console.log(`  compare it against a fresh one with: ${process.argv[1]} --name ${name}${carried ? ` ${carried}` : ''} --check --startup --runtime ${target} --print`)
   } else if (CHECK && !has('--print')) {
     console.log(`  would write: ${dest}  (--check: nothing was written)`)
   } else {
     let body
     try {
       body = startupDoc({
-        agent: name, pubkey: pubkey || manifestPubkey, channel: flag('--channel'),
+        agent: name, pubkey: pubkey || manifestPubkey, channel,
         runtimeLabel: rt.label, report,
       })
     } catch (e) { die(e.message) }
