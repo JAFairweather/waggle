@@ -71,8 +71,9 @@ import { homedir } from 'node:os'
 import { nip19 } from 'nostr-tools'
 import { nip98Template, nip98Header, expectedUrl } from '../src/nip98.mjs'
 import { loadBunkerSignerFiles, makeLocalSigner, withPinnedCustody } from '../src/nostr_signer.mjs'
-import { refusal, checkMintBounds, chooseSigningSource,
+import { refusal, checkMintBounds,
   SIGN_TIMEOUT_MS, MAX_SIGN_SKEW_SECS, NIP98_WINDOW_SECS } from '../src/relay_invite.mjs'
+import { resolveSigner, signerBanner } from '../src/relay_invite_signer.mjs'
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
@@ -128,52 +129,30 @@ function readKeyText(pathArg) {
 /**
  * The one signer for this run — local file or bunker pairing, chosen explicitly, custody pinned.
  *
- * `what` names the state this run will write, so an identity mismatch is refused in the operator's
- * terms rather than as a hex comparison.
+ * The decisions live in ../src/relay_invite_signer.mjs so they can be driven with a signer whose
+ * identity differs from its pairing address. What stays here is the environment, the file checks,
+ * and turning a refusal into an exit code — none of which is a choice about which key signs.
  */
 async function buildSigner(what) {
   const keyArg = arg('key')
-  const uriFile = String(process.env.WAGGLE_BUNKER_URI_FILE || '').trim()
-  const clientFile = String(process.env.WAGGLE_NIP46_CLIENT_NSEC_FILE || '').trim()
+  const result = await resolveSigner({
+    keyArg,
+    uriFile: String(process.env.WAGGLE_BUNKER_URI_FILE || '').trim(),
+    clientFile: String(process.env.WAGGLE_NIP46_CLIENT_NSEC_FILE || '').trim(),
+    expect: process.env.EXPECT_PUBKEY,
+    what,
+  }, {
+    loadBunker: (uriFile, clientFile) => loadBunkerSignerFiles(uriFile, clientFile),
+    loadLocal: (path) => makeLocalSigner(readKeyText(path), expand(path)),
+    pin: withPinnedCustody,
+  })
 
-  const choice = chooseSigningSource({ keyArg, uriFile, clientFile })
-  if (choice.error) die(`${choice.error}\n\n${USAGE}`)
-
-  let base
-  try {
-    base = choice.kind === 'bunker'
-      ? loadBunkerSignerFiles(uriFile, clientFile)
-      : makeLocalSigner(readKeyText(keyArg), expand(keyArg))
-  } catch (e) { die(`could not load the signing key: ${e.message}`) }
-
-  const bail = (msg, code = 1) => {
-    try { base.close() } catch { /* nothing published; the pool going down quietly is fine */ }
-    die(msg, code)
+  if (result.error) {
+    // Close first: a bunker pool holds the process open, and this path exits without publishing.
+    try { result.signer?.close() } catch { /* nothing published; a quiet close is fine */ }
+    die(result.usage ? `${result.error}\n\n${USAGE}` : result.error, result.code)
   }
-
-  // ASK the bunker which identity it holds — never read it off the pairing. `bunker://<hex>` names
-  // the remote SIGNER, which NIP-46 permits to differ from the user key it signs with, so the URI
-  // hex is a transport address. Pinning to it would fail every signature as a custody mismatch, and
-  // naming the true identity in EXPECT_PUBKEY would be refused for disagreeing with the pairing —
-  // no third option, and the error would blame the identity rather than the assumption.
-  let identity
-  try { identity = await base.userPubkey() }
-  catch (e) { bail(`could not establish which identity the signer holds: ${e.message}`, 2) }
-
-  const expect = String(process.env.EXPECT_PUBKEY || '').trim().toLowerCase()
-  if (expect && !/^[0-9a-f]{64}$/.test(expect)) bail('EXPECT_PUBKEY must be a 64-character hex pubkey')
-  if (expect && expect !== identity) {
-    // Refused BEFORE anything is signed. A claim inserts a relay_members row that cannot be removed
-    // without that key's cooperation (#366), so the wrong identity here is permanent.
-    bail(`EXPECT_PUBKEY does not match the ${choice.kind === 'bunker' ? 'pairing' : 'key file'}:\n` +
-      `  expected ${expect}\n  signer is ${identity}\n` +
-      `  Refusing before signing — ${what} writes state under whichever key signs.`)
-  }
-  // Pinning to the resolved identity when EXPECT_PUBKEY is unset is not a no-op: a bunker holding
-  // several identities can answer sign_event as one it did not name here, and every signature after
-  // the first is a fresh chance to. Unpinned, the tool would verify each signature and still not
-  // notice they came from different keys.
-  return withPinnedCustody(base, expect || identity)
+  return result
 }
 
 async function post(path, bodyObj, signer) {
@@ -228,7 +207,8 @@ async function get(path) {
 
 // --- mint --------------------------------------------------------------------------------------
 if (cmd === 'mint') {
-  const signer = await buildSigner('minting an invite')
+  const chosen = await buildSigner('minting an invite')
+  const signer = chosen.signer
   const ttl = Number(arg('ttl', '3600'))
   const uses = Number(arg('uses', '1'))
   // Caught here rather than at the relay: a 400 comes back as exit 2, "relay/network", which
@@ -238,9 +218,9 @@ if (cmd === 'mint') {
   const out = expand(arg('out', '~/.nvoy/relay-invite.code'))
   if (existsSync(out)) die(`${out} already exists. Refusing to overwrite — an invite code file is a bearer secret; move it aside if you mean to replace it.`)
 
-  // `signer.pinned`, not `signer.pubkey` — on a bunker the latter is the pairing's transport
-  // address, and printing it would name a key that signs nothing.
-  console.log(`relay-invite: minting as ${nip19.npubEncode(signer.pinned)} (${signer.remote ? 'bunker pairing' : 'local key file'})`)
+  // Built in src/relay_invite_signer.mjs from the RESOLVED identity. As a bare console.log here it
+  // was untestable, and printing the pairing's transport address instead went unnoticed.
+  console.log(signerBanner('minting', chosen))
   const { status, json, text } = await post('/api/invites', { ttl_secs: ttl, max_uses: uses }, signer)
 
   if (status === 403) {
@@ -277,7 +257,8 @@ if (cmd === 'mint') {
 
 // --- claim -------------------------------------------------------------------------------------
 if (cmd === 'claim') {
-  const signer = await buildSigner('a claim')
+  const chosen = await buildSigner('a claim')
+  const signer = chosen.signer
   const codePath = arg('code-file')
   if (!codePath) die(`--code-file <path> is required. The code is read from a file, never from argv.\n${USAGE}`)
   const cp = expand(codePath)
@@ -285,7 +266,7 @@ if (cmd === 'claim') {
   const code = readFileSync(cp, 'utf8').trim()
   if (!code) die(`${cp} is empty`)
 
-  console.log(`relay-invite: claiming as ${nip19.npubEncode(signer.pinned)} (${signer.remote ? 'bunker pairing' : 'local key file'})`)
+  console.log(signerBanner('claiming', chosen))
   if (signer.remote) {
     console.log('  Signing through NIP-46 — the bunker will prompt for approval, TWICE where a join')
     console.log('  policy applies (accept-policy, then the claim). An unanswered prompt times out.')

@@ -10,9 +10,11 @@
 // all, and the paths that do build one use a local key file. BUZZ_RELAY_URL points at a closed
 // port so the run ends immediately after the part under test, with no network and no relay.
 //
-// The bunker-specific half — that the identity is resolved by asking `get_public_key` rather than
-// read off the `bunker://` URI — is in tests/nostr_signer.mjs, in-process against a fake pool,
-// because driving a real NIP-46 pairing from a subprocess would mean a socket and a 15s connect.
+// A subprocess can only ever drive the LOCAL key path, where the pairing address, the resolved
+// identity and the pinned key are the same value — so the last block here drives
+// `resolveSigner` in-process with a signer whose identity differs from its address, which is
+// the only arrangement where pinning to the wrong one is visible. `makeBunkerSigner`'s own
+// half — that the identity is ASKED via get_public_key — is in tests/nostr_signer.mjs.
 //
 //   node tests/relay_invite_signer.mjs
 
@@ -21,8 +23,10 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { generateSecretKey, getPublicKey } from 'nostr-tools/pure'
+import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
+import { withPinnedCustody } from '../src/nostr_signer.mjs'
+import { resolveSigner, signerBanner } from '../src/relay_invite_signer.mjs'
 
 let pass = 0, fail = 0
 const ok = (name, value) => { console.log(value ? 'ok  ' : 'FAIL', '—', name); value ? pass++ : fail++ }
@@ -161,6 +165,72 @@ try {
     ok('mint bounds are still enforced ahead of the signer', ttl.code === 1 && said(ttl, /minimum of 60s/))
     const noCode = run(['claim', '--key', files.lower])
     ok('claim still requires --code-file', noCode.code === 1 && said(noCode, /--code-file <path> is required/))
+  }
+  // ── The split case: pairing address ≠ identity ──────────────────────────────────────────────
+  // Everything above runs the local-key path, where the pairing address, the resolved identity and
+  // the pinned key are ALL THE SAME VALUE — so none of it can tell them apart. Three mutations
+  // survived the full suite on exactly that blind spot (#478 review): pinning to `base.pubkey`
+  // instead of the resolved identity, and both banners naming the address. This block is the only
+  // arrangement in which those are distinguishable, and it drives the real decision code.
+  {
+    const uriHex = getPublicKey(generateSecretKey())          // what bunker:// names
+    const userSk = generateSecretKey(), userPk = getPublicKey(userSk)   // what it signs as
+    let asked = 0
+    const split = (over = {}) => ({
+      pubkey: uriHex, remote: true,
+      userPubkey: async () => { asked++; return userPk },
+      signEvent: async (e) => JSON.parse(JSON.stringify(finalizeEvent(e, userSk))),
+      close() {}, ...over,
+    })
+    // A spy alongside the real wrapper: `pinned` proves the outcome, `pinnedTo` proves the argument.
+    let pinnedTo = null
+    const pin = (s, expect) => { pinnedTo = expect; return withPinnedCustody(s, expect) }
+    const resolve = (over = {}, opts = {}) => resolveSigner(
+      { uriFile: '/run/uri', clientFile: '/run/client', ...opts },
+      { loadBunker: async () => split(over), loadLocal: async () => { throw new Error('not this path') }, pin })
+
+    const r = await resolve()
+    ok('the identity is the key the bunker reports, not the URI hex',
+      r.identity === userPk && r.identity !== uriHex)
+    ok('custody is pinned to that identity — NOT to the pairing address', pinnedTo === userPk)
+    ok('…and the wrapper agrees', r.signer.pinned === userPk)
+    ok('…so a signature by that identity is accepted rather than refused',
+      (await r.signer.signEvent({ kind: 27235, created_at: 1, tags: [], content: '' })).pubkey === userPk)
+
+    ok('the banner names the identity that will sign',
+      signerBanner('claiming', r).includes(nip19.npubEncode(userPk)))
+    ok('…and never the pairing address, which signs nothing',
+      !signerBanner('claiming', r).includes(nip19.npubEncode(uriHex)))
+    ok('…and still reports which backend it came from', /bunker pairing/.test(signerBanner('claiming', r)))
+
+    // EXPECT_PUBKEY is compared against the RESOLVED identity. Naming the URI hex — the value an
+    // operator reads straight off the pairing file — must fail, or the comparison is against the
+    // wrong thing in the one case that matters.
+    ok('EXPECT_PUBKEY naming the identity passes', !(await resolve({}, { expect: userPk })).error)
+    const addr = await resolve({}, { expect: uriHex })
+    ok('EXPECT_PUBKEY naming the PAIRING ADDRESS is refused', !!addr.error && /does not match/.test(addr.error))
+    ok('…and the refusal is exit 1, the wrong-identity code', addr.code === 1)
+    ok('…and hands back the signer so the caller can close the pool', !!addr.signer)
+
+    // Finding 2 of the review: a malformed value used to cost a connect and an approval tap before
+    // being told it was malformed. Asserted as "no round trip happened", not as message text.
+    asked = 0
+    const junkExpect = await resolve({}, { expect: 'not-hex' })
+    ok('a malformed EXPECT_PUBKEY is refused for free — no identity round trip',
+      /64-character hex/.test(String(junkExpect.error)) && asked === 0)
+
+    // NEGATIVE CONTROLS — the guard must be able to pass, and must still refuse a broken signer.
+    const local = await resolveSigner({ keyArg: '/k' }, {
+      loadLocal: async () => ({ pubkey: userPk, remote: false, userPubkey: async () => userPk, close() {} }),
+      loadBunker: async () => { throw new Error('not this path') }, pin })
+    ok('NEGATIVE CONTROL — the local path still resolves and pins to its own key',
+      !local.error && local.signer.pinned === userPk && /local key file/.test(signerBanner('minting', local)))
+
+    const broken = await resolve({ userPubkey: async () => { throw new Error('nip46 get_public_key timed out') } })
+    ok('a signer that cannot say who it is fails as a SIGNER fault, not bad input', broken.code === 2)
+    ok('…and names the thing that could not be established', /which identity the signer holds/.test(broken.error))
+    const junkId = await resolve({ userPubkey: async () => 'not-a-pubkey' })
+    ok('a malformed identity is refused rather than pinned to', /nothing can be pinned/.test(String(junkId.error)))
   }
 } finally { rmSync(dir, { recursive: true, force: true }) }
 
