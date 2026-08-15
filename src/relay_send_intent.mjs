@@ -53,8 +53,13 @@ export function mentionVerdict(body, { broadcast = false } = {}) {
   //
   // Names contain spaces, so a name continues across a space only into another word; ` @` and ` —`
   // both end it. The email case (`a@b.com`) is excluded by the lookbehind rather than by a special
-  // case, because `@` preceded by a word character is never an at-word.
-  const found = [...text.matchAll(/(?<![\w@])@([\p{L}\p{N}][\p{L}\p{N}._-]*(?: [\p{L}\p{N}][\p{L}\p{N}._-]*){0,3})/gu)]
+  // case, because `@` preceded by a letter or digit is never an at-word.
+  //
+  // The lookbehind is `\p{L}\p{N}`, not `\w`: `\w` is ASCII-only even under /u, so `наташа@mail.ru`
+  // is not an email to it. That body carries no mention at all, passes the guard, routes to nobody
+  // — and the report tells the sender `Addressed to: @mail.ru`, which is #118 with a reason not to
+  // go looking. The character class in the capture is already Unicode; the exclusion has to match it.
+  const found = [...text.matchAll(/(?<![\p{L}\p{N}_@])@([\p{L}\p{N}][\p{L}\p{N}._-]*(?: [\p{L}\p{N}][\p{L}\p{N}._-]*){0,3})/gu)]
     .map(m => m[1].trim()).filter(Boolean)
   // Deduplicated for the report only — naming the same recipient twice reads as two recipients, and
   // the report is the thing the sender checks before deciding the message went where they meant.

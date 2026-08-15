@@ -58,6 +58,21 @@ section('1. the mention guard — the failure that is silent end to end')
   const email = mentionVerdict('mail me at someone@example.com')
   ok(email.ok === false, 'an email address does not count as an at-word — it names nobody')
 
+  // The ASCII fixture above cannot tell a lookbehind that works from one that works on ASCII, and
+  // the first version of this guard was the second kind: `\w` is ASCII-only even under /u, so a
+  // local part with a non-ASCII letter was not an email to it. Raised in review of #518.
+  const emailUni = mentionVerdict('mail me at café@example.com')
+  ok(emailUni.ok === false, 'an email with a non-ASCII local part is still not an at-word')
+  const emailCyr = mentionVerdict('x@example.com and наташа@mail.ru')
+  ok(emailCyr.ok === false,
+    '…and a body whose only @ is a non-ASCII email is refused, not sent with mail.ru as its recipient')
+
+  // The other direction, because a lookbehind wide enough to exclude every email also excludes every
+  // name: a mention written in the same script must still get through.
+  const named = mentionVerdict('@Наташа — the build is green')
+  ok(named.ok === true && named.mentions[0] === 'Наташа',
+    'a non-ASCII at-word is still a mention — the exclusion is of emails, not of scripts')
+
   const bcast = mentionVerdict('a note for the humans', { broadcast: true })
   ok(bcast.ok === true && bcast.broadcast === true, '--broadcast lets a no-mention body through, marked as a broadcast')
   const bcastNamed = mentionVerdict('@My Dude — hello', { broadcast: true })
