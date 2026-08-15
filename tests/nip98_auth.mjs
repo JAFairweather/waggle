@@ -112,7 +112,11 @@ ok('building without a url is refused, naming why the url matters', /tenant host
 {
   // Each refusal must name the thing to DO about it, not just restate the code.
   const cases = [
-    ['join_policy_required', /--accept-terms/, 'names the flag that fixes it'],
+    // Names the ACT, not a flag. This string is now rendered by the console too (#487), and a
+    // page whose whole purpose is to remove the terminal must not answer a refusal with a
+    // command-line switch. The CLI's own `--accept-terms` line is asserted below, so the flag is
+    // still reachable from the tool — it just is not baked into the shared explanation.
+    ['join_policy_required', /Accept the terms first/, 'names the act that fixes it'],
     ['invite_expired', /Mint a new one/, 'says to mint again'],
     ['invite_exhausted', /uses left/, 'distinguishes exhausted from expired'],
     ['invite_invalid', /another relay/, 'points at the wrong-deployment case, not at expiry'],

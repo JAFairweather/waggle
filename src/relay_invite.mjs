@@ -32,8 +32,11 @@ export const SIGN_TIMEOUT_MS = 45_000
 export const MAX_SIGN_SKEW_SECS = 45
 
 const REFUSALS = {
+  // Names the ACT, not a flag. This string is rendered by the console too, and a page whose whole
+  // purpose is to remove the terminal must not answer a refusal with a command-line switch. The
+  // tool prints its own `--accept-terms` line next to this one, so the CLI loses nothing.
   join_policy_required: 'this deployment has a join policy and the claim carried no receipt.\n' +
-    '  Re-run with --accept-terms (and --confirm-age if the policy requires attestation).',
+    '  Accept the terms first — and attest age where the policy requires it.',
   invite_expired: 'the invite code has expired. Mint a new one.',
   invite_exhausted: 'the invite code has no uses left. Mint a new one, or raise --uses next time.',
   invite_invalid: 'the relay does not recognise this invite code. Check the code file is the one\n' +
