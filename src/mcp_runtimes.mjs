@@ -235,10 +235,23 @@ export const runtime = id => RUNTIMES.find(r => r.id === id) || null
  * Nothing secret goes in here and nothing secret may be added: this object is rendered into a
  * paste block and into an operator's config file. Paths and public values only.
  */
-export function channelStanza({ agent, command, args = [], instanceRoot }) {
+export function channelStanza({ agent, command, args = [], instanceRoot, verbatim = false }) {
   const a = String(agent || '').toLowerCase()
   if (!a) throw new Error('channelStanza needs an agent name')
   if (!command) throw new Error('channelStanza needs the command that launches the channel')
+  // `verbatim` is for the ssh form (#472), and both halves of it are load-bearing.
+  //
+  // `--instance` after an ssh target is not an argument to anything local — everything past the
+  // target is the REMOTE command. On a forced-command entry it lands in `SSH_ORIGINAL_COMMAND`;
+  // without one, ssh tries to exec `--instance <agent>` on the broker. The instance is selected by
+  // which key authenticates, not by a flag.
+  //
+  // `env` is set in the LOCAL process. ssh does not forward it — no `SendEnv` here — so
+  // `NVOY_INSTANCE_ROOT` reaches nothing on the far side and only makes the stanza differ from the
+  // registration that actually works.
+  //
+  // The live `nvoy-mc-claude` entry carries neither: 18 args ending at the target, and `env: {}`.
+  if (verbatim) return { server: `${NVOY}-${a}`, command: String(command), args: args.map(String), env: {} }
   return {
     server: `${NVOY}-${a}`,
     command: String(command),
