@@ -51,6 +51,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { LANES, boundIdentity, installState, renderState } from '../src/agent_install_state.mjs'
 import { exportTemplate, importTemplate } from '../src/agent_manifest_transfer.mjs'
 import { channelCommand, credentialPaths, credentialReport, registeredForm, sameVector } from '../src/channel_registration.mjs'
@@ -76,6 +77,11 @@ if (!acceptableName(name)) die(usageLine())
 const CHECK = has('--check')
 const ROOT = flag('--root') || join(homedir(), '.nvoy', 'desktop')
 const HERE = join(ROOT, name)
+// The checkout this tool is running out of, so the startup document can name its commands by a path
+// that resolves from the agent's cwd rather than from ours — the agent's cwd is HERE, and HERE has
+// no `tools/` (#524). Derived rather than configured: this file's own location is the one thing that
+// cannot be stale, and an operator who has to supply a path can supply the wrong one.
+const REPO = dirname(dirname(fileURLToPath(import.meta.url)))
 const pubkey = flag('--pubkey').toLowerCase()
 const owner = flag('--owner').toLowerCase()
 const from = flag('--from')
@@ -566,7 +572,7 @@ if (has('--startup')) {
         // Passed through when the operator supplies it, and left undefined otherwise so the
         // document prints the caveat rather than a command that exits 3 (#514 review).
         bridge: flag('--bridge') || process.env.WAGGLE_BRIDGE_PUBKEY || undefined,
-        runtimeLabel: rt.label, report,
+        runtimeLabel: rt.label, repo: REPO, report,
       })
     } catch (e) { die(e.message) }
     if (has('--print')) console.log(body.split('\n').map(l => `  | ${l}`).join('\n'))
