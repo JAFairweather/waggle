@@ -92,18 +92,12 @@ import { verifyEvent, nip19 } from 'nostr-tools'
 import { consoleSigner } from './signer-session.mjs'
 import { newestFreshControlState, requireFreshControlState } from './control-state-freshness.mjs'
 import { loadBridgeKey, rememberBridgeKey } from './bridge-key-store.mjs'
+import { STATUSES, statusLabel } from './agent-roster.mjs'
 
 const RELAYS = ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub', 'wss://jskitty.com/nostr']
-// WIRE values. These are what the bridge signs into its control state and what `validState`
-// checks against — they do not move, ever, and a rename here is a protocol change wearing a
-// copy change's clothes. What a person reads is STATUS_LABEL, below.
-const STATUSES = ['admitted', 'paused', 'revoked']
-// What each status READS as (#348). `revoked → withdrawn` was already special-cased inline at the
-// one render site; the rest of the vocabulary now joins it here rather than a second surface
-// growing its own private translation. An unlisted status renders as its raw wire value — a state
-// this page has never heard of must LOOK unfamiliar rather than borrow a friendly word.
-const STATUS_LABEL = { admitted: 'in', paused: 'paused', revoked: 'removed' }
-const statusLabel = s => STATUS_LABEL[s] || s
+// WIRE values and what a person reads, both from the module that owns them (#413). They used to be
+// declared here; the task-route picker on Config needs the same vocabulary, and two translations of
+// one wire value drift in exactly the direction where `revoked` reads as something reassuring.
 const $ = id => document.getElementById(id)
 const hex = v => { const s = String(v || '').trim(); if (/^npub1/i.test(s)) return nip19.decode(s).data; if (/^[0-9a-f]{64}$/i.test(s)) return s.toLowerCase(); throw Error('Enter one npub or a 64-character hex public key.') }
 const npub = k => { try { return nip19.npubEncode(k) } catch { return k } }
