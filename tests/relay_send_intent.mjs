@@ -47,6 +47,14 @@ section('1. the mention guard — the failure that is silent end to end')
   ok(!/whole thing/.test(prose.mentions[0]), '…and the mention span does not run off to the end of the body')
   ok(prose.mentions[0].split(' ').length <= 4, '…the span is bounded, so an over-capture stays recognisable as one')
 
+  // Found on the first live send: a body that names someone once and quotes them again in an example
+  // reported "@My Dude, @My Dude", which reads as two recipients. Report-level only — the bridge
+  // resolves the body, so the quoted at-word is still routed. Both halves asserted.
+  const twice = mentionVerdict('@My Dude — the matcher broke on `@My Dude @Dennis` last week')
+  ok(twice.mentions.filter(m => m === 'My Dude').length === 1, 'a name said twice is reported once')
+  ok(twice.mentions.includes('Dennis'),
+    '…and deduping does not drop a second, different name — an at-word quoted as an example is still routed')
+
   const email = mentionVerdict('mail me at someone@example.com')
   ok(email.ok === false, 'an email address does not count as an at-word — it names nobody')
 
