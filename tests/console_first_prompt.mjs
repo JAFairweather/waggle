@@ -90,9 +90,23 @@ const MATRIX = [
     'dm-relays': MISSING, 'admit-grant': PRESENT, profile: MISSING }) } }],
   ['exactly one open row — the singular "is", not "are"', { report: { rows: rows({
     'bunker-uri': PRESENT, 'admit-grant': MISSING }) } }],
+  // The console's own shape: it can observe exactly one row and never the other eight. This is the
+  // report the page renders on EVERY connect, so it is the one the two copies most need to agree on.
+  ['the console shape — one observed row, eight never checked', { report: { rows: rows({
+    'bunker-uri': UNKNOWN, 'bunker-client': UNKNOWN, 'signer-identity': UNKNOWN, 'dm-relays': UNKNOWN,
+    'admit-grant': PRESENT, 'mcp-registration': UNKNOWN, 'mcp-exclusive': UNKNOWN,
+    'mcp-identity': UNKNOWN, profile: UNKNOWN }) } }],
+  ['every row UNKNOWN — nothing observed at all', { report: { rows: rows({
+    'bunker-uri': UNKNOWN, 'admit-grant': UNKNOWN, profile: UNKNOWN }) } }],
   ['no report at all — the "nothing here is confirmed" tail', {}],
   ['an empty rows array — the case that satisfies BOTH filters', { report: { rows: [] } }],
   ['no runtime label, no channel, no pubkey', { report: { rows: rows({ 'admit-grant': PRESENT }) } }],
+  // Every non-default parameter at once. Two mutations survived the first battery — a twin that
+  // ignored `briefPath`, and one with the `!agent` guard removed — and both survived for the same
+  // reason: no fixture passed the parameter, so no assertion could see it drop. This closes the
+  // class rather than those two instances. `writtenBy` is the third defect of this shape.
+  ['every non-default parameter supplied at once', { briefPath: 'docs/OTHER_BRIEF.md',
+    writtenBy: 'a fixture, deliberately,', report: { rows: rows({ 'admit-grant': PRESENT }) } }],
 ]
 
 for (const [what, extra] of MATRIX) {
@@ -103,6 +117,19 @@ for (const [what, extra] of MATRIX) {
   if (what.startsWith('no runtime label')) { delete args.runtimeLabel; delete args.channel; delete args.pubkey }
   const a = node.startupDoc(args), b = web.startupDoc(args)
   check(a === b, `${what} — the two copies render the same ${a.length} bytes`)
+}
+
+// Byte-identity is blind to a parameter BOTH copies ignore — two twins that dropped `briefPath`
+// agree perfectly. So each non-default parameter is also asserted to reach the output, in both
+// directions: the value appears, and the default it replaced does not.
+for (const copy of [['node', node], ['browser', web]]) {
+  const [label, mod] = copy
+  const doc = mod.startupDoc({ agent: 'Pi Agent', briefPath: 'docs/OTHER_BRIEF.md', report: { rows: [] } })
+  check(doc.includes('docs/OTHER_BRIEF.md') && !doc.includes('docs/AGENT_BRIEF.md'),
+    `the ${label} copy renders the briefPath it was GIVEN, and drops the default it replaced`)
+  let threw = null
+  try { mod.startupDoc({ report: { rows: [] } }) } catch (e) { threw = e.message }
+  check(threw !== null, `  …and the ${label} copy refuses to render a document with no agent name`)
 }
 
 // A property the byte-comparison alone cannot state: that the comparison is comparing something.
@@ -177,6 +204,77 @@ check(/id="handoff-copy"/.test(page), 'there is a copy button, since the operato
 // not write the paste.
 check(/writtenBy:\s*'[^']*console/.test(page),
   'and the page NAMES ITSELF as the author rather than inheriting `connect-agent --startup`')
+
+// The twin binding renders `startupDoc` against `startupDoc`, so it is blind to what the page HANDS
+// it. `channel:` shipped reading `owner-key` — a 64-hex pubkey rendered under "Your channel", which
+// `connect-agent --channel` refuses as a type and which contradicts the UUID the same agent has on
+// disk. Nothing above could see it, because every assertion so far drives the renderer and none
+// drives the call site.
+const callSite = /startupDoc\(\{([\s\S]*?)\n\s*\}\)/.exec(page)
+check(callSite, 'the handoff is built by a `startupDoc({…})` call this suite can read')
+const argOf = field => new RegExp(`^\\s*${field}:.*$`, 'm').exec(callSite?.[1] || '')?.[0] || ''
+check(/\$\('channel-id'\)/.test(argOf('channel')),
+  '  …and `channel` is taken from the channel-id field, the one holding the UUID')
+check(!/owner-key/.test(argOf('channel')),
+  "  …and NOT from owner-key — the owner's pubkey is not this agent's channel")
+// Positive control. Without it the two assertions above are satisfied by a page that reads
+// `channel-id` into every field, which would be a different way to render the wrong document.
+check(/\$\('agent-key'\)/.test(argOf('pubkey')) && !/channel-id/.test(argOf('pubkey')),
+  "  …while `pubkey` still comes from agent-key, so the fields are not all reading one input")
+
+// ------------------------------------------------------------------------------------------
+console.log('\n7. the never-checked rows collapse, and the alarm stays variable')
+// The console can observe one row and never the other eight, so it rendered eight identical
+// never-checked lines and a "8 of these are not confirmed" alarm on EVERY connect — including a
+// perfect install. A constant is not a signal; an alarm that always fires and one that never fires
+// fail identically. Both directions are asserted below, because "collapse the rows" done wrong is
+// indistinguishable from "stop reporting them".
+const consoleShape = node.startupDoc({ agent: 'Pi Agent', pubkey: PUB, report: { rows: rows({
+  'bunker-uri': UNKNOWN, 'bunker-client': UNKNOWN, 'signer-identity': UNKNOWN, 'dm-relays': UNKNOWN,
+  'admit-grant': PRESENT, 'mcp-registration': UNKNOWN, 'mcp-exclusive': UNKNOWN,
+  'mcp-identity': UNKNOWN, profile: UNKNOWN }) } })
+check(!/\*\*\d+ of these (is|are) not confirmed\.\*\*/.test(consoleShape),
+  'the alarm does NOT fire when the only non-PRESENT rows are ones nothing looked at')
+check(/8 further artifacts were never checked/.test(consoleShape),
+  '  …and the eight are still reported, as one line that says never checked')
+// Per-row bullets are what the eight lines were. The phrase itself legitimately appears once more
+// in the invariant text, where a sentence renders one row's state inline — so count the BULLETS,
+// not the phrase, or this assertion measures the wrong thing.
+check(consoleShape.split('\n').filter(l => /^- .*never checked — do not assume either way\.?$/.test(l)).length === 0,
+  '  …with no per-row never-checked bullet left behind')
+check(consoleShape.split('\n').filter(l => /further artifacts? w(as|ere) never checked/.test(l)).length === 1,
+  '  …and exactly one collapsed line, not one per row')
+check((consoleShape.match(/connect-agent --check/g) || []).length === 1,
+  '  …and the remedy once, not eight times')
+// Nothing may be lost in the collapse: an agent has to be able to name what was not checked.
+for (const k of ['bunker-uri', 'dm-relays', 'mcp-identity', 'profile']) {
+  check(consoleShape.includes(k), `  …and still names ${k} by title, so the collapse loses no artifact`)
+}
+check(/admit-grant: confirmed/.test(consoleShape),
+  '  …while the one row the console DID observe still renders in full')
+check(!/Every artifact above is confirmed/.test(consoleShape),
+  'and it never claims everything above is confirmed while a never-checked line sits above')
+
+// POSITIVE CONTROL, the direction that matters most. Same shape, one row that was actually looked
+// at and found MISSING: the alarm must fire. Without this the assertions above are satisfied by a
+// document that has simply stopped warning about anything.
+const realNegative = node.startupDoc({ agent: 'Pi Agent', pubkey: PUB, report: { rows: rows({
+  'bunker-uri': UNKNOWN, 'bunker-client': UNKNOWN, 'signer-identity': UNKNOWN, 'dm-relays': MISSING,
+  'admit-grant': PRESENT, 'mcp-registration': UNKNOWN, 'mcp-exclusive': UNKNOWN,
+  'mcp-identity': UNKNOWN, profile: UNKNOWN }) } })
+check(/\*\*1 of these is not confirmed\.\*\*/.test(realNegative),
+  'POSITIVE CONTROL — one row observed MISSING and the alarm fires, counting that row alone')
+check(/7 further artifacts were never checked/.test(realNegative),
+  '  …with the seven never-checked ones counted separately, not folded into the alarm')
+check(realNegative.includes('nothing can reach you'),
+  '  …and the dm-relays consequence is still spelled out where it applies')
+
+// The size claim the change was made for, measured rather than asserted in prose. The block those
+// eight rows occupy was ~1,100 bytes; the collapsed form is the two lines between the observed row
+// and the blank line that follows. A ceiling here fails if someone re-expands it one row at a time.
+const block = consoleShape.split('\n').filter(l => /never checked|connect-agent --check/.test(l)).join('\n')
+check(block.length > 0 && block.length < 400,
+  `NEVER-CHECKED BLOCK is ${block.length} bytes, down from ~1,100 — and non-empty, so this is measuring something`)
 
 console.log(`\n${pass} passed, ${fail} failed`)
 assert.equal(fail, 0, `${fail} assertion(s) failed`)

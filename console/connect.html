@@ -560,7 +560,13 @@ function renderHandoff(allLanded, proven) {
     $('handoff').textContent = startupDoc({
       agent: name,
       pubkey: toHex($('agent-key').value) || undefined,
-      channel: toHex($('owner-key').value) || undefined,
+      // The channel is a UUID, and it lives in `channel-id` — the field lines 362, 372 and 413
+      // already read. This line once reached for `owner-key`, which put the owner's 64-hex pubkey
+      // under "Your channel" and gave one agent two accounts of itself: the UUID that
+      // `connect-agent --startup` writes on disk, and the owner's key in the paste. §6 asserts the
+      // call site passes this field, because the twin binding renders doc against doc and cannot
+      // see a wrong argument.
+      channel: $('channel-id').value.trim().toLowerCase() || undefined,
       report,
       // Say who actually wrote it. The default names `connect-agent --startup`, which did not
       // write this one — and an agent told to "regenerate it" by a command that was never run

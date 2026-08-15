@@ -96,8 +96,20 @@ export function startupDoc({ agent, pubkey, channel, runtimeLabel, briefPath = '
   // sentence rendered from a row whose row the reader never sees is a sentence they cannot check.
   const DEPENDS_ON = ['bunker-uri', 'bunker-client', 'signer-identity', 'dm-relays', 'admit-grant',
     'mcp-registration', 'mcp-exclusive', 'mcp-identity', 'profile']
-  const state = DEPENDS_ON.map(say).filter(Boolean)
-  const open = rows.filter(r => DEPENDS_ON.includes(r.key) && r.state !== PRESENT)
+  // Observed and never-checked are rendered differently, because they are different facts and the
+  // console emits eight of the second kind on every connect. Eight identical never-checked lines
+  // carrying the same remedy eight times is ~1.1KB at the top of the agent's context window, and it
+  // buried `admit-grant` — the one row the console is entitled to speak to — in the middle of them.
+  // Collapsed to a single line that still says never-checked, never says fine.
+  const inScope = key => DEPENDS_ON.includes(key)
+  const observed = rows.filter(r => inScope(r.key) && r.state !== UNKNOWN)
+  const neverChecked = DEPENDS_ON.filter(k => row(k)?.state === UNKNOWN)
+  const state = DEPENDS_ON.filter(k => row(k) && row(k).state !== UNKNOWN).map(say).filter(Boolean)
+  // `open` counts only rows something actually looked at. It once counted the never-checked ones
+  // too, which made the alarm below a constant on the console path — it fired on every connect,
+  // including a perfect one, because the page can never observe those eight. An alarm that always
+  // fires and one that never fires fail identically.
+  const open = observed.filter(r => r.state !== PRESENT)
 
   const out = []
   out.push(`# ${agent} — you are a participant in a waggle-bridged community`)
@@ -148,7 +160,15 @@ export function startupDoc({ agent, pubkey, channel, runtimeLabel, briefPath = '
   out.push('')
   out.push('## Before you speak, know what is actually true')
   out.push('')
-  if (state.length) { for (const s of state) out.push(`- ${s}`) } else out.push('- (no install state was supplied — nothing here is confirmed)')
+  if (state.length) { for (const s of state) out.push(`- ${s}`) }
+  else if (!neverChecked.length) out.push('- (no install state was supplied — nothing here is confirmed)')
+  if (neverChecked.length) {
+    const titles = neverChecked.map(k => row(k).title).join(', ')
+    out.push(`- **${neverChecked.length} further artifact${neverChecked.length === 1 ? ' was' : 's were'} never checked` +
+      ` — do not assume either way:** ${titles}.`)
+    out.push(`  Whatever wrote this could not observe ${neverChecked.length === 1 ? 'it' : 'them'};` +
+      ` run \`connect-agent --check\` on the agent's own machine to settle ${neverChecked.length === 1 ? 'it' : 'them'}.`)
+  }
   out.push('')
   if (open.length) {
     out.push(`**${open.length} of these ${open.length === 1 ? 'is' : 'are'} not confirmed.** Anything depending on ${open.length === 1 ? 'it' : 'them'} will fail in the`)
@@ -156,11 +176,13 @@ export function startupDoc({ agent, pubkey, channel, runtimeLabel, briefPath = '
     out.push(`your inbound relay list is not published, **nothing can reach you** — an agent once spent`)
     out.push(`a day posting successfully while structurally unable to receive a single message, and`)
     out.push(`only the bridge's own journal knew.`)
-  } else if (state.length) {
+  } else if (state.length && !neverChecked.length) {
     // `state.length` is load-bearing, not tidiness. `state` and `open` are two filters over the same
     // rows, and EMPTY rows satisfies both: zero rows means zero non-PRESENT rows. Without this guard
     // a document with no install state said "nothing here is confirmed" and "every artifact above is
     // confirmed" twenty lines apart — rule 2 broken inside the function that enforces rule 2.
+    // `!neverChecked.length` is the same defect one collapse later: "every artifact above" would
+    // now be claiming the collapsed never-checked line too.
     out.push(`Every artifact above is confirmed. That is a statement about what was checked, not a`)
     out.push(`promise about the network — prove a publish by fetching it back from a fresh connection.`)
   }
