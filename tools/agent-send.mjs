@@ -38,7 +38,10 @@ const dry = has('--dry-run')
 
 const base = loadNostrSigner()
 if (!base) die('no signer configured — set WAGGLE_BUNKER_URI_FILE and WAGGLE_NIP46_CLIENT_NSEC_FILE, or BUZZ_PRIVATE_KEY')
-const signer = withPinnedCustody(base, flag('--expect'))
+// --expect takes the full 64-hex key, not the 8-char prefix everyone reads keys by. Getting that
+// wrong is the likeliest way to invoke this tool, and a stack trace is not a refusal anyone acts on.
+let signer
+try { signer = withPinnedCustody(base, flag('--expect')) } catch (e) { die(`--expect ${String(e?.message || e)} — pass the full key, not the 8-character prefix`, 1) }
 
 const body = await new Promise(resolve => {
   let s = ''
