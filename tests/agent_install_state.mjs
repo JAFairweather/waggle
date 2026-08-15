@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { npubEncode, decode as nip19decode } from 'nostr-tools/nip19'
-import { installState, renderState, foreignNvoyServers, boundIdentity, ARTIFACTS, ARTIFACT_KEYS, NEVER_CHECKED, NEVER_VERIFIED, PRESENT, UNVERIFIED, MISSING, UNKNOWN }
+import { installState, renderState, foreignNvoyServers, boundIdentity, ARTIFACTS, ARTIFACT_KEYS, LANES, NEVER_CHECKED, NEVER_VERIFIED, NOT_APPLICABLE, PRESENT, UNVERIFIED, MISSING, UNKNOWN }
   from '../src/agent_install_state.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -570,6 +570,164 @@ check(ARTIFACTS.some(a => a.blocking) && ARTIFACTS.some(a => !a.blocking),
     'and a missing row is never at the ceiling — something is absent and can be created')
   check(installState(complete).atCeiling === false,
     'and a report with nothing outstanding is not "the best available" — it is complete')
+}
+
+// ── The participation lane (#513) ────────────────────────────────────────────────────────────
+//
+// Two ways to participate, and until this the model could describe only one. Seven rows reach an
+// ssh channel on the broker box; a sealed-lane agent authenticates to the bridge by signature and
+// needs none of them — so `--check` told an agent onboarded exactly as the design describes that
+// it could not run, and exited 1 saying so.
+//
+// The whole risk of the fix is in the other direction. A scope that excuses a row is one line from
+// a scope that excuses every row, and both look like a suite that went green.
+{
+  const brokerKeys = ARTIFACTS.filter(a => a.lanes?.length === 1 && a.lanes[0] === 'broker').map(a => a.key)
+  check(brokerKeys.length === 7, `seven rows are scoped to the broker lane (found ${brokerKeys.length})`)
+  check(ARTIFACTS.filter(a => !a.lanes).length > 0,
+    'and most rows are scoped to no lane at all, which means every lane needs them')
+  check(Object.keys(LANES).sort().join(',') === 'broker,sealed', 'two lanes, named')
+
+  // The tool's own observations: everything found and verified, so nothing here is MISSING for a
+  // reason other than the lane. That isolates the property — any refusal below is the scope.
+  const sealed = installState(complete, { lane: 'sealed' })
+
+  // 1. Scoped out, and NOT to `present`. This is the whole bullet the issue leads with: "satisfied"
+  //    and "never asked for" are different reasons for a row not to be a problem, and a model that
+  //    spells them the same way is how a genuinely missing credential reads green.
+  check(brokerKeys.every(k => sealed.rows.find(r => r.key === k).state === NOT_APPLICABLE),
+    'a sealed-lane agent reports all seven broker rows NOT-APPLICABLE')
+  check(brokerKeys.every(k => sealed.rows.find(r => r.key === k).state !== PRESENT),
+    '  …and not one of them as PRESENT — "did not apply" is never "satisfied"')
+  check(!sealed.notApplicable.some(k => sealed.missing.includes(k) || sealed.unverified.includes(k) || sealed.unknown.includes(k)),
+    '  …and a scoped-out row appears in exactly one bucket, so no count double-reports it')
+  check(sealed.counts.present === Object.keys(complete).length - brokerKeys.length,
+    '  …and the present count drops by exactly seven — the rows left the tally, they were not renamed into it')
+
+  // 2. The row still exists and still says so. Dropping the seven rows from the render would be the
+  //    same defect one layer out: the reader cannot audit a scope they cannot see.
+  const shown = renderState(sealed)
+  check(brokerKeys.every(k => shown.includes(ARTIFACTS.find(a => a.key === k).title)),
+    'the seven are still printed, so the scope is auditable rather than invisible')
+  check(!/\[ok \] The broker's host key/.test(shown) && /\[n\/a\] The broker's host key/.test(shown),
+    '  …with their own glyph, never a tick')
+  check(/7 rows did not apply to the sealed lane/.test(sealed.headline) && /not the same as satisfied/.test(sealed.headline),
+    '  …and the headline says how many were skipped, and that skipped is not satisfied')
+
+  // 3. The point of the change: this agent is no longer told it cannot run.
+  check(sealed.exitCode !== 1 && sealed.outcome !== 'incomplete',
+    'a sealed-lane agent with its own artifacts in place is NOT told "this agent cannot run"')
+
+  // 4. BOTH DIRECTIONS. The same fully-installed observations, minus the broker artifacts, must
+  //    still refuse on the broker lane. A gate that passes everything and one that passes the right
+  //    things fail identically, and this is the assertion that tells them apart.
+  const withoutBroker = { ...complete }
+  for (const k of brokerKeys) withoutBroker[k] = { found: false }
+  const asBroker = installState(withoutBroker, { lane: 'broker' })
+  check(asBroker.exitCode === 1 && asBroker.outcome === 'incomplete',
+    'BOTH DIRECTIONS — a BROKER-lane agent with no broker artifacts still cannot run')
+  check(asBroker.missing.length === brokerKeys.length && brokerKeys.every(k => asBroker.missing.includes(k)),
+    '  …and it names all seven, rather than refusing for some other reason')
+  check(installState(withoutBroker, { lane: 'sealed' }).exitCode !== 1,
+    '  …and the SAME observations pass on the sealed lane — the lane is what differs, not the box')
+
+  // 5. Undeclared is not sealed. The second bullet of the issue, and the one that could silently
+  //    turn this whole file permissive: a default of "assume the lane with fewer requirements" is
+  //    reached by deleting one `||` and looks exactly like this test passing.
+  const undeclared = installState(withoutBroker)
+  check(undeclared.exitCode === 1 && brokerKeys.every(k => undeclared.missing.includes(k)),
+    'an UNDECLARED lane keeps every broker row required — silence is not a declaration')
+  check(undeclared.notApplicable.length === 0,
+    '  …and scopes nothing out at all')
+  // The tool sets this row from the flag, so no flag means no observation. Asserted with the
+  // observation removed rather than on `withoutBroker`, which declares every key satisfied.
+  const { lane: _dropped, ...noLaneObserved } = withoutBroker
+  check(installState(noLaneObserved).rows.find(r => r.key === 'lane').state === UNKNOWN,
+    '  …and the lane row itself reads UNKNOWN, so the reader can see the declaration is absent')
+  check(installState(complete).atCeiling === false,
+    '  …and an undeclared agent is never "at the ceiling" — declaring the lane is a thing to do here')
+
+  // 6. A lane name this build does not know is not a declaration either. Same failure mode as 5,
+  //    reached by a typo rather than by omission.
+  const typo = installState(withoutBroker, { lane: 'sealled' })
+  check(typo.exitCode === 1 && typo.notApplicable.length === 0 && typo.lane === null,
+    'an unrecognised lane name excuses nothing — `sealled` is not `sealed`')
+  for (const bad of [null, undefined, '', 'toString', '__proto__', 'constructor', true, 0, {}, ['sealed']]) {
+    if (installState(withoutBroker, { lane: bad }).notApplicable.length !== 0) {
+      check(false, `  …and neither does ${JSON.stringify(bad) ?? String(bad)} — inherited Object keys are not lanes`)
+    }
+  }
+  check(true, '  …and neither do null, empty, a boolean, an array, or an inherited Object property name')
+
+  // 7. The ceiling still means what it meant. A sealed-lane agent whose only outstanding rows are
+  //    ones this build never checks has reached the best answer available here — which is exit 3,
+  //    not exit 0. Exit 0 stays unreachable (#492) and this change does not alter that.
+  const atCeiling = installState(
+    Object.fromEntries(ARTIFACT_KEYS.map(k => [k,
+      k in NEVER_CHECKED ? { found: null } : k in NEVER_VERIFIED ? { found: true } : { found: true, verified: true }])),
+    { lane: 'sealed' })
+  check(atCeiling.exitCode === 3 && atCeiling.atCeiling === true,
+    'a fully-installed sealed-lane agent reaches exit 3 AT THE CEILING — the best this build can report')
+  check(atCeiling.outcome !== 'complete',
+    '  …and never exit 0, which is still unreachable by construction (#492)')
+}
+
+// ── …and the tool declares it, refuses a bad one, and mints no broker key without it ──────────
+{
+  const src = readFileSync(join(ROOT, 'tools', 'connect-agent.mjs'), 'utf8')
+  if (src.length < 2000) {
+    console.error(`agent_install_state: INCONCLUSIVE — connect-agent.mjs read back only ${src.length} bytes`)
+    process.exit(3)
+  }
+  check(/installState\(obs,\s*\{\s*lane\s*\}\)/.test(src),
+    'the tool passes the declared lane to installState — a flag it parses and drops changes nothing')
+  // Key material created "just in case" is key material nobody is tracking, and a sealed-lane agent
+  // has no broker to present an ssh key to.
+  check(/!CHECK && !STARTUP_ONLY && !SEALED/.test(src),
+    'and it mints no channel keypair on the sealed lane')
+
+  const probeRoot = mkdtempSync(join(tmpdir(), 'wb-lane-probe-'))
+  const run = args => {
+    try {
+      return { out: execFileSync(process.execPath, [join(ROOT, 'tools', 'connect-agent.mjs'), ...args],
+        { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'] }), code: 0 }
+    } catch (e) {
+      if (e?.signal || e?.code === 'ETIMEDOUT') return null
+      return { out: `${typeof e?.stdout === 'string' ? e.stdout : ''}${typeof e?.stderr === 'string' ? e.stderr : ''}`, code: e?.status ?? null }
+    }
+  }
+  const base = ['--name', 'probe', '--check', '--root', probeRoot]
+
+  // Assert the REASON, not only the refusal. `!ok` cannot tell a correct refusal from a correct
+  // refusal that sends the operator somewhere useless, and the remedy here is the list of lanes.
+  const bad = run([...base, '--lane', 'sealled'])
+  if (bad === null || !bad.out) {
+    console.error('agent_install_state: INCONCLUSIVE — connect-agent.mjs never ran for the --lane refusal')
+    rmSync(probeRoot, { recursive: true, force: true }); process.exit(3)
+  }
+  check(bad.code === 1 && /--lane must be one of: sealed, broker/.test(bad.out),
+    'the tool refuses an unknown --lane and names the ones it takes')
+  check(!/Declared participation lane/.test(bad.out),
+    '  …and refuses before rendering a report, so a typo cannot look like a run')
+
+  const live = run([...base, '--lane', 'sealed'])
+  if (live === null || !live.out || live.out.length < 500) {
+    console.error(`agent_install_state: INCONCLUSIVE — --lane sealed produced ${live?.out?.length ?? 0} bytes`)
+    console.error('  This is NOT an all-clear: the tool was never observed reporting anything.')
+    rmSync(probeRoot, { recursive: true, force: true }); process.exit(3)
+  }
+  check(/\[ok \] Declared participation lane/.test(live.out) && /sealed —/.test(live.out),
+    'a live --lane sealed run reports the declaration as its own row')
+  check((live.out.match(/\[n\/a\]/g) || []).length === 7,
+    '  …and renders exactly seven n/a rows')
+  const undeclaredRun = run(base)
+  if (undeclaredRun === null || !undeclaredRun.out || undeclaredRun.out.length < 500) {
+    console.error('agent_install_state: INCONCLUSIVE — the undeclared control never produced a report')
+    rmSync(probeRoot, { recursive: true, force: true }); process.exit(3)
+  }
+  check(!/\[n\/a\]/.test(undeclaredRun.out) && /no --lane given/.test(undeclaredRun.out),
+    'BOTH DIRECTIONS — the same run with no --lane scopes nothing out, and says why')
+  rmSync(probeRoot, { recursive: true, force: true })
 }
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)

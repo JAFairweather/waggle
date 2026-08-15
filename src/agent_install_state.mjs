@@ -14,6 +14,16 @@
 //   missing     — something looked, and it is not there
 //   unknown     — nothing looked. NOT the same as missing.
 //
+// And one more that is not an observation at all:
+//
+//   not-applicable — this agent's declared lane never needed it. NOT the same as satisfied.
+//
+// The lane (#513) exists because there are two ways to participate and this model could describe
+// only one of them. Seven of the rows below reach an ssh channel on the broker box; an agent on
+// the sealed lane authenticates to the bridge by signature and needs none of them. Until it could
+// say so, `--check` told a correctly-onboarded agent it could not run — a wrong answer given
+// confidently, which is the failure this file was written to prevent.
+//
 // The fourth state was added after the first version reported two artifacts as `missing` that it
 // had never examined. That is the same false confidence pointing the other way, and it is worse
 // than it sounds: "missing" sends an operator to create a thing that may already exist, and for a
@@ -35,11 +45,35 @@ export const PRESENT = 'present'
 export const UNVERIFIED = 'unverified'
 export const MISSING = 'missing'
 export const UNKNOWN = 'unknown'
+// A fifth state, and the only one that is not an observation (#513). The four above answer "what
+// did we see?"; this one answers "was this ever this agent's step?" — and it must never be spelled
+// `present`, because "satisfied" and "did not apply" are different reasons for a row not being a
+// problem, and only one of them means the artifact exists. Collapsing them is how a genuinely
+// missing credential reads as a green row.
+export const NOT_APPLICABLE = 'not-applicable'
+
+// How this agent participates. A DECLARATION, not an observation — and until #513 there was no way
+// to make it, so the model could only describe the broker lane. An agent onboarded exactly as the
+// design describes was told, with confidence, that it could not run.
+export const LANES = Object.freeze({
+  sealed: 'seal to the bridge, and the bridge seals back — authenticated by signature, on no other box',
+  broker: 'an MCP server reached over ssh, on the broker box',
+})
 
 // The artifacts, in the order they must be satisfied. `blocking` marks the ones without which the
 // agent cannot function at all — as opposed to the ones without which it merely has no name.
 // Both matter; conflating them is how "it works" and "it is finished" became the same claim.
+//
+// `lanes` scopes a row to the lanes that need it. A row WITHOUT `lanes` is needed by every lane:
+// the default is the demanding one on purpose, so adding a lane later cannot quietly excuse an
+// artifact that nobody remembered to scope.
 export const ARTIFACTS = [
+  // First, because it governs every row beneath it. Non-blocking on purpose: an agent that has not
+  // said how it participates is not broken, it is unexamined, and the honest report for unexamined
+  // is INCONCLUSIVE rather than "cannot run". What it must not do is assume the lane with fewer
+  // requirements and pass.
+  { key: 'lane', title: 'Declared participation lane', blocking: false,
+    why: 'Which lane this agent speaks over, and therefore which artifacts it needs at all. Undeclared is not sealed: the broker rows stay required, because assuming the lane with fewer requirements is how a missing credential reads as satisfied.' },
   { key: 'identity', title: 'Identity key', blocking: true,
     why: 'The key it signs as. Held in the Bunker; this machine never sees it.' },
   { key: 'bunker-uri', title: 'Bunker pairing', blocking: true,
@@ -67,17 +101,20 @@ export const ARTIFACTS = [
     why: 'Six tools read it and none write it. Every field is validated; one bad field refuses the whole runtime.' },
   { key: 'state-dirs', title: 'Runtime directories', blocking: true,
     why: 'Five of them, two with non-default modes. Nothing creates them and nothing lists them.' },
-  { key: 'channel-key', title: 'Channel keypair', blocking: true,
+  // ── Broker-lane only, all seven. Every one of them exists to reach an ssh channel on another
+  // box, and a sealed-lane agent reaches the bridge by signature instead. Two of these were the
+  // rows telling a correctly-onboarded agent it could not run (#513).
+  { key: 'channel-key', title: 'Channel keypair', blocking: true, lanes: ['broker'],
     why: 'The MCP channel transport. Minted at the path the registration names — the two used to disagree, so a fresh agent got a correct stanza pointing at a key nothing had created (#474).' },
   // Its own row, not folded into the keypair. The private half is mintable here; neither of these
   // is, and a green key row beside a missing host key is exactly how a fresh agent reads as ready.
-  { key: 'channel-host-key', title: "The broker's host key", blocking: true,
+  { key: 'channel-host-key', title: "The broker's host key", blocking: true, lanes: ['broker'],
     why: "StrictHostKeyChecking refuses an unknown host, so without this the channel will not connect. It is the broker's host key and comes from the broker doctor on that box — it cannot be minted here, and this tool will never write one." },
-  { key: 'channel-authorized', title: 'The public half is seated on the broker', blocking: true,
+  { key: 'channel-authorized', title: 'The public half is seated on the broker', blocking: true, lanes: ['broker'],
     why: "The other box's authorized_keys, under its forced command. Nothing on this machine can see it, so it is UNKNOWN until an operator confirms it — never assumed from the key existing here." },
-  { key: 'mcp-registration', title: 'Registered as an MCP server', blocking: true,
+  { key: 'mcp-registration', title: 'Registered as an MCP server', blocking: true, lanes: ['broker'],
     why: 'How a new session becomes this agent. Needs the instance root set explicitly; the default path does not exist here.' },
-  { key: 'mcp-exclusive', title: 'No other nvoy server registered', blocking: true,
+  { key: 'mcp-exclusive', title: 'No other nvoy server registered', blocking: true, lanes: ['broker'],
     why: 'Registered is not sole. A generically-named server alongside carries the tools that sign, bound to somebody else.' },
   // #338. Sole is not YOURS. An agent was handed a session whose attached server answered `whoami`
   // with a different agent's identity — it would have read that identity's sealed inbox and posted
@@ -85,9 +122,9 @@ export const ARTIFACTS = [
   // perfectly. The Bunker path has refused this since day one via EXPECT_PUBKEY. The MCP path had
   // no equivalent, so the same class of defect moved one layer up from Pair to Bind and found no
   // guard there.
-  { key: 'mcp-identity', title: 'The server answers as THIS agent', blocking: true,
+  { key: 'mcp-identity', title: 'The server answers as THIS agent', blocking: true, lanes: ['broker'],
     why: 'Registered is not sole, and sole is not yours. Proven by whoami equalling the minted key — never by the registration existing. That proof is a saved capture, not a live signer: it has no freshness and no binding to the session under test, so it passes forever once taken (#462).' },
-  { key: 'channel-answers', title: 'Channel server answers', blocking: true,
+  { key: 'channel-answers', title: 'Channel server answers', blocking: true, lanes: ['broker'],
     why: 'Registered is not running. Proven by initialize + tools/list, not by the registration existing.' },
 ]
 
@@ -100,6 +137,12 @@ export const ARTIFACT_KEYS = ARTIFACTS.map(a => a.key)
 // are hardcoded at their call sites: five report `found: null` and six report `verified: false`, and
 // no branch can move them. `complete` requires zero unknown and zero unverified, so exit 0 is
 // unreachable by construction (#492).
+//
+// The lane does not change that. Declaring `sealed` scopes three of the eleven out — they are the
+// broker's rows — and the remaining eight are still enough to keep exit 0 unreachable. What the
+// lane changes is exit **1**: a sealed-lane agent reaches the ceiling at exit 3 instead of being
+// told it cannot run. That is the whole of #513, and it is worth being exact about, because "the
+// check now passes" is the summary a reader will reach for and it is not what happens.
 //
 // Each of those was a reasonable local decision — "not checked here" is honest — and the aggregate
 // consequence lived in a different file from every one of them. An operator running `--check` to
@@ -153,9 +196,28 @@ export function ceilingReached({ unverified = [], unknown = [], missing = [] } =
  * it work" is the one people skip. Defaulting the skipped case to `present` is how a report
  * becomes a green light for an agent nobody checked.
  */
-export function installState(observations = {}) {
+export function installState(observations = {}, { lane = null } = {}) {
+  // A lane counts as declared only if it is a string naming one we know. An unrecognised name is a
+  // typo or a future lane, and neither may excuse a row: `applies` falls back to "every row
+  // applies", which is the demanding answer. `--lane brokr` must not quietly become `--lane sealed`.
+  //
+  // `typeof === 'string'` is not belt-and-braces. `String(['sealed'])` is `'sealed'`, so without it
+  // a single-element array declares a lane and scopes seven rows out — measured, not reasoned
+  // about. `hasOwnProperty` rather than `in` for the same reason one layer down: `'toString'` is a
+  // property of every object and would otherwise name a lane.
+  const declared = typeof lane === 'string' && Object.prototype.hasOwnProperty.call(LANES, lane) ? lane : null
+  // No `lanes` on a row → every lane needs it. No declared lane → every row applies, because the
+  // permissive reading of silence is the one this whole module exists to refuse.
+  const applies = artifact => !declared || !artifact.lanes || artifact.lanes.includes(declared)
+
   const rows = ARTIFACTS.map(artifact => {
     const seen = observations[artifact.key]
+    // Scoped out before the observation is consulted, and deliberately so: a broker key that
+    // happens to exist on a sealed-lane box has still not been asked for, and reporting it
+    // `present` would put "we have it" and "we never needed it" back in the same cell.
+    if (!applies(artifact)) {
+      return { ...artifact, state: NOT_APPLICABLE, note: `not part of the ${declared} lane` }
+    }
     // An absent observation and an explicit `found: null` both mean nobody looked. Only an
     // explicit `found: false` — someone looked and it was not there — is MISSING.
     let state
@@ -173,6 +235,7 @@ export function installState(observations = {}) {
   const missing = by(MISSING)
   const unverified = by(UNVERIFIED)
   const unknown = by(UNKNOWN)
+  const notApplicable = by(NOT_APPLICABLE)
   const blockingMissing = missing.filter(r => r.blocking)
   const atCeiling = ceilingReached({
     unverified: unverified.map(r => r.key), unknown: unknown.map(r => r.key), missing: missing.map(r => r.key),
@@ -201,13 +264,23 @@ export function installState(observations = {}) {
     outcome = 'complete'; exitCode = 0
     headline = 'Every piece present and observed doing its job.'
   }
+  // Say out loud how many rows were scoped out, and by which lane. A report that quietly stops
+  // asking about seven artifacts is the same shape as a report that quietly passes them — the
+  // reader cannot tell the two apart unless the count is on the page.
+  if (notApplicable.length) {
+    headline += ` ${notApplicable.length} row${notApplicable.length === 1 ? '' : 's'} did not apply to the ${declared} lane and ${notApplicable.length === 1 ? 'was' : 'were'} not checked — that is not the same as satisfied.`
+  }
 
   return {
-    outcome, exitCode, headline, rows, atCeiling,
-    counts: { present: by(PRESENT).length, unverified: unverified.length, missing: missing.length, unknown: unknown.length },
+    outcome, exitCode, headline, rows, atCeiling, lane: declared,
+    counts: {
+      present: by(PRESENT).length, unverified: unverified.length,
+      missing: missing.length, unknown: unknown.length, notApplicable: notApplicable.length,
+    },
     missing: missing.map(r => r.key),
     unverified: unverified.map(r => r.key),
     unknown: unknown.map(r => r.key),
+    notApplicable: notApplicable.map(r => r.key),
   }
 }
 
@@ -346,8 +419,10 @@ function pickKey(value, depth = 0) {
 // unverified row never prints as a tick — the single most likely way this report lies.
 export function renderState(report, { width = 34 } = {}) {
   // UNKNOWN gets its own glyph. Sharing one with MISSING would put "nobody looked" and "it is not
-  // there" back into the same cell, which is the distinction this report exists to keep.
-  const mark = { [PRESENT]: 'ok ', [UNVERIFIED]: ' ? ', [MISSING]: ' x ', [UNKNOWN]: ' - ' }
+  // there" back into the same cell, which is the distinction this report exists to keep. Same
+  // reasoning for NOT_APPLICABLE: it is emphatically not `ok`, and a reader scanning the left
+  // column for ticks must not find one on a row nobody asked about.
+  const mark = { [PRESENT]: 'ok ', [UNVERIFIED]: ' ? ', [MISSING]: ' x ', [UNKNOWN]: ' - ', [NOT_APPLICABLE]: 'n/a' }
   const lines = report.rows.map(r =>
     `[${mark[r.state]}] ${r.title.padEnd(width)} ${r.state === PRESENT ? '' : r.state.toUpperCase()}${r.note ? `  — ${r.note}` : ''}`.trimEnd())
   return [...lines, '', report.headline].join('\n')

@@ -255,7 +255,7 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, brief
     out.push(`- **${neverChecked.length} further artifact${neverChecked.length === 1 ? ' was' : 's were'} never checked` +
       ` — do not assume either way:** ${titles}.`)
     out.push(`  Whatever wrote this could not observe ${neverChecked.length === 1 ? 'it' : 'them'};` +
-      ` run \`connect-agent --check\` on the agent's own machine to settle ${neverChecked.length === 1 ? 'it' : 'them'}.`)
+      ` run \`connect-agent --check --lane sealed\` on the agent's own machine to settle ${neverChecked.length === 1 ? 'it' : 'them'}.`)
   }
   out.push('')
   if (open.length) {
