@@ -29,6 +29,7 @@
 // hard to produce on a real machine. `nip19.decode` is arithmetic over a string and opens nothing,
 // so importing it does not cost that.
 import { nip19 } from 'nostr-tools'
+import { foreignServers, parseClaudeList } from './mcp_runtimes.mjs'
 
 export const PRESENT = 'present'
 export const UNVERIFIED = 'unverified'
@@ -164,20 +165,14 @@ export function installState(observations = {}) {
 // returns names. Passing `null` — the tool could not be run — must reach the UNKNOWN path, never
 // an empty array, because "nothing conflicting" and "I could not look" are the two things this
 // whole module exists to keep apart.
+//
+// The name test and the parse both live in src/mcp_runtimes.mjs now, so Claude Code and Codex
+// cannot answer this question differently, and neither of them can miss `nvoy_other` the way the
+// hyphen-only test here did (#464). This is the `claude mcp list` adapter over them, kept because
+// it is the shape the suite and the tool already speak.
 export function foreignNvoyServers(listOutput, name) {
   if (typeof listOutput !== 'string') return null
-  const mine = `nvoy-${String(name).toLowerCase()}`
-  const found = []
-  for (const line of listOutput.split('\n')) {
-    // `claude mcp list` prints `<server>: <command…> - <status>`. Take only the name.
-    const m = /^([A-Za-z0-9._-]+):/.exec(line.trim())
-    if (!m) continue
-    const server = m[1].toLowerCase()
-    if (server !== 'nvoy' && !server.startsWith('nvoy-')) continue
-    if (server === mine) continue
-    if (!found.includes(server)) found.push(server)
-  }
-  return found
+  return foreignServers(parseClaudeList(listOutput), name)
 }
 
 // Does the registered MCP server answer as the agent we just minted? (#338)
