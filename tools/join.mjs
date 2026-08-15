@@ -32,12 +32,13 @@
 // in memory dies with a dropped connection. It is deleted on exit, on failure, and on signal.
 // It is never printed.
 
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join as joinPath, resolve } from 'node:path'
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44, verifyEvent } from 'nostr-tools'
 import { buildJoinRequest, REQUESTABLE_CAPS } from '../src/join_request.mjs'
 import { readPairingToken, PAIRING_TOKEN_KIND } from '../src/pairing_token.mjs'
+import { seatPlan, timeoutReport, firstTruthy } from '../src/pairing_seat.mjs'
 import { makeBunkerSigner, withPinnedCustody } from '../src/nostr_signer.mjs'
 import { relaySet } from '../src/relays.mjs'
 
@@ -163,11 +164,15 @@ console.log(`join: waiting up to ${waitSecs}s for a pairing token, then burning 
 // before the sealing key is even derived.
 const conversation = (peer) => nip44.v2.utils.getConversationKey(secret, peer)
 
-const listen = (url, deadline) => new Promise(resolve => {
+let refusals = 0
+
+const listen = (url, deadline, reg) => new Promise(resolve => {
   let ws, done = false
-  const fin = (opened) => { if (done) return; done = true; try { ws.close() } catch {} ; resolve(opened) }
+  const fin = (opened) => { if (done) return; done = true; clearTimeout(t); try { ws.close() } catch {} ; resolve(opened) }
   try { ws = new WebSocket(url) } catch { return fin(null) }
   const t = setTimeout(() => fin(null), Math.max(0, deadline - Date.now()))
+  // Another relay got there first: stop waiting on this one rather than sitting on its timer.
+  reg.onCancel(() => fin(null))
   ws.onopen = () => ws.send(JSON.stringify(['REQ', 'pair',
     { kinds: [PAIRING_TOKEN_KIND], '#p': [requestPubkey], since: request.created_at }]))
   ws.onmessage = (m) => {
@@ -187,24 +192,26 @@ const listen = (url, deadline) => new Promise(resolve => {
       // Say it and keep listening. A refused token is not the end of the wait — but a wait that
       // swallowed the reason would look identical to no token ever arriving, and the two need
       // different things from the operator.
+      refusals++
       console.error(`join: a token arrived from the hive and was refused — ${opened.reason}`)
       return
     }
-    clearTimeout(t)
     fin(opened)
   }
   ws.onerror = () => { clearTimeout(t); fin(null) }
 })
 
 const deadline = Date.now() + Math.max(0, Math.min(waitSecs, 3600)) * 1000
-const opened = (await Promise.all(RELAYS.map(u => listen(u, deadline)))).find(Boolean)
+// First relay to deliver wins and the rest are cancelled. `Promise.all` here made the happy path
+// wait out the whole --wait window on the relays that had nothing to say — see `firstTruthy`.
+const opened = await firstTruthy(RELAYS.map(u => reg => listen(u, deadline, reg)))
 
 if (!opened) {
   burn()
-  console.log('join: no pairing token arrived before the deadline. The request key is burned, so a')
-  console.log('      token sealed to it now can never be opened — ask the owner to approve again')
-  console.log('      and run this command fresh. Grants issued in the meantime are still live.')
-  process.exit(4)
+  const report = timeoutReport(refusals)
+  console.log(`join: ${report.lines[0]}`)
+  for (const line of report.lines.slice(1)) console.log(`      ${line}`)
+  process.exit(report.exitCode)
 }
 
 // ── Prove custody before anything is written ────────────────────────────────────────────────
@@ -233,12 +240,22 @@ try {
 // ── Seat it ─────────────────────────────────────────────────────────────────────────────────
 if (seatDir) {
   mkdirSync(seatDir, { recursive: true, mode: 0o700 })
-  for (const [name, value] of [['bunker-uri', pairingUri], ['bunker-client', clientNsec]]) {
+  const present = readdirSync(seatDir)
+  const plan = seatPlan({ identityPubkey: opened.identityPubkey, pairingUri, clientNsec, present })
+  if (!plan.ok) {
+    pairingUri = null
+    burn()
+    die(`${plan.reason} Nothing was written; the request key is burned.`, 6)
+  }
+  for (const { name, value } of plan.files) {
     const path = joinPath(seatDir, name)
     writeFileSync(path, value + '\n', { mode: 0o600 })
     chmodSync(path, 0o600)
     console.log(`join: wrote ${path} (mode 600)`)
   }
+  // The identity is on disk, so the next session can pin to it instead of trusting whatever the
+  // bunker reports. Print the line the operator needs — the file is the record, this is the reminder.
+  console.log(`join: pin the seat with  EXPECT_PUBKEY=${opened.identityPubkey}`)
 } else {
   console.log('join: no --seat <dir> given, so the proven pairing was discarded. Re-run with --seat')
   console.log('      to keep it; the owner will have to approve again.')

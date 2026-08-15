@@ -100,8 +100,21 @@ export function readPairingToken(plaintext, { requestId, now = Math.floor(Date.n
 
   // Refuse unknown keys rather than ignore them. A field this module does not understand, sitting
   // in an artifact that carries a credential, is something a future reader will treat as meaningful.
+  //
+  // Bounded, because these names are attacker-supplied and this message is what a person reads —
+  // the same reason rule 2 below refuses to echo the token's own rid. They are still NAMED, because
+  // a typo'd field is the likely cause and naming it is what makes the refusal actionable; but the
+  // line cannot be used as a canvas: at most four, each clipped, and the remainder counted.
   const extra = Object.keys(body).filter(k => !BODY_KEYS.includes(k))
-  if (extra.length) return { ok: false, reason: `pairing token carries fields this build does not understand: ${extra.sort().join(', ')}` }
+  if (extra.length) {
+    const shown = extra.sort().slice(0, 4).map(k => (k.length > 24 ? `${k.slice(0, 24)}…` : k))
+    const rest = extra.length - shown.length
+    return {
+      ok: false,
+      reason: `pairing token carries ${extra.length} field${extra.length === 1 ? '' : 's'} this build does not understand: `
+        + shown.join(', ') + (rest > 0 ? `, and ${rest} more` : ''),
+    }
+  }
   if (body.v !== 1) return { ok: false, reason: `pairing token version ${JSON.stringify(body.v)} is not 1` }
 
   // Rule 2. The refusal does not echo the token's own rid: it is attacker-supplied, and this

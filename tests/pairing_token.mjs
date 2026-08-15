@@ -119,6 +119,30 @@ const read = (text, over = {}) => readPairingToken(text, { requestId: RID, now: 
   const noId = read(JSON.stringify({ v: 1, rid: RID, a: 'nope', uri: URI, exp: EXP }))
   check(noId.ok === false && /no 64-hex identity/.test(noId.reason), 'a token naming no usable identity is refused')
   refuses('and one cannot be built either', () => build({ identityPubkey: 'nope' }), /64-hex identity/)
+
+  // The refusal names the field because that is what makes it actionable — but the names are
+  // attacker-supplied and the line is the one a person reads, so it is BOUNDED. Rule 2 refuses to
+  // echo the token's own rid for the same reason; this is that rule applied twenty lines up.
+  const body = { v: 1, rid: RID, a: IDENTITY, uri: URI, exp: EXP }
+  for (let i = 0; i < 40; i++) body[`junk${String(i).padStart(2, '0')}`] = 1
+  const many = read(JSON.stringify(body))
+  check(many.ok === false, '40 unknown fields are refused')
+  check(/40 fields/.test(many.reason), 'and the COUNT is reported, so nothing is hidden by the cap')
+  check((many.reason.match(/junk/g) || []).length === 4, 'but only four are echoed, not forty')
+  check(/and 36 more/.test(many.reason), 'with the remainder counted rather than dropped silently')
+  check(many.reason.length < 200, `the whole line stays short (${many.reason.length} chars) — a token cannot use it as a canvas`)
+
+  const longKey = 'x'.repeat(400)
+  const clipped = read(JSON.stringify({ v: 1, rid: RID, a: IDENTITY, uri: URI, exp: EXP, [longKey]: 1 }))
+  check(clipped.ok === false && clipped.reason.length < 120,
+    `a single 400-char field name is clipped, not echoed whole (${clipped.reason.length} chars)`)
+  check(/…/.test(clipped.reason), 'and the clip is visible, so the reader knows the name was truncated')
+
+  // NEGATIVE CONTROL for the cap: the common case is ONE typo'd field, and it must still be named
+  // in full. A bound that hid the useful case would be a worse bug than the one it fixed.
+  const typo = read(JSON.stringify({ v: 1, rid: RID, a: IDENTITY, uri: URI, expp: EXP }))
+  check(typo.ok === false && /expp/.test(typo.reason) && /1 field/.test(typo.reason),
+    'NEGATIVE CONTROL — one mistyped field is still named in full and counted as 1')
 }
 
 // ── 7. Opening is not proof of custody, and the result must say so ────────────────────────────
