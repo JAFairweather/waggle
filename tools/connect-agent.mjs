@@ -40,7 +40,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { boundIdentity, installState, renderState } from '../src/agent_install_state.mjs'
-import { channelStanza, cliRuntimes, foreignServers, isMine, registrationHelp } from '../src/mcp_runtimes.mjs'
+import { channelStanza, cliRuntimes, exclusivityVerdict, foreignServers, isMine, registrationHelp } from '../src/mcp_runtimes.mjs'
 
 const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (process.argv[i + 1] || '') }
 const has = n => process.argv.includes(n)
@@ -229,15 +229,28 @@ see('mcp-registration', registered, false, regNote)
 // Asserted across every runtime that answered, and labelled with which one, because "remove it"
 // is a different command in each. It also now sees `nvoy_other` and not only `nvoy-other`: the
 // hyphen-only test reported sole occupancy with an underscore-spelled channel beside it (#464).
+// A runtime that is installed but could not be read is a place NOBODY LOOKED, and this row is the
+// one that stops this session signing as another identity. "None of the runtimes I could read holds
+// a foreign server" is not "no foreign server is registered", and a green tick cannot be earned by
+// the runtimes that happened to answer. `mcp-registration` already carries this caveat twenty lines
+// up; the security row was the one place it did not say so (#464 review).
+//
+// Note the asymmetry, which is deliberate: an unread runtime cannot promote this row to true, but it
+// also cannot demote a foreign server that WAS found back to UNKNOWN. A positive detection stands on
+// its own — an unasked runtime does not un-find it, it only means there may be more.
 const foreign = answered.length === 0
   ? null
   : answered.flatMap(p => foreignServers(p.names, name).map(s => ({ rt: p.rt, server: s })))
-see('mcp-exclusive', foreign === null ? null : foreign.length === 0, foreign !== null && foreign.length === 0,
+const unread = unreadable.map(p => p.rt.label).join(', ')
+const exclusive = exclusivityVerdict(foreign, unreadable.length)
+see('mcp-exclusive', exclusive.found, exclusive.verified,
   foreign === null
-    ? (unreadable.length ? 'no runtime could be read — INCONCLUSIVE, not absent' : 'no MCP host CLI on this machine to ask — UNKNOWN, not clean')
-    : foreign.length === 0
-      ? `nvoy-${name} is the only nvoy server registered in ${answered.map(p => p.rt.label).join(', ')}`
-      : `also registered: ${foreign.map(f => `${f.server} (${f.rt.label})`).join(', ')} — these carry the tools that SIGN, and not as ${name}. Remove with \`${foreign.map(f => f.rt.remove(f.server))[0]}\` before acting.`)
+    ? (unreadable.length ? `no runtime could be read (${unread}) — INCONCLUSIVE, not absent` : 'no MCP host CLI on this machine to ask — UNKNOWN, not clean')
+    : foreign.length
+      ? `also registered: ${foreign.map(f => `${f.server} (${f.rt.label})`).join(', ')} — these carry the tools that SIGN, and not as ${name}. Remove with \`${foreign.map(f => f.rt.remove(f.server))[0]}\` before acting.${unreadable.length ? ` (${unread} went unread, so there may be more.)` : ''}`
+      : unreadable.length
+        ? `${unread} is installed but could not be read, so nobody has looked there — UNKNOWN, not clean. nvoy-${name} is the only nvoy server in ${answered.map(p => p.rt.label).join(', ')}, which is not the same as the only one on this machine.`
+        : `nvoy-${name} is the only nvoy server registered in ${answered.map(p => p.rt.label).join(', ')}`)
 if (foreign?.length) warn.push(`${foreign.map(f => f.server).join(', ')} would sign as another identity from this session`)
 
 // Sole is not YOURS (#338). Nothing here can call the server — the channel holds its own lock — so

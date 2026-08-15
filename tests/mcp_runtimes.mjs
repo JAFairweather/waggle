@@ -11,7 +11,7 @@
 // being pure: the operator's own MCP config is not a test fixture.
 import { strict as assert } from 'node:assert'
 import {
-  RUNTIMES, channelStanza, cliRuntimes, fileRuntimes, foreignServers, isMine, isNvoyServer,
+  RUNTIMES, channelStanza, cliRuntimes, exclusivityVerdict, fileRuntimes, foreignServers, isMine, isNvoyServer,
   parseClaudeList, parseCodexJson, registrationHelp, runtime, stanzaJson,
 } from '../src/mcp_runtimes.mjs'
 
@@ -97,7 +97,33 @@ check(JSON.stringify(parseClaudeList(`Checking MCP server health...\n\n${CLAUDE_
 // The consequence the review named, asserted at the surface rather than at the parser: an
 // unreadable list must not reach foreignServers as "nothing foreign here".
 check(foreignServers(parseClaudeList('Error: unable to read config'), 'mc-claude') === null,
-  'an unreadable list stays UNKNOWN all the way to the report, and cannot print a clean tick')
+  'an unreadable list stays UNKNOWN all the way to foreignServers, and cannot print a clean tick')
+
+// ── The row itself. The line above is true of `foreignServers`, and was written as though it were
+// true of the REPORT — one frame below where the sentence is about. It is not: the tool asked only
+// the runtimes that ANSWERED, so `claude` answering clean while `codex` sat installed-and-unreadable
+// printed a green tick on the row that stops this session signing as another identity (#464 review).
+//
+// Four states, and the controls that make them mean something. A verdict function returning
+// `{found: null}` for everything would satisfy every UNKNOWN assertion here and take the guard down
+// while looking strictly safer — so the clean case and the detection case are asserted as hard as
+// the refusals.
+const verdict = (f, u) => JSON.stringify(exclusivityVerdict(f, u))
+check(verdict([], 0) === JSON.stringify({ found: true, verified: true }),
+  'NEGATIVE CONTROL — every runtime answered and none holds a foreign server: that IS a clean tick')
+check(verdict(['nvoy-other'], 0) === JSON.stringify({ found: false, verified: false }),
+  'NEGATIVE CONTROL — a foreign server that was found is MISSING, not UNKNOWN')
+check(verdict([], 1) === JSON.stringify({ found: null, verified: false }),
+  'THE BUG — one runtime installed but unreadable makes the row UNKNOWN, however clean the others read')
+check(verdict(null, 1) === JSON.stringify({ found: null, verified: false }),
+  'and no runtime readable at all is UNKNOWN, never absent')
+check(verdict(null, 0) === JSON.stringify({ found: null, verified: false }),
+  'and no MCP host CLI on the machine is UNKNOWN too — nobody looked')
+// The asymmetry, asserted rather than assumed: an unread runtime must not un-find what was found.
+check(verdict(['nvoy-other'], 1) === JSON.stringify({ found: false, verified: false }),
+  'a detection SURVIVES an unread runtime — an unasked runtime does not un-find a foreign server')
+check(exclusivityVerdict([], 0).verified === true && exclusivityVerdict([], 1).verified === false,
+  'and `verified` follows: only the state where every runtime was actually read is verified')
 
 // Captured from `codex mcp list --json` on 2026-08-14. The plain table is fixed-width and folds a
 // whole environment block into the name column, which is why this asks for JSON.

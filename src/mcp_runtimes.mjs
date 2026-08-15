@@ -60,6 +60,31 @@ export function foreignServers(names, agent) {
   return out
 }
 
+/**
+ * The `mcp-exclusive` verdict — the row that stops this session signing as another identity (#338).
+ *
+ * It lives here rather than inline in `connect-agent.mjs` because the defect it exists to prevent
+ * was invisible from the altitude the tests were written at. The tool consulted only the runtimes
+ * that ANSWERED, so "Codex is installed but returned nothing readable" left a green tick: a place
+ * nobody looked, reported as clean. A subprocess harness is the only way to reach an inline
+ * expression, and this suite deliberately opens none — so the decision is a function instead, and
+ * all four states can be asserted directly.
+ *
+ * The asymmetry is deliberate. An unread runtime cannot promote this row to `true`, but it must not
+ * demote a foreign server that WAS found back to UNKNOWN: a positive detection stands on its own,
+ * and an unasked runtime does not un-find it — it only means there may be more.
+ *
+ * @param {Array|null} foreign  foreign nvoy servers across the runtimes that answered; null if none did
+ * @param {number} unreadable   how many runtimes are installed but could not be read
+ * @returns {{found: boolean|null, verified: boolean}}  `found: null` is UNKNOWN, and is never a pass
+ */
+export function exclusivityVerdict(foreign, unreadable = 0) {
+  if (foreign === null) return { found: null, verified: false }
+  if (foreign.length) return { found: false, verified: false }
+  if (unreadable > 0) return { found: null, verified: false }
+  return { found: true, verified: true }
+}
+
 // ── Parsers. Each returns an array of server names, or null for "could not read this".
 // null is not []. `[]` means the runtime answered and has nothing registered; null means nobody
 // looked, and those two must never share a cell — the whole four-state report rests on it.
