@@ -22,7 +22,7 @@
 import { finalizeEvent, generateSecretKey, getEventHash } from 'nostr-tools/pure'
 import * as nip44 from 'nostr-tools/nip44'
 import { loadNostrSigner, withPinnedCustody } from '../src/nostr_signer.mjs'
-import { buildIntent, sendVerdict } from '../src/relay_send_intent.mjs'
+import { buildIntent, envelopeTemplates, sendVerdict } from '../src/relay_send_intent.mjs'
 
 const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (process.argv[i + 1] || '') }
 const has = n => process.argv.includes(n)
@@ -58,9 +58,15 @@ if (intent.ok !== true) die(intent.reason, 1)
 const rumor = { ...intent.rumor, tags: intent.rumor.tags.map(t => [...t]) }
 rumor.id = getEventHash(rumor)
 
+// The seal and the wrap must NOT carry the send time — see `envelopeTemplates`, which owns that
+// decision and is the only place a suite can assert it. Publishing `rumor.created_at` on both, which
+// is what this did first, put the timing correlation the bridge deliberately removes onto a public
+// relay.
+const env = envelopeTemplates({ rumorCreatedAt: rumor.created_at, bridge })
+
 let seal
 try {
-  seal = await signer.signEvent({ kind: 13, created_at: rumor.created_at, tags: [],
+  seal = await signer.signEvent({ ...env.seal, tags: [...env.seal.tags],
     content: await signer.nip44Encrypt(bridge, JSON.stringify(rumor)) })
 } catch (e) {
   // withPinnedCustody sets exitCode 1 for a custody mismatch and 2 for a signature that does not
@@ -71,7 +77,7 @@ try {
 // The wrap's key is throwaway and its pubkey means nothing — that is the point of NIP-59. The seal
 // inside carries the only signature that names the sender.
 const wsk = generateSecretKey()
-const wrap = finalizeEvent({ kind: 1059, created_at: rumor.created_at, tags: [['p', bridge]],
+const wrap = finalizeEvent({ ...env.wrap, tags: env.wrap.tags.map(t => [...t]),
   content: nip44.encrypt(JSON.stringify(seal), nip44.getConversationKey(wsk, bridge)) }, wsk)
 
 console.error(`agent-send: ${wrap.id.slice(0, 12)}… sealed by ${self.slice(0, 8)}… -> waggle ${bridge.slice(0, 8)}…` +

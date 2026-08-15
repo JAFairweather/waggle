@@ -8,7 +8,7 @@
 //      spaces in them, and the positive control is the point of the test.
 //   3. A send cannot claim delivery. The agent cannot read the community channel back, so "the
 //      relay stored it" is the most it may ever say.
-import { buildIntent, mentionVerdict, sendVerdict } from '../src/relay_send_intent.mjs'
+import { buildIntent, envelopeTemplates, FUZZ_SECS, mentionVerdict, sendVerdict } from '../src/relay_send_intent.mjs'
 
 let pass = 0, fail = 0
 const ok = (cond, what) => { if (cond) { pass++; console.log(`  ok   ${what}`) } else { fail++; console.log(`  FAIL ${what}`) } }
@@ -115,6 +115,55 @@ section('3. what a send may honestly claim')
   const bcast = sendVerdict({ accepted: 1, relays: 1, readBack: 1, broadcast: true })
   ok(/no agent is routed it/i.test(bcast.text), 'a broadcast says plainly that no agent is routed it')
   ok(!/Addressed to/.test(bcast.text), '…and does not also claim to have addressed someone')
+}
+
+
+section('4. the envelope — backdated, because the send time is the thing being hidden')
+{
+  const BRIDGE = 'b'.repeat(64)
+  const AT = 1_760_000_000
+
+  // BOTH DIRECTIONS. `rnd` is injected so the bounds are asserted rather than sampled — a random
+  // draw that happens to land mid-range cannot tell a correct window from a broken one.
+  const lo = envelopeTemplates({ rumorCreatedAt: AT, bridge: BRIDGE, rnd: () => 0 })
+  const hi = envelopeTemplates({ rumorCreatedAt: AT, bridge: BRIDGE, rnd: () => 0.999999 })
+
+  ok(lo.seal.created_at === AT && lo.wrap.created_at === AT,
+    'the smallest draw dates both events AT the send time — the window is closed at the top')
+  ok(hi.seal.created_at >= AT - FUZZ_SECS && hi.wrap.created_at >= AT - FUZZ_SECS,
+    '  …and the largest draw never goes further back than FUZZ_SECS')
+  ok(hi.seal.created_at < AT && hi.wrap.created_at < AT,
+    '  …and does move — a window that never fires is the defect this replaced')
+
+  // THE DEFECT ITSELF, named. Both events carried `rumor.created_at`, which publishes the
+  // correlation `src/nostr_egress.mjs` fuzzes away. Asserting "not equal to the send time" for a
+  // real draw is what would have caught it.
+  let sameAsSend = 0, sealEqWrap = 0
+  for (let i = 0; i < 200; i++) {
+    const e = envelopeTemplates({ rumorCreatedAt: AT, bridge: BRIDGE })
+    if (e.seal.created_at === AT && e.wrap.created_at === AT) sameAsSend++
+    if (e.seal.created_at === e.wrap.created_at) sealEqWrap++
+  }
+  ok(sameAsSend < 5, `over 200 draws the envelope almost never carries the exact send time (${sameAsSend}/200) — carrying it always was the defect`)
+  ok(sealEqWrap < 20, `  …and the seal and the wrap are dated INDEPENDENTLY (${sealEqWrap}/200 collide) — one shared timestamp is itself a correlator`)
+
+  // NEVER IN THE FUTURE. A relay may refuse a future-dated event outright, and that refusal would
+  // read as the lane being down.
+  ok(lo.seal.created_at <= AT && hi.wrap.created_at <= AT, 'no draw is ever dated in the future')
+
+  // THE SHAPE `handleRelayIngress` REQUIRES. Asserted here because the tool has no suite of its own.
+  ok(lo.seal.kind === 13 && lo.wrap.kind === 1059, 'the seal is kind 13 and the wrap is kind 1059')
+  ok(JSON.stringify(lo.wrap.tags) === JSON.stringify([['p', BRIDGE]]),
+    'the wrap carries the p tag naming the bridge — the only addressing a relay can filter on')
+  ok(lo.seal.tags.length === 0, '  …and the seal carries no tags, which is what makes it opaque')
+
+  // The window has to stay well inside the bridge's `since` lookback or the wrap is never served,
+  // and that failure is silent. Pinned so widening it trips here first.
+  ok(FUZZ_SECS === 3600, 'the window is an hour — see the coupling to bridge.mjs SINCE_SECS in the module')
+
+  let threw = ''
+  try { envelopeTemplates({ rumorCreatedAt: AT, bridge: 'nope' }) } catch (e) { threw = String(e.message) }
+  ok(/p tag/.test(threw), 'a bad bridge key is refused, and the reason names what would have been lost')
 }
 
 console.log(`\nrelay_send_intent: ${pass} checks passed${fail ? `, ${fail} FAILED` : ''}`)

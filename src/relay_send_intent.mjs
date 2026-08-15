@@ -98,6 +98,48 @@ export function buildIntent({ body, channel, self, at = null, broadcast = false 
   })
 }
 
+// NIP-59 BACKDATING — how far into the past the seal and the wrap are dated.
+//
+// It lives here, and not as a literal in `tools/agent-send.mjs`, for the reason #506 moved its
+// tracker into src/: the tool has no suite, so a decision made there is a decision nothing can
+// assert. This one was made wrong first — both events carried the exact send time, which publishes
+// to a public relay precisely the correlation `src/nostr_egress.mjs:496` fuzzes away, and which
+// `src/return_lane_inbox.mjs:64` documents from the reading end as the reason a seal is not
+// freshness-checked. The reviewer found it by reading; nothing in 107 suites could have.
+//
+// AN HOUR, DELIBERATELY, where the bridge uses two days — and the difference is a coupling, not a
+// preference. The bridge's ingress subscribes `{ kinds: [1059], '#p': [BRIDGE_PK], since: SINCE }`
+// with `SINCE = bootTime − SINCE_SECS` (`src/bridge.mjs:113`, `:3892`). A wrap dated before that is
+// never served and the send looks like a message nobody answered — a silent drop, which is this
+// project's characteristic failure. Two days of fuzz is safe only while `SINCE_SECS` keeps its
+// default; an hour is safe for any lookback above an hour, and an hour already destroys the exact
+// correlation. Widening this without reading that `since` filter reintroduces the silent drop.
+export const FUZZ_SECS = 3600
+
+/**
+ * The seal and wrap templates, minus their encrypted content — the shape and the timestamps only.
+ *
+ * `rnd` is injectable so the backdating can be asserted at its bounds rather than sampled. Both
+ * events are dated INDEPENDENTLY: two events stamped with the same backdated second are themselves
+ * a correlator, which is the thing being removed.
+ *
+ * The shape is what `handleRelayIngress` requires, and it is asserted against that reader: kind 13
+ * seal, kind 1059 wrap, and the `p` tag naming the bridge, which is the only addressing a relay can
+ * filter on.
+ */
+export function envelopeTemplates({ rumorCreatedAt, bridge, rnd = Math.random } = {}) {
+  const at = Number.isSafeInteger(rumorCreatedAt) ? rumorCreatedAt : Math.floor(Date.now() / 1000)
+  const to = String(bridge || '').toLowerCase()
+  if (!HEX64.test(to)) throw new Error('envelopeTemplates needs the bridge pubkey — a wrap with no p tag reaches no one')
+  // Floor, never round: rounding can carry a value to `at + 0.5 → at`, and the one thing this must
+  // never produce is a timestamp in the future, which a relay may refuse outright.
+  const back = () => at - Math.floor(Math.min(Math.max(rnd(), 0), 0.999999) * FUZZ_SECS)
+  return Object.freeze({
+    seal: Object.freeze({ kind: 13, created_at: back(), tags: [] }),
+    wrap: Object.freeze({ kind: 1059, created_at: back(), tags: [['p', to]] }),
+  })
+}
+
 /**
  * What the agent may honestly say after publishing, which is less than "sent".
  *
