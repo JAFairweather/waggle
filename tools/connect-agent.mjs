@@ -42,6 +42,11 @@
 //                    against --pubkey. This is the MCP path's EXPECT_PUBKEY (#338): registered is
 //                    not sole, and sole is not YOURS. Without it the binding reads UNCHECKED.
 //
+// --seat-receipt <p> the receipt the broker's channel-seat forced command returned (#488). It names
+//                    the key fingerprint that was seated; a receipt for THIS agent's channel key
+//                    promotes `channel-authorized`, one for a different key reports MISSING, and no
+//                    receipt at all leaves the row UNKNOWN. Never a pass by default.
+//
 // --from <instance>  mirror an existing agent's manifest for the fields this repo cannot derive
 //                    (grantors, task carriers, relays). Mirroring is not understanding: the
 //                    copied values are reported, and docs/DESIGN_CONNECT_REMOTE_AGENT.md §II
@@ -55,6 +60,7 @@ import { fileURLToPath } from 'node:url'
 import { LANES, boundIdentity, installState, renderState } from '../src/agent_install_state.mjs'
 import { exportTemplate, importTemplate } from '../src/agent_manifest_transfer.mjs'
 import { channelCommand, credentialPaths, credentialReport, registeredForm, sameVector } from '../src/channel_registration.mjs'
+import { keyFingerprint, seatVerdict } from '../src/channel_seat.mjs'
 import { acceptableName, knownFlag, normaliseName, usageLine } from '../src/connect_flags.mjs'
 import { RUNTIMES, channelStanza, cliRuntimes, exclusivityVerdict, foreignServers, isMine, registrationHelp, runtime } from '../src/mcp_runtimes.mjs'
 import { startupDoc } from '../src/agent_startup.mjs'
@@ -329,10 +335,28 @@ see('channel-host-key', existsSync(knownHostsPath), false,
   existsSync(knownHostsPath)
     ? 'present — but whether it is the RIGHT host key is not checked here; StrictHostKeyChecking proves that on first connect'
     : `absent — run the broker doctor on the broker and write its host key to ${knownHostsPath}. This tool will never mint one`)
-// UNKNOWN and not MISSING: nothing on this machine can see the broker's authorized_keys, and
-// "cannot check" must not read as "not there" any more than it may read as "fine".
-see('channel-authorized', null, false,
-  `unverifiable from here — confirm ${keyPath}.pub is seated in the broker's authorized_keys under its forced command`)
+// Nothing on this machine can see the broker's authorized_keys, so without evidence this row is
+// UNKNOWN and not MISSING — "cannot check" must not read as "not there" any more than it may read as
+// "fine". #488 gives it the one thing it never had: a promotion path. The broker's forced command
+// (`tools/channel-seat.mjs`) returns a receipt naming the key it seated, and a receipt for THIS key
+// promotes the row. Like `--whoami`, it is a saved capture with no freshness — it proves the seat
+// happened, not that it still stands, and the row says so rather than implying more.
+const seatReceiptPath = flag('--seat-receipt')
+const localBlob = (() => {
+  try { return /^ssh-ed25519 ([A-Za-z0-9+/=]+)/.exec(readFileSync(`${keyPath}.pub`, 'utf8').trim())?.[1] || '' }
+  catch { return '' }
+})()
+const localFingerprint = keyFingerprint(localBlob)
+const seatRemedy = `run the broker's channel-seat forced command with an approver-signed intent for ${localFingerprint || `${keyPath}.pub`}, then pass its receipt as --seat-receipt <path>`
+let seatReceipt = null, seatReadFailed = false
+if (seatReceiptPath) {
+  try { seatReceipt = JSON.parse(readFileSync(seatReceiptPath, 'utf8')) }
+  catch { seatReceipt = null; seatReadFailed = true }
+  if (seatReadFailed) warn.push(`could not read ${seatReceiptPath} — the seat is UNCHECKED, not absent`)
+}
+const seat = seatVerdict(seatReceipt, { fingerprint: localFingerprint, agent: pubkey || undefined })
+see('channel-authorized', seat.seated, seat.seated === true,
+  seat.seated === null ? `${seat.reason} — ${seatRemedy}` : seat.reason)
 
 // ── MCP registration. Reported, never written: it edits the operator's own config, and this tool
 // prints the exact command rather than reaching into it.

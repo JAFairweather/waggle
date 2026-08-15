@@ -35,6 +35,7 @@ export const FLAGS = Object.freeze([
   { flag: '--channel', value: 'uuid', what: 'the destination channel, for the same' },
   { flag: '--channel-host', value: 'host', what: 'the channel host a registration stanza points at' },
   { flag: '--channel-user', value: 'user', what: 'the account the channel transport authenticates as' },
+  { flag: '--seat-receipt', value: 'path', what: 'the receipt the broker’s channel-seat forced command returned' },
 ])
 
 const KNOWN = new Set(FLAGS.map(f => f.flag))
