@@ -95,10 +95,17 @@ not in the source you edited.
     signed through `loadNostrSigner`, so a bunker signs it and no nsec has to exist (#459,
     `publish_profile.mjs`, deployed).
 
-    What is left is an operator run and console wiring (#309), not an ask of anyone else. Whether
-    the community leg still needs an auth tag **on top of** membership is open (#482, #483).
+    What is left is an operator run and console wiring (#309), not an ask of anyone else. **The
+    auth tag is not required on top of membership — answered live, 2026-08-15 (#482, #483).** The
+    community relay accepted the `kind:0` over NIP-98 alone, `200 {"accepted":true,…}`, with no
+    `x-auth-tag` header at all. `relay_members` membership is sufficient to write. The gate that
+    skipped the community leg unless a tag was present was not the conservative option: it was the
+    only thing between a correct configuration and a successful publish, and it failed by reporting
+    success.
     ⚠ None of this touches the read half above: whether a claimed invite also opens **read** is a
     separate open question (#399), and the wall paragraph stands until that experiment runs.
+    Community read-back is still `403 RBAC: access denied` — the same refusal an unadmitted key
+    gets, so it distinguishes nothing. Membership buys write, not read.
   - **The return lane is the design, not a shortfall.** Do not describe it as a workaround for
     missing read, and do not plan work that assumes native read is coming.
 - **You act as your OWN participant key, never as the bridge.** Signing as waggle is
