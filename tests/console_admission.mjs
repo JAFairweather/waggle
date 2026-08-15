@@ -429,13 +429,22 @@ check(/let invite = null/.test(page) && !/localStorage[^\n]*invite|invite[^\n]*l
 const stripStrings = l => l.replace(/'(?:[^'\\]|\\.)*'/g, "''").replace(/"(?:[^"\\]|\\.)*"/g, '""')
 const ALLOWED_USES = [
   /^let invite = null$/,                       // declared for the flow
-  /^invite = null; policyVerdict = null$/,     // cleared with the rest of the key's state
+  /^invite = null; policyVerdict = null; inviteRelay = null$/, // cleared with the rest of the key's state
   /^invite = out\.code$/,                      // held, once, from the mint
   /^if \(!invite\) \{ admitSt\(''?, ''?\); return \}$/, // a guard: tested, never rendered
   /^code: invite,$/,                           // handed to the claim, which is its whole purpose
 ]
+// The scan tracks a VALUE, so it has to name every binding that value is readable through — and the
+// code has two. `invite` is one; `out.code`, the field it is assigned from, is the other. Keyed on
+// `invite` alone, this passed with `admitSt('ok', `Minted ${out.code}`)` inserted straight after the
+// assignment: the bearer secret on the page and nothing saying so.
+//
+// Two names is not the end of the list, and chasing the third is not the plan. The rule that closes
+// it: a new binding can only be born on a line that READS an existing one, so every alias birth
+// matches the filter and lands unlisted. `const c = out.code` fails here even though `c` is a name
+// this regex has never heard of.
 const uses = pageCode.split('\n').map(l => stripStrings(l).trim())
-  .filter(l => /(?<![A-Za-z])invite(?![A-Za-z-])/.test(l))
+  .filter(l => /(?<![A-Za-z])(invite|out\.code)(?![A-Za-z-])/.test(l))
 const unlisted = uses.filter(l => !ALLOWED_USES.some(re => re.test(l)))
 check(unlisted.length === 0,
   `the code is used in ${uses.length} places and every one is on the allowlist${unlisted.length ? ` — UNLISTED: ${unlisted.join(' | ')}` : ''}`)
@@ -444,6 +453,40 @@ check(unlisted.length === 0,
 check(uses.length === ALLOWED_USES.length,
   `and every listed shape is actually present (${uses.length}) — an allowlist longer than the code is a rule nothing enforces`)
 check(pageCode.length > 5000, `and the scan read a real script block (${pageCode.length} bytes)`)
+
+// The claim goes to the relay the code was MINTED at, not to whatever the field says at click time.
+// Both were `$('admit-relay').value.trim()`, with nothing pinning them and the input not disabled in
+// between: edit it between the two clicks and relay A's bearer code is POSTed to relay B, with A's
+// policy verdict handed to B's consent gate. B fails closed where it requires more than A, so it was
+// never an admission bypass — but "Not claiming on a guess" is this page's own stated rule.
+const claimHandler = /\$\('admit-claim'\)\.addEventListener\([\s\S]*?\n\}\)/.exec(pageCode)?.[0] || ''
+check(claimHandler.length > 200, `the claim handler is readable from here (${claimHandler.length} bytes)`)
+check(/relayUrl: inviteRelay/.test(claimHandler),
+  '  …and claims at the PINNED relay, the one the code was minted at')
+check(!/\$\('admit-relay'\)/.test(claimHandler),
+  '  …never re-reading the input, which is what let the destination change under the code')
+check(/inviteRelay = relayUrl/.test(pageCode) && /inviteRelay = null/.test(pageCode),
+  '  …and the pin is set on a successful mint and cleared with the rest of the key state')
+// POSITIVE CONTROL. Without it, a claim handler that had simply stopped naming a relay at all would
+// satisfy both assertions above.
+check(/\$\('admit-relay'\)\.value/.test(pageCode),
+  'POSITIVE CONTROL — the input is still read somewhere, at mint time, so this pin is pinning something')
+
+// `agentSigner` is assigned in three places, not the two the flow makes obvious. `adopt()` is the
+// third, and it changes the OPERATOR's identity — today unreachable with a mint flow live, but held
+// that way by reachability rather than by anything asserting it. One line, so that the day a
+// "switch key" affordance lands, an agent's bunker pairing cannot survive an operator change.
+const adoptFn = /async function adopt\([\s\S]*?\n\}/.exec(pageCode)?.[0] || ''
+check(adoptFn.length > 200, `adopt() is readable from here (${adoptFn.length} bytes)`)
+check(/forgetMintedKey\(\)/.test(adoptFn),
+  '  …and it clears the mint flow, so an operator change cannot leave an agent pairing open')
+// The one call site that could run during module evaluation awaits a dynamic import first, so it
+// cannot reach `adopt` before the `let` declarations below it initialise. Asserted rather than
+// reasoned, because the restore path ends in a bare `catch` that would swallow the ReferenceError
+// and report itself as "the signer went away".
+const restore = /const saved = readSession\(\)[\s\S]*?adopt\(/.exec(pageCode)?.[0] || ''
+check(restore.includes('await nc()'),
+  'and the session-restore path awaits a dynamic import before adopt, so no declaration is in its TDZ')
 
 // The refusal text the page renders must not answer with a command-line flag — that is the terminal
 // this whole change exists to remove.

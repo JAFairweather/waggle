@@ -647,6 +647,13 @@ const readSession = () => { try { return localStorage.getItem(SESSION_KEY) } cat
 const setAuth = (msg, cls = '') => { const s = $('authst'); s.className = 'status ' + cls; s.textContent = msg }
 // `remember` is the already-serialized session string, or null to persist nothing (the local path).
 async function adopt(s, label, remember = null) {
+  // The operator's identity is changing, so nothing belonging to the previous one may survive it —
+  // including a live agent bunker pairing and an unclaimed invite code. Today this is unreachable
+  // while a mint flow is open, because `adopt` hides `#auth` and only the titlebar sign-in re-opens
+  // it, and that is only wired once logout has run. That is an invariant held by REACHABILITY, and
+  // the day a "switch key" affordance lands it stops holding with nothing to say so. Asserted here
+  // instead, where it costs one line.
+  forgetMintedKey()
   signer = s
   signerPk = await s.getPublicKey()
   saveSession(remember)
@@ -835,7 +842,7 @@ function forgetMintedKey() {
   $('admit-claim').style.display = 'none'
   $('admit-terms').checked = false; $('admit-age').checked = false
   $('admitst').className = 'status'; $('admitst').textContent = ''
-  invite = null; policyVerdict = null
+  invite = null; policyVerdict = null; inviteRelay = null
   $('mintst').className = 'status'; $('mintst').textContent = ''
 }
 $('mint-go').addEventListener('click', () => {
@@ -934,6 +941,13 @@ $('mint-prove').addEventListener('click', async () => {
 const INVITE_TTL_SECS = 3600
 let invite = null
 let policyVerdict = null
+// The relay the code was minted at, pinned at the moment of the mint. The claim used to read the
+// input field a second time, and nothing stopped it changing in between: edit it between the two
+// clicks and the page POSTs relay A's bearer code to relay B, with A's policy verdict passed into
+// B's consent gate. B fails closed where it requires more than A, so this was not an admission
+// bypass — but the page's stated refusal is "Not claiming on a guess", and a policy read from one
+// host applied to another is a guess. Disabling the input is presentation; this is the fix.
+let inviteRelay = null
 const admitSt = (cls, text) => { const s = $('admitst'); s.className = `status${cls ? ` ${cls}` : ''}`; s.textContent = text }
 
 $('admit-mint').addEventListener('click', async () => {
@@ -954,6 +968,7 @@ $('admit-mint').addEventListener('click', async () => {
     const out = await mintInvite({ relayUrl, sign: t => signFresh(t, signer), ttlSecs: INVITE_TTL_SECS, maxUses: 1 })
     if (!out.ok) { admitSt('err', out.reason); return }
     invite = out.code
+    inviteRelay = relayUrl
     // The policy read happens now, not at claim time: a claim without a receipt where a policy
     // applies is a guaranteed 403, and asking first turns that into either a receipt or an
     // accurate account of what is needed.
@@ -989,11 +1004,13 @@ $('admit-mint').addEventListener('click', async () => {
 $('admit-claim').addEventListener('click', async () => {
   if (!invite) { admitSt('err', 'Mint an invite first.'); return }
   if (!agentSigner) { admitSt('err', 'The agent\'s bunker pairing is gone — prove custody again. The claim must be signed by the AGENT\'s key, not yours.'); return }
-  const relayUrl = $('admit-relay').value.trim()
+  // The pinned URL, not a second read of the field. `policyVerdict` was read from this host too, so
+  // the code, the policy and the destination are one set or none of them.
+  if (!inviteRelay) { admitSt('err', 'The relay this invite was minted at is not pinned — mint again.'); return }
   admitSt('', 'Claiming — the agent\'s bunker will prompt, twice where a policy applies…')
   try {
     const out = await claimInvite({
-      relayUrl,
+      relayUrl: inviteRelay,
       code: invite,
       policy: policyVerdict?.state === 'present' ? policyVerdict.policy : null,
       // Read off the boxes at the moment of the claim, and passed through as stated. Neither is
