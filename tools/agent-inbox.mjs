@@ -24,7 +24,7 @@
 import { readFileSync } from 'node:fs'
 import { verifyEvent } from 'nostr-tools/pure'
 import { loadNostrSigner } from '../src/nostr_signer.mjs'
-import { inboxSummary, rumorVerdict, sealAuthor, wrapAddressedTo } from '../src/return_lane_inbox.mjs'
+import { inboxSummary, openTracker, rumorVerdict, sealAuthor, wrapAddressedTo } from '../src/return_lane_inbox.mjs'
 
 const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (process.argv[i + 1] || '') }
 const has = n => process.argv.includes(n)
@@ -56,6 +56,20 @@ const seen = new Set()
 // seal's signature is the authorship proof, and doing the second (expensive) decrypt before it holds
 // would run unauthenticated input through the signer.
 async function open(wrap) {
+  // VERIFY BEFORE DEDUPING. `seen` is keyed on `wrap.id`, and until this line nothing had proved
+  // that id was the event's own hash — it was a field in unauthenticated relay JSON. An event
+  // carrying a colliding id, delivered first, would take the slot and silently suppress the real
+  // message (#505 review, should-fix 3). `verifyEvent` recomputes the hash and checks the schnorr
+  // signature, so the id becomes a value the relay cannot choose.
+  //
+  // This is NOT an authorship check and must never be read as one: the wrap is signed by a
+  // throwaway ephemeral key that says nothing about who wrote the message. Authorship is the seal's
+  // signature, checked by `sealAuthor` below, and that ordering is the whole point of the module.
+  if (!verifyEvent(wrap)) {
+    failed++
+    console.error(`  a wrap did not verify — its id or signature is not the event it claims to be; not counted as read`)
+    return
+  }
   if (seen.has(wrap.id)) return
   seen.add(wrap.id)
   if (wrapAddressedTo(wrap, self).ok !== true) return
@@ -87,22 +101,73 @@ async function open(wrap) {
 }
 
 let answered = 0
+
+// THE OPENS MUST BE AWAITED BEFORE THE SUMMARY, and nothing used to await them (#505 review,
+// must-fix 1). `ws.onmessage` was `async` and its promise was dropped on the floor: `open()`
+// suspended at the first `nip44Decrypt`, the very next frame was EOSE, EOSE resolved the relay's
+// promise, `Promise.all` settled, and `inboxSummary` ran with an empty verdict list. A trusted
+// message from the bridge — present on the relay, decryptable with the key in hand — was reported
+// as "Nothing new" with exit 0. That is the one sentence this module exists to prevent.
+//
+// It passed every test and the cold read-back because a LOCAL key settles the decrypt in a
+// microtask, which drains before the EOSE frame is dispatched. With a bunker, `nip44Decrypt` is an
+// RPC over a relay (`src/nostr_signer.mjs`) and it loses every time — 1 ms of latency is enough.
+// The production signer is the one that triggers it, and the tests used the other one.
+// The tracker itself lives in src/return_lane_inbox.mjs, where a suite drives it. That placement is
+// the point: this defect survived because the logic sat in a file nothing tested.
+const { track, drain } = openTracker()
+
+const report = async () => {
+  const stillOpen = await drain()
+  if (stillOpen) console.error(`  ${stillOpen} wrap(s) were still being opened when the read ended — counted as unread, not as absent`)
+  const summary = inboxSummary({ verdicts, failed: failed + stillOpen, reachable: answered, scanned: seen.size })
+  console.log(`\n${summary.text}`)
+  process.exit(summary.inconclusive ? 3 : 0)
+}
+
+// Registered BEFORE the subscription, not after: in --watch the promise below never settles, so a
+// handler installed after it would never be installed at all. This is what makes the summary and
+// the exit-3 contract reachable in --watch, which they were not — `Promise.all` only settled on the
+// 24-day timer.
+if (watch) process.on('SIGINT', () => { console.error('\n  interrupted — draining what is in flight, then reporting'); report() })
+
+// --watch had no `onclose` and no reconnect (#505 review, must-fix 2). When a relay closed cleanly —
+// a restart, an idle reap, the ordinary case over the days this mode is meant to run — the promise
+// never settled, the timer held the process open, and the tool sat with no subscription printing
+// nothing. That is worse than the polling it replaces, because a poll reconnects on the next tick.
 await Promise.all(RELAYS.map(url => new Promise(resolve => {
-  let ws, done = false
-  const end = () => { if (done) return; done = true; try { ws.close() } catch { /* already gone */ } resolve() }
-  try { ws = new WebSocket(url) } catch { return end() }
+  let ws, done = false, backoff = 1000
+  const end = () => { if (done) return; done = true; try { ws?.close() } catch { /* already gone */ } resolve() }
   const t = setTimeout(end, watch ? 0x7fffffff : 12000)
-  ws.onopen = () => ws.send(JSON.stringify(['REQ', 'inbox', { kinds: [1059], '#p': [self], since, limit: 200 }]))
-  ws.onmessage = async e => {
-    try {
-      const m = JSON.parse(e.data)
-      if (m[0] === 'EVENT') await open(m[2])
+
+  const connect = () => {
+    try { ws = new WebSocket(url) } catch { return end() }
+    ws.onopen = () => {
+      backoff = 1000
+      ws.send(JSON.stringify(['REQ', 'inbox', { kinds: [1059], '#p': [self], since, limit: 200 }]))
+    }
+    ws.onmessage = e => {
+      let m
+      try { m = JSON.parse(e.data) } catch { return /* a relay that speaks nonsense is one relay, not a crash */ }
+      if (m[0] === 'EVENT' && m[2]) {
+        track(open(m[2]).catch(err => {
+          failed++
+          console.error(`  an opener threw — ${String(err?.message || err).slice(0, 160)}`)
+        }))
+        return
+      }
       if (m[0] === 'EOSE') { answered++; if (!watch) { clearTimeout(t); end() } }
-    } catch { /* a relay that speaks nonsense is one relay, not a crash */ }
+    }
+    // `ws` emits 'close' after 'error', so the close handler is the single place this is decided.
+    ws.onerror = () => {}
+    ws.onclose = () => {
+      if (!watch) { clearTimeout(t); return end() }   // a close before EOSE is a read that did not happen
+      console.error(`  ${url} closed the subscription — reconnecting in ${Math.round(backoff / 1000)}s`)
+      setTimeout(connect, backoff)
+      backoff = Math.min(backoff * 2, 60000)
+    }
   }
-  ws.onerror = () => { clearTimeout(t); end() }
+  connect()
 })))
 
-const summary = inboxSummary({ verdicts, failed, reachable: answered, scanned: seen.size })
-console.log(`\n${summary.text}`)
-process.exit(summary.inconclusive ? 3 : 0)
+await report()

@@ -130,6 +130,57 @@ export function rumorVerdict(rumor, { author, self, trusted = [] } = {}) {
 }
 
 /**
+ * Hold the in-flight opens so the summary cannot run before they settle.
+ *
+ * This lives here rather than inline in the tool because of how it was found: the tool had it
+ * inline, no suite drove the tool, and the result was the one sentence this module exists to
+ * prevent. `ws.onmessage` was `async` and its promise was dropped — the opener suspended at the
+ * first decrypt, EOSE arrived on the very next frame and resolved the read, and `inboxSummary` was
+ * handed an empty verdict list. A trusted message, present on the relay and decryptable with the
+ * key in hand, reported as "Nothing new" with exit 0.
+ *
+ * THE SIGNER DECIDES IT, and that is why every test passed. A local key settles the decrypt in a
+ * MICROTASK, which drains before the EOSE frame is dispatched as a task. A bunker's `nip44Decrypt`
+ * is an RPC over a relay, so it settles on a TIMER, and it loses every time — 1 ms is enough. The
+ * production signer is the one that triggers it; the tests used the other one. So the suite drives
+ * this with timer-settled promises and never microtask-settled ones, because a microtask fixture
+ * passes with or without the fix.
+ *
+ * `drain` is BOUNDED. An opener that never settles must not hang the read — and must not be counted
+ * as read either, which is why it returns the number still outstanding for the caller to add to
+ * `failed`. Being unable to finish is not the same as finding nothing.
+ */
+export function openTracker({
+  graceMs = 20000,
+  now = () => Date.now(),
+  // NOT unref'd. This timer is already bounded by graceMs, and it is frequently the only thing
+  // left on the loop — the sockets are shut by the time drain runs. Unreferencing it made node
+  // exit mid-drain instead of reporting what was still outstanding, which is the same class of
+  // silent-quit this module exists to refuse.
+  sleep = ms => new Promise(r => setTimeout(r, ms)),
+} = {}) {
+  const pending = new Set()
+  return {
+    size: () => pending.size,
+    // Settlement is all this observes — never the value, and never the rejection, which stays the
+    // caller's. A tracked promise that rejects must not become an unhandled rejection in here.
+    track(promise) {
+      const settled = Promise.resolve(promise).then(() => {}, () => {})
+      pending.add(settled)
+      settled.finally(() => pending.delete(settled))
+      return promise
+    },
+    async drain() {
+      const deadline = now() + graceMs
+      while (pending.size && now() < deadline) {
+        await Promise.race([Promise.allSettled([...pending]), sleep(Math.max(1, deadline - now()))])
+      }
+      return pending.size
+    },
+  }
+}
+
+/**
  * What a person, or the agent's own session, reads at the end of a poll.
  *
  * The rule this exists to enforce: A FAILED READ IS NOT AN EMPTY INBOX. "No messages" and "I could

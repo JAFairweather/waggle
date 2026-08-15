@@ -18,7 +18,7 @@
 // inbox must still be reportable as quiet.
 import { getPublicKey, generateSecretKey, finalizeEvent, getEventHash, verifyEvent } from 'nostr-tools/pure'
 import * as nip44 from 'nostr-tools/nip44'
-import { inboxSummary, rumorVerdict, sealAuthor, wrapAddressedTo } from '../src/return_lane_inbox.mjs'
+import { inboxSummary, openTracker, rumorVerdict, sealAuthor, wrapAddressedTo } from '../src/return_lane_inbox.mjs'
 
 let pass = 0, fail = 0
 const check = (cond, what) => { if (cond) { pass++; console.log(`  ok   ${what}`) } else { fail++; console.log(`  FAIL ${what}`) } }
@@ -167,6 +167,119 @@ check(mixed.trusted.length === 1 && mixed.data.length === 1 && mixed.refusedCoun
 check(mixed.inconclusive === false, '  …and a complete read is not INCONCLUSIVE just because something was refused')
 check(/anyone may seal mail to this key, and being addressed is not authority/.test(mixed.text),
   '  …and the summary states the trust rule wherever untrusted mail is present')
+
+// ── openTracker — the summary must not run before the opens settle (#505 review, must-fix 1) ─────
+//
+// EVERY FIXTURE HERE SETTLES ON A TIMER, never in a microtask. That is the whole discipline of this
+// section: a microtask-settled promise drains before the next task regardless of whether the
+// tracker exists, so a microtask fixture passes against the broken code and proves nothing. A local
+// signing key settles in a microtask; the bunker this tool is written for settles on a timer, and
+// that difference is exactly why the defect shipped past a green suite and a cold read-back.
+{
+  const onATimer = (ms, run) => new Promise(r => setTimeout(() => { run(); r() }, ms))
+
+  // The defect, reproduced: work is in flight when the read ends.
+  {
+    let opened = 0
+    const t = openTracker()
+    t.track(onATimer(20, () => { opened++ }))
+
+    // This is the instant EOSE arrived and the old code resolved the read.
+    check(opened === 0, 'AT EOSE the opener has NOT finished — the fixture reproduces the race, rather than assuming it')
+    check(t.size() === 1, '  …and the tracker knows one open is still in flight')
+
+    const outstanding = await t.drain()
+    check(opened === 1, 'after drain the opener HAS finished — this is the verdict the summary used to lose')
+    check(outstanding === 0, '  …and drain reports nothing outstanding')
+    check(t.size() === 0, '  …and the tracker is empty again, so --watch does not grow a set for days')
+  }
+
+  // NEGATIVE CONTROL. The same fixture with the tracking removed — which is what the tool did
+  // before this fix. If this block did NOT show the work being lost, the block above would be
+  // passing for some reason other than the fix, and would keep passing if the fix were reverted.
+  {
+    let opened = 0
+    const t = openTracker()
+    void onATimer(20, () => { opened++ })          // started, never tracked — the dropped promise
+    const outstanding = await t.drain()
+    check(opened === 0 && outstanding === 0,
+      'NEGATIVE CONTROL — an UNtracked open is lost exactly as before: drain returns clean while the work is still pending')
+  }
+
+  // Bounded. An opener that never settles must not hang the read, and must not be counted as read.
+  {
+    const t = openTracker({ graceMs: 40 })
+    t.track(new Promise(() => {}))                 // never settles, as a wedged bunker RPC does not
+    const started = Date.now()
+    const outstanding = await t.drain()
+    check(outstanding === 1, 'an open that never settles is REPORTED as outstanding, not counted as read')
+    check(Date.now() - started < 2000, '  …and drain gives up on its grace rather than hanging the read for ever')
+    check(t.size() === 1, '  …and it is still in flight — drain reports, it does not cancel')
+  }
+
+  // A rejecting open is settled work, not a crash and not an unhandled rejection. The tool's own
+  // catch reports it; the tracker only ever observes that it is over.
+  {
+    let landed = false
+    const t = openTracker()
+    t.track(onATimer(10, () => { landed = true }).then(() => Promise.reject(new Error('bunker said no'))))
+    const outstanding = await t.drain()
+    check(landed === true && outstanding === 0, 'a REJECTED open still settles the drain — a failing decrypt cannot wedge the read')
+  }
+
+  check(await openTracker().drain() === 0, 'draining an empty tracker returns immediately — the ordinary quiet-inbox path is not slowed')
+}
+
+// ── the dedup key is verified before it is used (#505 review, should-fix 3) ──────────────────────
+//
+// A WIRING ASSERTION, and named as one: the property is enforced by one line in tools/agent-inbox.mjs
+// and what is checked here is that the line is in the right ORDER, not that the tool behaves. The
+// order is the whole of it — `seen` is keyed on `wrap.id`, so verifying after the dedup would still
+// let a forged id take the slot and suppress the real message.
+{
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../tools/agent-inbox.mjs', import.meta.url), 'utf8')
+  if (src.length < 3000) {
+    console.error(`return_lane_inbox: INCONCLUSIVE — agent-inbox.mjs read back only ${src.length} bytes`)
+    process.exit(3)
+  }
+  const verifyAt = src.indexOf('if (!verifyEvent(wrap))')
+  const dedupAt = src.indexOf('seen.has(wrap.id)')
+  check(verifyAt > 0, 'the tool verifies the wrap event before trusting anything in it')
+  check(dedupAt > 0 && verifyAt < dedupAt, '  …and does so BEFORE the dedup, so a forged id cannot take the slot of a real message')
+  check(/track\(open\(/.test(src),
+    '  …and the opener is TRACKED where it is started — an untracked open is the original defect, exactly')
+  check(/await drain\(\)/.test(src), '  …and the read drains before it summarises')
+  check(/ws\.onclose\s*=/.test(src), 'the subscription handles onclose — a cleanly closed relay used to leave --watch deaf and silent')
+  // Presence FIRST. The earlier form of this check compared two indexOf results, and indexOf
+  // returns -1 when absent — so deleting the handler outright made it pass, because -1 is less
+  // than everything. An ordering assertion that a deletion satisfies is not an assertion.
+  const sigintAt = src.indexOf("process.on('SIGINT'")
+  const readAt = src.indexOf('await Promise.all(RELAYS')
+  check(sigintAt > 0 && readAt > 0, 'the --watch interrupt handler and the read are both present')
+  check(sigintAt > 0 && readAt > 0 && sigintAt < readAt,
+    '  …and the handler is installed BEFORE the read that never resolves, or it would never be installed at all')
+  check(/failed: failed \+ stillOpen/.test(src),
+    'what is still in flight when the read ends is added to the failed count — outstanding is INCONCLUSIVE, never clean')
+}
+
+// And the hazard that made the first version of these checks lie: `verifyEvent` memoises its
+// verdict on a symbol property, and object spread COPIES symbols. A forgery built as `{...event,
+// id: …}` verifies TRUE against the cached verdict of the honest event it was spread from. Relay
+// input arrives through JSON.parse and carries no symbols, so the real path is unaffected — but a
+// fixture built the convenient way tests nothing at all.
+{
+  const sk = generateSecretKey()
+  const ev = finalizeEvent({ kind: 1059, created_at: 1, tags: [['p', 'a'.repeat(64)]], content: 'x' }, sk)
+  const offTheWire = o => JSON.parse(JSON.stringify(o))
+  check(verifyEvent(offTheWire(ev)) === true, 'an honest wrap verifies when it arrives the way a relay sends it')
+  check(verifyEvent(offTheWire({ ...ev, id: 'b'.repeat(64) })) === false,
+    'NEGATIVE — a swapped id fails verification, so wrap.id is a hash the relay cannot choose')
+  check(verifyEvent(offTheWire({ ...ev, content: 'y' })) === false, 'NEGATIVE — swapped content fails too')
+  check(Object.getOwnPropertySymbols({ ...ev }).length > 0,
+    'and a SPREAD copy carries the memoised verdict — which is why every fixture above goes through JSON first')
+}
+
 
 console.log(`\nreturn_lane_inbox: ${fail ? `${fail} FAILED, ` : ''}${pass} checks passed`)
 process.exit(fail ? 1 : 0)
