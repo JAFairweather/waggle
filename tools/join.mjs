@@ -6,30 +6,39 @@
 // What this does, in order:
 //   1. mints an EPHEMERAL request key — this is the envelope, NOT the identity (docs/DESIGN_JOIN.md)
 //   2. publishes a signed join request naming the hive and the capabilities it wants
-//   3. waits for a sealed reply addressed to the request key
-//   4. prints what to do next, and burns the request key
+//   3. waits for a pairing token sealed to the request key, and opens it (src/pairing_token.mjs)
+//   4. PROVES the bunker actually controls the approved identity before writing anything
+//   5. seats the pairing, and burns the request key
 //
 // WHAT IT DOES NOT DO, and must not be described as doing. It does not mint the persistent agent
 // identity — that is minted into the OWNER's Bunker when they approve, and this session never
-// holds it. It does not pair. It does not post to the channel. Those steps need a Bunker and a
-// responder; see docs/JOIN_RUNBOOK.md.
+// holds it. What it seats is a NIP-46 pairing to that identity, which the owner can revoke; the
+// key itself never moves. It does not post to the channel.
 //
 // THE RESPONDER IS NOT BUILT. `tools/join-approve.mjs` is a design, not a file — JOIN_RUNBOOK §6
 // lists it first under "what is missing for the unattended loop". Until it exists the owner reads
-// the request and issues the grants by hand from the console (§4 and §5). This comment and the
-// output below both used to name that tool as though it existed, which sent an owner looking for
-// a file that has never been in the tree.
+// the request and issues the grants by hand from the console (§4 and §5), and seals the pairing
+// token by hand too. This comment and the output below both used to name that tool as though it
+// existed, which sent an owner looking for a file that has never been in the tree.
+//
+// WHY A CUSTODY CHALLENGE SITS BETWEEN OPENING THE TOKEN AND WRITING IT. Opening a sealed token
+// proves who sealed it, not that the signer on the other end of the URI holds the identity the
+// owner approved. `readPairingToken` says so — it returns `custodyUnproven: true` and no promise
+// beyond that. A pairing seated without the challenge points somewhere unverified, and every later
+// signature inherits the mistake. So the signature happens first, pinned, and is never published.
 //
 // The request key is written to a 0600 file in a temp dir for the lifetime of the wait, because a
 // reply sealed to it arrives after this process has been running for a while and a key held only
 // in memory dies with a dropped connection. It is deleted on exit, on failure, and on signal.
 // It is never printed.
 
-import { mkdtempSync, writeFileSync, rmSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join as joinPath } from 'node:path'
-import { finalizeEvent, generateSecretKey, getPublicKey, nip19 } from 'nostr-tools'
+import { join as joinPath, resolve } from 'node:path'
+import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44, verifyEvent } from 'nostr-tools'
 import { buildJoinRequest, REQUESTABLE_CAPS } from '../src/join_request.mjs'
+import { readPairingToken, PAIRING_TOKEN_KIND } from '../src/pairing_token.mjs'
+import { makeBunkerSigner, withPinnedCustody } from '../src/nostr_signer.mjs'
 import { relaySet } from '../src/relays.mjs'
 
 const RELAYS = relaySet(process.env.JOIN_RELAYS)
@@ -48,12 +57,16 @@ const toHex = (v) => {
 }
 
 const hiveArg = arg('hive')
-if (!hiveArg) die('usage: node tools/join.mjs --hive <npub|hex> [--caps task,task-relay] [--purpose "..."] [--label name]')
+if (!hiveArg) die('usage: node tools/join.mjs --hive <npub|hex> [--caps task,task-relay] [--purpose "..."] [--label name] [--seat <dir>]')
 const hive = toHex(hiveArg)
 const caps = (arg('caps', 'task,task-relay')).split(',').map(s => s.trim()).filter(Boolean)
 const purpose = arg('purpose', '')
 const label = arg('label', '')
 const waitSecs = Number(arg('wait', '900'))
+// Where a proven pairing is written. Absent, the ceremony still runs and still proves custody — it
+// just discards the pairing at the end and says so. A dry run that silently seated a credential
+// somewhere of its own choosing would be the worse default.
+const seatDir = arg('seat') ? resolve(arg('seat')) : null
 
 for (const cap of caps) {
   if (!REQUESTABLE_CAPS.includes(cap)) die(`"${cap}" cannot be requested — choose from: ${REQUESTABLE_CAPS.join(', ')}`)
@@ -138,16 +151,101 @@ console.log(`  ${request.id}`)
 console.log()
 console.log('Now the owner approves — BY HAND. There is no responder yet: nothing watches for this')
 console.log('request, nothing will DM them, and no reply of theirs will be parsed. They read the')
-console.log('request, decide, and issue the grants from the console (docs/JOIN_RUNBOOK.md §4 and §5).')
+console.log('request, decide, issue the grants from the console (docs/JOIN_RUNBOOK.md §4 and §5),')
+console.log('and seal a pairing token back to the request key above.')
 console.log('Send them the request id above. This session holds no key and never will.')
 console.log()
-console.log(`join: waiting up to ${waitSecs}s for the decision, then burning the request key…`)
+console.log(`join: waiting up to ${waitSecs}s for a pairing token, then burning the request key…`)
 
-// The wait is deliberately dumb: this build has no pairing step yet, so there is nothing for this
-// process to do with an approval except tell the operator it happened. Claiming otherwise would be
-// the thing this repo calls blurring shipped with designed.
-await new Promise(r => setTimeout(r, Math.max(0, Math.min(waitSecs, 3600)) * 1000))
+// ── Wait for a pairing token sealed to R ────────────────────────────────────────────────────
+// A token from anyone other than the hive this session asked to join is not a near miss to report
+// with a decrypt failure — it is a stranger answering someone else's question, and it is dropped
+// before the sealing key is even derived.
+const conversation = (peer) => nip44.v2.utils.getConversationKey(secret, peer)
+
+const listen = (url, deadline) => new Promise(resolve => {
+  let ws, done = false
+  const fin = (opened) => { if (done) return; done = true; try { ws.close() } catch {} ; resolve(opened) }
+  try { ws = new WebSocket(url) } catch { return fin(null) }
+  const t = setTimeout(() => fin(null), Math.max(0, deadline - Date.now()))
+  ws.onopen = () => ws.send(JSON.stringify(['REQ', 'pair',
+    { kinds: [PAIRING_TOKEN_KIND], '#p': [requestPubkey], since: request.created_at }]))
+  ws.onmessage = (m) => {
+    let ev
+    try {
+      const d = JSON.parse(m.data)
+      if (d[0] !== 'EVENT' || !d[2]) return
+      ev = d[2]
+    } catch { return }
+    try {
+      if (ev.pubkey !== hive || !verifyEvent(ev)) return
+    } catch { return }
+    let plaintext
+    try { plaintext = nip44.v2.decrypt(ev.content, conversation(ev.pubkey)) } catch { return }
+    const opened = readPairingToken(plaintext, { requestId: request.id })
+    if (!opened.ok) {
+      // Say it and keep listening. A refused token is not the end of the wait — but a wait that
+      // swallowed the reason would look identical to no token ever arriving, and the two need
+      // different things from the operator.
+      console.error(`join: a token arrived from the hive and was refused — ${opened.reason}`)
+      return
+    }
+    clearTimeout(t)
+    fin(opened)
+  }
+  ws.onerror = () => { clearTimeout(t); fin(null) }
+})
+
+const deadline = Date.now() + Math.max(0, Math.min(waitSecs, 3600)) * 1000
+const opened = (await Promise.all(RELAYS.map(u => listen(u, deadline)))).find(Boolean)
+
+if (!opened) {
+  burn()
+  console.log('join: no pairing token arrived before the deadline. The request key is burned, so a')
+  console.log('      token sealed to it now can never be opened — ask the owner to approve again')
+  console.log('      and run this command fresh. Grants issued in the meantime are still live.')
+  process.exit(4)
+}
+
+// ── Prove custody before anything is written ────────────────────────────────────────────────
+// The client key is this session's half of the NIP-46 pairing, not the identity. It is minted here
+// and is worthless to anyone who does not also hold the URI.
+const clientNsec = nip19.nsecEncode(generateSecretKey())
+let pairingUri = opened.pairing.take()
+let signer = null
+try {
+  signer = withPinnedCustody(makeBunkerSigner(pairingUri, clientNsec), opened.identityPubkey)
+  // Signed, verified against the pinned pubkey, and never published. The challenge is the proof;
+  // putting it on a relay would only tell the world a pairing happened.
+  await signer.signEvent({ kind: PAIRING_TOKEN_KIND, created_at: Math.floor(Date.now() / 1000),
+    tags: [['challenge', request.id]], content: '' })
+  console.log(`join: custody proved — the signer signs as ${opened.identityPubkey}`)
+} catch (e) {
+  pairingUri = null
+  opened.pairing.forget()
+  try { signer?.close() } catch {}
+  burn()
+  die(`the pairing did not prove custody, so nothing was written: ${e.message}`, e.exitCode ?? 2)
+} finally {
+  try { signer?.close() } catch {}
+}
+
+// ── Seat it ─────────────────────────────────────────────────────────────────────────────────
+if (seatDir) {
+  mkdirSync(seatDir, { recursive: true, mode: 0o700 })
+  for (const [name, value] of [['bunker-uri', pairingUri], ['bunker-client', clientNsec]]) {
+    const path = joinPath(seatDir, name)
+    writeFileSync(path, value + '\n', { mode: 0o600 })
+    chmodSync(path, 0o600)
+    console.log(`join: wrote ${path} (mode 600)`)
+  }
+} else {
+  console.log('join: no --seat <dir> given, so the proven pairing was discarded. Re-run with --seat')
+  console.log('      to keep it; the owner will have to approve again.')
+}
+pairingUri = null
+
 burn()
-console.log('join: request key burned. If the owner approved, the grants are live on the hive —')
-console.log('      check with the console access list. Pairing to the persistent identity is the')
-console.log('      next step and is not built yet (docs/DESIGN_JOIN.md).')
+console.log(`join: request key burned. Paired to ${nip19.npubEncode(opened.identityPubkey)}.`)
+console.log(`      The pairing expires at ${new Date(opened.expiresAt * 1000).toISOString()} unless`)
+console.log('      the owner extended it in their Bunker; the identity itself is theirs to revoke.')
