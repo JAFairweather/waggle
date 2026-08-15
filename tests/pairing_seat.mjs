@@ -36,6 +36,15 @@ ok(!clean.files.every(f => f.name !== 'identity'),
 const lower = seatPlan({ identityPubkey: A.toUpperCase(), pairingUri: URI, clientNsec: NSEC })
 ok(lower.ok && lower.files[0].value === A, 'the identity is normalised to lowercase hex')
 
+// A seat that always wrote the same identity would pass every assertion above. Two different keys
+// must produce two different seats, or the file is decoration rather than a record.
+const other = seatPlan({ identityPubkey: B, pairingUri: URI, clientNsec: NSEC })
+ok(other.ok && other.files.find(f => f.name === 'identity').value === B,
+  'a different identity is carried through — the file records what was proved, not a constant')
+ok(clean.files.find(f => f.name === 'identity').value
+  !== other.files.find(f => f.name === 'identity').value,
+  'and the two seats differ, so the value is genuinely threaded from the challenge')
+
 ok(!seatPlan({ identityPubkey: 'nope', pairingUri: URI, clientNsec: NSEC }).ok,
   'a non-hex identity is refused')
 ok(/64-hex identity/.test(seatPlan({ identityPubkey: 'nope', pairingUri: URI, clientNsec: NSEC }).reason),
