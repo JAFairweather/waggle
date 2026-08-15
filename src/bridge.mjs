@@ -50,6 +50,7 @@ import { fileURLToPath } from 'node:url'
 // these four came out first — the split is staged, not big-bang.
 import { LANE_IDS, LANES, RELEASED } from './lanes.mjs'   // the trust gradient's one source (#282)
 import { taskRouteMention, taskRouteMentionProblem, taskRouteMentionKey, taskRouteMentionArbitrate, taskRouteMentionConflict } from './task_route_mention.mjs'   // #404, #408, #409, #416
+import { alertHashtags, alertHashtagHit, returnCarryReason } from './alert_hashtag.mjs'   // #508
 import { log, err } from './log.mjs'
 import { markLatency } from './latency.mjs'
 import { durableSet, durableQueue } from './stores.mjs'
@@ -441,9 +442,26 @@ const PUB = cfg.public ? {
     authors: (Array.isArray(r.authors) ? r.authors : (r.author != null ? [r.author] : []))
       .map(s => String(s || '').toLowerCase())
       .filter(s => /^[0-9a-f]{64}$/.test(s) && s !== String(BRIDGE_PK || '').toLowerCase()),
+    // #508. The hashtags THIS recipient subscribes to. Absent means absent: an agent that
+    // configures none behaves exactly as it did before this existed, and a global tag was declined
+    // because it would make every configured agent a recipient of every alert in the channel.
+    // Refusals are logged rather than dropped — a tag discarded silently at load is a subscription
+    // the operator believes they have.
+    alert_tags: (() => {
+      const { tags, problems } = alertHashtags(r.alert_tags)
+      for (const { value, why } of problems) {
+        err(`config: return_lane ${String(r.npub_hex || r.npub || '').slice(0, 12)}… alert tag ${JSON.stringify(String(value ?? '')).slice(0, 40)} refused — ${why}`)
+      }
+      return tags
+    })(),
     managedTaskRoute: false,
   })).filter(r => /^[0-9a-f]{64}$/.test(r.npub_hex) && r.mention), ...configuredTaskRoutes.map(r => ({
     npub_hex: r.participant, mention: r.mention, protocol: r.protocol, authors: [],
+    // Console-managed routes carry no alert tags yet: the route command is an owner-signed policy
+    // envelope, and adding a field to it is a change to the signed shape plus the console that
+    // composes it. Explicitly empty rather than omitted, so this reads as "not yet supplied" and
+    // not as an oversight (follow-up work, not part of #508).
+    alert_tags: [],
     scan_channel: r.channel, scan_author: r.sender, managedTaskRoute: true,
   }))],
   // Working channel(s) the return-lane detector scans for @mentions of, and replies to, an
@@ -2996,7 +3014,7 @@ function installTaskRoutes(routes) {
   PUB.returnLane = [
     ...PUB.returnLane.filter(route => !route.managedTaskRoute),
     ...routes.map(route => ({ npub_hex: route.participant, mention: route.mention,
-      protocol: route.protocol, authors: [], scan_channel: route.channel,
+      protocol: route.protocol, authors: [], alert_tags: [], scan_channel: route.channel,
       scan_author: route.sender, managedTaskRoute: true })),
   ]
   PUB.scanChannels = [...new Set([...PUB.manualScanChannels, ...routes.map(route => route.channel)])]
@@ -3555,6 +3573,10 @@ async function scanReturnLane(msgs, opts = {}) {
     }
     const body = String(m.content || '')
     const ptags = tags.filter(t => t[0] === 'p' && t[1]).map(t => String(t[1]).toLowerCase())
+    // #508. Read once per message, like ptags: which hashtag fired is a per-recipient question,
+    // but WHAT the message carries is not, and re-deriving it inside the fan-out loop is how two
+    // recipients end up disagreeing about the same message.
+    const ttags = tags.filter(t => t[0] === 't' && t[1]).map(t => String(t[1]))
     // #407/#409: WHO IS NAMED is a property of the text and the route set together, so it is
     // settled once per message, before any per-recipient delivery test. Asking each route on its
     // own is what let `mc` and `MC Claude` both carry `@MC Claude`. Longest wins at each at-word.
@@ -3606,11 +3628,27 @@ async function scanReturnLane(msgs, opts = {}) {
         // for the whole message, because it is a cross-route question this per-route loop cannot
         // answer on its own.
         (!r.dynamic && !!r.mention && namedHere.has(taskRouteMentionKey(r.mention)))
-      if (!mentioned && !repliedTo) continue
-      const why = repliedTo && !mentioned ? 'reply' : 'mention'
+      // #508. A THIRD signal, and the only one that is not addressed to anybody: an alert tag says
+      // "whoever is watching", which is why it is a per-recipient subscription and not a channel
+      // setting. Evaluated even when `mentioned` is already true, because the tag that fired is
+      // what goes in the log line — but it changes nothing about routing in that case, and the
+      // dedup below is unchanged: one message reaching a recipient by both signals is one carry.
+      const alerted = alertHashtagHit(body, ttags, r.alert_tags)
+      // `why` is an ALLOWLISTED token, not a sentence — see returnCarryReason, which owns the
+      // closed set and is the only place it is decided. Building it inline here is how a value the
+      // carry templates reject gets constructed, and rejecting one aborts the whole scan.
+      const why = returnCarryReason({ mentioned, repliedTo, alerted })
+      if (!why) continue
       let descriptor
       try { descriptor = carryDescriptor(r, m, why, opts.channel) }
       catch (e) { err(`RETURN drop[task-carry]: ${String(m.id).slice(0, 12)}… -> ${r.npub_hex.slice(0, 12)}…: ${e.message}`); continue }
+      // Name the tag that fired. "carried by alert" without saying which is a line nobody can act
+      // on the day an agent starts receiving more than it expected, and the two sources are worth
+      // telling apart: a client that writes the `t` tag and one that writes only the body text
+      // behave differently, and the operator cannot see which from inside the channel.
+      if (alerted && !mentioned && !repliedTo) {
+        log(`RETURN carry[alert]: ${String(m.id).slice(0, 12)}… -> ${r.npub_hex.slice(0, 12)}… raised #${alerted.tag} (${alerted.via})`)
+      }
       addRlSeen(key)                                       // in-memory now: no double-carry within this scan/overlap
       const accepted = await returnLaneSend(r.npub_hex, descriptor,
         { src: m.id, why, protocol: r.protocol || 'return-carry-v1', channel: opts.channel || null }, opts.publish)

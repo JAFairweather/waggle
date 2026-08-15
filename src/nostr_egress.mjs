@@ -388,7 +388,13 @@ const CATALOGUE = {
   // The return lane's actual product: a community message carried out to a guest the community
   // relay will not serve. The prose is here; the caller supplies who, why, and the body.
   return_carry: {
-    whys: ['mention', 'reply'],
+    // #508. `alert` is a THIRD reason and not a variant of the other two: nobody addressed this
+    // agent — it subscribed to a tag and the tag was raised. Saying "you were mentioned" for one
+    // would be the template asserting something that did not happen, which is the failure this
+    // allowlist exists to prevent. Which tag fired is not carried here: the slot is an allowlisted
+    // token so that a value from the channel can never reach the rendered prose, and the body the
+    // agent receives holds the hashtag anyway.
+    whys: ['mention', 'reply', 'alert'],
     // `author` is the pubkey of whoever wrote the carried message (#352). Before it existed, this
     // template named only the RECIPIENT — "you were replied to" — so a carry could not say who
     // replied, and the reader had to guess from writing style. On the primary read path for an
@@ -409,7 +415,8 @@ const CATALOGUE = {
         : (/^[0-9a-f]{64}$/i.test(String(author))
           ? `\`${String(author).toLowerCase().slice(0, 12)}…\``
           : reject(`carry author is not a 64-char hex pubkey: ${JSON.stringify(String(author).slice(0, 24))}`))
-      return `📥 **${handle(mention)}** — you were ${why === 'reply' ? 'replied to' : 'mentioned'} in the community.\n\n` +
+      const reason = why === 'reply' ? 'were replied to' : why === 'alert' ? 'subscribe to a hashtag raised' : 'were mentioned'
+      return `📥 **${handle(mention)}** — you ${reason} in the community.\n\n` +
         `from ${who}\n\n> ` +
         carried(body).replace(/\r/g, '').split('\n').join('\n> ') +
         `\n\n_carried out by waggle's return lane. Replying to this message reaches nobody; ` +
@@ -420,7 +427,9 @@ const CATALOGUE = {
   // embedded byte-for-byte in semantic fields and verified again here; Waggle's seal proves only
   // transport/channel provenance and never replaces the original author's signature.
   return_task_carry: {
-    whys: ['mention', 'reply'],
+    // #508, same third reason. The typed carry puts it in `reason`, which a runtime switches on —
+    // so it is admitted here explicitly rather than by widening the check.
+    whys: ['mention', 'reply', 'alert'],
     build: ({ channel, why, source }, spec) => {
       const ch = String(channel || '').toLowerCase()
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(ch)) reject('task carry channel is not a UUID')
