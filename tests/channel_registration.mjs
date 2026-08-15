@@ -28,6 +28,14 @@ import {
   KEY_FILE, KNOWN_HOSTS_FILE, SSH_BIN, SSH_TEMPLATE,
   channelCommand, credentialPaths, credentialReport, isRetiredLocalForm, registeredForm, sameVector,
 } from '../src/channel_registration.mjs'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { channelStanza } from '../src/mcp_runtimes.mjs'
+
+const ROOT_DIR = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 let pass = 0, fail = 0
 const check = (cond, what) => { if (cond) { pass++; console.log(`  ok   ${what}`) } else { fail++; console.log(`  FAIL ${what}`) } }
@@ -253,6 +261,95 @@ check(sameVector(`nvoy-mc-claude: ${SSH_BIN} - ✔ Connected`, 'nvoy-mc-claude',
   'a line with a command and no arguments is null — nothing was read, so nothing is claimed')
 check(sameVector('nvoy-mc-claude: - ✔ Connected', 'nvoy-mc-claude', LIVE_ARGS) === null,
   'and a line with no command at all is null, not a comparison against its status text')
+
+// ── 8. The stanza that is PRINTED, not the vector one layer under it ─────────────────────────
+console.log('\n8. what --stanza emits is the registration, not a superset of it')
+// The round-2 blocker: section 1 asserts on `channelCommand(...).args`, and the tool hands that to
+// `channelStanza`, which appended `--instance <agent>` and an env entry. Everything past an ssh
+// target is the remote command, and ssh forwards no env — so the printed stanza was 20 args and an
+// env block while the live entry is 18 and none, and no assertion anywhere could see it. Asserting
+// one layer below the value that ships is the same defect this PR exists to fix.
+const shipped = channelStanza({ agent: 'mc-claude', command: built.command, args: built.args, instanceRoot: `${ROOT}/instances`, verbatim: true })
+check(JSON.stringify(shipped.args) === JSON.stringify(LIVE_ARGS),
+  'the stanza the tool prints carries exactly the live vector — no --instance appended after the ssh target')
+check(shipped.command === SSH_BIN, 'and the command it names is ssh by absolute path')
+check(JSON.stringify(shipped.env) === '{}',
+  'and its env is empty: an env entry on an ssh stanza is set in the LOCAL process and reaches nothing on the far side')
+check(shipped.args.at(-1) === 'root@nave.pub',
+  'so the target is the last argument — anything after it would be sent as the remote command')
+check(sameVector(`nvoy-mc-claude: ${SSH_BIN} ${shipped.args.join(' ')} - ✔ Connected`, 'nvoy-mc-claude', shipped.args) === true,
+  'and an entry registered FROM this stanza compares equal to it — the round trip the operator is told to run')
+// Both directions. `verbatim` has to be what does this, not an accident of the vector: the default
+// form still appends, which is what a local spawn needs.
+const localStanza = channelStanza({ agent: 'mc-claude', command: 'node', args: ['server.mjs'], instanceRoot: `${ROOT}/instances` })
+check(localStanza.args.includes('--instance') && localStanza.env.NVOY_INSTANCE_ROOT === `${ROOT}/instances`,
+  'NEGATIVE CONTROL — the default form still appends --instance and the env root, which a local spawn needs')
+check(shipped.server === localStanza.server && shipped.server === 'nvoy-mc-claude',
+  'and both forms register under the same server name')
+
+// ── 9. The verdict the operator reads ────────────────────────────────────────────────────────
+console.log('\n9. what the mcp-registration row says, driven through the tool')
+// Everything above tests the exported functions. The row is assembled in `connect-agent.mjs` from
+// their answers, and that is the layer where the last two defects lived: `unknown` spent the credit
+// `registeredForm` was careful not to give away, and an ssh entry pointing at the wrong host read
+// healthy. Neither is visible from a function test, so drive the tool with a fake `claude` on PATH
+// and read the row it prints.
+const probeRoot = mkdtempSync(join(tmpdir(), 'wb-mcpreg-'))
+const binDir = join(probeRoot, 'bin')
+mkdirSync(binDir, { recursive: true })
+const AGENT = 'mc-claude'
+const AGENT_ROOT = join(probeRoot, AGENT)
+// The vector the tool will build for THIS root, so the fixtures are the tool's own stanza rather
+// than a hand-typed copy that can drift from it.
+const toolArgs = channelCommand({ instanceRoot: AGENT_ROOT, host: HOST }).args
+
+// The fake runtime is a node script, not a shell script, and PATH is replaced rather than extended.
+// Replaced, so a real `codex` on the machine cannot answer with the operator's own registrations
+// and make this suite depend on the laptop it runs on. Node, because a `#!/bin/sh` stub that pipes
+// through `cat` needs `cat` on PATH — with PATH stripped it exits 127, the tool reports "could not
+// be read", and every assertion below fails for a reason that is the fixture rather than the code.
+const runTool = listing => {
+  writeFileSync(join(binDir, 'claude'), `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(listing + '\n')})\n`, { mode: 0o755 })
+  const args = [join(ROOT_DIR, 'tools', 'connect-agent.mjs'), '--name', AGENT, '--root', probeRoot,
+    '--check', '--channel-host', HOST]
+  try {
+    return execFileSync(process.execPath, args, { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, PATH: binDir } })
+  } catch (e) { return typeof e?.stdout === 'string' ? e.stdout : '' }
+}
+const regRow = out => (out.split('\n').find(l => /Registered as an MCP server/.test(l)) || '')
+
+// A tool that produced nothing has told us nothing. Exit 3, not a pass.
+const sshOut = runTool(`nvoy-${AGENT}: ${SSH_BIN} ${toolArgs.join(' ')} - ✔ Connected`)
+if (!regRow(sshOut)) {
+  console.error('channel_registration: INCONCLUSIVE — the tool printed no mcp-registration row.')
+  console.error('  This is NOT an all-clear: the verdict was never observed.')
+  rmSync(probeRoot, { recursive: true, force: true })
+  process.exit(3)
+}
+// NEGATIVE CONTROL FIRST, so the three refusals below cannot be a row that never says ok.
+check(/^\[ok \]/.test(regRow(sshOut).trim()) && /matching --stanza/.test(regRow(sshOut)),
+  `NEGATIVE CONTROL — an ssh entry matching the stanza IS a tick — ${regRow(sshOut).trim().slice(0, 78)}`)
+
+// MISSING, not merely "not a tick". This row is `blocking: true`, so MISSING stops the run and
+// UNVERIFIED does not — and `registered = true` with nothing verified renders `?`, which is not a
+// tick and is also not a refusal. Asserting only "no ok" cannot tell those two apart, and the
+// difference is whether the operator is stopped or waved through.
+const opaque = regRow(runTool(`nvoy-${AGENT}: node /opt/nvoy/mcp/dist/server.js - ✔ Connected`))
+check(/^\[ x \]/.test(opaque.trim()) && /MISSING/.test(opaque),
+  'a command that is neither the ssh form nor the retired one is MISSING, not present-and-unchecked — ✔ Connected is what the retired form printed too')
+check(/neither the ssh form nor the retired one/.test(opaque),
+  `and the reason names what it is, not just that it failed — ${opaque.trim().slice(0, 78)}`)
+
+const retired = regRow(runTool(`nvoy-${AGENT}: node /home/agent/.nvoy/claude-channel.mjs --instance ${AGENT} - ✔ Connected`))
+check(/^\[ x \]/.test(retired.trim()) && /RETIRED LOCAL FORM/.test(retired),
+  'the retired local spawn is MISSING too, and is named as retired — this is the entry that lists as connected and reaches nothing')
+
+// Form is not correctness: right shape, wrong host.
+const wrongHost = regRow(runTool(`nvoy-${AGENT}: ${SSH_BIN} ${toolArgs.slice(0, -1).join(' ')} root@nave-old.pub - ✔ Connected`))
+check(/^\[ x \]/.test(wrongHost.trim()) && /NOT the/.test(wrongHost),
+  'and an ssh entry pointing at a different host is MISSING — connected is not connected to the right thing')
+
+rmSync(probeRoot, { recursive: true, force: true })
 
 console.log(`\n${pass} passed, ${fail} failed`)
 assert.equal(fail, 0, `${fail} assertion(s) failed`)
