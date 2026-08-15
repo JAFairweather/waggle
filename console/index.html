@@ -289,6 +289,24 @@
         <div class="status" id="admitst"></div>
       </div>
 
+      <!-- The name (#487, second leg). Shown once the key is on the member list, because the
+           community half of this publish is a write to that relay. Being on the list is what lets
+           the key write; this is what makes anyone able to address it. -->
+      <div id="name" style="display:none;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+        <label>Give it a name <span class="hint">this is what an @word looks up — without it the key is on the list and nobody can address it</span></label>
+        <div class="hint" style="margin-top:6px">
+          The agent's own key signs this, and it has to: the relay refuses any event whose key is
+          not the one that signed in, so nothing here can publish a name on its behalf. It goes to
+          the public relays and to this community in one act.
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
+          <input id="name-display" placeholder="The name people will type after the @" autocomplete="off" spellcheck="false" style="flex:1 1 240px">
+          <input id="name-about" placeholder="One line about it (optional)" autocomplete="off" style="flex:1 1 240px">
+          <button class="btn" id="name-go" style="flex:0 0 auto">Publish the name</button>
+        </div>
+        <div class="status" id="namest"></div>
+      </div>
+
       <button class="btn ghost" id="mint-use" style="margin-top:12px">Use this key below</button>
     </div>
     <div class="status" id="mintst"></div>
@@ -387,6 +405,8 @@ import { proveCustody, custodyNonce } from './bunker-custody.mjs'
 import { claimInvite, mintInvite, readPolicy } from './admission-client.mjs'
 import { loadRelayUrl, probeRelay, rememberRelayUrl } from './relay-reach.mjs'
 import { checkMintBounds } from './relay-admission.mjs'
+import { adoptFrom, nameVerdict, profileTemplate, publishCommunity, publishPublic, readBackCommunity, readPublic } from './profile-publish.mjs'
+import * as webNip98 from './nip98.mjs'
 // This page signs kind 440 and 441 without going through consoleSigner, so it does not inherit that
 // chokepoint's guard and needs its own (#418). It calls the guard through signFresh() rather than
 // inline, so the ordering is assertable from a test — an inline handler is not importable.
@@ -844,6 +864,9 @@ function forgetMintedKey() {
   $('admit-policy').style.display = 'none'
   $('admit-claim').style.display = 'none'
   $('admit-terms').checked = false; $('admit-age').checked = false
+  $('name').style.display = 'none'
+  $('name-display').value = ''; $('name-about').value = ''
+  $('namest').className = 'status'; $('namest').textContent = ''
   $('admitst').className = 'status'; $('admitst').textContent = ''
   invite = null; policyVerdict = null; inviteRelay = null
   $('mintst').className = 'status'; $('mintst').textContent = ''
@@ -1046,11 +1069,51 @@ $('admit-claim').addEventListener('click', async () => {
     // `already` and `joined` are kept apart: one consumed a finite slot and one did not, and a
     // re-run that consumed nothing must not read like a first claim that did.
     $('admit-claim').disabled = true
+    // The name step opens here and not before: its community half is a write to this relay, and a
+    // key that is not on the member list cannot make it.
+    $('name').style.display = ''
+    if (minted && !$('name-display').value.trim()) $('name-display').focus()
     admitSt('ok', `${out.outcome} — ${out.note} The relay now says this key is a member. That is NOT the ` +
       'same as having watched it authenticate: the proof is one kind:0 published from this key ' +
       'against the community relay and read back cold.')
   } catch (e) {
     admitSt('err', e.message)
+  }
+})
+
+// The name (#487, second leg). This is what makes the key addressable — admission makes it able to
+// authenticate, and the two are different facts.
+$('name-go').addEventListener('click', async () => {
+  const st = $('namest')
+  const say = (cls, text) => { st.className = `status${cls ? ` ${cls}` : ''}`; st.textContent = text }
+  if (!minted) { say('err', 'Make a key first.'); return }
+  if (!agentSigner) { say('err', 'The agent\'s bunker pairing is gone — prove custody again. This profile must be signed by the AGENT\'s key; the relay refuses any event whose key is not the one that signed in.'); return }
+  const relayUrl = $('admit-relay').value.trim()
+  const display = $('name-display').value.trim()
+  if (!display) { say('err', 'Give it a name — an @word resolves against it, and a profile without one publishes a blank face that looks like it worked.'); return }
+  say('', 'Reading what is already published, so nothing already there gets blanked…')
+  try {
+    // Adopt first. A second, drifting profile that disagrees with the one already published is the
+    // failure worth preventing, and it is invisible until somebody sees the wrong face.
+    const before = await readPublic(minted.display.pubkeyHex)
+    const adopted = adoptFrom(before.events, minted.display.pubkeyHex)
+    const template = profileTemplate({ name: display, about: $('name-about').value, adopted })
+    say('', 'Signing — the agent\'s bunker will prompt, three times: the profile, then the two requests that carry it.')
+    const signed = await signFresh(template, agentSigner)
+    say('', 'Publishing, then reading it back cold from a fresh connection — a relay\'s OK is not a publish.')
+    const pub = await publishPublic(signed)
+    const nip98 = { nip98Template: webNip98.nip98Template, nip98Header: webNip98.nip98Header }
+    const community = await publishCommunity({ relayUrl, signedEvent: signed,
+      sign: t => signFresh(t, agentSigner), nip98 })
+    // Attempted, and whatever happens is reported as itself. This is expected to be refused:
+    // membership buys write, not read, so the refusal distinguishes nothing.
+    const communityRead = community.ok
+      ? await readBackCommunity({ relayUrl, pubkey: minted.display.pubkeyHex, sign: t => signFresh(t, agentSigner), nip98 })
+      : null
+    const v = nameVerdict({ pub, community, communityRead })
+    say(v.proven && v.communityAccepted ? 'ok' : 'err', v.text)
+  } catch (e) {
+    say('err', `${e.message}`)
   }
 })
 
