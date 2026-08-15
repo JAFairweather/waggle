@@ -88,14 +88,30 @@ export function exitFor(status) {
  * Pure: it takes strings and returns a verdict, so both directions can be asserted without a key
  * file, a bunker or a socket. It does not import the signer backend — `src/` may not (egress ban).
  *
- * @returns {{kind: 'bunker'|'local'}|{error: string}}
+ * @returns {{kind: 'bunker'|'local'|'paste'}|{error: string}}
  */
-export function chooseSigningSource({ keyArg = null, uriFile = '', clientFile = '' } = {}) {
+export function chooseSigningSource({ keyArg = null, uriFile = '', clientFile = '', paste = false } = {}) {
   const key = String(keyArg || '').trim()
   const uri = String(uriFile || '').trim()
   const client = String(clientFile || '').trim()
   const pairing = !!uri || !!client
+  const pasted = !!paste
 
+  // Every ambiguous PAIR is named, rather than one check for "more than one source". The operator
+  // is told which two things are fighting and how to drop one, and a third source is the point at
+  // which a generic message stops being actionable (#480).
+  if (pasted && key) {
+    return { error: '--bunker and --key are BOTH given, and this tool will not pick one.\n' +
+      '  Drop one. A claim writes a relay_members row that cannot be removed without whichever\n' +
+      '  key signs (#366), so the wrong choice here is permanent.' }
+  }
+  if (pasted && pairing) {
+    return { error: '--bunker was given AND a pairing is already configured in the environment.\n' +
+      '  Pasting would sign as the pasted signer while the seated pairing sits unused, and this\n' +
+      '  tool will not choose between two bunkers. Unset WAGGLE_BUNKER_URI_FILE and\n' +
+      '  WAGGLE_NIP46_CLIENT_NSEC_FILE to paste, or drop --bunker to use the seated pairing.' }
+  }
+  if (pasted) return { kind: 'paste' }
   if (key && pairing) {
     return { error: '--key and a bunker pairing are BOTH configured, and this tool will not pick one.\n' +
       '  A claim writes a relay_members row that cannot be removed without that key (#366), so\n' +
@@ -111,8 +127,9 @@ export function chooseSigningSource({ keyArg = null, uriFile = '', clientFile = 
     return { kind: 'bunker' }
   }
   if (key) return { kind: 'local' }
-  return { error: 'no signing key. Either pass --key <path>, or set WAGGLE_BUNKER_URI_FILE and\n' +
-    '  WAGGLE_NIP46_CLIENT_NSEC_FILE to sign through a bunker pairing (#477).' }
+  return { error: 'no signing key. Pass --bunker to paste a bunker:// URI at a prompt (#480), or\n' +
+    '  --key <path> for a local key file, or set WAGGLE_BUNKER_URI_FILE and\n' +
+    '  WAGGLE_NIP46_CLIENT_NSEC_FILE to use a seated pairing (#477).' }
 }
 
 /** Local check of the relay's mint bounds. Returns null when fine, else the operator's message. */
