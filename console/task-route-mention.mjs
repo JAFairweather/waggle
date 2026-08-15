@@ -201,11 +201,55 @@ export function taskRouteMentioned(body, mention) {
 // about a single at-word, never about a route, which is why `carried` is resolved before
 // `suppressed` is answered.
 //
-// Returns { carried, suppressed }: `carried` maps mention key -> mention as written; `suppressed`
-// maps mention key -> { mention, by, at }, naming the longer mention that took the at-word and
-// where. The caller logs from `suppressed` — a route that silently stops receiving a carry it used
-// to receive presents as the return lane being flaky, which is the failure this repo keeps paying
-// for.
+// The at-word as written, for a near-miss line: the `@`, the route's own name, and the run of
+// mention characters that CONTINUED past it. The continuation stops at the first character outside
+// the alphabet, so it takes `@MC Claudette` out of `@MC Claudette please look` and not the rest of
+// the sentence. A space deliberately ends it: a space may be interior to a name, but a name is what
+// we are trying to identify here and swallowing them would print the whole message.
+//
+// SAFE FOR A JOURNAL BY CONSTRUCTION, not by sanitising afterwards. The prefix is the configured
+// mention, which the grammar has already refused control characters in, and the continuation is
+// drawn from `MENTION_ALPHABET` — letters, numbers and `_ . ' -` — so no newline or escape can
+// enter this string from the channel body. The cap is what bounds it: a 4 000-character word is
+// otherwise a 4 000-character journal line chosen by whoever wrote the message (cf. #405).
+const NEAR_MISS_WORD_MAX = 64
+function atWordAt(text, at, mentionLength) {
+  const tail = new RegExp(`[${MENTION_ALPHABET}]+`, 'uy')
+  tail.lastIndex = at + 1 + mentionLength
+  const run = tail.exec(text)
+  const word = `@${text.slice(at + 1, at + 1 + mentionLength)}${run ? run[0] : ''}`
+  return word.length <= NEAR_MISS_WORD_MAX ? word : `${word.slice(0, NEAR_MISS_WORD_MAX)}…`
+}
+
+// LOSING TO THE BOUNDARY IS ALSO A LOSS (#415). `suppressed` answers "which other ROUTE took this
+// at-word", and that leaves the more common case unreported: `@MC Claudette` carries to `MC` and
+// not to `MC Claude`, because the boundary correctly says the at-word did not end after `Claude`.
+// No route took it from `MC Claude` — the word itself did — so nothing was contested and nothing
+// was logged. The owner of `MC Claude` watched messages that visibly begin with their name reach
+// somebody else, with no line anywhere saying why.
+//
+// That is the same "presents as the return lane being flaky" failure the suppression log exists to
+// prevent, one case short of covered. So a route whose mention is a PREFIX of the at-word but whose
+// boundary lookahead failed is reported as a NEAR MISS, with the at-word as written, because the
+// at-word is the whole explanation: seeing `@MC Claudette` next to the route `MC Claude` ends the
+// question immediately.
+//
+// PRECEDENCE, and it matters more than it looks. carried > suppressed > near miss. A route that
+// carried anywhere in the body is not reported at all; a route already named in `suppressed` is not
+// reported twice under a second heading. Two lines about one route in one message is how a log
+// starts being skimmed instead of read.
+//
+// Returns { carried, suppressed, nearMissed }: `carried` maps mention key -> mention as written;
+// `suppressed` maps key -> { mention, by, at }, naming the longer mention that took the at-word and
+// where; `nearMissed` maps key -> { mention, word, at }, naming the at-word that continued past the
+// route's name. The caller logs from the latter two — a route that silently stops receiving a carry
+// it used to receive presents as the return lane being flaky, which is the failure this repo keeps
+// paying for.
+//
+// NOT RATE LIMITED HERE, deliberately. Both maps are keyed by mention, so one message yields at most
+// one line per route no matter how many at-words it holds. Across messages the caller's `rlDropOnce`
+// is per message id, so a channel where an agent's name is a common prefix logs once per message —
+// the same exposure `suppressed` already has, not a new one.
 export function taskRouteMentionArbitrate(body, mentions) {
   const text = String(body == null ? '' : body)
   const rows = []
@@ -216,16 +260,27 @@ export function taskRouteMentionArbitrate(body, mentions) {
     if (rows.some(row => row.key === key)) continue
     // Sticky, so a candidate is tested AT the at-word rather than anywhere after it. A non-sticky
     // test would let a mention later in the body win an at-word it does not start.
-    rows.push({ mention: m, key, re: new RegExp(`@${m.replace(RE_ESCAPE, '\\$&')}(?![${MENTION_ALPHABET}])`, 'iuy') })
+    // `re` is the real matcher. `pre` is the same pattern WITHOUT the boundary — the two together
+    // are what separate "this at-word is not your name" from "this at-word starts with your name
+    // and then keeps going", which is the whole of #415.
+    rows.push({ mention: m, key,
+      re: new RegExp(`@${m.replace(RE_ESCAPE, '\\$&')}(?![${MENTION_ALPHABET}])`, 'iuy'),
+      pre: new RegExp(`@${m.replace(RE_ESCAPE, '\\$&')}`, 'iuy') })
   }
   const carried = new Map()
   const contested = []
+  const missed = []
   for (let i = 0; i < text.length; i++) {
     if (text[i] !== '@') continue
     const hits = []
     for (const row of rows) {
       row.re.lastIndex = i
-      if (row.re.test(text)) hits.push(row)
+      if (row.re.test(text)) { hits.push(row); continue }
+      // Matched as a prefix, then the boundary said the at-word had not ended. That is a near miss,
+      // and it is recorded whether or not any OTHER route went on to take this at-word — the
+      // precedence pass below decides what is worth a line.
+      row.pre.lastIndex = i
+      if (row.pre.test(text)) missed.push({ row, at: i, word: atWordAt(text, i, row.mention.length) })
     }
     if (!hits.length) continue
     // EVERY mention of the longest length carries — the tie is not broken. See above.
@@ -239,5 +294,12 @@ export function taskRouteMentionArbitrate(body, mentions) {
     if (carried.has(row.key) || suppressed.has(row.key)) continue   // won elsewhere, or already recorded
     suppressed.set(row.key, { mention: row.mention, by, at })
   }
-  return { carried, suppressed }
+  const nearMissed = new Map()
+  for (const { row, at, word } of missed) {
+    // carried > suppressed > near miss. See the precedence note above: the quietest true statement
+    // about a route is the one worth printing, and printing two is how the log stops being read.
+    if (carried.has(row.key) || suppressed.has(row.key) || nearMissed.has(row.key)) continue
+    nearMissed.set(row.key, { mention: row.mention, word, at })
+  }
+  return { carried, suppressed, nearMissed }
 }

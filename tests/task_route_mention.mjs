@@ -307,7 +307,7 @@ process.env.FORWARD_MODE = 'buzz'
 process.env.WB_STUB_SEND = '1'
 process.env.WB_NO_BOOT = '1'
 
-const { scanReturnLane, PUB, grantSet } = await import('../src/bridge.mjs')
+const { scanReturnLane, PUB, grantSet, nearMissLedger } = await import('../src/bridge.mjs')
 grantSet.set(myDude, { grantId: '1'.repeat(64), grantor: crew })
 grantSet.set(mcClaude, { grantId: '2'.repeat(64), grantor: crew })
 grantSet.set(mcOnly, { grantId: '3'.repeat(64), grantor: crew })
@@ -464,8 +464,9 @@ ok('  …and the legitimate carry still lands, so the fix suppresses rather than
 console.log('\narbitration — longest wins per at-word, both directions')
 
 const arb = (body, mentions) => {
-  const { carried, suppressed } = taskRouteMentionArbitrate(body, mentions)
-  return { won: [...carried.values()].sort(), lost: [...suppressed.values()].map(s => s.mention).sort() }
+  const { carried, suppressed, nearMissed } = taskRouteMentionArbitrate(body, mentions)
+  return { won: [...carried.values()].sort(), lost: [...suppressed.values()].map(s => s.mention).sort(),
+    near: [...nearMissed.values()].map(n => `${n.mention} in ${n.word}`).sort() }
 }
 const ROUTES = ['MC', 'MC Claude', 'My Dude']
 const ALL_ROUTES = [...ROUTES, MESNIL_LONG, 'Mesnil']
@@ -500,6 +501,68 @@ ok('the winner does not depend on route order',
 
 // Size floor — an arbitration over no routes must report nothing rather than everything.
 ok('no routes means nothing carries', arb('@MC Claude', []).won.length === 0)
+
+// ---------------------------------------------------------------------------------------------
+// Losing to the BOUNDARY is also a loss (#415). `suppressed` answers "which other route took it",
+// which left the commoner case silent: `@MC Claudette` carries to `MC` and not to `MC Claude`, no
+// route took it, nothing was logged, and the owner of `MC Claude` watched messages that visibly
+// begin with their name reach somebody else with no line anywhere saying why.
+// ---------------------------------------------------------------------------------------------
+console.log('\nnear misses — the at-word that continued past the name')
+
+ok('a route whose name is a prefix of a longer WORD is reported',
+  arb('@MC Claudette please look', ROUTES).near.join('|') === 'MC Claude in @MC Claudette',
+  JSON.stringify(arb('@MC Claudette please look', ROUTES)))
+ok('  …and the at-word as written is IN the line, because that is the whole explanation',
+  arb('@MC Claudeé said no', ROUTES).near.join('|') === 'MC Claude in @MC Claudeé')
+ok('  …a possessive counts too — a different name, not this one',
+  arb("@MC Claude's Assistant will", ROUTES).near.join('|') === "MC Claude in @MC Claude's")
+ok('  …and the shorter route still CARRIES the at-word it legitimately owns',
+  arb('@MC Claudette please look', ROUTES).won.join('|') === 'MC')
+
+// BOTH DIRECTIONS. A near-miss report that fired on every at-word would be worse than silence: the
+// log exists to be read, and one that always says something says nothing.
+ok('an at-word that is nobody-and-nothing-like is not a near miss for anyone',
+  arb('@Nobody at all', ROUTES).near.length === 0, JSON.stringify(arb('@Nobody at all', ROUTES)))
+ok('a route that WON its at-word outright is not also reported as missing it',
+  arb('@MC Claude — please look at this.', ROUTES).near.length === 0)
+ok('an unrelated route is not dragged into someone else\'s near miss',
+  !arb('@MC Claudette please look', ROUTES).near.some(n => n.startsWith('My Dude')))
+
+// PRECEDENCE — carried beats suppressed beats near miss. Two lines about one route in one message
+// is how a log starts being skimmed instead of read.
+ok('a route that carried ELSEWHERE gets no near-miss line for the at-word it lost',
+  arb('@MC Claudette and @MC Claude', ROUTES).near.length === 0,
+  JSON.stringify(arb('@MC Claudette and @MC Claude', ROUTES)))
+{
+  const both = arb('@MC Claude then @MCX', ROUTES)
+  ok('a route suppressed by another ROUTE is not ALSO reported as a near miss',
+    both.lost.join('|') === 'MC' && both.near.length === 0, JSON.stringify(both))
+}
+// The two are genuinely different findings, and the operator does different things about them, so
+// a body producing one of each must produce one of each.
+{
+  const mixed = arb('@My Dudette and @MC Claude', ROUTES)
+  ok('a body with one of each reports one of each, under its own heading',
+    mixed.lost.join('|') === 'MC' && mixed.near.join('|') === 'My Dude in @My Dudette',
+    JSON.stringify(mixed))
+}
+
+// The word is outside-controlled text on its way to a journal (#405 is the same lesson). It cannot
+// carry a control character — the continuation is drawn from the mention alphabet — and it is
+// capped, or a 4 000-character word is a 4 000-character journal line chosen by the sender.
+{
+  const long = arb(`@MC Claude${'x'.repeat(4000)} hello`, ROUTES)
+  ok('a monstrous word does not become a monstrous log line',
+    long.near.length === 1 && long.near[0].length < 120, String(long.near[0]?.length))
+  ok('  …and it SAYS it was cut, rather than silently reading as a shorter word',
+    String(long.near[0] ?? '').endsWith('…'), JSON.stringify(long.near))
+  const broken = arb('@MC Claude\u000Ayikes RETURN forged', ROUTES)
+  ok('a newline right after the name cannot get into the reported word',
+    !/[\u000A]/.test(broken.near.join('|') + broken.won.join('|')))
+  ok('  …and that body is a plain carry, not a near miss — a newline ENDS the at-word',
+    broken.won.join('|') === 'MC Claude' && broken.near.length === 0, JSON.stringify(broken))
+}
 
 // TIES ARE NOT BROKEN — the claim this fix originally rested on was false (#414 review).
 // `taskRouteMentionKey` folds with `toLowerCase()` (Unicode case MAPPING); the matcher folds with
@@ -571,6 +634,55 @@ ok('end to end: a tie reaches BOTH agents, so the real agent is not displaced',
     captured.join(' / ').slice(0, 200))
   ok('  …and the line says which longer name took the at-word, and where',
     !!line && /@MC does not take the at-word at \d+ — @MC Claude is longer/.test(line), String(line))
+}
+
+// The NEAR MISS is a DIFFERENT reason and gets its own line (#415), deduped by content rather than
+// by count (#425 review). Driven end to end, because the dedup lives at the log site and a unit
+// test of the ledger alone would not prove the log site consults it.
+{
+  const captured = []
+  const realLog = console.log
+  console.log = (...a) => { captured.push(a.join(' ')) }
+  const nearMisses = () => captured.filter(l => l.includes('skip[longer-word]'))
+  await carriedBy('@MCX please look at this')            // @MC matched as a prefix; the word ran on
+  const first = nearMisses().length
+  await carriedBy('@MCX again, exactly the same typo')   // same (route, word) — one confusion, not two
+  const repeat = nearMisses().length
+  await carriedBy('@mcx once more, in lower case')       // the same confusion, written differently
+  const folded = nearMisses().length
+  await carriedBy('@MCY a DIFFERENT typo for the same route')
+  const distinct = nearMisses().length
+  console.log = realLog
+
+  ok('a near miss is reported, under its own heading and not as a name clash',
+    first === 1 && /@MC does not take the at-word at \d+ — @MCX continues past it/.test(nearMisses()[0] || ''),
+    (nearMisses()[0] || captured.join(' / ')).slice(0, 200))
+  ok('  …and the same at-word again is NOT reported again — one confusion, one line',
+    repeat === first, `${first} -> ${repeat}`)
+  ok('  …including in another case, because the key folds the way the route key folds',
+    folded === first, `${first} -> ${folded}`)
+  // The direction a count threshold gets wrong, and the reason the dedup is by content: a threshold
+  // cannot tell a new confusion from the fortieth repeat of an old one, so it goes quiet on real,
+  // standing drift — which is the failure #415 exists to stop, one layer down.
+  ok('NEGATIVE CONTROL — a NEW at-word for the same route still gets its own line',
+    distinct === first + 1, `${folded} -> ${distinct}`)
+}
+
+// The ledger on its own, for the bound. Its own instance, so it is not reading state the end-to-end
+// block above left behind.
+{
+  const once = nearMissLedger({ cap: 3 })
+  ok('the ledger reports a first sighting', once('mc', '@MCX') === true)
+  ok('  …and refuses the same pair', once('mc', '@MCX') === false)
+  ok('  …while a different ROUTE with the same word is a different confusion', once('my dude', '@MCX') === true)
+  ok('  …and a different WORD for the same route is too', once('mc', '@MCY') === true)
+  // Eviction, insertion-ordered: the fourth distinct pair pushes the first one out, so it reports
+  // again rather than being remembered forever on a process meant to run for months. A cap that
+  // never evicted would pass every assertion above.
+  ok('NEGATIVE CONTROL — past the cap the OLDEST pair is evicted and reports again',
+    once('mc', '@MCZ') === true && once('mc', '@MCX') === true)
+  ok('  …while the newest pair is still remembered, so eviction is ordered and not a wipe',
+    once('mc', '@MCZ') === false)
 }
 
 console.log(fails ? `\nTASK ROUTE MENTION FAIL — ${fails}` : '\nTASK ROUTE MENTION PASS — grammar, reasons, console join, boundary, arbitration, end-to-end carry')

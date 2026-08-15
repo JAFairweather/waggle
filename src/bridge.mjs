@@ -2452,6 +2452,33 @@ function rlDropOnce(id) {
   return true
 }
 
+// Near-miss dedup (#425 review). A near miss is reported once per (route, at-word), not once per
+// message. `@MCX` near-missing `MC` is signal; the same channel member typing it forty more times
+// is the same one confusion, and a journal a human greps on demand loses its value by repetition.
+//
+// Deliberately NOT a frequency threshold, and that was the reviewer's point: "log the first N, then
+// go quiet" reproduces the exact failure #415 exists to stop — a route losing its at-word silently,
+// one layer down — and leaves the owner unable to tell "fixed" from "rate-limited" from the log
+// alone. Keying on content instead means every DISTINCT confusion still gets its line, and a new
+// near-miss word for the same route is a new line however long the old one has been repeating.
+//
+// A factory rather than a module-level Set so a test can hold its own and assert eviction; bounded
+// and insertion-ordered, the same shape as rlDropOnce, because this process is meant to run for
+// months and the at-words are supplied by whoever is typing in the channel.
+export function nearMissLedger({ cap = Number(process.env.NEAR_MISS_LOG_CAP || 2000) } = {}) {
+  const seen = new Set()
+  return (routeKey, word) => {
+    // Folded the same way `taskRouteMentionKey` folds, on BOTH halves: `@MCX` and `@mcx` are the
+    // same confusion, and a route is the same route whichever case its name was written in.
+    const k = `${taskRouteMentionKey(routeKey)}\n${taskRouteMentionKey(word)}`
+    if (seen.has(k)) return false
+    seen.add(k)
+    if (seen.size > cap) seen.delete(seen.values().next().value)
+    return true
+  }
+}
+const nearMissOnce = nearMissLedger()
+
 // Publish a wrap to the public relays, resolving to the count that returned OK-true. Per-relay OK is
 // the ONLY landing signal: a relay 503s or drops silently, and an explicit ["OK", id, false]
 // rejection used to read byte-identical to an accept (the loop counted any inbound frame). Finding
@@ -3492,13 +3519,22 @@ async function scanReturnLane(msgs, opts = {}) {
     // must not take an at-word from one that is.
     const contestants = recipients.filter(r => !r.dynamic && !!r.mention &&
       (!r.managedTaskRoute || r.scan_channel === String(opts.channel || '').toLowerCase()))
-    const { carried: namedHere, suppressed: shadowed } =
+    const { carried: namedHere, suppressed: shadowed, nearMissed } =
       taskRouteMentionArbitrate(body, contestants.map(r => r.mention))
     // Named, not dropped silently. This says only who took the at-word — a route can also fail to
     // carry for reasons that have nothing to do with naming, and this line does not claim otherwise.
-    if (shadowed.size && rlDropOnce(m.id)) {
+    if ((shadowed.size || nearMissed.size) && rlDropOnce(m.id)) {
       for (const { mention, by, at } of shadowed.values())
         log(`RETURN skip[longer-name]: ${String(m.id).slice(0, 12)}… @${mention} does not take the at-word at ${at} — @${by} is longer`)
+      // A DIFFERENT reason, under its own heading (#415). Losing to another route and losing to the
+      // word itself are two things an operator does two different things about: the first is a
+      // naming collision to resolve, the second is usually somebody typing a name that is not
+      // anyone's. Collapsing them into one line would report a name clash that does not exist.
+      // Once per (route, at-word), not once per message — see nearMissLedger. The route key is the
+      // Map's own key, so this dedups on the same fold the arbitration already used.
+      for (const [routeKey, { mention, word, at }] of nearMissed)
+        if (nearMissOnce(routeKey, word))
+          log(`RETURN skip[longer-word]: ${String(m.id).slice(0, 12)}… @${mention} does not take the at-word at ${at} — ${word} continues past it`)
     }
     let carried = false
     // No break: one message fans out to EVERY matching recipient, each deduped on its own
