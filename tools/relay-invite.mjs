@@ -65,12 +65,15 @@
 // Exit: 0 ok · 1 bad input · 2 relay/network · 3 INCONCLUSIVE (it ran, and could not tell you)
 //       4 the relay answered, and its answer is a refusal — that IS the result, not a failure.
 
+import { createInterface } from 'node:readline'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { homedir } from 'node:os'
+import { generateSecretKey } from 'nostr-tools/pure'
 import { nip19 } from 'nostr-tools'
+import { checkPastedBunkerUri, findBunkerUriExposure, planClientKey } from '../src/bunker_paste.mjs'
 import { nip98Template, nip98Header, expectedUrl } from '../src/nip98.mjs'
-import { loadBunkerSignerFiles, makeLocalSigner, withPinnedCustody } from '../src/nostr_signer.mjs'
+import { loadBunkerSignerFiles, makeBunkerSigner, makeLocalSigner, withPinnedCustody } from '../src/nostr_signer.mjs'
 import { refusal, checkMintBounds,
   SIGN_TIMEOUT_MS, MAX_SIGN_SKEW_SECS, NIP98_WINDOW_SECS } from '../src/relay_invite.mjs'
 import { resolveSigner, signerBanner } from '../src/relay_invite_signer.mjs'
@@ -90,17 +93,24 @@ const die = (msg, code = 1) => { console.error(`relay-invite: ${msg}`); process.
 const expand = (p) => (String(p).startsWith('~/') ? resolve(homedir(), String(p).slice(2)) : resolve(String(p)))
 
 const USAGE = `usage:
-  BUZZ_RELAY_URL=… node tools/relay-invite.mjs mint  --key <path> [--ttl 3600] [--uses 1] [--out <path>]
-  BUZZ_RELAY_URL=… node tools/relay-invite.mjs claim --key <path> --code-file <path>
+  BUZZ_RELAY_URL=… node tools/relay-invite.mjs mint  --bunker [--ttl 3600] [--uses 1] [--out <path>]
+  BUZZ_RELAY_URL=… node tools/relay-invite.mjs claim --bunker --code-file <path>
                                                      [--accept-terms] [--confirm-age]
 
   --accept-terms   accept this deployment's join policy (required where one is configured)
   --confirm-age    attest, as a person, that the age requirement is met. Never inferred.
 
-  Instead of --key, sign through a NIP-46 pairing — the only way a bunker-held identity can
-  claim, and the shape #367 requires (#477). Set BOTH, and do not also pass --key:
+  ONE signing source, named explicitly — never two. A claim writes a relay_members row that
+  cannot be removed without whichever key signs (#366), so an ambiguous run is refused.
+
+    --bunker              paste a bunker:// URI at a hidden prompt (#480). Not echoed, not saved;
+                          only the NIP-46 client key persists, so later runs need no re-approval.
+                          A URI in argv or an env var is REFUSED — both are recorded.
+    --key <path>          a mode-0600 file holding an nsec or 64-hex key.
     WAGGLE_BUNKER_URI_FILE=<path>  WAGGLE_NIP46_CLIENT_NSEC_FILE=<path>
-    EXPECT_PUBKEY=<64-hex>         optional; pins which identity may sign.`
+                          a pairing an administrator seated for an agent runtime (#477/#367).
+
+    EXPECT_PUBKEY=<64-hex>  optional with any source; pins which identity may sign.`
 
 if (!cmd || !['mint', 'claim'].includes(cmd)) die(USAGE)
 
@@ -126,8 +136,99 @@ function readKeyText(pathArg) {
   die(`${p} holds neither an nsec nor a 64-character hex key`)
 }
 
+// --- pasting a bunker URI (#480) ----------------------------------------------------------------
+// The prompt REQUIRES an interactive terminal, and reads from `process.stdin` rather than opening
+// /dev/tty. Both halves of that are load-bearing:
+//
+//   - A pipe or a heredoc is refused rather than accepted, because both are routes by which the
+//     connect secret ends up in a file or a history. Falling back to stdin when there is no
+//     terminal would quietly defeat the reason this prompt exists.
+//   - Echo suppression only works on a stream readline can put in raw mode. A stream opened from
+//     /dev/tty has no `setRawMode`, so readline cannot take over the echoing, the terminal driver
+//     keeps doing it, and the pasted URI appears on screen — while the prompt says it will not.
+//     `process.stdin` on a TTY has it. Found by running this through a pty; it is invisible to
+//     every check that does not.
+function promptHidden(question) {
+  return new Promise((ok, no) => {
+    const input = process.stdin, output = process.stdout
+    if (!input.isTTY || typeof input.setRawMode !== 'function') {
+      return no(new Error('--bunker needs an interactive terminal. stdin here is not one, and this ' +
+        'tool will not read a bunker URI from a pipe or a heredoc:\n' +
+        '  the URI carries a connect secret, and both of those put it in a file.\n' +
+        '  Run it from a shell, or use --key / WAGGLE_BUNKER_URI_FILE instead.'))
+    }
+    const rl = createInterface({ input, output, terminal: true })
+    let muted = false, settled = false
+    // Nothing is echoed — not even asterisks, which leak the length. Announced, because a prompt
+    // that swallows keystrokes with no warning reads as a hung tool.
+    rl._writeToOutput = (s) => { if (!muted) output.write(s) }
+    const finish = (fn, arg) => {
+      if (settled) return
+      settled = true
+      muted = false
+      output.write('\n')
+      rl.close()
+      fn(arg)
+    }
+    // A closed input has to REJECT. Without this the promise never settles, and Ctrl-D or Ctrl-C
+    // at the prompt exits 13 on an unsettled top-level await rather than saying anything.
+    rl.on('close', () => finish(no, new Error('the prompt was closed before a URI was entered — nothing was signed')))
+    rl.on('SIGINT', () => finish(no, new Error('cancelled at the prompt — nothing was signed')))
+    output.write(`${question}\n(nothing will appear as you paste)\n> `)
+    muted = true
+    rl.question('', (answer) => finish(ok, answer))
+  })
+}
+
+// The CLIENT key, persisted; the URI never is. A NIP-46 bunker authorizes a specific client
+// keypair, so a fresh one each run is an app the signer has never seen — some refuse it outright
+// as "Unknown client", and the rest ask for approval again. Same reasoning and same 0600 file as
+// tools/grant.mjs:56-66.
+function clientKeyHex() {
+  const dir = process.env.WAGGLE_HOME ? expand(process.env.WAGGLE_HOME) : resolve(homedir(), '.waggle')
+  const path = resolve(dir, 'relay-invite-client.key')
+  let existing = null
+  if (existsSync(path)) {
+    const mode = statSync(path).mode & 0o777
+    if (mode & 0o077) die(`${path} is mode ${mode.toString(8)} — the NIP-46 client key must be 0600.`, 1)
+    existing = readFileSync(path, 'utf8')
+  }
+  const plan = planClientKey(existing)
+  if (plan.error) die(`${path}: ${plan.error}`, 1)
+  if (!plan.create) return plan.hex
+
+  const hex = Buffer.from(generateSecretKey()).toString('hex')
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  writeFileSync(path, `${hex}\n`, { mode: 0o600 })
+  console.error(`relay-invite: new NIP-46 client key saved to ${path}`)
+  console.error('  Approve this app in your signer once — later runs reuse it and will not ask again.')
+  return hex
+}
+
+async function loadPastedBunker() {
+  const answer = await promptHidden('Paste the bunker:// URI from your signer\'s "connect an app" flow.')
+  const parsed = checkPastedBunkerUri(answer)
+  if (parsed.error) die(parsed.error, 1)
+  if (!parsed.hasSecret) {
+    // Not fatal: a URI re-copied after this client key was already authorized has no secret left,
+    // and that run is legitimate. Said out loud because if the pairing ISN'T established the
+    // bunker answers "Unknown client", which reads as a broken tool rather than a missing secret.
+    console.error('relay-invite: the URI carries no secret. That is expected on a re-run with an ' +
+      'already-approved client key,\n  and is the cause of "Unknown client" if this is the first pairing.')
+  }
+  // The client key is resolved BEFORE the connecting message, so "a new key was saved, approve it
+  // once" is read before "approve the prompt" rather than after it.
+  const client = clientKeyHex()
+  console.error(`relay-invite: connecting to the signer over ${parsed.relays.length} relay(s) — approve the prompt.`)
+  return makeBunkerSigner(parsed.uri, nip19.nsecEncode(Uint8Array.from(Buffer.from(client, 'hex'))), {
+    uriLabel: 'the pasted bunker URI',
+    clientLabel: 'the saved NIP-46 client key',
+  })
+}
+
 /**
- * The one signer for this run — local file or bunker pairing, chosen explicitly, custody pinned.
+ * The one signer for this run — pasted bunker, local file, or seated pairing; chosen explicitly,
+ * custody pinned.
  *
  * The decisions live in ../src/relay_invite_signer.mjs so they can be driven with a signer whose
  * identity differs from its pairing address. What stays here is the environment, the file checks,
@@ -135,15 +236,22 @@ function readKeyText(pathArg) {
  */
 async function buildSigner(what) {
   const keyArg = arg('key')
+  // Before the prompt, not after: a URI already in argv or the environment is a secret already
+  // recorded, and prompting for a second one would leave the operator believing it was not.
+  const exposed = findBunkerUriExposure(argv, process.env)
+  if (exposed.error) die(exposed.error, 1)
+
   const result = await resolveSigner({
     keyArg,
     uriFile: String(process.env.WAGGLE_BUNKER_URI_FILE || '').trim(),
     clientFile: String(process.env.WAGGLE_NIP46_CLIENT_NSEC_FILE || '').trim(),
+    paste: flag('bunker'),
     expect: process.env.EXPECT_PUBKEY,
     what,
   }, {
     loadBunker: (uriFile, clientFile) => loadBunkerSignerFiles(uriFile, clientFile),
     loadLocal: (path) => makeLocalSigner(readKeyText(path), expand(path)),
+    loadPaste: () => loadPastedBunker(),
     pin: withPinnedCustody,
   })
 

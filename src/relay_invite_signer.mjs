@@ -22,6 +22,9 @@ import { chooseSigningSource } from './relay_invite.mjs'
 /** Exit codes, matching the tool's contract. 2 is "the signer failed", 1 is "you meant another key". */
 const INPUT = 1, SIGNER = 2
 
+/** What to call the thing EXPECT_PUBKEY disagreed with, in the operator's terms. */
+const SOURCE = { bunker: 'pairing', local: 'key file', paste: 'bunker you pasted' }
+
 /**
  * Resolve one signer for a run, or explain why not.
  *
@@ -31,9 +34,9 @@ const INPUT = 1, SIGNER = 2
  * @returns `{signer, identity, kind, remote}` on success. On failure `{error, code, signer?}` —
  *          `signer` is present when one was built, so the caller can close it before exiting.
  */
-export async function resolveSigner({ keyArg, uriFile, clientFile, expect = '', what = 'this run' } = {}, deps = {}) {
-  const { loadBunker, loadLocal, pin } = deps
-  const choice = chooseSigningSource({ keyArg, uriFile, clientFile })
+export async function resolveSigner({ keyArg, uriFile, clientFile, paste = false, expect = '', what = 'this run' } = {}, deps = {}) {
+  const { loadBunker, loadLocal, loadPaste, pin } = deps
+  const choice = chooseSigningSource({ keyArg, uriFile, clientFile, paste })
   if (choice.error) return { error: choice.error, code: INPUT, usage: true }
 
   // Shape-checked BEFORE anything is built or asked. On a bunker, resolving the identity means a
@@ -45,8 +48,15 @@ export async function resolveSigner({ keyArg, uriFile, clientFile, expect = '', 
     return { error: 'EXPECT_PUBKEY must be a 64-character hex pubkey', code: INPUT }
   }
 
+  const load = {
+    bunker: () => loadBunker(uriFile, clientFile),
+    local: () => loadLocal(keyArg),
+    paste: () => loadPaste(),
+  }[choice.kind]
+  if (!load) return { error: `no loader for a ${choice.kind} signer`, code: INPUT }
+
   let base
-  try { base = choice.kind === 'bunker' ? await loadBunker(uriFile, clientFile) : await loadLocal(keyArg) }
+  try { base = await load() }
   catch (e) { return { error: `could not load the signing key: ${e.message}`, code: INPUT } }
 
   // ASK which identity it holds — never read it off the pairing. `bunker://<hex>` names the remote
@@ -65,7 +75,7 @@ export async function resolveSigner({ keyArg, uriFile, clientFile, expect = '', 
     // Refused before anything is signed. A claim inserts a relay_members row that cannot be removed
     // without that key's cooperation (#366), so the wrong identity here is permanent.
     return {
-      error: `EXPECT_PUBKEY does not match the ${choice.kind === 'bunker' ? 'pairing' : 'key file'}:\n` +
+      error: `EXPECT_PUBKEY does not match the ${SOURCE[choice.kind]}:\n` +
         `  expected ${want}\n  signer is ${identity}\n` +
         `  Refusing before signing — ${what} writes state under whichever key signs.`,
       code: INPUT, signer: base,
@@ -85,6 +95,10 @@ export async function resolveSigner({ keyArg, uriFile, clientFile, expect = '', 
  * Takes the resolved identity, never the signer — passing the signer is what let a banner print the
  * pairing's transport address, which is a key that signs nothing.
  */
-export function signerBanner(verb, { identity, remote } = {}) {
-  return `relay-invite: ${verb} as ${nip19.npubEncode(identity)} (${remote ? 'bunker pairing' : 'local key file'})`
+export function signerBanner(verb, { identity, remote, kind } = {}) {
+  // A pasted bunker and a seated one are both remote, and the operator needs to tell them apart:
+  // the pasted one is whatever they just put in, the seated one is whatever an administrator left
+  // in the environment. Reading `remote` alone would print the same line for both.
+  const source = kind === 'paste' ? 'pasted bunker' : remote ? 'bunker pairing' : 'local key file'
+  return `relay-invite: ${verb} as ${nip19.npubEncode(identity)} (${source})`
 }

@@ -25,6 +25,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
+import { checkPastedBunkerUri, findBunkerUriExposure, planClientKey } from '../src/bunker_paste.mjs'
 import { withPinnedCustody } from '../src/nostr_signer.mjs'
 import { resolveSigner, signerBanner } from '../src/relay_invite_signer.mjs'
 
@@ -231,6 +232,121 @@ try {
     ok('…and names the thing that could not be established', /which identity the signer holds/.test(broken.error))
     const junkId = await resolve({ userPubkey: async () => 'not-a-pubkey' })
     ok('a malformed identity is refused rather than pinned to', /nothing can be pinned/.test(String(junkId.error)))
+  }
+
+  // --- --bunker: pasting a URI (#480) ------------------------------------------------------------
+  // The prompt itself is a TTY read and is not driven here — what IS driven is every decision
+  // around it: the ambiguity guard with a third source, the refusal of a URI that arrived by a
+  // route that records it, what a paste is allowed to be, and the client key's reuse rule.
+  {
+    const uriHex = getPublicKey(generateSecretKey())   // what the pasted bunker:// names
+    const userPk = getPublicKey(generateSecretKey())   // who it actually signs as — deliberately not the same
+
+    // A signing source is only a source if it can be CHOSEN. Asserted through resolveSigner rather
+    // than the chooser alone, because a `kind` the loader map has no entry for resolves to
+    // "no loader for a paste signer" — which is a green chooser test and a broken tool.
+    let built = 0
+    const pasteSigner = { pubkey: uriHex, remote: true, userPubkey: async () => userPk, close() {} }
+    const viaPaste = await resolveSigner({ paste: true }, {
+      loadPaste: async () => { built++; return pasteSigner },
+      loadLocal: async () => { throw new Error('not this path') },
+      loadBunker: async () => { throw new Error('not this path') },
+      pin: withPinnedCustody,
+    })
+    ok('--bunker resolves through the paste loader', !viaPaste.error && built === 1 && viaPaste.kind === 'paste')
+    // The whole point of the split-signer fixture: a pasted bunker is remote, so pinning to
+    // `.pubkey` would pin to the transport address here and every signature would be a mismatch.
+    ok('…and pins to the identity the signer reports, not the pasted URI\'s address',
+      viaPaste.signer.pinned === userPk && viaPaste.signer.pinned !== uriHex)
+    ok('…and the banner names a PASTED bunker, distinct from a seated pairing',
+      signerBanner('minting', viaPaste) === `relay-invite: minting as ${nip19.npubEncode(userPk)} (pasted bunker)`)
+    ok('NEGATIVE CONTROL — a seated pairing still reads as a pairing, not as a paste',
+      /\(bunker pairing\)$/.test(signerBanner('minting', { identity: userPk, remote: true, kind: 'bunker' })))
+
+    // Ambiguity, per PAIR. Each of these would otherwise resolve by silent precedence, and a claim
+    // writes a relay_members row that cannot be removed without whichever key signed (#366).
+    const noLoad = { loadPaste: async () => { throw new Error('must not load') },
+      loadLocal: async () => { throw new Error('must not load') },
+      loadBunker: async () => { throw new Error('must not load') }, pin: withPinnedCustody }
+    const bothCli = await resolveSigner({ paste: true, keyArg: '/k' }, noLoad)
+    ok('--bunker with --key is refused, and nothing is loaded',
+      /--bunker and --key are BOTH given/.test(String(bothCli.error)) && bothCli.code === 1)
+    const bothBunkers = await resolveSigner({ paste: true, uriFile: '/u', clientFile: '/c' }, noLoad)
+    ok('--bunker with a seated pairing is refused rather than choosing one bunker over the other',
+      /will not choose between two bunkers/.test(String(bothBunkers.error)))
+    const nothing = await resolveSigner({}, noLoad)
+    ok('with no source at all, the error offers --bunker first', /Pass --bunker to paste/.test(String(nothing.error)))
+
+    // findBunkerUriExposure — the refusal that makes the prompt more than decoration.
+    const inArgv = findBunkerUriExposure([`bunker://${uriHex}?relay=wss://r.example`], {})
+    ok('a bunker URI in argv is refused', /will not take\s+one that way/.test(String(inArgv.error)))
+    ok('…and says the secret is already in the shell history, so it must be rotated',
+      /Rotate the pairing/.test(String(inArgv.error)))
+    ok('a bunker URI in an env var is refused',
+      /will not take one from the\s+environment/.test(String(findBunkerUriExposure([], { MY_BUNKER_URI: `bunker://${uriHex}?relay=wss://r.example` }).error)))
+    // The env scan reads VALUES, not names (#481 review). Matching the name meant the refusal only
+    // fired when the operator had helpfully called the variable something with "bunker" and "uri"
+    // in it; every realistic name a signer's own docs suggest went straight through with the
+    // secret in it. Each of these was accepted before the fix.
+    for (const name of ['SIGNER', 'NOSTR_CONNECT', 'BUNKER', 'NIP46_URI', 'X']) {
+      ok(`a bunker URI in ${name} is refused — the name is not what makes it a secret`,
+        /will not take one from the\s+environment/.test(
+          String(findBunkerUriExposure([], { [name]: `bunker://${uriHex}?relay=wss://r.example` }).error)))
+    }
+    ok('…and names the variable, so the operator knows which one to rotate',
+      /^SIGNER holds a bunker:\/\/ URI/.test(String(findBunkerUriExposure([], { SIGNER: `bunker://${uriHex}` }).error)))
+    ok('…and says to rotate, as the argv branch already did',
+      /Rotate the pairing/.test(String(findBunkerUriExposure([], { SIGNER: `bunker://${uriHex}` }).error)))
+    ok('a URI in a _FILE-named variable is refused too — the convention is a path, not a hiding place',
+      /will not take one from the\s+environment/.test(
+        String(findBunkerUriExposure([], { WAGGLE_BUNKER_URI_FILE: `bunker://${uriHex}` }).error)))
+
+    // BOTH DIRECTIONS. A guard that refuses everything is indistinguishable from one that works.
+    ok('NEGATIVE CONTROL — an ordinary command line is not refused',
+      !findBunkerUriExposure(['mint', '--bunker', '--ttl', '3600'], {}).error)
+    ok('NEGATIVE CONTROL — WAGGLE_BUNKER_URI_FILE naming a PATH is not refused, only a URI is',
+      !findBunkerUriExposure([], { WAGGLE_BUNKER_URI_FILE: '/home/op/.nvoy/bunker-uri' }).error)
+    ok('NEGATIVE CONTROL — an ordinary environment is not refused',
+      !findBunkerUriExposure([], { HOME: '/home/op', PATH: '/usr/bin', LANG: 'en_GB.UTF-8' }).error)
+
+    // checkPastedBunkerUri — what a paste is allowed to be. Every refusal names the wrong part,
+    // because the operator's next act is to re-copy the string and a generic message re-copies
+    // the same one.
+    const good = checkPastedBunkerUri(`  "bunker://${uriHex}?relay=wss://relay.example&secret=abc"  `)
+    ok('a whole URI is accepted, quotes and whitespace stripped',
+      good.pubkey === uriHex && good.relays.length === 1 && good.hasSecret === true)
+    ok('a URI with no secret is ACCEPTED, not refused — a re-run after pairing has none',
+      checkPastedBunkerUri(`bunker://${uriHex}?relay=wss://relay.example`).hasSecret === false)
+    ok('a truncated paste is named as truncated, with the length it actually had',
+      /is 40 characters, not 64/.test(String(checkPastedBunkerUri(`bunker://${uriHex.slice(0, 40)}?relay=wss://r.example`).error)))
+    // ASSERT THE REASON, NOT ONLY THE REFUSAL (#481 review). A full-length pubkey with one wrong
+    // character used to be refused with "is 64 characters, not 64", which reads as a tool fault and
+    // sends the operator to re-copy a string that was never short.
+    {
+      const substituted = `${uriHex.slice(0, 63)}g`
+      const e = String(checkPastedBunkerUri(`bunker://${substituted}?relay=wss://r.example`).error)
+      ok('a full-length non-hex pubkey is refused for its CHARSET, not for a length it has',
+        /right length but is not hex/.test(e) && !/not 64/.test(e))
+      ok('…and names the offending character, so the operator can find it',
+        /contains "g"/.test(e))
+      ok('an over-long paste says so rather than calling itself truncated',
+        /extra characters/.test(String(checkPastedBunkerUri(`bunker://${uriHex}ff?relay=wss://r.example`).error)))
+    }
+    ok('a nostrconnect:// URI is named as the other direction, not as invalid',
+      /OTHER direction/.test(String(checkPastedBunkerUri('nostrconnect://abc?relay=wss://r.example').error)))
+    ok('a URI with no relay is refused for having no transport',
+      /names no relay/.test(String(checkPastedBunkerUri(`bunker://${uriHex}`).error)))
+    ok('a ws:// relay is refused, and says which scheme it got',
+      /not wss:\/\/ — NIP-46 traffic is not sent over ws:\/\//.test(String(checkPastedBunkerUri(`bunker://${uriHex}?relay=ws://r.example`).error)))
+    ok('an empty paste says so plainly', /nothing was pasted/.test(String(checkPastedBunkerUri('   ').error)))
+
+    // planClientKey — reuse is the behaviour, and a corrupt file must NOT quietly regenerate.
+    ok('no file yet means create one', planClientKey(null).create === true)
+    ok('an empty file means create one', planClientKey('\n').create === true)
+    ok('an existing key is REUSED, not replaced — a fresh one is a new app to the signer',
+      planClientKey(`${uriHex.toUpperCase()}\n`).hex === uriHex && planClientKey(uriHex).created === false)
+    ok('a corrupt client key is refused rather than silently regenerated',
+      /will not overwrite it/.test(String(planClientKey('garbage').error)))
   }
 } finally { rmSync(dir, { recursive: true, force: true }) }
 
