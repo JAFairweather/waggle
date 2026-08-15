@@ -140,7 +140,11 @@ check(RUNTIMES.every(r => typeof r.startupFile === 'string' && r.startupFile.end
 check(RUNTIMES.find(r => r.id === 'claude').startupFile === 'CLAUDE.md', 'Claude Code reads CLAUDE.md')
 check(RUNTIMES.find(r => r.id === 'codex').startupFile === 'AGENTS.md', 'Codex reads AGENTS.md')
 check(RUNTIMES.find(r => r.id === 'gemini').startupFile === 'GEMINI.md', 'Gemini reads GEMINI.md')
-check(RUNTIMES.find(r => r.id === 'generic').startupFile === 'AGENTS.md', 'a Pi or headless host gets AGENTS.md, the cross-tool convention')
+check(RUNTIMES.find(r => r.id === 'generic').startupFile === 'AGENTS.md', 'a headless host gets AGENTS.md, the cross-tool convention')
+// Pi (pi.dev) reads the same filename as Codex from a DIFFERENT set of directories — `~/.pi/agent/`,
+// parent directories, and the cwd. The filename agreeing is not the file being found, which is why
+// `--startup` prints the path it wrote instead of reporting that a runtime read it (#519).
+check(RUNTIMES.find(r => r.id === 'pi').startupFile === 'AGENTS.md', 'Pi reads AGENTS.md too')
 check(new Set(RUNTIMES.map(r => r.startupFile)).size >= 3,
   'and they are not all the same name — writing CLAUDE.md on a Codex box is a file nothing reads')
 
