@@ -32,17 +32,25 @@ check(/longer than 32/.test(why('a'.repeat(ALERT_TAG_MAX + 1))), 'over-long is r
 check(alertHashtagProblem('a'.repeat(ALERT_TAG_MAX)) === null, '  …and exactly at the limit is fine — the boundary is not off by one')
 check(/second #/.test(why('al#ert')), 'a second # is refused with its own sentence')
 check(/must start with a letter or number/.test(why('_alert')), 'a leading underscore is refused for STARTING wrongly, not for the character')
-check(/position 6 \(U\+002D\)/.test(why('alert-2')),
-  'a hyphen is refused by position and codepoint — the tightening is deliberate and legible')
+// A hyphen is ADMITTED (#508 review). It reads as a tightening worth having until you notice the
+// same argument condemns `#alert`/`#alerting`, which the trailing lookahead already settles — and
+// that refusing it rejected `p0-incident` at config load, so an operator's subscription silently
+// did not exist. A dot is still refused, so the alphabet is a decision and not an absence of one.
+check(alertHashtagProblem('alert-2') === null, 'a hyphen is admitted — ordinary in a Nostr t tag, and refusing it dropped real subscriptions')
+check(/position 6 \(U\+002E\)/.test(why('alert.2')),
+  '  …while a dot is still refused by position and codepoint, so the alphabet is legible and deliberate')
 check(/position 6 \(U\+00A0\)/.test(why('alert\u00A0two')),
   'and a non-breaking space is named by codepoint, because "invalid tag" sends an operator hunting')
 check(/position 6 \(U\+200B\)/.test(why('alert\u200Bx')), '  …as is a zero-width space, which is invisible in every editor')
 
 // ── The list parser ─────────────────────────────────────────────────────────────────────────
 {
-  const { tags, problems } = alertHashtags(['#alert', 'ops', '#ALERT', 'bad-tag', ''])
-  check(tags.join(',') === 'alert,ops', 'the list keeps the usable tags, in order')
-  check(tags.length === 2, '  …and folds a case-variant duplicate rather than subscribing twice')
+  // `bad.tag` rather than `bad-tag`: the hyphen is admitted now, so the old fixture stopped
+  // exercising the unsupported-character branch it was written for. `p0-incident` rides along to
+  // prove the list path keeps a hyphenated tag rather than only the single-value path.
+  const { tags, problems } = alertHashtags(['#alert', 'ops', '#ALERT', 'bad.tag', '', 'p0-incident'])
+  check(tags.join(',') === 'alert,ops,p0-incident', 'the list keeps the usable tags, in order')
+  check(tags.length === 3, '  …and folds a case-variant duplicate rather than subscribing twice')
   check(problems.length === 2 && problems.every(p => p.why), 'and REPORTS what it dropped, with a reason for each')
   check(problems.some(p => /unsupported character/.test(p.why)) && problems.some(p => /is empty/.test(p.why)),
     '  …and the two reasons are different — a silently discarded tag is a subscription the operator thinks they have')
@@ -214,6 +222,34 @@ check(alertHashtagHit('#1', ['1'], ['1'])?.tag === '1',
   check(/t\[0\] === 't' && t\[1\]/.test(bridge), '  …with the t tags actually extracted from the event, or the tag-carried form is invisible')
 }
 
+
+// ── the two boundary cases the review pushed on (#508 review) ────────────────────────────────────
+//
+// Both are BOTH-DIRECTION pairs on purpose. A lookbehind that suppressed every `(#alert` would
+// satisfy the markdown case and silently kill a real alarm somebody wrote as "(#alert)"; a check
+// that only asserted the refusal could not tell those two apart.
+{
+  const hit = (body, tag) => alertHashtagHit(body, [], [tag])
+
+  check(!hit('[see the runbook](#alert)', 'alert'),
+    'a markdown link target does not raise the lane — `](` before the # is a link, not an alarm')
+  check(!!hit('the build is down (#alert)', 'alert'),
+    '  …but a person writing (#alert) still does, so what is excluded is the link form, not the bracket')
+  check(!hit('https://example.com/runbook#alert', 'alert'),
+    'a URL fragment still does not raise it — the case the first lookbehind was written for')
+  check(!!hit('#alert at the start of a line', 'alert'), '  …and an ordinary alarm still fires')
+
+  // `-` was refused until this review. The cost was not theoretical: `p0-incident` was rejected at
+  // config load, so an operator's subscription silently did not exist.
+  const parsed = alertHashtags(['p0-incident'])
+  check(parsed.tags.length === 1 && parsed.tags[0] === 'p0-incident',
+    'a hyphenated tag survives config parsing — admissible in a Nostr t tag, and it was being dropped')
+  check(parsed.problems.length === 0, '  …with no problem reported against it')
+  check(!!hit('paging #p0-incident now', 'p0-incident'), '  …and it fires from the body')
+  // The boundary still holds in the other direction: the shorter tag must not match inside it.
+  check(!hit('paging #p0-incident now', 'p0'),
+    '  …while #p0 does NOT match inside #p0-incident, so the operator still owns where a tag ends')
+}
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
 process.exit(pass ? 0 : 1)

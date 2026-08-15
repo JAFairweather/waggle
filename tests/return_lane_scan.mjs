@@ -24,6 +24,8 @@ const bridgePk = getPublicKey(bridgeSk)
 const claude = getPublicKey(generateSecretKey())
 const dennis = getPublicKey(generateSecretKey())
 const bumble = getPublicKey(generateSecretKey())
+const siren = getPublicKey(generateSecretKey())
+const klaxon = getPublicKey(generateSecretKey())
 // Buzz-side signer keys. claudeSigner is bound to ONE entry (unique → drives echo-skip);
 // sharedSigner is bound to two (ambiguous → must NOT drive skip, stands in for the shared bridge).
 const claudeSignerSk = generateSecretKey()
@@ -49,6 +51,11 @@ writeFileSync(resolve(dir, 'config.json'), JSON.stringify({
       { npub_hex: claude, mention: 'claude', authors: [claudeSigner] },
       { npub_hex: dennis, mention: 'dennis', authors: [sharedSigner] },
       { npub_hex: bumble, mention: 'bumble', authors: [sharedSigner] },
+      // Two alert subscribers on DIFFERENT tags (#508). Two, not one, because a single subscriber
+      // cannot tell "carries to whoever subscribed" from "carries to everyone" — the second one is
+      // the control that has to stay silent while the first fires.
+      { npub_hex: siren, mention: 'siren', authors: [], alert_tags: ['alert'] },
+      { npub_hex: klaxon, mention: 'klaxon', authors: [], alert_tags: ['p0-incident'] },
     ],
   },
 }, null, 2))
@@ -89,7 +96,14 @@ const toOf = e => e.to
 const short = k => k.slice(0, 12)
 
 // --- config resolution ------------------------------------------------------
-ok('three return-lane recipients parsed', PUB.returnLane.length === 3)
+ok('five return-lane recipients parsed', PUB.returnLane.length === 5)
+// The config key itself, asserted as a value rather than as source text. Renaming `alert_tags` in
+// src/bridge.mjs drops every subscription silently and turns the whole lane into a no-op — and the
+// #508 suite stayed green through exactly that, because every bridge-side check there scans source.
+ok('the alert subscription SURVIVES config parsing',
+  PUB.returnLane[3]?.alert_tags?.length === 1 && PUB.returnLane[3].alert_tags[0] === 'alert')
+ok('  …and the second subscriber carries its own different tag',
+  PUB.returnLane[4]?.alert_tags?.[0] === 'p0-incident')
 ok('the unique author binding is kept', PUB.returnLane[0].authors.length === 1 && PUB.returnLane[0].authors[0] === claudeSigner)
 ok('scan_authors resolves the crew signer', PUB.scanAuthors.includes(crew))
 ok('the bridge key is STRIPPED from the gate', !PUB.scanAuthors.includes(bridgePk))
@@ -231,5 +245,40 @@ recordPosted({ id: 'orig-ok', author: claude, buzz: parseBuzzEventId(`{"event_id
 d = await scanDelta([{ id: 'rep-ok', pubkey: crew, content: 'replying to that', tags: [['e', 'b'.repeat(64), '', 'reply']] }])
 ok('the identical reply IS carried once the id parsed', d.length === 1 && d[0]?.why === 'reply')
 
-console.log(fails ? `\nRETURN LANE SCAN FAIL — ${fails}` : '\nRETURN LANE SCAN PASS — gate, p-tag, fan-out, echo (3 forms + shared guard), reply-detection, id-parse')
+// --- alert hashtag (#508), driven rather than scanned -------------------------
+//
+// The #508 suite asserts the bridge wiring by reading src/bridge.mjs as text, and My Dude showed
+// what that cannot see: rename the `alert_tags` config key, or truncate the `t`-tag list to empty,
+// and the entire lane is a no-op with every suite green. Both mutations die here, because these
+// cases run the real scanReturnLane over the real config and look at what came out.
+d = await scanDelta([{ id: 'a1', pubkey: crew, content: 'the build is down #alert' }])
+ok('a #alert message carries to its subscriber with no @name anywhere in it',
+  d.length === 1 && toOf(d[0]) === short(siren))
+ok('  …and the carry is labelled alert, not mention', d[0]?.why === 'alert')
+
+// THE CONTROL, and the reason there are two subscribers: without it, "carries to the subscriber" is
+// indistinguishable from "carries to everyone", which is the failure mode a mention-shaped lane has.
+ok('  …and the OTHER subscriber, on a different tag, is not carried to',
+  !d.some(e => toOf(e) === short(klaxon)))
+
+d = await scanDelta([{ id: 'a2', pubkey: crew, content: 'paging #p0-incident right now' }])
+ok('the second tag reaches its own subscriber and only that one',
+  d.length === 1 && toOf(d[0]) === short(klaxon))
+
+// Kills the `t`-tag mutation specifically: nothing in the BODY matches here, so a carry can only
+// come from the tag list. Truncating it made the #508 suite stay green.
+d = await scanDelta([{ id: 'a3', pubkey: crew, content: 'no hashtag anywhere in this body', tags: [['t', 'alert']] }])
+ok('a tag carried in a t tag rather than the body still fires the lane',
+  d.length === 1 && toOf(d[0]) === short(siren))
+
+d = await scanDelta([{ id: 'a4', pubkey: crew, content: 'quiet in here #unwatched' }])
+ok('  NEGATIVE CONTROL — a tag nobody subscribed to carries nothing', d.length === 0)
+
+// Precedence as behaviour, not as a source read. returnCarryReason owns the order; this proves the
+// bridge actually consults it, and that an alert subscriber who is ALSO named is not carried twice.
+d = await scanDelta([{ id: 'a5', pubkey: crew, content: '@siren the build is down #alert' }])
+ok('a message that both names the agent and carries its tag is labelled mention',
+  d.length === 1 && d[0]?.why === 'mention')
+
+console.log(fails ? `\nRETURN LANE SCAN FAIL — ${fails}` : '\nRETURN LANE SCAN PASS — gate, p-tag, fan-out, echo (3 forms + shared guard), reply-detection, id-parse, alert hashtag (body + t tag, both controls)')
 process.exit(fails ? 1 : 0)

@@ -28,13 +28,19 @@ export const ALERT_TAG_MAX = 32
 //
 //   `.` would make `#alert.` ambiguous with a sentence ending, and a tag that swallows the full
 //       stop after it is a tag that stops matching the moment somebody writes a sentence.
-//   `-` is admissible in a Nostr `t` tag and is refused anyway, because `#alert-2` and `#alert`
-//       would then be two tags whose relationship is decided by the boundary rather than by the
-//       operator. If a hyphenated tag is ever wanted, widening this string is the one edit.
+//   `-` IS admitted, and the argument for refusing it did not survive contact (#508 review). It was
+//       that `#alert-2` and `#alert` would become two tags whose relationship is decided by the
+//       boundary rather than by the operator — but that is already true of `#alert` and `#alerting`,
+//       and the trailing lookahead settles both the same way. Against that, `-` is admissible in a
+//       Nostr `t` tag and ordinary in practice, and the `t`-tag path compares whole values where no
+//       boundary applies at all, so refusing it bought nothing there and lost real coverage:
+//       `p0-incident` was rejected at config load, so the subscription never existed.
+//       Escaped, and last but for the escape, so it can never read as a range — a character class
+//       nobody can read is a class nobody can check.
 //
 // `\p{L}` and `\p{N}` rather than `\w`, so a tag in any script works and the boundary refuses the
 // same characters the grammar does.
-const ALERT_ALPHABET = '\\p{L}\\p{N}_'
+const ALERT_ALPHABET = '\\p{L}\\p{N}_\\-'
 
 const ALLOWED_CHAR = new RegExp(`[${ALERT_ALPHABET}]`, 'u')
 const STARTS_WELL = /^[\p{L}\p{N}]/u
@@ -52,7 +58,7 @@ export function alertHashtagProblem(value) {
   if (raw.length > ALERT_TAG_MAX) return `alert tag is longer than ${ALERT_TAG_MAX} characters`
   if (raw.includes('#')) return 'alert tag holds a second # — configure one tag per entry'
   for (const [i, ch] of [...raw].entries()) {
-    if (!ALLOWED_CHAR.test(ch)) return `alert tag holds an unsupported character at position ${i + 1} (${codepoint(ch)}) — letters, numbers and _ only`
+    if (!ALLOWED_CHAR.test(ch)) return `alert tag holds an unsupported character at position ${i + 1} (${codepoint(ch)}) — letters, numbers, _ and - only`
   }
   if (!STARTS_WELL.test(raw)) return 'alert tag must start with a letter or number'
   return null
@@ -112,10 +118,17 @@ const RE_ESCAPE = /[.*+?^${}()|[\]\\]/g
 // A space, a newline, start-of-text, `(`, `[`, `"` and every ordinary punctuation mark are all
 // still fine, so the forms people actually write — at the start of a line, after a space, inside
 // brackets — all match.
+//
+// The second lookbehind is `](`, and it exists because the first one does not close the case it was
+// written for (#508 review). A markdown link target `[see the runbook](#alert)` is preceded by `(`,
+// which is deliberately allowed above — so it fired the alert lane, exactly the same class as the
+// URL fragment and just as ordinary to paste into a channel. It is spelled as its own lookbehind
+// rather than by removing `(` from the first, because `(#alert)` written by a person — "the build
+// is down (#alert)" — is a real alarm and must still match.
 export function alertHashtagMatcher(tag) {
   const t = String(tag == null ? '' : tag).replace(/^#/, '')
   if (!t) return null
-  return new RegExp(`(?<![${ALERT_ALPHABET}/#])#${t.replace(RE_ESCAPE, '\\$&')}(?![${ALERT_ALPHABET}])`, 'iu')
+  return new RegExp(`(?<![${ALERT_ALPHABET}/#])(?<!\\]\\()#${t.replace(RE_ESCAPE, '\\$&')}(?![${ALERT_ALPHABET}])`, 'iu')
 }
 
 // Does this message raise one of this recipient's alerts?
