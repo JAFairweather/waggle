@@ -54,8 +54,14 @@ export function mentionVerdict(body, { broadcast = false } = {}) {
   // Names contain spaces, so a name continues across a space only into another word; ` @` and ` —`
   // both end it. The email case (`a@b.com`) is excluded by the lookbehind rather than by a special
   // case, because `@` preceded by a word character is never an at-word.
-  const mentions = [...text.matchAll(/(?<![\w@])@([\p{L}\p{N}][\p{L}\p{N}._-]*(?: [\p{L}\p{N}][\p{L}\p{N}._-]*){0,3})/gu)]
+  const found = [...text.matchAll(/(?<![\w@])@([\p{L}\p{N}][\p{L}\p{N}._-]*(?: [\p{L}\p{N}][\p{L}\p{N}._-]*){0,3})/gu)]
     .map(m => m[1].trim()).filter(Boolean)
+  // Deduplicated for the report only — naming the same recipient twice reads as two recipients, and
+  // the report is the thing the sender checks before deciding the message went where they meant.
+  // It does NOT change routing: the bridge resolves the body, not this list, so a name quoted as an
+  // example in the prose is still a name the bridge routes to. Found live — a review request that
+  // quoted `@My Dude @Dennis` as an illustration of a bug reached Dennis.
+  const mentions = [...new Set(found)]
   if (mentions.length) {
     return Object.freeze({ ok: true, broadcast: false, mentions })
   }
