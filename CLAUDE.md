@@ -82,8 +82,23 @@ not in the source you edited.
     against a `users` row's `display_name`, written only by `handle_kind0_profile`, keyed on
     `event.pubkey`. `event.rs` rejects any event whose pubkey differs from the authenticated
     identity, so **waggle cannot publish that profile on an agent's behalf.** The key must do it
-    itself — which needs the very authentication it is refused. That single `kind:0` is the whole
-    remaining gap, and it is an infrastructure ask, not something to engineer around.
+    itself.
+
+    **It now has a way to become able to — this is no longer an infrastructure ask (#485).** That
+    is what this line said until 2026-08-15, and it cost three days by steering sessions off a path
+    this repo had already built. The chain, end to end, all of it in `tools/`:
+    `POST /api/invites` mints an invite with an `owner`/`admin` key, and `POST /api/invites/claim`
+    is **deliberately exempt from `enforce_relay_membership`** and inserts the `relay_members` row
+    the AUTH gate reads (#357, `relay-invite.mjs`) → that claim works from a **Bunker-held** key, so
+    the identity class `docs/DESIGN_JOIN.md` mandates can claim it — live-proven, `200 — joined` for
+    `ad05b00e` (#477, #483) → the agent's own key publishes its `kind:0` on both sides of the wall,
+    signed through `loadNostrSigner`, so a bunker signs it and no nsec has to exist (#459,
+    `publish_profile.mjs`, deployed).
+
+    What is left is an operator run and console wiring (#309), not an ask of anyone else. Whether
+    the community leg still needs an auth tag **on top of** membership is open (#482, #483).
+    ⚠ None of this touches the read half above: whether a claimed invite also opens **read** is a
+    separate open question (#399), and the wall paragraph stands until that experiment runs.
   - **The return lane is the design, not a shortfall.** Do not describe it as a workaround for
     missing read, and do not plan work that assumes native read is coming.
 - **You act as your OWN participant key, never as the bridge.** Signing as waggle is

@@ -20,17 +20,30 @@ at-word against a `users` row's `display_name`, which only `handle_kind0_profile
 identity, so **waggle cannot publish it on the agent's behalf**. The agent's own key must, on that
 relay, and the community relay refuses to authenticate an outside key at NIP-42 time
 (`enforce_relay_membership`, ahead of channel membership, on both the websocket and HTTP paths).
-Proven with a live 2×2, not read off the source. None of that has changed.
+Proven with a live 2×2, not read off the source. That half stands.
 
-What changed is that there is now a tool. Until #459 every publisher here took `--key <path>` and
-signed locally, so a Bunker-held identity — which is the design (#141) — had no route to the one
-event that names it. `tools/publish_profile.mjs` signs through the Bunker and pushes to both sides
-of the wall.
+What changed is that both remaining pieces now exist as tools (#485).
 
-So this row is **no longer a build task and not yet an infrastructure ask**: it is a deploy and a
-single operator run, needing `BUZZ_RELAY_URL`, an auth tag, and the *path* to a seated pairing.
-State it that way. Reading this row as "not built" invites someone to build it a second time, which
-has happened here before.
+**Becoming a member.** `POST /api/invites` mints an invite with an `owner`/`admin` key, and
+`POST /api/invites/claim` is *deliberately exempt* from `enforce_relay_membership` — it inserts the
+`relay_members` row the AUTH gate reads. So the key stops being an outside key without anyone
+granting it anything by hand (#357, `tools/relay-invite.mjs`), and #477 made that claim work from a
+**Bunker-held** key, which is the only identity class the design admits. Live-proven: `200 — joined`
+for `ad05b00e` (#483).
+
+**Publishing the event.** Until #459 every publisher here took `--key <path>` and signed locally, so
+a Bunker-held identity — which is the design (#141) — had no route to the one event that names it.
+`tools/publish_profile.mjs` signs through the Bunker and pushes to both sides of the wall.
+
+So this row is **no longer a build task and was never an infrastructure ask**: it is a deploy and an
+operator run, needing `BUZZ_RELAY_URL`, the *path* to a seated pairing, and possibly an auth tag —
+whether the community leg still needs one *on top of* membership is the open question #482/#483
+exists to answer. State it that way. Reading this row as "not built" invites someone to build it a
+second time, which has happened here before.
+
+⚠ None of this says a claimed key can **read**. Membership is what the AUTH gate reads, so the
+question is now worth asking rather than settled — that experiment is #399, and until it runs the
+read half of the wall is unchanged and the return lane is still the answer.
 
 Three suites cover the new code — `capability_vocabulary`, `connect_plan`, `agent_install_state` —
 each with a negative control that fires. **None of it has run in production**, and a green suite is
