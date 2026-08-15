@@ -1,33 +1,32 @@
-// agent_startup.mjs — the file an agent's runtime reads before it does anything (#466).
+// agent-startup.mjs — the browser twin of `src/agent_startup.mjs` (#490).
 //
-// `docs/AGENT_BRIEF.md` opens with "paste this into a Codex or Claude agent". Nothing pastes it.
-// So a fully connected agent — identity minted, grants live, MCP registered — still begins every
-// session knowing none of it: not its own name, not which key it acts as, not that the community
-// relay will not serve it a read. It learned that once, from a human, into one session, and a
-// compaction lost it.
+// The console's last step hands the operator the agent's FIRST PROMPT — the text they paste into
+// the new session. That text has to be the same text the runtime later reads off disk, or the
+// agent is told two different accounts of itself: one at the paste, one at every session after.
 //
-// Every runtime already reads a file at session start. Claude Code reads CLAUDE.md, Codex reads
-// AGENTS.md, Gemini reads GEMINI.md. Same content, different filename — the shape #464 fixed for
-// registration, applied to the brief.
+// WHY A COPY AND NOT AN IMPORT. `tools/serve-console.mjs` sets `DOCROOT = console/` and refuses
+// anything outside it (`serve-console.mjs:72`) — deliberately, because serving the repo root once
+// exposed `.env`. So `../src/agent_startup.mjs` is a 403 in the browser, by design, and no amount
+// of wanting one copy changes that. The reverse direction is closed too: `console/` is not in the
+// deploy ship list (`deploy/deploy-runner.sh:63`), so shipped code importing from here would not
+// load on the box at all.
 //
-// Two rules govern what may go in here, and both are absolute because this file is written to disk
-// and read into a model context every session:
+// This is the same bind `console/scope-hash.mjs` lives under, for the same reason, and it carries
+// the same obligation: the duplication is only safe while something PROVES the two agree.
+// `tests/console_first_prompt.mjs` renders both copies over a matrix of install reports and
+// asserts the output is byte-identical — including the refusal path, where the message an operator
+// acts on must also match. If you edit this file, edit its twin, and let that suite say so.
 //
-//   1. NOTHING SECRET. Public keys, paths and channel ids only. Never a bunker URI, never an nsec,
-//      never a client secret, never a host IP. `assertNoSecrets` is not decoration.
-//
-//      Its BOUND, stated because the next person will otherwise trust it further than it goes: the
-//      sweep catches credentials with a distinguishing SHAPE. A raw 64-hex private key has none —
-//      it is byte-identical to the 64-hex public key this file exists to print — so it is
-//      structurally undetectable here and always will be. What rule 1 guarantees is "no bech32- or
-//      URI-shaped credential", not "nothing secret". The operator-pasted fields are held to a
-//      shape at the boundary in `tools/connect-agent.mjs` instead, where an allowlist is possible;
-//      this sweep is defence in depth over machine-generated note text, which has no shape.
-//   2. NOTHING UNPROVEN STATED AS FACT. The body is built from the install report, so an agent
-//      whose kind:10050 was never checked is told it was never checked — not that it is reachable.
-//      An agent that believes it is reachable and is not will report the wall as broken, and that
-//      exact confusion has cost this project a day more than once.
-import { MISSING, PRESENT, UNKNOWN, UNVERIFIED } from './agent_install_state.mjs'
+// Everything below the constants is byte-identical to `src/agent_startup.mjs` on purpose. Do not
+// "improve" it here.
+// The four state constants, inlined rather than imported. `src/agent_install_state.mjs` carries
+// `installState()` and the ARTIFACTS table with it — a browser needs none of that, and importing it
+// would drag the whole node-side observation machinery into the page. These four strings ARE the
+// wire values, re-exported because `connect.html` builds a report out of them, and `tests/console_first_prompt.mjs` asserts they still match their source.
+export const PRESENT = 'present'
+export const UNVERIFIED = 'unverified'
+export const MISSING = 'missing'
+export const UNKNOWN = 'unknown'
 
 // Anything that looks like a credential. Checked against the rendered text, not against the inputs,
 // because the failure that matters is what reaches the file.

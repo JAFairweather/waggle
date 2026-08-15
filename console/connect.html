@@ -132,6 +132,11 @@
 
   pre.cmd{background:var(--field);border:1px solid var(--line-strong);border-radius:var(--r-sm);
     padding:14px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.7;margin:12px 0 0}
+  /* The handoff is a document, not a one-liner: wrap it and cap the height, or step 05 is a
+     screen and a half of scrolling with the copy button off the top of it. */
+  pre#handoff{white-space:pre-wrap;word-break:break-word;max-height:46vh;overflow-y:auto}
+  .handoff-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px}
+  .handoff-said{color:var(--dim);font-size:12.5px}
   .foot{color:var(--faint);font-size:12.5px;margin-top:34px;border-top:1px solid var(--line);padding-top:16px}
 
   .console-tabs{display:flex;gap:5px;border-bottom:1px solid var(--line);margin:4px 0 22px}
@@ -202,10 +207,15 @@
   </section>
 
   <section class="step" id="handoff-step" hidden>
-    <div class="step-head"><span class="step-n">05</span><h2>On the agent's machine</h2></div>
-    <p class="step-note">The approvals above live on the relays. This is the one command that
-      binds them to a running agent — it is idempotent, and it reports what is present, what is
-      missing, and what is present but unverified.</p>
+    <div class="step-head"><span class="step-n">05</span><h2>Paste this into the agent</h2></div>
+    <p class="step-note">The agent's first prompt, written from what this page actually proved.
+      Paste it into the new session as its opening message. It states what is confirmed and what
+      was never checked, and it does not round the second into the first — an agent that believes
+      it is reachable and is not will report the wall as broken.</p>
+    <div class="handoff-bar">
+      <button class="btn" id="handoff-copy">Copy the prompt</button>
+      <span class="handoff-said" id="handoff-said" role="status" aria-live="polite"></span>
+    </div>
     <pre class="cmd" id="handoff"></pre>
   </section>
 
@@ -219,6 +229,7 @@ import { nip19, verifyEvent } from 'nostr-tools'
 import { planConnection, planSummary, INTENTS, INTENT_KEYS, PARTY, EXTRA_PARTIES } from './connect-plan.mjs'
 import { PLANE_COPY } from './capability-vocabulary.mjs'
 import { scopeHash } from './scope-hash.mjs'
+import { MISSING, PRESENT, UNKNOWN, startupDoc } from './agent-startup.mjs'
 import { consoleSigner } from './signer-session.mjs'
 import { renderTitlebar } from './vendor/nave-titlebar.mjs'
 
@@ -463,6 +474,9 @@ $('sign').addEventListener('click', async () => {
     return
   }
   let allLanded = true
+  // Counted, not inferred. The prompt states how many approvals were READ BACK, and
+  // `allLanded` alone cannot say whether that was one grant or nine.
+  let proven = 0
   for (const step of currentPlan.steps) {
     const line = document.createElement('div')
     line.className = 'result pending'
@@ -484,6 +498,7 @@ $('sign').addEventListener('click', async () => {
       const seen = back.filter(r => r.found)
       const landed = seen.length > 0
       allLanded = allLanded && landed
+      if (landed) proven++
       line.className = `result ${landed ? 'ok' : 'err'}`
       line.textContent = [
         `${step.sentence}`,
@@ -502,24 +517,77 @@ $('sign').addEventListener('click', async () => {
     }
   }
   $('sign').disabled = false
-  if (allLanded) renderHandoff()
+  // Rendered whether or not the grants landed, and this is deliberate. The prompt is built from
+  // the install state, so a failed run produces a prompt that SAYS admission is missing and that
+  // the agent does not post in at all — which is the thing its first session most needs to know.
+  // Hiding it on failure taught the operator nothing and left them at a blank step.
+  renderHandoff(allLanded, proven)
 })
 
-// ── Step 5: the agent's side, filled in ──────────────────────────────────────────────────────
-function renderHandoff() {
-  const agent = toHex($('agent-key').value)
-  const name = ($('agent-name').value.trim() || 'agent').toLowerCase().replace(/[^a-z0-9._-]/g, '-')
+// ── Step 5: the agent's first prompt ─────────────────────────────────────────────────────────
+// Not a command any more (#490). The flow ends with the text the operator pastes into the new
+// session, built from `console/agent-startup.mjs` — the twin of the module that writes the file
+// the runtime reads on disk, so the paste and that file cannot become two different accounts of
+// the same agent. `tests/console_first_prompt.mjs` holds the two byte-identical.
+//
+// Every row this page did not OBSERVE is reported as never-checked, never as fine. The console
+// proved exactly one thing — that the grants were served back by id from a fresh connection — and
+// that is the only row it is entitled to call confirmed. The rest live on the agent's machine and
+// are `connect-agent --check`'s to answer.
+function renderHandoff(allLanded, proven) {
+  const name = $('agent-name').value.trim() || 'agent'
+  const unseen = (key, title) => ({ key, title, state: UNKNOWN, note: 'not observable from the console — run `connect-agent --check` on the agent' })
+  const report = { rows: [
+    { key: 'admit-grant', title: 'Admitted to the channel',
+      state: allLanded ? PRESENT : MISSING,
+      note: allLanded
+        ? `${proven} approval${proven === 1 ? '' : 's'} read back by id from a fresh connection`
+        : 'at least one approval was not served back by id — a relay OK is not storage' },
+    unseen('bunker-uri', 'Bunker pairing'),
+    unseen('bunker-client', 'Client transport key'),
+    unseen('signer-identity', 'Signer resolves to the right key'),
+    unseen('dm-relays', 'Inbound DM relay list (kind 10050)'),
+    unseen('mcp-registration', 'Registered as an MCP server'),
+    unseen('mcp-exclusive', 'No other nvoy server registered'),
+    unseen('mcp-identity', 'The server answers as THIS agent'),
+    unseen('profile', 'Public profile (kind 0)'),
+  ] }
   $('handoff-step').hidden = false
-  $('handoff').textContent = [
-    `node tools/connect-agent.mjs \\`,
-    `  --name ${name} \\`,
-    `  --pubkey ${agent || '<the agent public key>'} \\`,
-    `  --owner ${toHex($('owner-key').value) || '<your public key>'}`,
-    ``,
-    `# --check on its own reports what is present, what is missing, and`,
-    `# what is present but unverified, and changes nothing.`,
-  ].join('\n')
+  try {
+    // `startupDoc` throws rather than rendering when its sweep finds a credential shape. Nothing
+    // this function assembles should ever trip it — which is exactly why the failure is surfaced
+    // instead of swallowed: if it ever fires, something upstream is putting a secret in a note.
+    $('handoff').textContent = startupDoc({
+      agent: name,
+      pubkey: toHex($('agent-key').value) || undefined,
+      channel: toHex($('owner-key').value) || undefined,
+      report,
+      // Say who actually wrote it. The default names `connect-agent --startup`, which did not
+      // write this one — and an agent told to "regenerate it" by a command that was never run
+      // would produce a different document from a machine this page never observed.
+      writtenBy: 'the waggle console, at connect time,',
+    })
+    $('handoff-copy').disabled = false
+  } catch (err) {
+    $('handoff').textContent = `Refused to build the prompt: ${err?.message || err}\n\n`
+      + `Nothing has been written and nothing is safe to paste. This is the credential sweep\n`
+      + `firing — find what put that value into the agent's install state before continuing.`
+    $('handoff-copy').disabled = true
+  }
 }
+
+$('handoff-copy').addEventListener('click', async () => {
+  const said = $('handoff-said')
+  try {
+    await navigator.clipboard.writeText($('handoff').textContent)
+    said.textContent = 'Copied — paste it as the agent’s first message.'
+  } catch {
+    // Clipboard access is refused often enough (permissions, an insecure origin, a headless
+    // browser) that a silent failure would leave the operator pasting stale clipboard content
+    // into a new agent and wondering why it knows nothing.
+    said.textContent = 'Could not reach the clipboard — select the text below and copy it by hand.'
+  }
+})
 
 renderPlanes()
 renderExtras()
