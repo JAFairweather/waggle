@@ -79,8 +79,29 @@ export function makeBunkerSigner(uriText, clientNsec, {
     timer = setTimeout(() => { if (pending.delete(id)) reject(new Error(`nip46 ${method} timed out`)) }, timeout)
   })
   const ready = () => (connected ??= rpc('connect', [pubkey, secret], 15000))
-  return Object.freeze({ pubkey, remote: true,
-    async signEvent(event) { await ready(); return JSON.parse(await rpc('sign_event', [JSON.stringify(event)])) },
+  // `pubkey` above is the REMOTE SIGNER's key — the hex in `bunker://<hex>`. NIP-46 permits that to
+  // differ from the user identity the signer holds, and `get_public_key` is the method that
+  // resolves the second. Nothing here called it, so callers that read `.pubkey` as "who this signs
+  // as" were reading the transport address. Pinning custody to it dead-ends both ways: pin to the
+  // URI hex and every signature is a CUSTODY MISMATCH, or name the true identity and it is refused
+  // for disagreeing with the pairing. There is no third configuration, so it must be asked.
+  //
+  // `pubkey` keeps its meaning for every existing caller; this is the value to pin against.
+  let identity
+  const userPubkey = async () => {
+    if (identity) return identity
+    await ready()
+    const got = String(await rpc('get_public_key', [], 15000) || '').trim().toLowerCase()
+    if (!/^[0-9a-f]{64}$/.test(got)) {
+      throw new Error(`${uriLabel}: get_public_key returned ${got ? 'a malformed pubkey' : 'nothing'} — ` +
+        'cannot establish which identity this bunker signs as, so nothing may be pinned to it')
+    }
+    return (identity = got)
+  }
+  return Object.freeze({ pubkey, remote: true, userPubkey,
+    // timeoutMs matters where a human approves the prompt: NIP-98 wants created_at within ±60s of
+    // server time, so the default 60s can return a locally valid signature the relay calls stale.
+    async signEvent(event, { timeoutMs } = {}) { await ready(); return JSON.parse(await rpc('sign_event', [JSON.stringify(event)], timeoutMs ?? 60000)) },
     async nip44Encrypt(peer, plaintext) { await ready(); return rpc('nip44_encrypt', [peer, plaintext]) },
     async nip44Decrypt(peer, ciphertext) { await ready(); return rpc('nip44_decrypt', [peer, ciphertext]) },
     close() { for (const p of pending.values()) p.reject(new Error('nip46 signer closed')); pending.clear(); try { pool.close(relays) } catch {} },
@@ -103,6 +124,9 @@ export function makeLocalSigner(raw, label = 'BUZZ_PRIVATE_KEY') {
   if (sk.length !== 32) throw new Error(`${label} is not a valid nsec or 64-hex key`)
   const pubkey = getPublicKey(sk), conversation = peer => nip44.getConversationKey(sk, peer)
   return Object.freeze({ pubkey, remote: false,
+    // Local: the key IS the identity, so no round trip. Present so a caller can pin the same way
+    // against either backend rather than branching on `remote`.
+    userPubkey: async () => pubkey,
     signEvent: async event => finalizeEvent(event, sk),
     nip44Encrypt: async (peer, plaintext) => nip44.encrypt(plaintext, conversation(peer)),
     nip44Decrypt: async (peer, ciphertext) => nip44.decrypt(ciphertext, conversation(peer)),
@@ -127,9 +151,10 @@ export function withPinnedCustody(signer, expect = '') {
   const fail = (message, code) => { const e = new Error(message); e.exitCode = code; throw e }
   return Object.freeze({
     pubkey: signer.pubkey, remote: signer.remote, pinned,
+    userPubkey: () => signer.userPubkey(),
     get signatures() { return signatures },
-    async signEvent(event) {
-      const signed = await signer.signEvent(event)
+    async signEvent(event, opts) {
+      const signed = await signer.signEvent(event, opts)
       const n = ++signatures
       const where = `signature ${n} (kind:${event && event.kind})`
       // verifyEvent THROWS on a malformed event rather than returning false, and an event straight
