@@ -32,6 +32,12 @@
 // --channel-user <u> it (default `root`): the host is deployment state, and a stanza pointing
 //                    nowhere registers cleanly, lists as ✔ Connected, and reaches nobody (#472).
 //
+// --lane <l>         how this agent participates: `sealed` (seal to the bridge, authenticated by
+//                    signature, nothing on another box) or `broker` (an MCP server over ssh). The
+//                    two need different artifacts. UNDECLARED IS NOT SEALED — with no --lane every
+//                    row stays required, because the lane with fewer requirements is not the safe
+//                    default to assume (#513).
+//
 // --whoami <path>    the `nvoy_whoami` result captured from the session under test, compared
 //                    against --pubkey. This is the MCP path's EXPECT_PUBKEY (#338): registered is
 //                    not sole, and sole is not YOURS. Without it the binding reads UNCHECKED.
@@ -45,7 +51,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { boundIdentity, installState, renderState } from '../src/agent_install_state.mjs'
+import { LANES, boundIdentity, installState, renderState } from '../src/agent_install_state.mjs'
 import { exportTemplate, importTemplate } from '../src/agent_manifest_transfer.mjs'
 import { channelCommand, credentialPaths, credentialReport, registeredForm, sameVector } from '../src/channel_registration.mjs'
 import { RUNTIMES, channelStanza, cliRuntimes, exclusivityVerdict, foreignServers, isMine, registrationHelp, runtime } from '../src/mcp_runtimes.mjs'
@@ -71,6 +77,15 @@ const fromFile = flag('--from-file')
 // forced-command entry is seated under, and is a default because it is not deployment state.
 const channelHost = flag('--channel-host')
 const channelUser = flag('--channel-user') || 'root'
+// Allowlisted at the boundary like --pubkey and --channel. A typo must refuse here rather than
+// fall through to "unrecognised, so treat every row as required" — that behaviour is the correct
+// backstop inside installState, but silently demanding broker artifacts from someone who typed
+// `--lane sealled` is a confusing way to be right.
+const lane = flag('--lane').toLowerCase()
+if (has('--lane') && !Object.prototype.hasOwnProperty.call(LANES, lane)) {
+  die(`--lane must be one of: ${Object.keys(LANES).join(', ')}`)
+}
+const SEALED = lane === 'sealed'
 
 // Shape-check the two operator-pasted values HERE, at the boundary, before anything renders them
 // (#466 review §3). Both have a known shape, so an allowlist is available and an allowlist is
@@ -88,6 +103,14 @@ const obs = {}
 const see = (key, found, verified, note) => { obs[key] = { found, verified, note } }
 const did = []
 const warn = []
+
+// The declaration itself is a row, so an agent that never made one is visibly UNKNOWN rather than
+// silently defaulted. Verified: the flag was supplied and is a lane this build knows about, which
+// is the whole of what this row claims.
+see('lane', has('--lane') ? true : null, has('--lane'),
+  has('--lane')
+    ? `${lane} — ${LANES[lane]}`
+    : 'no --lane given, so every row stays required — an undeclared lane is not a sealed one')
 
 // ── Credentials. Observed, never created: the identity lives in a Bunker and the pairing is
 // copied from its UI by a human. This tool refuses to be the thing that invents either. ────────
@@ -254,7 +277,9 @@ see('state-dirs', dirsNow.length === DIRS.length, dirsNow.length === DIRS.length
 // minted — so a fresh agent finished with a correct stanza pointing at a private key that had never
 // been created, and the one working agent worked only because its pair was made by hand.
 const { keyPath, knownHostsPath } = credentialPaths(HERE)
-if (!existsSync(keyPath) && !CHECK && !STARTUP_ONLY) {
+// Not minted for a sealed-lane agent: it has no broker to present it to, and key material created
+// "just in case" is key material nobody is tracking.
+if (!existsSync(keyPath) && !CHECK && !STARTUP_ONLY && !SEALED) {
   mkdirSync(dirname(keyPath), { recursive: true, mode: 0o700 })
   execFileSync('ssh-keygen', ['-t', 'ed25519', '-N', '', '-C', `nvoy-mcp-channel ${name}`, '-f', keyPath], { stdio: 'ignore' })
   did.push(`generated ${keyPath}`)
@@ -465,7 +490,7 @@ if (bind.match === false) warn.push(`this session answers as ${bind.resolved.sli
 see('channel-answers', registered === true ? true : null, false, 'registered is not running — prove with an initialize + tools/list handshake')
 
 // ── Report ──────────────────────────────────────────────────────────────────────────────────
-const report = installState(obs)
+const report = installState(obs, { lane })
 if (did.length) { console.log(`\nchanged:`); for (const d of did) console.log(`  + ${d}`) }
 if (CHECK) console.log(`\n(--check: nothing was changed)`)
 console.log(`\n${name} — ${HERE}\n`)

@@ -270,6 +270,34 @@ check(/Bunker pairing is not in place/.test(mixedLine), 'a MISSING piece beside 
 check(/Client transport key was never checked/.test(mixedLine),
   '  …and the unchecked one KEEPS its own state — all-or-nothing silenced this the moment the states mixed')
 
+// ── 5d. the check command names the lane it was checked under ───────────────────────────────
+console.log('\n5d. the remedy command carries the right lane')
+// The document tells the reader to settle its state with `connect-agent --check`. That command was
+// written with `--lane sealed` baked into the string, so a BROKER-lane agent following its own
+// onboarding document scoped out the rows it depends on — `applies` refusing to assume the cheaper
+// lane, arriving through the document instead of the flag.
+const remedies = doc => doc.split('\n').filter(l => l.includes('connect-agent --check'))
+const laneDoc = lane => startupDoc({ agent: 'oliver', pubkey: PUB,
+  report: { lane, rows: [{ key: 'bunker-uri', title: 'Bunker pairing', state: MISSING },
+    { key: 'profile', title: 'Published profile', state: UNKNOWN }] } })
+
+const broker = remedies(laneDoc('broker'))
+check(broker.length >= 2, 'the document prints the remedy command more than once, so one right and one wrong is possible')
+check(broker.every(l => /connect-agent --check --lane broker/.test(l)),
+  'a BROKER-lane report renders --lane broker in EVERY remedy line')
+check(!broker.some(l => /--lane sealed/.test(l)),
+  '  …and never the other lane — this rendered `--lane sealed` for a broker agent')
+const sealedDoc = remedies(laneDoc('sealed'))
+check(sealedDoc.every(l => /connect-agent --check --lane sealed/.test(l)),
+  'BOTH DIRECTIONS — a SEALED-lane report still renders --lane sealed, so the fix is not "drop the flag"')
+// Undeclared is not sealed — `installState` treats silence as "every row applies", and a document
+// that supplied the flag anyway would talk an undeclared agent into the permissive reading.
+const noLane = remedies(laneDoc(null))
+check(noLane.length >= 2 && noLane.every(l => !/--lane/.test(l)),
+  'an UNDECLARED lane prints no --lane at all — silence is not a declaration here either')
+check(remedies(laneDoc('brokr')).every(l => !/--lane/.test(l)),
+  'an unrecognised lane is DROPPED, not echoed — `installState` would refuse it, so printing it hands over a command that fails')
+
 // ── 6. The tool, not the function ───────────────────────────────────────────────────────────
 console.log('\n6. what connect-agent actually writes')
 // Everything above tests `startupDoc`, which is handed a pubkey. The tool is not, and that gap

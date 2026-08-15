@@ -107,6 +107,14 @@ const MATRIX = [
   // class rather than those two instances. `writtenBy` is the third defect of this shape.
   ['every non-default parameter supplied at once', { briefPath: 'docs/OTHER_BRIEF.md',
     writtenBy: 'a fixture, deliberately,', report: { rows: rows({ 'admit-grant': PRESENT }) } }],
+  // `report.lane` renders the `--lane` flag on the remedy command (#515). It is a field on `report`
+  // rather than a parameter, so nothing above walks it, and the two copies inline their own lane
+  // list — the exact shape that drifts. All three branches, because a twin can agree on one.
+  ['a BROKER-lane report — the remedy names the other lane', { report: { lane: 'broker',
+    rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } }],
+  ['a SEALED-lane report', { report: { lane: 'sealed', rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } }],
+  ['an unrecognised lane — dropped, not echoed', { report: { lane: 'brokr',
+    rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } }],
 ]
 
 for (const [what, extra] of MATRIX) {
@@ -122,6 +130,26 @@ for (const [what, extra] of MATRIX) {
 // Byte-identity is blind to a parameter BOTH copies ignore — two twins that dropped `briefPath`
 // agree perfectly. So each non-default parameter is also asserted to reach the output, in both
 // directions: the value appears, and the default it replaced does not.
+// The lane is the same blindness one layer in: two copies that both ignored `report.lane` agree
+// byte for byte. Each is asserted to render it, and to render the other branches differently — a
+// copy that hardcoded one lane passes the identity check and fails here.
+for (const [label, copy] of [['node', node], ['browser', web]]) {
+  const remedy = lane => (copy.startupDoc({ agent: 'Pi Agent', pubkey: PUB,
+    report: { lane, rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } })
+    .split('\n').filter(l => l.includes('connect-agent --check')))
+  const broker = remedy('broker')
+  check(broker.length >= 2 && broker.every(l => l.includes('--lane broker')),
+    `${label}: a broker-lane report renders --lane broker in every remedy line`)
+  check(remedy('sealed').every(l => l.includes('--lane sealed')),
+    `${label}:   …and BOTH DIRECTIONS, a sealed-lane report renders --lane sealed`)
+  check(remedy(null).every(l => !l.includes('--lane')) && remedy('brokr').every(l => !l.includes('--lane')),
+    `${label}:   …and neither an undeclared nor an unrecognised lane prints a flag`)
+}
+// The lane names themselves, pinned. A stale list in the browser copy does not render a wrong
+// sentence — it drops a valid `--lane` flag, or prints one `installState` would refuse.
+check(Object.keys(web.LANES).sort().join(',') === Object.keys(nodeState.LANES).sort().join(','),
+  'the browser copy knows exactly the lanes `src/agent_install_state.mjs` does')
+
 for (const copy of [['node', node], ['browser', web]]) {
   const [label, mod] = copy
   const doc = mod.startupDoc({ agent: 'Pi Agent', briefPath: 'docs/OTHER_BRIEF.md', report: { rows: [] } })
