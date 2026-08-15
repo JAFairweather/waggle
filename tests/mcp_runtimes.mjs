@@ -71,6 +71,34 @@ check(parseClaudeList(null) === null, 'claude: no output at all is null, not []'
 check(JSON.stringify(parseClaudeList('No MCP servers configured.')) === JSON.stringify([]),
   'claude: a real answer with nothing in it is [], not null')
 
+// FAIL CLOSED (#464 review). This parser feeds `mcp-exclusive`, and `[]` there means "asked, and
+// nothing foreign is registered" — a green tick. Anything it cannot actually read must therefore
+// come back null, or the tick is printed off a list nobody read. Every case below produced a
+// usable-looking answer before the fix; the first two produced a WRONG NAME.
+check(parseClaudeList('Error: unable to read config') === null,
+  'claude: an error line is INCONCLUSIVE, not a server named "Error"')
+check(parseClaudeList('zsh: command not found: claude') === null,
+  'claude: a shell failure is INCONCLUSIVE, not a server named "zsh"')
+check(parseClaudeList('') === null && parseClaudeList('   \n  ') === null,
+  'claude: blank output is INCONCLUSIVE — a command that printed nothing has told you nothing')
+check(parseClaudeList('Traceback (most recent call last)\n  File "x", line 1') === null,
+  'claude: output with no entries in it at all is null, NOT an empty list')
+check(parseClaudeList(`${CLAUDE_OUT}\nsomething the parser has never seen`) === null,
+  'claude: one unrecognised line invalidates the whole read rather than being skipped')
+check(parseClaudeList('No MCP servers configured.\nnvoy-x: /usr/bin/ssh root@h - ✓ Connected') === null,
+  'claude: "nothing configured" alongside an entry is a contradiction, not a list')
+
+// BOTH DIRECTIONS — a parser that returned null for everything would pass every check above, and
+// would take the whole feature down while looking strictly safer.
+check(JSON.stringify(parseClaudeList(`Checking MCP server health...\n\n${CLAUDE_OUT}\n`))
+  === JSON.stringify(['nvoy-mc-claude', 'nvoy_codex_jaf', 'github']),
+  'NEGATIVE CONTROL — a health-check header, a blank line and a trailing newline do not break a real list')
+
+// The consequence the review named, asserted at the surface rather than at the parser: an
+// unreadable list must not reach foreignServers as "nothing foreign here".
+check(foreignServers(parseClaudeList('Error: unable to read config'), 'mc-claude') === null,
+  'an unreadable list stays UNKNOWN all the way to the report, and cannot print a clean tick')
+
 // Captured from `codex mcp list --json` on 2026-08-14. The plain table is fixed-width and folds a
 // whole environment block into the name column, which is why this asks for JSON.
 const CODEX_OUT = JSON.stringify([
@@ -135,6 +163,38 @@ check(gemini.kind === 'file' && !gemini.line, 'gemini is file-configured and is 
 check(gemini.config.includes('settings.json') && gemini.json.includes('mcpServers'), 'gemini gets a path and the stanza')
 const generic = help.find(h => h.id === 'generic')
 check(!!generic && /pi|headless/i.test(generic.label), `a host with no CLI at all is covered — ${generic.label.slice(0, 40)}…`)
+
+// SHELL QUOTING (#464 review). These lines are printed for the operator to paste, and the old
+// `.join(' ')` did not fail on a path with a space in it — it produced a DIFFERENT, valid command
+// that registered the wrong argv and reported success. `/Users/x/My Drive/...` is an ordinary
+// macOS home path, and the next signal is a channel that will not connect for a reason nothing on
+// screen names.
+{
+  const spaced = channelStanza({
+    agent: 'MC-Claude',
+    command: '/Users/op/My Drive/bin/node',
+    args: ['/Users/op/My Drive/nvoy/claude-channel.mjs', '--instance', 'mc-claude'],
+    instanceRoot: '/Users/op/My Drive/instances',
+  })
+  for (const r of cliRuntimes()) {
+    const line = r.add(spaced)
+    check(line.includes("'/Users/op/My Drive/bin/node'"), `${r.id}: a command path with a space is quoted`)
+    check(line.includes("'/Users/op/My Drive/nvoy/claude-channel.mjs'"), `${r.id}: an argument with a space is quoted`)
+    check(/(-e|--env) 'NVOY_INSTANCE_ROOT=\/Users\/op\/My Drive\/instances'/.test(line),
+      `${r.id}: an env VALUE with a space is quoted as one token`)
+    // The property, not the mechanism: splitting the rendered line the way a shell would must give
+    // back exactly the argv that went in.
+    check(!/ \/Users\/op\/My Drive/.test(line.replace(/'[^']*'/g, '')),
+      `${r.id}: no unquoted space survives anywhere in the line`)
+  }
+  const quoted = channelStanza({ agent: "od'd", command: '/bin/node', args: ['/a b'], instanceRoot: '/r' })
+  check(cliRuntimes().every(r => r.add(quoted).includes("'\\''")),
+    "a single quote inside a token uses the '\\'' escape rather than ending the quoting early")
+}
+// BOTH DIRECTIONS — quoting everything unconditionally would pass all of the above and make every
+// ordinary line unreadable. The plain case must stay plain.
+check(!claudeLine.includes("'"), 'NEGATIVE CONTROL — an ordinary path is NOT quoted; the line stays copy-readable')
+check(!help.find(h => h.id === 'codex').line.includes("'"), 'NEGATIVE CONTROL — same for codex')
 
 check(cliRuntimes().every(r => typeof r.add === 'function' && typeof r.remove === 'function' && typeof r.parse === 'function'),
   'every CLI runtime can list, add AND remove — a guard that says "remove it" without the command is half a guard')

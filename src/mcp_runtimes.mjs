@@ -64,14 +64,44 @@ export function foreignServers(names, agent) {
 // null is not []. `[]` means the runtime answered and has nothing registered; null means nobody
 // looked, and those two must never share a cell — the whole four-state report rests on it.
 
-/** `claude mcp list` prints `<server>: <command…> - <status>`. Take only the name. */
+/**
+ * `claude mcp list` prints `<server>: <command…> - <status>`. Take only the name.
+ *
+ * ALLOWLIST, not denylist. The previous version took anything before a colon, which meant a line
+ * this parser had never seen still produced an answer: `Error: unable to read config` parsed as a
+ * server called `Error`, and output with no colons at all — a stack trace, a permissions failure,
+ * a future format — parsed as `[]`. `[]` is the value that says "the runtime answered and has
+ * nothing registered", so `mcp-exclusive` printed a verified tick off a list it had never read.
+ * That is the one row in this report where failing open is a security answer rather than a
+ * cosmetic one (#464 review).
+ *
+ * Now every non-blank line must be recognised or the whole read is null. A format change surfaces
+ * as INCONCLUSIVE, which is the correct direction to be wrong in and the reason the four-state
+ * report exists at all.
+ */
+const CLAUDE_ENTRY = /^([A-Za-z0-9._-]+):\s+\S.*\s-\s+\S/
+const CLAUDE_EMPTY = /^No MCP servers configured\b/
+// Progress chatter the CLI prints around the list. Matched exactly rather than skipped loosely:
+// "any line that is not an entry" is how the old parser got here.
+const CLAUDE_NOISE = /^(Checking MCP server health|MCP servers?:)/
+
 export function parseClaudeList(stdout) {
   if (typeof stdout !== 'string') return null
+  // A command that prints nothing has told you nothing. Blank stdout is not an empty list.
+  if (!stdout.trim()) return null
   const names = []
-  for (const line of stdout.split('\n')) {
-    const m = /^([A-Za-z0-9._-]+):/.exec(line.trim())
-    if (m && !names.includes(m[1])) names.push(m[1])
+  let sawEmpty = false
+  for (const raw of stdout.split('\n')) {
+    const line = raw.trim()
+    if (!line) continue
+    if (CLAUDE_EMPTY.test(line)) { sawEmpty = true; continue }
+    if (CLAUDE_NOISE.test(line)) continue
+    const m = CLAUDE_ENTRY.exec(line)
+    if (!m) return null
+    if (!names.includes(m[1])) names.push(m[1])
   }
+  // "No MCP servers configured." alongside entries is a contradiction, not a list.
+  if (sawEmpty && names.length) return null
   return names
 }
 
@@ -97,6 +127,23 @@ export function parseCodexJson(stdout) {
 
 // ── The runtimes.
 
+/**
+ * Shell-quote one token of a command line the operator is meant to paste (#464 review).
+ *
+ * `.join(' ')` produced a line that BREAKS RATHER THAN FAILS on a path containing a space, which
+ * on macOS is an ordinary home directory (`/Users/x/My Drive/…`). Pasted, it registers a server
+ * with the wrong argv and reports success, and the operator's next signal is a channel that will
+ * not connect for a reason nothing on screen names.
+ *
+ * Bare when the token is unambiguous, single-quoted otherwise, with the standard `'\''` escape so
+ * a token containing a quote survives too.
+ */
+const shq = value => {
+  const token = String(value ?? '')
+  if (token === '') return "''"
+  return /^[A-Za-z0-9._:=@/-]+$/.test(token) ? token : `'${token.replace(/'/g, "'\\''")}'`
+}
+
 export const RUNTIMES = [
   {
     id: 'claude',
@@ -106,10 +153,10 @@ export const RUNTIMES = [
     listArgs: ['mcp', 'list'],
     parse: parseClaudeList,
     add: ({ server, command, args, env }) =>
-      ['claude', 'mcp', 'add', server, '-s', 'user',
-        ...Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`]),
-        '--', command, ...args].join(' '),
-    remove: server => `claude mcp remove ${server}`,
+      ['claude', 'mcp', 'add', shq(server), '-s', 'user',
+        ...Object.entries(env).flatMap(([k, v]) => ['-e', shq(`${k}=${v}`)]),
+        '--', shq(command), ...args.map(shq)].join(' '),
+    remove: server => `claude mcp remove ${shq(server)}`,
     // A registered server that the real channel already holds the lock on reports "Failed to
     // connect" here. That is expected and is not a registration fault.
     listCaveat: '"Failed to connect" in this list is EXPECTED while the real channel holds the lock',
@@ -122,10 +169,10 @@ export const RUNTIMES = [
     listArgs: ['mcp', 'list', '--json'],
     parse: parseCodexJson,
     add: ({ server, command, args, env }) =>
-      ['codex', 'mcp', 'add', server,
-        ...Object.entries(env).flatMap(([k, v]) => ['--env', `${k}=${v}`]),
-        '--', command, ...args].join(' '),
-    remove: server => `codex mcp remove ${server}`,
+      ['codex', 'mcp', 'add', shq(server),
+        ...Object.entries(env).flatMap(([k, v]) => ['--env', shq(`${k}=${v}`)]),
+        '--', shq(command), ...args.map(shq)].join(' '),
+    remove: server => `codex mcp remove ${shq(server)}`,
   },
   {
     id: 'gemini',
