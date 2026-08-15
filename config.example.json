@@ -36,6 +36,8 @@
     "moderation_command_ids": [],
     "lifecycle_command_at": 0,
     "lifecycle_command_ids": [],
+    "seat_command_at": 0,
+    "seat_command_ids": [],
     "trust_command_at": 0,
     "task_route_command_at": 0,
     "mirror_grandfathered": ["<pre-consent watched author hex, temporary explicit exception>"],
@@ -82,6 +84,13 @@
       "ssh_user": "waggle-policy-ingress",
       "ssh_identity_file": "/etc/waggle/policy-client/writer_ed25519",
       "ssh_known_hosts_file": "/etc/waggle/policy-client/known_hosts"
+    },
+    "channel_seat": {
+      "mode": "off",
+      "ssh_host": "<the broker host>",
+      "ssh_user": "waggle-channel-seat",
+      "ssh_identity_file": "/etc/waggle/channel-seat/seat_ed25519",
+      "ssh_known_hosts_file": "/etc/waggle/channel-seat/known_hosts"
     },
     "trusted_repliers": [],
     "muted_authors": []

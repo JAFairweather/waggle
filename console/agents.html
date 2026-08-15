@@ -75,6 +75,13 @@
       <button id="resume" disabled>Resume a paused agent</button>
     </div>
 
+    <div class="widens">
+      <p class="note"><b>Seat this agent's MCP channel key.</b> The channel is an ssh call to the broker under a forced command, and the broker answers no key it has not been told about. This publishes one signed instruction; every other byte of what that key may do — the one command it can run, the restrictions on it, the instance it reaches — comes from the broker's own config, never from here. What you supply is a <b>public</b> key, so it is safe to paste and safe on a relay.</p>
+      <label for="seat-key">The agent's channel public key</label>
+      <input id="seat-key" placeholder="ssh-ed25519 AAAA… — the one line the agent's connect-agent printed" spellcheck="false" disabled>
+      <button id="seat" disabled>Seat the channel key</button>
+    </div>
+
     <button class="quiet" id="rename" disabled>Rename</button>
     <button class="quiet" id="lane-off" disabled>Stop carrying mentions</button>
     <button class="quiet" id="pause" disabled>Pause routing</button>
@@ -88,6 +95,7 @@
       <tr><th>Control</th><th>Reach</th><th>What it does not do</th></tr>
       <tr><td><b>Let them in</b></td><td class="lane">widens</td><td>Gives the <b>write half only</b>. The community relay will not serve an external key, so they do <b>not</b> read your community directly — waggle carries mentions back to them instead.</td></tr>
       <tr><td><b>Carry mentions out to it</b></td><td class="lane">widens</td><td>Carries <b>mentions only</b>. It is not read access, and nothing on this page should be understood as making it so.</td></tr>
+      <tr><td><b>Seat the channel key</b></td><td class="lane">widens</td><td>Lets that key run <b>one fixed command</b> on the broker, and nothing else — no shell, no forwarding, no other instance. It is not membership and not a lane: an agent can be fully in this hive with no channel, and can hold a channel while paused. The key and the fact of the seat are published to public relays, because the command is signed and public like every other one on this page.</td></tr>
       <tr><td><b>Resume a paused agent</b></td><td class="lane">widens</td><td>Cannot resume an agent who was <b>removed</b>. Letting them back in is a fresh decision by you.</td></tr>
       <tr><td><b>Pause routing</b></td><td>narrows</td><td>Leaves the record intact — they are still in. This is a lane decision, not a membership one.</td></tr>
       <tr><td><b>Remove them</b></td><td>narrows</td><td>Undoes only what <b>this bridge issued and can revoke</b>. It does not reach the agent's own runtime, does not delete or rotate the agent's key — waggle never held it — and does not retract anything that key already published. <b>Removed is not disarmed.</b></td></tr>
@@ -212,7 +220,7 @@ async function check(agent, button, out) {
 }
 
 let activeBridge = null, activeState = null
-const CONTROLS = ['target', 'label', 'admit', 'lane-on', 'resume', 'rename', 'lane-off', 'pause', 'revoke', 'forget']
+const CONTROLS = ['target', 'label', 'seat-key', 'seat', 'admit', 'lane-on', 'resume', 'rename', 'lane-off', 'pause', 'revoke', 'forget']
 const setManage = ok => { for (const id of CONTROLS) $(id).disabled = !ok }
 
 async function publish(ev) {
@@ -228,7 +236,23 @@ async function publish(ev) {
   return results.filter(Boolean).length
 }
 
-async function send(op, extra = {}) {
+const LIFECYCLE_D = 'waggle-agent-lifecycle'
+// The seat lane is a different verb with a different consumer, so it carries a different `d` — the
+// same tag `src/channel_seat_runner.mjs` exports and the broker's forced command filters on. One
+// string, two ends: a mismatch here would publish a perfectly valid command that nothing reads.
+const SEAT_D = 'waggle-channel-seat'
+
+// KEY ORDER IS PART OF THE WIRE FORMAT on the seat lane. The bridge compares the content bytes
+// against a canonical re-serialisation (`canonicalJson`, src/buzz_policy_core.mjs) so that what it
+// forwards is what the broker will re-derive; an intent that is merely equivalent JSON is forwarded
+// here and refused there, and that refusal reads to an operator as the broker rejecting their key.
+// Sorting every command makes this true by construction rather than by the order a caller happened
+// to spread its fields in. Keys on this page are ASCII, where the default string sort and
+// `canonicalJson`'s byte-order sort agree; tests/channel_seat_delivery.mjs asserts that agreement
+// against the real function rather than leaving it as a claim.
+const canonical = body => JSON.stringify(Object.fromEntries(Object.keys(body).sort().map(k => [k, body[k]])))
+
+async function send(op, extra = {}, d = LIFECYCLE_D) {
   const out = $('manage-status')
   try {
     if (!activeBridge) throw Error('Load a fresh verified bridge state first.')
@@ -241,13 +265,18 @@ async function send(op, extra = {}) {
     const mine = await signer.getPublicKey()
     out.className = 'status'; out.textContent = `Requesting a signature from ${npub(mine)}…`
     const ev = await signer.signEvent({ kind: 30078, created_at: Math.floor(Date.now() / 1000),
-      tags: [['d', 'waggle-agent-lifecycle'], ['p', activeBridge]], content: JSON.stringify(body) })
+      tags: [['d', d], ['p', activeBridge]], content: canonical(body) })
     out.textContent = 'Publishing signed owner command…'
     const accepted = await publish(ev)
     if (!accepted) throw Error('No relay accepted the command. Nothing changed.')
     out.className = 'status ok'
-    out.textContent = `${accepted}/${RELAYS.length} relay(s) accepted it. The bridge will verify the signature, check the command against its catalogue, and refresh this state. A relay OK is not proof it was applied — this list is.`
-    setTimeout(load, 2500)
+    // A seat does not land in this roster, so it must not borrow the roster's proof. The bridge
+    // forwards it to the broker and the answer comes back as a receipt; saying "this list is" the
+    // proof would point at a list that will look identical either way.
+    out.textContent = d === SEAT_D
+      ? `${accepted}/${RELAYS.length} relay(s) accepted it. The bridge will forward it to the broker and record the receipt. A relay OK is not proof it was seated, and this list will not show it — the agent's own \`connect-agent --check\` is what settles whether the channel answers.`
+      : `${accepted}/${RELAYS.length} relay(s) accepted it. The bridge will verify the signature, check the command against its catalogue, and refresh this state. A relay OK is not proof it was applied — this list is.`
+    if (d !== SEAT_D) setTimeout(load, 2500)
   } catch (e) { out.className = 'status err'; out.textContent = e.message }
 }
 
@@ -280,6 +309,37 @@ $('resume').onclick = () => send('agent_resume')
 $('forget').onclick = () => send('agent_forget')
 $('lane-on').onclick = () => send('agent_return_lane', { enabled: true })
 $('lane-off').onclick = () => send('agent_return_lane', { enabled: false })
+$('seat').onclick = () => {
+  const out = $('manage-status')
+  const key = $('seat-key').value.trim()
+  // The private-key check runs FIRST and on its own. Every other refusal below is a shape complaint,
+  // and a private key fails those too — so ordering this second would meet the worst paste on this
+  // page with "that is not an ed25519 public key", which reads as a typo and invites a retry. The
+  // material never leaves the browser either way; this exists so the person is told what they pasted.
+  if (/BEGIN [A-Z ]*PRIVATE KEY|PuTTY-User-Key-File|nsec1|ncryptsec1|bunker:/i.test(key)) {
+    out.className = 'status err'
+    out.textContent = 'That is a PRIVATE key or a signing URI. Nothing was sent. A seat needs the matching .pub file — the one line beginning `ssh-ed25519`.'
+    return
+  }
+  // An options prefix, named as itself. `restrict …` and `command="…" …` are what an operator pastes
+  // when they copy a whole authorized_keys line, and the broker refuses those too — but that refusal
+  // arrives after a relay round trip and reads as the broker rejecting their key rather than as the
+  // paste carrying half a line too much. The options come from the broker's config, always.
+  if (/(^|\s)ssh-ed25519\s/.test(key) && !/^ssh-ed25519\s/.test(key)) {
+    out.className = 'status err'
+    out.textContent = 'Paste the `ssh-ed25519 …` line only. What precedes it are authorized_keys options, and those come from the broker\'s own config — an intent is not allowed to carry them. Nothing was sent.'
+    return
+  }
+  // The same shape src/channel_seat.mjs enforces, declared again because console/ cannot import from
+  // src/ at runtime; tests/channel_seat_delivery.mjs asserts the two agree on real keys AND on the
+  // rejections, so a divergence is a failing suite rather than a refusal that only happens remotely.
+  if (!/^ssh-ed25519 [A-Za-z0-9+/]{16,1024}={0,3}( [\x20-\x7e]{0,128})?$/.test(key)) {
+    out.className = 'status err'
+    out.textContent = 'That is not an ed25519 ssh public key. It is one line: `ssh-ed25519`, the base64 blob, and an optional comment. Nothing was sent.'
+    return
+  }
+  send('channel_seat', { key }, SEAT_D)
+}
 $('rename').onclick = () => {
   const label = $('label').value
   // One declaration for the whole handler. It used to sit inside the length branch, so the
