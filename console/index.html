@@ -253,6 +253,40 @@
         </div>
       </div>
 
+      <!-- Admission (#487). Hidden until custody is proved, because the claim is signed by the
+           bunker and there is no bunker to sign with until then. Placed inside the mint panel
+           rather than on its own page: admission is the second half of making a key usable, and
+           splitting it is what left it in a terminal. -->
+      <div id="admit" style="display:none;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+        <label>Let it in <span class="hint">so its key can sign in to the relay at all — access you give below is a different thing, and does not do this</span></label>
+        <div class="hint" style="margin-top:6px">
+          Two keys sign here, and they are not the same key. <strong>You</strong> make the invite,
+          because making one needs owner or admin on the relay. <strong>The agent's bunker</strong>
+          claims it, because the claim adds the signing key to the member list — claim it as
+          yourself and you let yourself in a second time while the agent stays outside, and the
+          relay says yes to that.
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
+          <input id="admit-relay" placeholder="wss://… or https://… — the same relay URL the buzz CLI uses" autocomplete="off" spellcheck="false" style="flex:1 1 320px">
+          <button class="btn" id="admit-mint" style="flex:0 0 auto">Make an invite</button>
+        </div>
+        <div id="admit-policy" style="display:none;margin-top:12px;padding:10px 12px;background:var(--field);border:1px solid var(--line);border-radius:var(--r-sm)">
+          <div id="admit-policy-what" class="hint" style="color:var(--text)"></div>
+          <!-- Never pre-ticked, and neither derives the other. An age attestation is a statement a
+               person makes about themselves; a box this page ticked is a statement this page made. -->
+          <label style="display:flex;gap:8px;align-items:flex-start;margin-top:10px;font-weight:400">
+            <input type="checkbox" id="admit-terms" style="flex:0 0 auto;margin-top:3px;width:auto">
+            <span class="hint" style="color:var(--text)">I have read this deployment's terms and accept them.</span>
+          </label>
+          <label id="admit-age-row" style="display:none;gap:8px;align-items:flex-start;margin-top:6px;font-weight:400">
+            <input type="checkbox" id="admit-age" style="flex:0 0 auto;margin-top:3px;width:auto">
+            <span class="hint" style="color:var(--text)">I attest to the age requirement this policy states.</span>
+          </label>
+        </div>
+        <button class="btn" id="admit-claim" style="display:none;margin-top:12px">Claim it, as the agent</button>
+        <div class="status" id="admitst"></div>
+      </div>
+
       <button class="btn ghost" id="mint-use" style="margin-top:12px">Use this key below</button>
     </div>
     <div class="status" id="mintst"></div>
@@ -348,6 +382,8 @@ import { CAP_LABEL, capLabel, CAP_ENFORCER, capEnforcer, ISSUABLE, describeGrant
 import { scopeHash } from './scope-hash.mjs'
 import { mintAgentKey } from './mint-agent-key.mjs'
 import { proveCustody, custodyNonce } from './bunker-custody.mjs'
+import { claimInvite, mintInvite, readPolicy } from './admission-client.mjs'
+import { checkMintBounds } from './relay-admission.mjs'
 // This page signs kind 440 and 441 without going through consoleSigner, so it does not inherit that
 // chokepoint's guard and needs its own (#418). It calls the guard through signFresh() rather than
 // inline, so the ordering is assertable from a test — an inline handler is not importable.
@@ -773,13 +809,33 @@ window.__revoke = (grantId, granteeShort) => {
 // failure is recoverable: fix the pairing, try again. The previous flow had already destroyed its
 // copy by the time anything could go wrong.
 let minted = null
+// The proved pairing, kept for the rest of this key's flow (#487). It used to be a local inside the
+// custody handler and was dropped on the way out, which meant the very next step — admitting the
+// key to the relay, which only the agent's own key can sign — had no signer and became a terminal
+// command. Its LIFETIME is exactly this key's flow: set only after custody is PROVEN, cleared by
+// `forgetMintedKey()` on a new mint or a sign-out, never written to storage. It is a NIP-46
+// pairing, not a key: nothing here can sign without the bunker answering.
+//
+// Named `agentSigner`, not `signer`, on purpose. The module-level `signer` is the OPERATOR's
+// console session, and the old code shadowed it with `const signer = await nip46Signer(uri)` inside
+// the handler — so anything added there that meant "the operator" would silently have got the
+// agent's bunker, and the relay answers 200 to that mistake.
+let agentSigner = null
 function forgetMintedKey() {
   if (minted) minted.secret.forget()
   minted = null
+  try { agentSigner?.close?.() } catch { /* a pairing that will not close is still being dropped */ }
+  agentSigner = null
   $('mint-out').style.display = 'none'
   $('mint-custody').style.display = 'none'
   $('mint-secret').style.display = 'none'; $('mint-secret').textContent = ''
   $('mint-bunker').value = ''
+  $('admit').style.display = 'none'
+  $('admit-policy').style.display = 'none'
+  $('admit-claim').style.display = 'none'
+  $('admit-terms').checked = false; $('admit-age').checked = false
+  $('admitst').className = 'status'; $('admitst').textContent = ''
+  invite = null; policyVerdict = null
   $('mintst').className = 'status'; $('mintst').textContent = ''
 }
 $('mint-go').addEventListener('click', () => {
@@ -827,12 +883,13 @@ $('mint-prove').addEventListener('click', async () => {
   if (!uri) { st.className = 'status err'; st.textContent = 'Paste the bunker:// URI your bunker gave you for this key.'; return }
   st.className = 'status'; st.textContent = 'Asking that bunker to sign a challenge — approve it there if it asks…'
   let verdict
+  let paired = null
   try {
     const { nip46Signer } = await nc()
-    const signer = await nip46Signer(uri)
+    paired = await nip46Signer(uri)
     verdict = await proveCustody({
       expectedPubkeyHex: minted.display.pubkeyHex,
-      sign: (event) => signer.signEvent(event),
+      sign: (event) => paired.signEvent(event),
       verifyEvent,
       nonce: custodyNonce(b => crypto.getRandomValues(b)),
     })
@@ -844,6 +901,9 @@ $('mint-prove').addEventListener('click', async () => {
     return
   }
   if (!verdict.proven) {
+    // An unproven pairing is dropped rather than kept "in case". Keeping it is how a signer that
+    // was NOT shown to hold this key ends up signing the claim that admits it.
+    try { paired?.close?.() } catch { /* dropping it either way */ }
     st.className = 'status err'
     st.textContent = `${verdict.code}: ${verdict.reason}`
     return
@@ -851,13 +911,109 @@ $('mint-prove').addEventListener('click', async () => {
   // PROVEN. Only now does the page let go — and only now is `take()` called, which is what makes
   // "this page no longer has it" true rather than promised.
   minted.secret.take()
+  // And only now is the pairing kept: `agentSigner` is set on the proven branch and nowhere else,
+  // so it can never hold a signer that failed the custody check.
+  agentSigner = paired
   $('mint-secret').textContent = ''
   $('mint-secret').style.display = 'none'
   $('mint-custody').style.display = 'none'
   $('mint-secret-note').textContent = 'The bunker has it. This page does not. Give the public half access below.'
+  $('admit').style.display = ''
   st.className = 'status ok'
-  st.textContent = `Custody proved — ${verdict.reason} This page has now cleared its copy.`
+  st.textContent = `Custody proved — ${verdict.reason} This page has now cleared its copy. ` +
+    'The pairing stays open for the admission step below, and is dropped when you make another key.'
 })
+// Admission (#487) — the invite sequence, without a terminal.
+//
+// The invite CODE is a bearer secret: whoever holds it can join this relay. It lives in this
+// variable for the life of the flow and goes nowhere else — not to storage, not into a URL, not
+// into any status line on this page. `forgetMintedKey()` clears it with everything else.
+// One hour, one use. Not a field: a longer-lived or multi-use invite is a bearer secret with a
+// wider blast radius, and this flow hands the code straight to a bunker that is already paired —
+// there is nothing for a longer window to buy.
+const INVITE_TTL_SECS = 3600
+let invite = null
+let policyVerdict = null
+const admitSt = (cls, text) => { const s = $('admitst'); s.className = `status${cls ? ` ${cls}` : ''}`; s.textContent = text }
+
+$('admit-mint').addEventListener('click', async () => {
+  if (!minted) { admitSt('err', 'Make a key first.'); return }
+  if (!signer) { admitSt('err', 'Sign in first — minting an invite is signed by YOUR key, and it needs owner or admin on the relay.'); return }
+  const relayUrl = $('admit-relay').value.trim()
+  if (!relayUrl) { admitSt('err', 'Give the relay URL — the same one the buzz CLI uses.'); return }
+  const bad = checkMintBounds(INVITE_TTL_SECS, 1)
+  // Caught here rather than at the relay: a 400 reads as a network fault over a number this page
+  // chose. It is a constant today, so this can only fire if that constant is edited wrongly.
+  if (bad) { admitSt('err', bad); return }
+  admitSt('', 'Minting — approve the signing prompt if your signer asks…')
+  try {
+    // Signed by the OPERATOR's console session, deliberately not by `agentSigner`.
+    // Through signFresh, like every other signing act on this page: a stale module graph means the
+    // request body was assembled by code the operator cannot see, and a signature is the
+    // irreversible part (#418).
+    const out = await mintInvite({ relayUrl, sign: t => signFresh(t, signer), ttlSecs: INVITE_TTL_SECS, maxUses: 1 })
+    if (!out.ok) { admitSt('err', out.reason); return }
+    invite = out.code
+    // The policy read happens now, not at claim time: a claim without a receipt where a policy
+    // applies is a guaranteed 403, and asking first turns that into either a receipt or an
+    // accurate account of what is needed.
+    policyVerdict = await readPolicy({ relayUrl })
+    if (policyVerdict.state === 'inconclusive') {
+      // NOT "no policy". Being unable to check is not the same as being fine, and guessing here
+      // becomes a 403 at claim time that nothing on this page could explain.
+      admitSt('err', `Invite minted, but ${policyVerdict.reason} Not claiming on a guess.`)
+      return
+    }
+    if (policyVerdict.state === 'none') {
+      $('admit-policy').style.display = 'none'
+      $('admit-claim').style.display = ''
+      admitSt('ok', 'Invite minted. This deployment has no join policy, so the agent can claim it directly.')
+      return
+    }
+    const p = policyVerdict.policy
+    const needsAge = p.age_attestation_required === true
+    $('admit-policy-what').textContent =
+      `This relay has a join policy (version ${p.version ?? p.policy_version ?? '(none)'}). ` +
+      `An age attestation is ${needsAge ? 'REQUIRED' : 'not required'}. A claim that has not accepted it is refused.`
+    $('admit-age-row').style.display = needsAge ? 'flex' : 'none'
+    $('admit-policy').style.display = ''
+    $('admit-claim').style.display = ''
+    admitSt('ok', 'Invite minted. Read the policy, then say so below — this page will not say it for you.')
+  } catch (e) {
+    // `reach` and `sign` are set by admission-client so a transport failure is never reported as a
+    // relay verdict. Nothing was minted on either path.
+    admitSt('err', `${e.message} Nothing was minted.`)
+  }
+})
+
+$('admit-claim').addEventListener('click', async () => {
+  if (!invite) { admitSt('err', 'Mint an invite first.'); return }
+  if (!agentSigner) { admitSt('err', 'The agent\'s bunker pairing is gone — prove custody again. The claim must be signed by the AGENT\'s key, not yours.'); return }
+  const relayUrl = $('admit-relay').value.trim()
+  admitSt('', 'Claiming — the agent\'s bunker will prompt, twice where a policy applies…')
+  try {
+    const out = await claimInvite({
+      relayUrl,
+      code: invite,
+      policy: policyVerdict?.state === 'present' ? policyVerdict.policy : null,
+      // Read off the boxes at the moment of the claim, and passed through as stated. Neither is
+      // derived from the other and neither from what the policy requires.
+      accepted: $('admit-terms').checked === true,
+      ageConfirmed: $('admit-age').checked === true,
+      sign: t => signFresh(t, agentSigner),
+    })
+    if (!out.ok) { admitSt('err', out.reason); return }
+    // `already` and `joined` are kept apart: one consumed a finite slot and one did not, and a
+    // re-run that consumed nothing must not read like a first claim that did.
+    $('admit-claim').disabled = true
+    admitSt('ok', `${out.outcome} — ${out.note} The relay now says this key is a member. That is NOT the ` +
+      'same as having watched it authenticate: the proof is one kind:0 published from this key ' +
+      'against the community relay and read back cold.')
+  } catch (e) {
+    admitSt('err', e.message)
+  }
+})
+
 $('mint-use').addEventListener('click', () => {
   if (!minted) return
   // Only the public half crosses into the grant form. There is no field on `display` that could

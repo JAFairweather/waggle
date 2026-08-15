@@ -178,8 +178,25 @@ check(relayInvite.includes("from '../src/nip98.mjs'"),
   'tools/relay-invite.mjs takes NIP-98 from src/, which ships (#432)')
 check(!relayInvite.includes('../console/nip98.mjs'),
   '  …and no longer from console/, which does not')
-check(existsSync(join(REPO, 'src/nip98.mjs')) && !existsSync(join(REPO, 'console/nip98.mjs')),
-  '  …and there is exactly ONE copy of the builder, in src/ — a move, not a fork')
+// The rule this protects is "shipped code does not import console/", NOT "there is one file".
+// It used to assert the latter — no console/nip98.mjs at all — which was right while the page had
+// no use for the builder. #487 gives it one: the console now signs its own NIP-98 requests to
+// admit an agent, and it cannot import ../src/ because serve-console pins DOCROOT to console/.
+// So the permitted arrangement is the one src/nip98.mjs's own header prescribes and
+// console/scope-hash.mjs set the precedent for: a browser copy BOUND BY A TEST. Unbound, it is a
+// fork, and a fork of a security-relevant builder is how two copies drift apart.
+check(existsSync(join(REPO, 'src/nip98.mjs')), '  …and the shipped builder is in src/')
+const webNip98 = join(REPO, 'console/nip98.mjs')
+if (existsSync(webNip98)) {
+  const binder = 'tests/console_admission.mjs'
+  const bind = existsSync(join(REPO, binder)) ? readFileSync(join(REPO, binder), 'utf8') : ''
+  check(bind.includes("from '../src/nip98.mjs'") && bind.includes("from '../console/nip98.mjs'"),
+    `  …and the browser copy is BOUND — ${binder} imports both and holds them equal`)
+  check(readFileSync(join(REPO, 'package.json'), 'utf8').includes(`node ${binder}`),
+    '  …by a suite that npm test actually runs, since an unrun binding binds nothing')
+} else {
+  check(true, '  …and there is no browser copy to bind')
+}
 
 console.log(pass ? '\nSHIP IMPORTS PASS — runtime code stays inside the deployed tree' : '\nSHIP IMPORTS FAIL')
 process.exit(pass ? 0 : 1)

@@ -380,7 +380,10 @@ check(noSigner !== null && /sign in first/.test(noSigner), `no signer is a state
 // is never published. Anything else is a new signing path and has to be looked at.
 const indexSrc = readFileSync(join(CONSOLE, 'index.html'), 'utf8')
 if (indexSrc.length < 10000) inconclusive(`index.html read back only ${indexSrc.length} bytes`)
-const CUSTODY_CALL = 'sign: (event) => signer.signEvent(event),'
+// The local was renamed `paired` in #487. It used to be `signer`, which SHADOWED the module-level
+// operator session under the same name — so a line added in that handler meaning "the operator"
+// silently got the agent's bunker, and the relay answers 200 to that mistake.
+const CUSTODY_CALL = 'sign: (event) => paired.signEvent(event),'
 const directSigns = indexSrc.split('\n')
   .map((line, i) => ({ line: line.trim(), n: i + 1 }))
   .filter(l => /\.signEvent\s*\(/.test(l.line) && l.line !== CUSTODY_CALL)

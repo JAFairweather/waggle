@@ -74,9 +74,13 @@ import { nip19 } from 'nostr-tools'
 import { checkPastedBunkerUri, findBunkerUriExposure, planClientKey } from '../src/bunker_paste.mjs'
 import { nip98Template, nip98Header, expectedUrl } from '../src/nip98.mjs'
 import { loadBunkerSignerFiles, makeBunkerSigner, makeLocalSigner, withPinnedCustody } from '../src/nostr_signer.mjs'
-import { refusal, checkMintBounds,
+// `refusal` is no longer imported here: every status this tool acts on now goes through
+// src/relay_admission.mjs, which formats the reason. An import left behind would be the only
+// remaining way for the CLI's wording to drift from the console's.
+import { checkMintBounds,
   SIGN_TIMEOUT_MS, MAX_SIGN_SKEW_SECS, NIP98_WINDOW_SECS } from '../src/relay_invite.mjs'
 import { resolveSigner, signerBanner } from '../src/relay_invite_signer.mjs'
+import { acceptOutcome, claimOutcome, mintOutcome, policyGate, policyReadVerdict } from '../src/relay_admission.mjs'
 
 const argv = process.argv.slice(2)
 const cmd = argv[0]
@@ -329,22 +333,15 @@ if (cmd === 'mint') {
   // Built in src/relay_invite_signer.mjs from the RESOLVED identity. As a bare console.log here it
   // was untestable, and printing the pairing's transport address instead went unnoticed.
   console.log(signerBanner('minting', chosen))
-  const { status, json, text } = await post('/api/invites', { ttl_secs: ttl, max_uses: uses }, signer)
-
-  if (status === 403) {
-    console.error('relay-invite: 403 — this key does not hold owner or admin in relay_members.')
-    console.error('  That IS the answer to the first open question in #357: minting needs the role,')
-    console.error('  and the ask to the relay operator is one line — put this key in relay_members as admin.')
-    // Exit 4, not 1. The tool worked perfectly and delivered its answer; 1 means "you invoked it
-    // wrong", which in a script reads as operator error over a correct, complete result.
-    process.exit(4)
-  }
-  if (status === 401) die(`401 — the relay rejected the signature: ${refusal(status, json, text)}`, 1)
-  if (status === 429) die(`429 — ${refusal(status, json, text)}`, 4)
-  if (status < 200 || status >= 300) die(`${status} — ${refusal(status, json, text)}`, 2)
-
-  const code = json?.code
-  if (!code) die(`${status} but no code in the response — cannot tell whether an invite was created. Check the relay before minting again.`, 3)
+  const res = await post('/api/invites', { ttl_secs: ttl, max_uses: uses }, signer)
+  const json = res.json
+  // Every status the relay can answer, and the exit code for each, live in src/relay_admission.mjs
+  // so the console reaches the same verdicts from the same code (#487). Exit 4 on a 403, not 1:
+  // the tool worked perfectly and delivered its answer, and 1 means "you invoked it wrong", which
+  // in a script reads as operator error over a correct, complete result.
+  const minted = mintOutcome(res)
+  if (!minted.ok) die(minted.reason, minted.exitCode)
+  const code = minted.code
 
   const dir = dirname(out)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -384,65 +381,51 @@ if (cmd === 'claim') {
   // The v2 claim path refuses without a receipt wherever a policy is configured, so asking first
   // turns a guaranteed 403 into either a receipt or an accurate explanation of what is needed.
   let policyReceipt = null
-  const pol = await get('/api/join-policy')
-  const policy = pol.json?.policy ?? null
-  if (pol.status >= 200 && pol.status < 300 && policy) {
-    const version = String(policy.version || '')
+  // The three verdicts — present / none / inconclusive — are in src/relay_admission.mjs, so the
+  // console cannot quietly grow a two-way version of this. A failed read is NOT "no policy":
+  // guessing turns into a 403 at claim time that nothing explains, and being unable to check is
+  // not the same as being fine.
+  const verdict = policyReadVerdict(await get('/api/join-policy'))
+  if (verdict.state === 'inconclusive') die(verdict.reason, verdict.exitCode)
+  if (verdict.state === 'none') {
+    console.log('relay-invite: no join policy configured on this deployment — claiming directly.')
+  } else {
+    const policy = verdict.policy
     const needsAge = policy.age_attestation_required === true
-    if (!version) die('the relay returned a join policy with no version — cannot accept it safely.', 3)
 
     console.log('')
     console.log('  This relay has a JOIN POLICY, and a claim without accepting it is refused.')
-    console.log(`    policy version:   ${version}`)
+    console.log(`    policy version:   ${policy.version ?? policy.policy_version ?? '(none)'}`)
     console.log(`    age attestation:  ${needsAge ? 'REQUIRED' : 'not required'}`)
     console.log('')
 
-    if (!flag('accept-terms')) {
-      console.error('relay-invite: not accepting the policy on your behalf.')
-      console.error('  Re-run with --accept-terms once you have read it. Accepting a deployment\'s')
-      console.error('  terms is the operator\'s act, not the tool\'s.')
-      process.exit(4)
-    }
-    if (needsAge && !flag('confirm-age')) {
-      console.error('relay-invite: this policy requires an AGE ATTESTATION, which is a statement by a')
-      console.error('  person about themselves. It is not inferred from --accept-terms, and this tool')
-      console.error('  will not assert it for you. Re-run with --confirm-age if it is true of you.')
+    // What the OPERATOR stated, passed through as stated. `policyGate` never derives the age
+    // attestation from accepting the terms — it is a statement by a person about themselves, and
+    // no tool asserts it for them.
+    const gate = policyGate({ policy, accepted: flag('accept-terms'), ageConfirmed: flag('confirm-age') })
+    if (!gate.ok) {
+      console.error(`relay-invite: not claiming — ${gate.reason}.`)
+      console.error('  Accepting a deployment\'s terms is the operator\'s act, not the tool\'s.')
+      console.error('  Re-run with --accept-terms once you have read it' +
+        (needsAge ? ', and --confirm-age if that is true of you.' : '.'))
       process.exit(4)
     }
 
-    const acc = await post('/api/invites/accept-policy',
-      // Exactly what the operator stated — never derived from needsAge. If the policy requires it
-      // the flag was already enforced above, so this is true there; where it is not required this
-      // sends false rather than a convenient true.
-      { code, policy_version: version, age_confirmed: flag('confirm-age') }, signer)
-    if (acc.status === 429) die(`429 — ${refusal(acc.status, acc.json, acc.text)}`, 4)
-    if (acc.status < 200 || acc.status >= 300)
-      die(`accept-policy ${acc.status} — ${refusal(acc.status, acc.json, acc.text)}`,
-        acc.status >= 400 && acc.status < 500 ? 4 : 2)
-    policyReceipt = acc.json?.receipt
-    if (!policyReceipt)
-      die(`accept-policy returned ${acc.status} but no receipt — cannot tell whether the acceptance was recorded.`, 3)
-    console.log(`  Policy ${version} accepted; receipt held for the claim.`)
-  } else if (pol.status === 404 || (pol.status >= 200 && pol.status < 300 && !policy)) {
-    console.log('relay-invite: no join policy configured on this deployment — claiming directly.')
-  } else {
-    // Never guess "probably no policy" from a failed read: that turns into a 403 the operator
-    // cannot explain. Being unable to check is not the same as being fine.
-    die(`could not read the join policy (${pol.status}) — refusing to guess whether one applies.`, 3)
+    const acc = acceptOutcome(await post('/api/invites/accept-policy', { code, ...gate.body }, signer))
+    if (!acc.ok) die(acc.reason, acc.exitCode)
+    policyReceipt = acc.receipt
+    console.log(`  Policy ${gate.body.policy_version} accepted; receipt held for the claim.`)
   }
 
   const body = policyReceipt ? { code, policy_receipt: policyReceipt } : { code }
-  const { status, json, text } = await post('/api/invites/claim', body, signer)
-
-  if (status === 401) die(`401 — the relay rejected the signature: ${refusal(status, json, text)}`, 1)
-  if (status === 403 || status === 429) die(`${status} — ${refusal(status, json, text)}`, 4)
-  if (status < 200 || status >= 300) die(`${status} — ${refusal(status, json, text)}`, 2)
-
+  const claimRes = await post('/api/invites/claim', body, signer)
   // "Joined" and "already a member" are both success, and they are DIFFERENT facts. Collapsing
   // them would hide a re-run that consumed nothing from a first claim that consumed a slot.
-  const outcome = json?.status || json?.outcome || (json ? JSON.stringify(json).slice(0, 120) : '(no body)')
+  const claimed = claimOutcome(claimRes)
+  if (!claimed.ok) die(claimed.reason, claimed.exitCode)
   console.log('')
-  console.log(`  ${status} — ${outcome}`)
+  console.log(`  ${claimRes.status} — ${claimed.outcome}`)
+  console.log(`  ${claimed.note}`)
   console.log('')
   console.log(`  ${signer.signatures} signature(s), every one verified against ${signer.pinned.slice(0, 8)}….`)
   console.log('  This key should now be in relay_members. That is NOT the same as having proved it:')
