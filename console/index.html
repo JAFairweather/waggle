@@ -348,6 +348,10 @@ import { CAP_LABEL, capLabel, CAP_ENFORCER, capEnforcer, ISSUABLE, describeGrant
 import { scopeHash } from './scope-hash.mjs'
 import { mintAgentKey } from './mint-agent-key.mjs'
 import { proveCustody, custodyNonce } from './bunker-custody.mjs'
+// This page signs kind 440 and 441 without going through consoleSigner, so it does not inherit that
+// chokepoint's guard and needs its own (#418). It calls the guard through signFresh() rather than
+// inline, so the ordering is assertable from a test — an inline handler is not importable.
+import { signFresh } from './guarded-signer.mjs'
 const { decode } = nip19
 
 const $ = (id) => document.getElementById(id)
@@ -721,7 +725,10 @@ $('confirm-go').addEventListener('click', async () => {
   if (!pendingTemplate || !signer) return
   const st = $('confirmst'); st.className = 'status'; st.textContent = 'Waiting for your signer…'
   try {
-    const signed = await signer.signEvent(pendingTemplate)
+    // Guard first, then sign. Grant issuance and revocation are the least recoverable things this
+    // console does, and the ordering is the whole point — refusing after the signature is worthless.
+    // It lives in signFresh() so a test can drive it; see console/guarded-signer.mjs.
+    const signed = await signFresh(pendingTemplate, signer)
     st.textContent = 'Publishing…'
     const results = await publish(signed)
     const okCount = results.filter(r => r.includes('accepted')).length
@@ -1172,5 +1179,6 @@ $('go').addEventListener('click', async () => {
   } finally { $('go').disabled = false }
 })
 </script>
+<script type="module" src="./staleness-guard.mjs"></script>
 </body>
 </html>
