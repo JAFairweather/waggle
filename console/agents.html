@@ -35,6 +35,16 @@
   table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}th,td{text-align:left;padding:7px 10px 7px 0;border-top:1px solid var(--line);vertical-align:top}
   th{font:600 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
   .scroll{overflow-x:auto}
+  /* The readback (#497). Each state gets its OWN colour and glyph: unverified sharing a tick with
+     present, or unknown sharing a cross with missing, is the exact collapse this panel exists to
+     prevent, and a stylesheet can undo in one line what the module is careful about. */
+  button.linkish{background:transparent;color:var(--gold);border:1px solid var(--line);padding:5px 10px;font-size:12px;margin:0}
+  .liveness{padding:0 0 12px 2px}
+  .liveline{display:flex;gap:9px;align-items:baseline;padding:4px 0;font-size:13px}
+  .mark{font:13px var(--mono);width:1.1em;flex:none}
+  .mark.present{color:var(--good)}.mark.unverified{color:var(--warn)}.mark.missing{color:var(--critical)}.mark.unknown{color:var(--faint)}
+  .liveline .what{font-weight:650;flex:0 0 190px}
+  .liveline .why{color:var(--dim);flex:1 1 220px}
 </style>
 </head>
 <body><main>
@@ -93,6 +103,8 @@ import { consoleSigner } from './signer-session.mjs'
 import { newestFreshControlState, requireFreshControlState } from './control-state-freshness.mjs'
 import { loadBridgeKey, rememberBridgeKey } from './bridge-key-store.mjs'
 import { STATUSES, statusLabel } from './agent-roster.mjs'
+import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
+import { readPublic } from './profile-publish.mjs'
 
 const RELAYS = ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub', 'wss://jskitty.com/nostr']
 // WIRE values and what a person reads, both from the module that owns them (#413). They used to be
@@ -160,8 +172,43 @@ function draw(state) {
     row.appendChild(el('span', 'npub', npub(a.pubkey)))
     row.appendChild(el('span', `pill ${a.status}`, statusLabel(a.status)))
     row.appendChild(el('span', `pill lane${a.return_lane ? '' : ' off'}`, a.return_lane ? 'mentions carried' : 'no mentions'))
+    // The roster tells you what was CLAIMED. This asks the relays what is true of the one row a
+    // browser can actually settle — the published name, without which an at-word resolves to
+    // nothing and every other row is moot (#497).
+    const look = el('button', 'linkish', 'Check')
+    const out = el('div', 'liveness')
+    look.onclick = () => check(a, look, out)
+    row.appendChild(look)
     list.appendChild(row)
+    list.appendChild(out)
   }
+}
+
+// Rendered from the report, never from the read: which states exist, what each one is called and
+// what it means are the module's to decide, so a second surface cannot grow a friendlier synonym
+// for "nobody looked".
+function drawLiveness(out, report) {
+  out.textContent = ''
+  for (const r of report.rows) {
+    const line = el('div', 'liveline')
+    line.appendChild(el('span', `mark ${r.state}`, MARK[r.state]))
+    line.appendChild(el('span', 'what', r.title))
+    line.appendChild(el('span', 'why', r.state === PRESENT ? r.note : `${r.state.toUpperCase()} — ${r.note}`))
+    out.appendChild(line)
+  }
+  out.appendChild(el('p', 'note', report.headline))
+}
+
+async function check(agent, button, out) {
+  button.disabled = true
+  out.textContent = 'Reading the public relays…'
+  let read = null
+  try { read = await readPublic(agent.pubkey) }
+  // A read that threw is a read that did not happen. Passing null keeps the name row UNKNOWN
+  // rather than letting a failed socket render as a key with no name.
+  catch { read = null }
+  drawLiveness(out, livenessReport({ agent, profileRead: read }))
+  button.disabled = false
 }
 
 let activeBridge = null, activeState = null
