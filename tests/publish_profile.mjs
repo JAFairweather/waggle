@@ -82,13 +82,64 @@ const run = (env, argv) => {
   ok('  ...and nothing was published on the refusal', /Nothing published/.test(r.stderr))
 }
 
-// 4. The community leg is skipped, loudly, when its env pair is absent — never silently.
+// 4. The community leg is skipped, loudly, when there is no relay URL — never silently.
 {
   const r = run({ BUZZ_PRIVATE_KEY: hex }, ['--dry-run', '--content-file', contentFile])
   ok('skipping the community leg is stated, not silent',
-    r.status === 0 && /BUZZ_RELAY_URL \/ BUZZ_AUTH_TAG unset/.test(r.stderr))
+    r.status === 0 && /BUZZ_RELAY_URL unset/.test(r.stderr))
   ok('  ...and the signature count drops to 1 with it, rather than staying wrong',
     /this run makes 1 signature\b/.test(r.stderr))
+}
+
+// 4b. A RELAY URL AND NO AUTH TAG (#482). This combination used to skip the community leg — the
+//     one that writes the `users` row an at-word resolves against — so a run with everything else
+//     right reported success and moved nothing. Since #357/#477 a claimed key is in relay_members
+//     and passes the gate on its own, so the tool must ATTEMPT it and report what the relay says.
+{
+  const r = run({ BUZZ_PRIVATE_KEY: hex, EXPECT_PUBKEY: pk, BUZZ_RELAY_URL: 'wss://relay.invalid' },
+    ['--dry-run', '--content-file', contentFile])
+  const e = r.stderr
+  ok('a relay URL with no auth tag ATTEMPTS the community leg rather than skipping it',
+    r.status === 0 && !/skipped/.test(e), `exit ${r.status}`)
+  ok('  ...and the two copies are ONE event with one id, because there is no tag to differ by', (() => {
+    const t = e.match(/trio copy\s+([0-9a-f]{64})/), c = e.match(/community copy\s+([0-9a-f]{64})/)
+    return t && c && t[1] === c[1]
+  })())
+  ok('  ...and that inversion is said out loud, not left for the reader to notice two equal ids',
+    /the SAME id: with no auth tag the two copies are one event/.test(e))
+  ok('  ...and the signature count is 1, not 2 — a bunker operator is not told to wait for a prompt that never comes',
+    /this run makes 1 signature\b/.test(e))
+
+  // BOTH DIRECTIONS. With a tag it must still build two distinct events — otherwise this change
+  // reads as "works" while having quietly dropped the auth-tag path.
+  const withTag = run({ BUZZ_PRIVATE_KEY: hex, EXPECT_PUBKEY: pk,
+    BUZZ_RELAY_URL: 'wss://relay.invalid', BUZZ_AUTH_TAG: '["auth","probe"]' },
+    ['--dry-run', '--content-file', contentFile])
+  ok('  NEGATIVE CONTROL — WITH a tag the copies are still two events with different ids', (() => {
+    const t = withTag.stderr.match(/trio copy\s+([0-9a-f]{64})/)
+    const c = withTag.stderr.match(/community copy\s+([0-9a-f]{64})/)
+    return t && c && t[1] !== c[1] && /this run makes 2 signatures/.test(withTag.stderr)
+  })())
+  // A tag that is present but malformed must still be refused. Making the tag optional is exactly
+  // the change that turns "invalid" into "absent" if the emptiness test is written carelessly.
+  const badTag = run({ BUZZ_PRIVATE_KEY: hex, BUZZ_RELAY_URL: 'wss://relay.invalid', BUZZ_AUTH_TAG: 'not json' },
+    ['--dry-run', '--content-file', contentFile])
+  ok('  a malformed auth tag is still REFUSED, not treated as absent',
+    badTag.status === 1 && /must be a JSON array/.test(badTag.stderr), `exit ${badTag.status}`)
+  const whitespaceTag = run({ BUZZ_PRIVATE_KEY: hex, BUZZ_RELAY_URL: 'wss://relay.invalid', BUZZ_AUTH_TAG: '   ' },
+    ['--dry-run', '--content-file', contentFile])
+  ok('  a whitespace-only tag counts as absent, not as malformed',
+    whitespaceTag.status === 0 && /one event/.test(whitespaceTag.stderr), `exit ${whitespaceTag.status}`)
+
+  // NOT ASSERTED HERE, deliberately. The tool compares its announced signature count against the
+  // count actually taken, and that guard cannot fire on any input this suite can construct — the
+  // counts only disagree when the code is wrong. An assertion that the message is absent would
+  // pass whether or not the guard exists, which is worse than no assertion.
+  //
+  // What proves it is a mutation: replacing `communityEvent = trioEvent` with a second, identical
+  // `sign(...)` makes the counts disagree, the guard fires, and three assertions above go red.
+  // Without the guard that mutation SURVIVES a green suite — the two events have the same id, so
+  // nothing in the output differs. Re-run it before trusting this block.
 }
 
 // 5. A malformed content file is refused before anything is signed.

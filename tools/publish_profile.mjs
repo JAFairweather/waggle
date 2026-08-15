@@ -122,6 +122,9 @@ const httpBase = () => process.env.BUZZ_RELAY_URL.replace(/^wss:/, 'https:').rep
 // The community-relay leg. NIP-98 over HTTP with the owner-minted auth tag, exactly as
 // publish_relay_list.mjs does it — the only difference here is that the NIP-98 event is signed by
 // the signer rather than by a secret key this process holds.
+const authHeader = () => (String(process.env.BUZZ_AUTH_TAG || '').trim()
+  ? { 'x-auth-tag': process.env.BUZZ_AUTH_TAG } : {})
+
 async function pushCommunity(signer, ev) {
   const url = httpBase() + '/events'
   const body = JSON.stringify(ev)
@@ -134,7 +137,10 @@ async function pushCommunity(signer, ev) {
     headers: {
       'content-type': 'application/json',
       authorization: 'Nostr ' + Buffer.from(JSON.stringify(nip98)).toString('base64'),
-      'x-auth-tag': process.env.BUZZ_AUTH_TAG,
+      // Omitted entirely when unset. Sending `x-auth-tag: undefined` puts the literal string
+      // "undefined" on the wire, which the relay reads as a malformed tag rather than as no tag —
+      // so the run would answer a question nobody asked.
+      ...authHeader(),
     },
     body,
   })
@@ -163,7 +169,10 @@ async function readBackCommunity(signer, pubkey) {
     r = await fetch(url, {
       headers: {
         authorization: 'Nostr ' + Buffer.from(JSON.stringify(nip98)).toString('base64'),
-        'x-auth-tag': process.env.BUZZ_AUTH_TAG,
+        // Omitted entirely when unset. Sending `x-auth-tag: undefined` puts the literal string
+      // "undefined" on the wire, which the relay reads as a malformed tag rather than as no tag —
+      // so the run would answer a question nobody asked.
+      ...authHeader(),
       },
     })
   } catch (e) { return { reachable: false, why: `read failed: ${e.message}` } }
@@ -184,7 +193,18 @@ async function readBackCommunity(signer, pubkey) {
 
 const dryRun = has('--dry-run')
 const contentFile = flag('--content-file')
-const community = !!(process.env.BUZZ_RELAY_URL && process.env.BUZZ_AUTH_TAG)
+// The community leg needs a relay URL. It used to need BUZZ_AUTH_TAG as well, and that made the
+// tool untestable against the thing it exists to do: with the tag unset it did not attempt the
+// community push, it SKIPPED it — so a run that had everything else right reported success while
+// leaving the `users` row, the only thing an at-word resolves against, unwritten (#482).
+//
+// The tag stopped being the only way in when #357/#477 landed: a claimed key is in `relay_members`
+// and passes `enforce_relay_membership` at NIP-98 time on its own. Whether the tag is still
+// required on top of that is a live question, and the tool's job is to be able to ASK it — try,
+// and report the relay's answer as the answer. Refusing to try is not the safe option; it is the
+// one that cannot learn anything.
+const authTagRaw = String(process.env.BUZZ_AUTH_TAG || '').trim()
+const community = !!String(process.env.BUZZ_RELAY_URL || '').trim()
 
 let loaded
 try { loaded = loadNostrSigner(process.env) } catch (e) { die(e.message) }
@@ -215,9 +235,14 @@ if (signer.remote && !expect)
 // property of the run, not of the backend, so a test can hold it in place either way. On a bunker
 // each of these is a SEPARATE approval prompt with a 60s timeout, and an operator who thinks it is
 // one tap walks away and the run dies on a signature nobody was there to give.
-const signatureCount = dryRun ? (community ? 2 : 1) : (community ? 4 : 1)
+// Counted, not guessed. With no auth tag the community copy IS the trio event, so the second
+// kind:0 signature does not happen — announcing 4 there would have a bunker operator waiting at a
+// prompt that never comes, which reads as a hang.
+const kind0Signatures = community && authTagRaw ? 2 : 1
+const signatureCount = dryRun ? kind0Signatures : kind0Signatures + (community ? 2 : 0)
 say(`  this run makes ${signatureCount} signature${signatureCount === 1 ? '' : 's'}${
   signatureCount === 4 ? ' — trio kind:0, community kind:0, then the NIP-98 headers for the push and the read-back' : ''}${
+  signatureCount === 3 ? ' — one kind:0 for both sides, then the NIP-98 headers for the push and the read-back' : ''}${
   signer.remote ? ', and each one is a separate bunker approval. Stay at the prompt.' : '.'}`)
 
 // Adopt the existing profile unless one was handed in. Reading first also means a run that cannot
@@ -253,17 +278,39 @@ say('    It covers every signature this run makes, not the first — each one is
 // After this point the PROVEN key is the one to read against, not the claimed one.
 const proven = trioEvent.pubkey
 
-let communityEvent = null
+let communityEvent = null, oneEvent = false
 if (community) {
-  const authTag = (() => { try { return JSON.parse(process.env.BUZZ_AUTH_TAG) } catch { return die('BUZZ_AUTH_TAG must be a JSON array, e.g. \'["auth","…"]\'') } })()
-  if (!Array.isArray(authTag)) die('BUZZ_AUTH_TAG must be a JSON array')
-  communityEvent = await sign({ kind: 0, created_at, tags: [authTag], content })
+  if (authTagRaw) {
+    const authTag = (() => { try { return JSON.parse(authTagRaw) } catch { return die('BUZZ_AUTH_TAG must be a JSON array, e.g. \'["auth","…"]\'') } })()
+    if (!Array.isArray(authTag)) die('BUZZ_AUTH_TAG must be a JSON array')
+    communityEvent = await sign({ kind: 0, created_at, tags: [authTag], content })
+  } else {
+    // No tag means no tags[] to add, which means the community copy would be byte-identical to the
+    // trio copy — same pubkey, same created_at, same content, so the same id. Signing it a second
+    // time would produce the same event, cost a second bunker approval, and let the tool print two
+    // ids that are one id. So it is the SAME EVENT on both sides, and that is said out loud:
+    // "one profile, not one event" is this tool's central honesty claim, and here it inverts.
+    communityEvent = trioEvent
+    oneEvent = true
+  }
 }
 
 say('')
 say(`  trio copy       ${trioEvent.id}`)
-say(`  community copy  ${communityEvent ? communityEvent.id : '(skipped — BUZZ_RELAY_URL / BUZZ_AUTH_TAG unset)'}`)
-say(`  same content    sha256 ${hash(content).slice(0, 16)}… — different ids, because the community copy carries the auth tag`)
+say(`  community copy  ${communityEvent ? communityEvent.id : '(skipped — BUZZ_RELAY_URL unset)'}`)
+say(oneEvent
+  ? `  same content    sha256 ${hash(content).slice(0, 16)}… — and the SAME id: with no auth tag the two copies are one event`
+  : `  same content    sha256 ${hash(content).slice(0, 16)}… — different ids, because the community copy carries the auth tag`)
+
+// The ANNOUNCED count against the count actually taken. A bunker operator is told how many
+// approvals to expect, and an announcement nothing checks is a number that drifts — signing a
+// second, byte-identical kind:0 instead of reusing the trio event costs a real approval and is
+// invisible in the output, because the two events have the same id.
+// Compared against the kind:0 half, not the announced total: the two NIP-98 signatures happen
+// after this point, so checking the total here would fire on every real run.
+if (signer.signatures !== kind0Signatures)
+  die(`announced ${kind0Signatures} kind:0 signature(s) and took ${signer.signatures}. ` +
+    'Refusing: the count is what a bunker operator waits on, so a wrong one is a hang they cannot read.', 2)
 
 if (dryRun) { say('publish_profile: --dry-run — nothing published'); process.exit(0) }
 
