@@ -268,8 +268,10 @@
         </div>
         <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
           <input id="admit-relay" placeholder="wss://… or https://… — the same relay URL the buzz CLI uses" autocomplete="off" spellcheck="false" style="flex:1 1 320px">
+          <button class="btn quiet" id="admit-check" style="flex:0 0 auto">Check it</button>
           <button class="btn" id="admit-mint" style="flex:0 0 auto">Make an invite</button>
         </div>
+        <div class="status" id="admit-reach"></div>
         <div id="admit-policy" style="display:none;margin-top:12px;padding:10px 12px;background:var(--field);border:1px solid var(--line);border-radius:var(--r-sm)">
           <div id="admit-policy-what" class="hint" style="color:var(--text)"></div>
           <!-- Never pre-ticked, and neither derives the other. An age attestation is a statement a
@@ -383,6 +385,7 @@ import { scopeHash } from './scope-hash.mjs'
 import { mintAgentKey } from './mint-agent-key.mjs'
 import { proveCustody, custodyNonce } from './bunker-custody.mjs'
 import { claimInvite, mintInvite, readPolicy } from './admission-client.mjs'
+import { loadRelayUrl, probeRelay, rememberRelayUrl } from './relay-reach.mjs'
 import { checkMintBounds } from './relay-admission.mjs'
 // This page signs kind 440 and 441 without going through consoleSigner, so it does not inherit that
 // chokepoint's guard and needs its own (#418). It calls the guard through signFresh() rather than
@@ -949,6 +952,26 @@ let policyVerdict = null
 // host applied to another is a guess. Disabling the input is presentation; this is the fix.
 let inviteRelay = null
 const admitSt = (cls, text) => { const s = $('admitst'); s.className = `status${cls ? ` ${cls}` : ''}`; s.textContent = text }
+
+// Typed once. Prefilled only from an address a probe actually reached, so a typo cannot outlive
+// the error that rejected it (#499).
+$('admit-relay').value = loadRelayUrl() || $('admit-relay').value
+
+// The CORS question, measured rather than asked. The plan for #486 opened by asking a person to go
+// and read BUZZ_CORS_ORIGINS off the relay host; `/api/join-policy` takes no auth, so one request
+// answers it — and answers it about THIS origin, which is the only form of the answer that matters.
+$('admit-check').addEventListener('click', async () => {
+  const reachSt = (cls, text) => { const s = $('admit-reach'); s.className = `status${cls ? ` ${cls}` : ''}`; s.textContent = text }
+  const relayUrl = $('admit-relay').value.trim()
+  if (!relayUrl) { reachSt('err', 'Give the relay URL first.'); return }
+  $('admit-check').disabled = true
+  reachSt('', 'Asking the relay for its join policy — no signature, no key…')
+  try {
+    const probe = await probeRelay({ relayUrl })
+    reachSt(probe.reaches ? 'ok' : 'err', probe.reason)
+    rememberRelayUrl(relayUrl, probe)
+  } finally { $('admit-check').disabled = false }
+})
 
 $('admit-mint').addEventListener('click', async () => {
   if (!minted) { admitSt('err', 'Make a key first.'); return }
