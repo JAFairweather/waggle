@@ -758,17 +758,50 @@ function recordWithdrawn(id, durable = false) {
     if (dirFd !== null) { try { closeSync(dirFd) } catch {} }
   }
 }
-// The buzz CLI's stdout carries the created event id (JSON or plain text); without it a
-// later withdrawal falls back to the follow-up-tombstone tier, so a miss is safe.
+// The buzz CLI's stdout carries the created event id (JSON or plain text). A miss is safe for
+// WITHDRAWAL — that falls back to the follow-up-tombstone tier — but it is not safe generally:
+// recordPosted files the agent-authored registry row only `if (rec.buzz)`, so a miss on an
+// agent's post also drops it out of stagingByBuzzId and silently kills every reply carry back to
+// that agent (#334). Both call sites that pass an `agent` therefore warn.
+//
+// A positional scan of the whole blob is NOT a safe fallback, and that was the worse half of this
+// bug. Real stdout is `{"accepted":true,"event_id":"…","mention_pubkeys":[…],"message":""}`, and
+// `mention_pubkeys` entries are lowercase 64-hex too. Any stdout whose id field is missing or
+// unrecognised would therefore return a MENTION PUBKEY: truthy, so neither no-id warning fires,
+// a registry row is filed under a key no reply can ever e-tag, and the journal records a pubkey
+// as a sent event id. That does not merely lose the carry — it answers #334's "is the registry
+// being fed?" with a false yes, sending the reader to the wrong conclusion.
 function parseBuzzEventId(stdout) {
   const s = String(stdout || '')
+  let parsedJson = false
   try {
     const j = JSON.parse(s)
+    parsedJson = true
     const v = j.event_id || j.id || j.event
-    if (typeof v === 'string' && /^[0-9a-f]{64}$/.test(v)) return v
-  } catch { /* not JSON — fall through to scan */ }
-  const m = s.match(/\b[0-9a-f]{64}\b/)
-  return m ? m[0] : null
+    // Case-insensitive, then normalised: recordPosted keys the registry lowercase and
+    // agentAuthoredBy reads it lowercase, so an uppercase id is the same id, not a different one.
+    if (typeof v === 'string' && /^[0-9a-f]{64}$/i.test(v)) return v.toLowerCase()
+  } catch { /* not JSON — a preamble can precede a JSON body; fall through */ }
+  // A parsed object with no recognised id field is a known shape that lacks one, not a blob to
+  // grep. Refusing here is what keeps a sibling pubkey from being mistaken for an event id.
+  if (parsedJson) return null
+  // Non-JSON: anchor on the field NAME first, so a preamble that breaks JSON.parse still resolves
+  // the real id rather than whichever 64-hex run happens to appear first.
+  const field = s.match(/"(?:event_id|id|event)"\s*:\s*"([0-9a-f]{64})"/i)
+  if (field) return field[1].toLowerCase()
+  // The same refusal as `parsedJson`, on the path that guard cannot reach. It only covers a string
+  // that parsed WHOLE; one stray `warning: slow relay` line ahead of the body defeats it, and when
+  // the body carries no id the anchor above misses too, so the bare scan below returns the first
+  // 64-hex run in the string — `mention_pubkeys[0]` on a refusal. Exactly the false yes this
+  // function exists to refuse, reachable by one line of stderr landing in stdout (#448 review).
+  //
+  // A preamble that broke JSON.parse still leaves a JSON BODY in the string, and that body is a
+  // known shape that lacks an id, not a blob to grep. A bare id in plain stdout has no `{`, so it
+  // falls through to the scan untouched.
+  const body = s.slice(s.indexOf('{'), s.lastIndexOf('}') + 1)
+  if (body) { try { JSON.parse(body); return null } catch { /* not a body either — scan */ } }
+  const m = s.match(/\b[0-9a-f]{64}\b/i)
+  return m ? m[0].toLowerCase() : null
 }
 
 // --- Lane-2 rate caps (annex §4.1.1; C3-approved shipping defaults) ----------
@@ -1869,8 +1902,12 @@ async function forwardPublic(ev, why, dest, quarantine) {
     log(`PUBLIC[buzz] ok -> ${quarantine ? 'STAGING' : 'inbox'} ${dest}: kind1 ${ev.id.slice(0, 12)}… by ${author}… (${why})`)
     // A7: record the repost so the author's later kind:5 can withdraw it. A null buzz id
     // (stdout didn't carry one) degrades to the follow-up-tombstone tier — logged, safe.
+    // Safe for withdrawal, that is. Where this post is an AGENT's, the same miss also keeps it
+    // out of stagingByBuzzId and silently costs every reply carry back to them (#334), so the
+    // warning has to name that consequence too or it sends the reader to the wrong tier.
     const buzzId = parseBuzzEventId(stdout)
-    if (!buzzId) err(`A7 warn[no-id]: could not capture buzz event id for ${ev.id.slice(0, 12)}… — withdrawal will use follow-up tier`)
+    if (!buzzId) err(`A7 warn[no-id]: could not capture buzz event id for ${ev.id.slice(0, 12)}… — withdrawal will use follow-up tier` +
+      (agent ? '; replies to this post cannot be carried back to the agent' : ''))
     recordPosted({ id: ev.id, author: ev.pubkey, buzz: buzzId, dest, q: !!quarantine, ts: nowSec, agent })
     journalSend(buzzId, { kind: 9, dest, lane: 'public' })
   }).catch(e => {
@@ -3222,6 +3259,12 @@ async function postRelay(ev, sender, dest, wantCh, body) {
     // transient failure retries. Residual: a crash after this post but before the mark re-posts on
     // restart — kind:9 has no idempotency key, so the dup-on-crash residual stands (§6).
     const buzzId = parseBuzzEventId(so)
+    // This lane always carries `agent: sender`, so a null id costs more here than a withdrawal
+    // tier: recordPosted only files the registry row `if (rec.buzz)`, so the post never enters
+    // stagingByBuzzId and a member's reply to it can never be carried back (#334). The send
+    // itself succeeded, which is why this is otherwise invisible — the agent simply stops
+    // hearing replies to that message, with nothing in the journal to say why.
+    if (!buzzId) err(`RELAY warn[no-id]: no buzz event id for wrap ${ev.id.slice(0, 12)}… from ${sender.slice(0, 12)}… — replies to this post cannot be carried back`)
     markRelaySeen(ev.id)
     recordPosted({ id: ev.id, author: sender, buzz: buzzId, dest, q: false, ts: nowSec, agent: sender })
     journalSend(buzzId, { kind: 9, dest, lane: 'relay' })

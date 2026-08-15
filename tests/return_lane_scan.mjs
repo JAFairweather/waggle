@@ -63,7 +63,7 @@ process.env.FORWARD_MODE = 'buzz'
 process.env.WB_STUB_SEND = '1'
 process.env.WB_NO_BOOT = '1'
 
-const { scanReturnLane, recordPosted, PUB, grantSet } = await import('../src/bridge.mjs')
+const { scanReturnLane, recordPosted, parseBuzzEventId, PUB, grantSet } = await import('../src/bridge.mjs')
 
 let fails = 0
 const ok = (n, c) => { console.log(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) fails++ }
@@ -153,5 +153,83 @@ ok('the same reply is not carried twice', d.length === 0)
 d = await scanDelta([{ id: 'rep2', pubkey: crew, content: 'unrelated thread post', tags: [['e', 'parenta', '', 'root']] }])
 ok('a root-tag to an agent post does NOT route (only reply-marked parents)', d.length === 0)
 
-console.log(fails ? `\nRETURN LANE SCAN FAIL — ${fails}` : '\nRETURN LANE SCAN PASS — gate, p-tag, fan-out, echo (3 forms + shared guard), reply-detection')
+// --- what feeds the registry: parseBuzzEventId (#334) -----------------------------------------
+// The registry above is only populated `if (rec.buzz)`. That id comes from parsing the buzz CLI's
+// stdout, and the parser had no coverage at all. Its own comment reasons about withdrawal only —
+// "a miss is safe" — but a miss ALSO means no registry row, and therefore no reply carry, which is
+// the routing this suite exists to prove. Assert both directions: the forms that must parse, and
+// the forms that must not be mistaken for an id.
+const HEX = 'a'.repeat(64)
+ok('a JSON event_id parses', parseBuzzEventId(`{"event_id":"${HEX}"}`) === HEX)
+ok('a JSON id parses', parseBuzzEventId(`{"id":"${HEX}"}`) === HEX)
+ok('a bare id in plain stdout parses', parseBuzzEventId(`posted ok ${HEX}\n`) === HEX)
+// Deliberately inverted from an earlier draft, which asserted that a 64-hex value in ANY JSON
+// field was accepted as the id. That is the mention-pubkey hazard in general form: a parsed object
+// whose id is not in a recognised field is a known shape without one, and guessing produces a
+// truthy non-id that silences every warning downstream.
+ok('a 64-hex value in an unrecognised JSON field is NOT taken as the id', parseBuzzEventId(`{"note":"sent","x":"${HEX}"}`) === null)
+ok('empty stdout yields no id rather than a guess', parseBuzzEventId('') === null)
+ok('stdout with no id yields no id', parseBuzzEventId('posted ok, no identifier here') === null)
+// A 65-char hex run is not a 64-char id with a stray neighbour; the word boundaries must refuse it
+// rather than silently truncating to something that keys the registry wrongly.
+ok('an over-long hex run is refused, not truncated', parseBuzzEventId('f'.repeat(65)) === null)
+// An uppercase id is the SAME id: recordPosted keys the registry lowercase and agentAuthoredBy
+// reads it lowercase, so normalising is correct and dropping it silently cost the carry.
+ok('an UPPERCASE id is normalised rather than dropped', parseBuzzEventId(HEX.toUpperCase()) === HEX)
+
+// The dangerous miss is not null — it is a SIBLING pubkey. Real stdout is
+// {"accepted":true,"event_id":"…","mention_pubkeys":["…"],"message":""}, and mention_pubkeys
+// entries are 64-hex too. A positional scan returns one of those: truthy, so no warning fires, the
+// registry row is filed under a key no reply can e-tag, and #334's "is the registry being fed?"
+// gets a false yes. Every case below must resolve the id or refuse — never a mention.
+const MENTION = 'e'.repeat(64)
+const ID = 'd'.repeat(64)
+ok('a mention pubkey is never mistaken for the event id',
+  parseBuzzEventId(`{"accepted":true,"event_id":"${ID}","mention_pubkeys":["${MENTION}"],"message":""}`) === ID)
+ok('an UPPERCASE id alongside mentions resolves the id, not the mention',
+  parseBuzzEventId(`{"accepted":true,"event_id":"${ID.toUpperCase()}","mention_pubkeys":["${MENTION}"]}`) === ID)
+ok('JSON with NO id field refuses rather than returning a mention pubkey',
+  parseBuzzEventId(`{"accepted":true,"mention_pubkeys":["${MENTION}"],"message":""}`) === null)
+ok('a non-JSON preamble still anchors on the field name, not on the first hex run',
+  parseBuzzEventId(`warning: slow relay\n{"mention_pubkeys":["${MENTION}"],"event_id":"${ID}"}`) === ID)
+
+// The preamble case with NO id, which the `parsedJson` guard cannot reach — it only covers a string
+// that parsed WHOLE. One stray stderr line ahead of the body defeated it, the field anchor found
+// nothing, and the bare scan returned mention_pubkeys[0]. Both inputs are shapes a FAILED send
+// actually produces, which is the path a lost id lives on (#448 review).
+ok('preamble + JSON body with NO id must not yield a mention pubkey',
+  parseBuzzEventId(`warning: slow relay\n{"accepted":false,"mention_pubkeys":["${MENTION}"],"message":"relay refused"}`) === null)
+ok('preamble + JSON error shape must not yield a mention pubkey',
+  parseBuzzEventId(`note: retrying\n{"error":"relay_error","mention_pubkeys":["${MENTION}"]}`) === null)
+
+// BOTH DIRECTIONS. A guard that refused anything containing a brace would satisfy the two above and
+// break the plain-stdout path, which has no brace at all — and break the preamble-WITH-id case,
+// which must still resolve.
+ok('  NEGATIVE CONTROL — a bare id with no JSON around it still parses through the same path',
+  parseBuzzEventId(`posted ok ${ID}\n`) === ID)
+ok('  NEGATIVE CONTROL — a preamble followed by a body that DOES carry an id still resolves it',
+  parseBuzzEventId(`warning: slow relay\n{"accepted":true,"mention_pubkeys":["${MENTION}"],"event_id":"${ID}"}`) === ID)
+ok('  NEGATIVE CONTROL — a preamble and a bare id, no body, still scans',
+  parseBuzzEventId(`warning: slow relay\nposted ${ID}`) === ID)
+
+// The consequence, asserted as behaviour rather than inferred: a post whose id failed to parse is
+// recorded with buzz:null, so it never enters stagingByBuzzId and a genuine reply to it cannot be
+// carried. This is the failure the warning added in src/bridge.mjs makes visible.
+// The reply must e-tag the id the CLI ACTUALLY created — the whole point is that the bridge never
+// learned it. An earlier version tagged a junk 11-character parent, which misses whether the parse
+// succeeded or not, so it could not fail for the reason it named and stayed green when the null
+// stdout was swapped for a clean parse. Matched against the positive control below.
+const REAL = 'c'.repeat(64)
+recordPosted({ id: 'orig-null', author: claude, buzz: parseBuzzEventId('posted, but the id was not printed'),
+  dest: 'chan', q: false, ts: 0, agent: claude })
+d = await scanDelta([{ id: 'rep-null', pubkey: crew, content: 'replying to that', tags: [['e', REAL, '', 'reply']] }])
+ok('a reply to a post whose id never parsed is silently NOT carried', d.length === 0)
+// Positive control for the line above — same shape, id parsed, carry happens. Without this, the
+// assertion cannot tell "the null id broke it" from "replies stopped working entirely".
+recordPosted({ id: 'orig-ok', author: claude, buzz: parseBuzzEventId(`{"event_id":"${'b'.repeat(64)}"}`),
+  dest: 'chan', q: false, ts: 0, agent: claude })
+d = await scanDelta([{ id: 'rep-ok', pubkey: crew, content: 'replying to that', tags: [['e', 'b'.repeat(64), '', 'reply']] }])
+ok('the identical reply IS carried once the id parsed', d.length === 1 && d[0]?.why === 'reply')
+
+console.log(fails ? `\nRETURN LANE SCAN FAIL — ${fails}` : '\nRETURN LANE SCAN PASS — gate, p-tag, fan-out, echo (3 forms + shared guard), reply-detection, id-parse')
 process.exit(fails ? 1 : 0)
