@@ -25,7 +25,6 @@
 //   node tools/connect-agent.mjs --name oliver --pubkey <64-hex> --owner <64-hex>
 //   node tools/connect-agent.mjs --name oliver --check      # changes nothing
 //   node tools/connect-agent.mjs --name oliver --check --stanza --channel-host <host>  # register
-
 //   node tools/connect-agent.mjs --name oliver --startup --runtime codex   # write AGENTS.md
 //   node tools/connect-agent.mjs --name oliver --check --startup --print   # show it, write nothing
 //
@@ -45,10 +44,10 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { boundIdentity, installState, renderState } from '../src/agent_install_state.mjs'
 import { exportTemplate, importTemplate } from '../src/agent_manifest_transfer.mjs'
-import { channelCommand, credentialReport, registeredForm, sameVector } from '../src/channel_registration.mjs'
+import { channelCommand, credentialPaths, credentialReport, registeredForm, sameVector } from '../src/channel_registration.mjs'
 import { RUNTIMES, channelStanza, cliRuntimes, exclusivityVerdict, foreignServers, isMine, registrationHelp, runtime } from '../src/mcp_runtimes.mjs'
 import { startupDoc } from '../src/agent_startup.mjs'
 
@@ -250,14 +249,37 @@ see('state-dirs', dirsNow.length === DIRS.length, dirsNow.length === DIRS.length
   dirsNow.length === DIRS.length ? (modesRight ? `${DIRS.length} directories, modes as expected` : 'all present, but a mode differs') : `${DIRS.length - dirsNow.length} missing`)
 
 // ── Channel keypair ─────────────────────────────────────────────────────────────────────────
-const keyPath = join(HERE, 'mcp-channel', 'id_ed25519')
+// Minted where the stanza names it (#474). It used to be minted at `mcp-channel/id_ed25519`, which
+// nothing consumed, while the registration named `credentials/claude-channel-ssh`, which nothing
+// minted — so a fresh agent finished with a correct stanza pointing at a private key that had never
+// been created, and the one working agent worked only because its pair was made by hand.
+const { keyPath, knownHostsPath } = credentialPaths(HERE)
 if (!existsSync(keyPath) && !CHECK && !STARTUP_ONLY) {
-  mkdirSync(join(HERE, 'mcp-channel'), { recursive: true, mode: 0o700 })
+  mkdirSync(dirname(keyPath), { recursive: true, mode: 0o700 })
   execFileSync('ssh-keygen', ['-t', 'ed25519', '-N', '', '-C', `nvoy-mcp-channel ${name}`, '-f', keyPath], { stdio: 'ignore' })
   did.push(`generated ${keyPath}`)
 }
 const keyOk = existsSync(keyPath) && mode(keyPath) === 0o600 && existsSync(`${keyPath}.pub`)
 see('channel-key', existsSync(keyPath), keyOk, existsSync(keyPath) ? (keyOk ? 'mode 600, with its public half' : `mode ${mode(keyPath)?.toString(8)}`) : 'absent')
+
+// The old location is left exactly where it is. It is key material, and this tool does not delete
+// key material — but an agent carrying both should be told which one its channel actually uses,
+// because the answer is not guessable from the filenames.
+const retiredKey = join(HERE, 'mcp-channel', 'id_ed25519')
+if (existsSync(retiredKey) && existsSync(keyPath)) {
+  warn.push(`${retiredKey} is a keypair from the pre-#474 location — nothing reads it. Left in place; remove it yourself once you are satisfied the channel works.`)
+}
+
+// The two halves that are somebody else's step, on the other box. Their own rows, because a green
+// keypair beside a missing host key is exactly how a fresh agent reads as ready and is not.
+see('channel-host-key', existsSync(knownHostsPath), false,
+  existsSync(knownHostsPath)
+    ? 'present — but whether it is the RIGHT host key is not checked here; StrictHostKeyChecking proves that on first connect'
+    : `absent — run the broker doctor on the broker and write its host key to ${knownHostsPath}. This tool will never mint one`)
+// UNKNOWN and not MISSING: nothing on this machine can see the broker's authorized_keys, and
+// "cannot check" must not read as "not there" any more than it may read as "fine".
+see('channel-authorized', null, false,
+  `unverifiable from here — confirm ${keyPath}.pub is seated in the broker's authorized_keys under its forced command`)
 
 // ── MCP registration. Reported, never written: it edits the operator's own config, and this tool
 // prints the exact command rather than reaching into it.
