@@ -232,6 +232,44 @@ const laneUnchecked = startupDoc({ agent: 'oliver', pubkey: PUB, report: { rows:
 check(/was never checked, which is not the same as absent/.test(laneUnchecked),
   'an unchecked pairing is reported as unchecked, not as missing')
 
+// The must-fix from the #514 review: the documented speak command could not run. `--bridge` is the
+// FIRST check in tools/agent-send.mjs — ahead of the signer, ahead of the body — and nothing in the
+// install path supplies it, so a fully-installed agent got the command and no caveat, and exit 3.
+console.log('\n5c. the speak command can actually be run')
+const BRIDGE = 'c'.repeat(64)
+const withBridge = startupDoc({ agent: 'oliver', pubkey: PUB, channel: CHAN, bridge: BRIDGE,
+  runtimeLabel: 'Codex CLI', report: allGood })
+const speakLine = l => (l.split('\n').find(x => x.includes('agent-send.mjs')) || '')
+check(/--bridge/.test(speakLine(withBridge)), 'the speak command names --bridge, which the tool refuses to run without')
+check(speakLine(withBridge).includes(BRIDGE),
+  '  …filled in with the actual key when the caller knew it, not left as a placeholder to resolve elsewhere')
+check(speakLine(withBridge).includes(CHAN),
+  '  …and the channel too — a pasted prompt has no somewhere-else to look these up')
+const listenLine = l => (l.split('\n').find(x => x.includes('agent-inbox.mjs')) || '')
+check(listenLine(withBridge).includes(PUB), 'the listen command carries the agent\'s own key for the same reason')
+check(!/⚠ \*\*`--bridge` is not filled in/.test(withBridge),
+  'NEGATIVE CONTROL — no caveat when the value IS known; the warning tracks the value, it is not decoration')
+
+// BOTH DIRECTIONS. `good` is the same fully-installed agent with no bridge supplied — the exact case
+// the review ran, where every lane row is PRESENT so the existing warning block stays silent.
+check(/--bridge/.test(speakLine(good)),
+  'with no bridge supplied the flag is STILL printed — an omitted flag is what made the command look complete')
+check(/⚠ \*\*`--bridge` is not filled in/.test(good),
+  '  …and a fully-installed agent is told it is unresolved, rather than handed a command that exits 3')
+check(/will not guess|refuses to guess/.test(good), '  …and told the tool refuses to guess it, which is what it does')
+check(/not a secret/.test(good), '  …and that it is a public key, so nobody withholds it as a credential')
+
+// The should-fix: the never-checked caveat was all-or-nothing, so one MISSING piece stated two
+// unexamined ones flatly as absent — what the fourth state exists to prevent.
+const laneMixed = startupDoc({ agent: 'oliver', pubkey: PUB, report: { rows: [
+  { key: 'bunker-uri', title: 'Bunker pairing', state: MISSING },
+  { key: 'bunker-client', title: 'Client transport key', state: UNKNOWN },
+] } })
+const mixedLine = (laneMixed.split('\n').find(l => l.includes('Neither command works yet')) || '')
+check(/Bunker pairing is not in place/.test(mixedLine), 'a MISSING piece beside an unchecked one is still reported missing')
+check(/Client transport key was never checked/.test(mixedLine),
+  '  …and the unchecked one KEEPS its own state — all-or-nothing silenced this the moment the states mixed')
+
 // ── 6. The tool, not the function ───────────────────────────────────────────────────────────
 console.log('\n6. what connect-agent actually writes')
 // Everything above tests `startupDoc`, which is handed a pubkey. The tool is not, and that gap
