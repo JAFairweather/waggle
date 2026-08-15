@@ -39,7 +39,23 @@ export const IDENTITY_ONLY = ['id', 'pubkey']
 
 const HEX64 = /^[0-9a-f]{64}$/i
 const isHexList = v => Array.isArray(v) && v.length > 0 && v.every(x => HEX64.test(String(x)))
-const isRelayList = v => Array.isArray(v) && v.length > 0 && v.every(x => /^wss:\/\/[^\s]+$/i.test(String(x)))
+// A relay URL, and nothing that can smuggle a credential inside one. `wss://` plus "no whitespace"
+// admitted `wss://user:pass@relay.example/x?token=…`, which is a credential in a file whose whole
+// premise is that it is a PUBLIC artifact safe to paste into a chat. The two carriers are userinfo
+// and a query string, so both are refused structurally here rather than left to `secretInText` —
+// that sweep is a denylist over shapes, and a relay URL has a shape to allowlist against.
+const RELAY_URL = /^wss:\/\/[^\s/?#@]+(\/[^\s?#]*)?$/i
+const isRelayList = v => Array.isArray(v) && v.length > 0 && v.every(x => RELAY_URL.test(String(x)))
+/** Why this relay list was refused — the entry, and what is wrong with it. */
+export function relayFault(v) {
+  if (!Array.isArray(v) || v.length === 0) return 'must be a non-empty list of wss:// URLs'
+  const bad = v.map(String).find(x => !RELAY_URL.test(x))
+  if (bad === undefined) return null
+  if (!/^wss:\/\//i.test(bad)) return `${JSON.stringify(bad)} is not a wss:// URL`
+  if (/@/.test(bad)) return `${JSON.stringify(bad.replace(/\/\/[^@/]*@/, '//…@'))} carries userinfo, which is a credential in a public artifact`
+  if (/[?#]/.test(bad)) return `${JSON.stringify(bad.split(/[?#]/)[0])}… carries a query string, which is a credential in a public artifact`
+  return `${JSON.stringify(bad)} is not a plain relay URL`
+}
 
 /**
  * Reduce a working manifest to what may cross a machine boundary.
@@ -57,7 +73,16 @@ export function exportTemplate(manifest) {
   for (const k of REQUIRED) {
     if (template[k] === undefined) throw new Error(`this manifest has no ${k}, so a template from it would seat an agent that answers to nobody`)
   }
-  const dropped = [...HOST_ONLY, ...IDENTITY_ONLY].filter(k => manifest[k] !== undefined)
+  // Checked on the way OUT as well as on the way in. `secretInText` catches userinfo but not a
+  // query string, so `wss://relay.example/x?token=…` would otherwise be written into a file the
+  // operator is told is safe to paste anywhere.
+  if (!isRelayList(template.relays)) throw new Error(`refusing to export relays: ${relayFault(template.relays)}`)
+  // Every non-portable key, not just the ones on the two named lists. Filtering by `HOST_ONLY`
+  // and `IDENTITY_ONLY` reported only fields this module already knows about, so a manifest key
+  // added anywhere else — a newer nvoy, a hand-edited file, a field this repo has never seen — was
+  // discarded and never named. That is the exact failure the docstring says this value prevents:
+  // a transfer that quietly loses half a manifest looks identical to one that carried it.
+  const dropped = Object.keys(manifest).filter(k => !PORTABLE.includes(k))
   const leak = secretInText(JSON.stringify(template))
   if (leak) throw new Error(`refusing to write a manifest template containing ${leak}`)
   return { template, dropped }
@@ -91,7 +116,10 @@ export function importTemplate(template, host) {
   }
   if (!isHexList(template.grantors)) throw new Error('template grantors must be a non-empty list of 64-hex keys')
   if (!isHexList(template.task_carriers)) throw new Error('template task_carriers must be a non-empty list of 64-hex keys')
-  if (!isRelayList(template.relays)) throw new Error('template relays must be a non-empty list of wss:// URLs')
+  // The reason, not only the refusal. `must be a non-empty list of wss:// URLs` about a URL that
+  // IS a wss:// URL sends the operator hunting for a typo in a string whose fault is the token on
+  // the end of it.
+  if (!isRelayList(template.relays)) throw new Error(`template relays: ${relayFault(template.relays)}`)
 
   const carried = [...HOST_ONLY, ...IDENTITY_ONLY].filter(k => template[k] !== undefined)
   if (carried.length) {

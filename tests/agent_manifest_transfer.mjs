@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { HOST_ONLY, IDENTITY_ONLY, exportTemplate, importTemplate } from '../src/agent_manifest_transfer.mjs'
+import { HOST_ONLY, IDENTITY_ONLY, exportTemplate, importTemplate, relayFault } from '../src/agent_manifest_transfer.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 let pass = 0, fail = 0
@@ -61,6 +61,18 @@ for (const k of IDENTITY_ONLY) check(template[k] === undefined, `${k} does NOT t
 for (const k of HOST_ONLY) check(template[k] === undefined, `${k} does NOT travel`)
 check(dropped.includes('watcher_uid') && dropped.includes('pubkey') && dropped.includes('bunker_uri_ref'),
   'and every dropped field is NAMED, not counted — a count cannot show you that no key is in the file')
+
+// "Every field left behind" has to mean every field, not every field on the two lists this module
+// already knows about. A newer nvoy, or a hand-edited manifest, carries keys this repo has never
+// seen; those were discarded and never reported, which is the one thing `dropped` exists to stop.
+const withUnknown = exportTemplate({ ...working, some_future_field: 'x', another_one: { a: 1 } })
+check(withUnknown.dropped.includes('some_future_field') && withUnknown.dropped.includes('another_one'),
+  'a manifest key this module has never heard of is named in `dropped`, not silently discarded')
+check(withUnknown.template.some_future_field === undefined,
+  'and it does not travel — an unknown field is not portable by default')
+// Both directions: `dropped` must not name a field that DID travel, or the report is noise.
+check(!withUnknown.dropped.includes('relays') && !withUnknown.dropped.includes('grantors'),
+  'NEGATIVE CONTROL — a field that travelled is not reported as dropped')
 
 // The other direction. A serialiser that emitted an empty object would pass every assertion above.
 check(Object.keys(template).length >= 6,
@@ -119,8 +131,39 @@ check(/must not travel/.test(threw(() => importTemplate({ ...template, watcher_u
 check(/64-hex pubkey/.test(threw(() => importTemplate(template, { ...host, pubkey: 'nope' }))),
   'seating needs a real key for the new agent')
 check(/needs the agent name/.test(threw(() => importTemplate(template, { ...host, name: '' }))), 'and a name')
-check(/relays must be a non-empty list of wss/.test(threw(() => importTemplate({ ...template, relays: ['http://nope'] }, host))),
+check(/is not a wss:\/\/ URL/.test(threw(() => importTemplate({ ...template, relays: ['http://nope'] }, host))),
   'a non-wss relay is refused: an agent pointed at a plaintext relay is not the agent that was authorised')
+check(/non-empty list/.test(threw(() => importTemplate({ ...template, relays: [] }, host))),
+  'and an empty relay list is refused as empty, not as malformed')
+
+// A template is a PUBLIC artifact — the tool tells the operator to paste it. Two shapes of relay
+// URL carry a credential inside one, and neither is a typo an operator spots on review.
+// Userinfo is caught twice over: `secretInText` has a shape for it and the relay allowlist has no
+// place for it. Assert the shape check names it, and that the whole path refuses either way — a
+// guard that only holds because a DIFFERENT guard fires first is not the guard being tested.
+// `String(null)` deliberately: a loosened allowlist makes `relayFault` return null for a URL it
+// should have faulted, and the assertion must SAY that rather than throw a TypeError out of the
+// message it was building. A crash and a failure are not the same signal.
+const userinfoFault = String(relayFault(['wss://user:hunter2@relay.example']))
+check(/carries userinfo/.test(userinfoFault),
+  `a relay URL with userinfo is named as userinfo, not as "not a wss:// URL" — ${userinfoFault.slice(0, 60)}`)
+check(!/hunter2/.test(userinfoFault),
+  'and the reason does not reprint the credential — an error message goes to a terminal and a log')
+const withUserinfo = threw(() => importTemplate({ ...template, relays: ['wss://user:hunter2@relay.example'] }, host))
+check(withUserinfo !== '' && !/hunter2/.test(withUserinfo),
+  'and the template is refused on import, without the credential in the message')
+const withQuery = threw(() => importTemplate({ ...template, relays: ['wss://relay.example/x?token=s3cret'] }, host))
+check(/carries a query string/.test(withQuery),
+  'a relay URL with a query string is refused — that is where a relay auth token goes')
+check(!/s3cret/.test(withQuery), 'and that refusal does not reprint it either')
+// Checked on the way OUT too: `secretInText` has a shape for userinfo and none for a query string,
+// so without this the token would be written into the file the operator is told to paste.
+check(/refusing to export relays/.test(threw(() => exportTemplate({ ...working, relays: ['wss://relay.example/x?token=s3cret'] }))),
+  'and the same URL cannot be EXPORTED into a template either')
+// Both directions. A relay check that refuses everything refuses every real install.
+check(threw(() => importTemplate({ ...template, relays: ['wss://relay.example', 'wss://nos.lol/', 'wss://a.b.c/req'] }, host)) === '',
+  'NEGATIVE CONTROL — ordinary relay URLs, with and without a path, still seat an agent')
+
 check(/grantors must be a non-empty list/.test(threw(() => importTemplate({ ...template, grantors: [] }, host))),
   'an EMPTY grantors list is refused — present-but-empty is how an agent ends up answering to nobody')
 check(/refusing to read/.test(threw(() => importTemplate({ ...template, relays: ['wss://x?k=nsec1qqqqqqqqqq'] }, host))),
