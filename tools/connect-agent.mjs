@@ -529,6 +529,10 @@ if (has('--startup')) {
     try {
       body = startupDoc({
         agent: name, pubkey: pubkey || manifestPubkey, channel,
+        // Nothing on this machine models waggle's own public key — no artifact, no manifest field.
+        // Passed through when the operator supplies it, and left undefined otherwise so the
+        // document prints the caveat rather than a command that exits 3 (#514 review).
+        bridge: flag('--bridge') || process.env.WAGGLE_BRIDGE_PUBKEY || undefined,
         runtimeLabel: rt.label, report,
       })
     } catch (e) { die(e.message) }

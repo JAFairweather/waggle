@@ -230,6 +230,7 @@ import { planConnection, planSummary, INTENTS, INTENT_KEYS, PARTY, EXTRA_PARTIES
 import { PLANE_COPY } from './capability-vocabulary.mjs'
 import { scopeHash } from './scope-hash.mjs'
 import { MISSING, PRESENT, UNKNOWN, startupDoc } from './agent-startup.mjs'
+import { loadBridgeKey } from './bridge-key-store.mjs'
 import { consoleSigner } from './signer-session.mjs'
 import { renderTitlebar } from './vendor/nave-titlebar.mjs'
 
@@ -567,6 +568,10 @@ function renderHandoff(allLanded, proven) {
       // call site passes this field, because the twin binding renders doc against doc and cannot
       // see a wrong argument.
       channel: $('channel-id').value.trim().toLowerCase() || undefined,
+      // The console is the one producer that HAS this value: `rememberBridgeKey` only persists it
+      // after a load that verified, so a stored key is a checked one. Without it the page rendered
+      // a speak command that exits 3 before signing anything (#514 review).
+      bridge: loadBridgeKey() || undefined,
       report,
       // Say who actually wrote it. The default names `connect-agent --startup`, which did not
       // write this one — and an agent told to "regenerate it" by a command that was never run

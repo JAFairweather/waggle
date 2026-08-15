@@ -244,7 +244,14 @@ check(consoleShape.split('\n').filter(l => /^- .*never checked — do not assume
   '  …with no per-row never-checked bullet left behind')
 check(consoleShape.split('\n').filter(l => /further artifacts? w(as|ere) never checked/.test(l)).length === 1,
   '  …and exactly one collapsed line, not one per row')
-check((consoleShape.match(/connect-agent --check/g) || []).length === 1,
+// SCOPED to the section being measured, for the same reason the line above counts bullets rather
+// than the phrase. Counted across the whole document this fails the moment any other section
+// legitimately names the same remedy — it did, when the lane commands were added (#512), and what it
+// reported was a regression in the collapse that had not happened.
+const beforeYouSpeak = (consoleShape.split('## Before you speak, know what is actually true')[1] || '').split('\n## ')[0]
+check(beforeYouSpeak.trim().length > 0,
+  '  …and the section being measured is actually present — an empty slice passes every filter below')
+check((beforeYouSpeak.match(/connect-agent --check/g) || []).length === 1,
   '  …and the remedy once, not eight times')
 // Nothing may be lost in the collapse: an agent has to be able to name what was not checked.
 for (const k of ['bunker-uri', 'dm-relays', 'mcp-identity', 'profile']) {
@@ -272,7 +279,7 @@ check(realNegative.includes('nothing can reach you'),
 // The size claim the change was made for, measured rather than asserted in prose. The block those
 // eight rows occupy was ~1,100 bytes; the collapsed form is the two lines between the observed row
 // and the blank line that follows. A ceiling here fails if someone re-expands it one row at a time.
-const block = consoleShape.split('\n').filter(l => /never checked|connect-agent --check/.test(l)).join('\n')
+const block = beforeYouSpeak.split('\n').filter(l => /never checked|connect-agent --check/.test(l)).join('\n')
 check(block.length > 0 && block.length < 400,
   `NEVER-CHECKED BLOCK is ${block.length} bytes, down from ~1,100 — and non-empty, so this is measuring something`)
 

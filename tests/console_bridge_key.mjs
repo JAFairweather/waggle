@@ -122,12 +122,28 @@ const unwired = withBridgeInput.filter(p => !reachesStore(p))
 check(unwired.length === 0,
   `every page with a bridge field reaches the shared store${unwired.length ? ` (missing: ${unwired.join(', ')})` : ''}`)
 
-// NEGATIVE CONTROL — and the pages WITHOUT one are not dragged in. index.html takes a GRANTOR key,
-// which is the owner's key, not the bridge's. The issue asked whether they are the same value in
-// practice; they are not, and a confidently wrong 64-hex prefill is worse than an empty box.
-const withoutBridgeInput = pages.filter(p => !withBridgeInput.includes(p))
+// CONSUMERS — a page may READ the stored key without collecting one, and connect.html now does: it
+// renders waggle's public key into the `agent-send --bridge` argument of the handoff document,
+// because it is the only producer that has a key a load actually verified (#514 review). Without it
+// the page printed a command that exits 3 before signing anything.
+//
+// "Has a bridge field" was standing in for the thing actually being protected, which is narrower:
+// do not PREFILL a field from this value. index.html takes a GRANTOR key — the owner's, not the
+// bridge's — and a confidently wrong 64-hex prefill is worse than an empty box. So the control now
+// asserts that directly, and a consumer has to argue with the assertion below rather than with a
+// proxy for it.
+const CONSUMERS = ['connect.html']
+const withoutBridgeInput = pages.filter(p => !withBridgeInput.includes(p) && !CONSUMERS.includes(p))
 check(withoutBridgeInput.length > 0 && withoutBridgeInput.every(p => !reachesStore(p)),
-  `NEGATIVE CONTROL — pages with no bridge field do not read the key (${withoutBridgeInput.join(', ')})`)
+  `NEGATIVE CONTROL — pages that neither collect nor consume the key do not read it (${withoutBridgeInput.join(', ')})`)
+// The real rule, asserted on the consumer rather than assumed of it: read it, never seat it in an
+// input. A prefill is the failure #322 refused; rendering it into a documented command is not.
+for (const page of CONSUMERS) {
+  const html = readFileSync(join(CONSOLE, page), 'utf8')
+  check(html.includes('loadBridgeKey'), `${page} consumes the shared store rather than naming a storage key of its own`)
+  check(!/\.value\s*=\s*loadBridgeKey|loadBridgeKey\(\)[^\n]*\.value\s*=/.test(html),
+    `  …and does NOT prefill any field from it — that is the confidently-wrong-value failure #322 refused`)
+}
 check(!readFileSync(join(CONSOLE, 'index.html'), 'utf8').includes(STORE),
   'index.html does not prefill its grantor field from the bridge key — a different value, deliberately')
 
