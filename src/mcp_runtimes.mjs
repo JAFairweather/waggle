@@ -212,9 +212,47 @@ export const RUNTIMES = [
     config: '~/.gemini/settings.json',
     configKey: 'mcpServers',
   },
+  // THE RUNTIME WITH NO MCP (#519). Pi is the agent harness at pi.dev, not a board — and this repo
+  // read its own `generic` label as hardware while planning the #486 walk, which is why that label
+  // no longer says it.
+  //
+  // `kind: 'none'` exists because the other two kinds both end in "here is how you register the MCP
+  // server", and for Pi that answer is false. Its docs say there is no built-in MCP and say what to
+  // do instead: build CLI tools with READMEs, or write an extension. Rendering it as `file` would
+  // print an `mcpServers` stanza under a label, and a stanza under a label is an instruction —
+  // pointing an operator at a config file that does not exist, for a subsystem the runtime does not
+  // have. A registry that cannot say "no MCP here" says the wrong thing confidently instead.
+  //
+  // The participation surface is the two tools this repo already ships, which is not a downgrade:
+  // both authenticate by SIGNATURE through `loadNostrSigner`, so neither needs a broker, an ssh
+  // account or a seated key, and neither ever holds one.
+  {
+    id: 'pi',
+    label: 'Pi (pi.dev)',
+    kind: 'none',
+    // Same filename as Codex, DIFFERENT search path: Pi loads it from `~/.pi/agent/`, from parent
+    // directories, and from the current directory. `--startup` prints the path it wrote for exactly
+    // this reason — a file at the wrong one of those is a file nothing reads, and it looks identical
+    // to a file that was read.
+    startupFile: 'AGENTS.md',
+    instead: 'no MCP — Pi has none built in. Participation is the two CLI tools: ' +
+      '`tools/agent-inbox.mjs --watch` to listen, `tools/agent-send.mjs` to speak. ' +
+      'Both sign through `loadNostrSigner`, so a bunker-held identity works with no nsec anywhere.',
+    // "Point your runtime at this directory" is not actionable for a runtime with three search
+    // locations, and the failure it hides is silent: a file at the wrong one of them is a file
+    // nothing reads, and the session looks exactly like one that read it and ignored it. So say the
+    // three, and say which act puts the file in reach of each.
+    startupNote: 'Pi loads AGENTS.md from ~/.pi/agent/, from parent directories, and from the ' +
+      'current directory — so either start the session with this directory as its cwd, or place ' +
+      'the file in ~/.pi/agent/. A file in none of those is read by nothing, and looks identical ' +
+      'to one that was read.',
+  },
   {
     id: 'generic',
-    label: 'Any other MCP host (Raspberry Pi, headless, self-hosted)',
+    // Was "Raspberry Pi, headless, self-hosted". The board was an example of a headless MCP host and
+    // is still a fine one; the word is gone because in this repo Pi now names the harness above, and
+    // an operator picking a runtime by its label is the person that ambiguity costs.
+    label: 'Any other MCP host (headless, self-hosted)',
     kind: 'file',
     // AGENTS.md is the cross-tool convention; a host that reads something else is pointed at it
     // by hand, which is why --startup prints the path it wrote rather than assuming it was read.
@@ -275,7 +313,13 @@ export function stanzaJson(stanza) {
  * operator ends up typing a Claude Code command.
  */
 export function registrationHelp(stanza) {
-  return RUNTIMES.map(r => r.kind === 'cli'
-    ? { id: r.id, label: r.label, kind: 'cli', line: r.add(stanza) }
-    : { id: r.id, label: r.label, kind: 'file', config: r.config, json: stanzaJson(stanza) })
+  return RUNTIMES.map(r => {
+    if (r.kind === 'cli') return { id: r.id, label: r.label, kind: 'cli', line: r.add(stanza) }
+    // A runtime with no MCP gets neither a command nor a stanza — it gets told so, by name. It is
+    // still in the list rather than filtered out of it, because an operator scanning for their
+    // runtime and not finding it concludes the tool does not know about it and picks the nearest
+    // block, which is the `mcpServers` one this branch exists to keep them away from.
+    if (r.kind === 'none') return { id: r.id, label: r.label, kind: 'none', instead: r.instead }
+    return { id: r.id, label: r.label, kind: 'file', config: r.config, json: stanzaJson(stanza) }
+  })
 }

@@ -486,6 +486,10 @@ if (has('--stanza')) {
   for (const h of registrationHelp(stanza)) {
     console.log(`\n  ${h.label}`)
     if (h.kind === 'cli') console.log(`    ${h.line}`)
+    // Neither a command nor a stanza. Printed as prose because there is nothing to paste, and the
+    // absence has to be said out loud — a runtime listed with nothing under it reads as a block that
+    // failed to render, and the operator goes looking for the config file it did not print (#519).
+    else if (h.kind === 'none') console.log(`    ${h.instead}`)
     else console.log(`    ${h.config}\n` + h.json.split('\n').map(l => `    ${l}`).join('\n'))
   }
   console.log(`\n  This is an ssh call to the broker host, not a local server: the identity lives there.`)
@@ -537,6 +541,9 @@ if (has('--startup')) {
   }
   console.log(`  point ${rt.label} at ${HERE} so it reads this at session start — registering the MCP`)
   console.log(`  server does not make a runtime read a file next to it.`)
+  // Where a runtime looks, when "point it at this directory" is not one place. Only Pi carries this
+  // today; printed from the row rather than special-cased here, so a second such runtime says it too.
+  if (rt.startupNote) console.log(`  ${rt.startupNote}`)
 }
 // The ceiling on the exit line too, not only in the headline forty lines up. An operator reading
 // the last line for the verdict is the reason this tool prints one (#492).

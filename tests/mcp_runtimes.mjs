@@ -188,7 +188,43 @@ const gemini = help.find(h => h.id === 'gemini')
 check(gemini.kind === 'file' && !gemini.line, 'gemini is file-configured and is given NO command line')
 check(gemini.config.includes('settings.json') && gemini.json.includes('mcpServers'), 'gemini gets a path and the stanza')
 const generic = help.find(h => h.id === 'generic')
-check(!!generic && /pi|headless/i.test(generic.label), `a host with no CLI at all is covered — ${generic.label.slice(0, 40)}…`)
+check(!!generic && /headless/i.test(generic.label), `a host with no CLI at all is covered — ${generic.label.slice(0, 40)}…`)
+
+// ── The runtime with no MCP (#519) ──────────────────────────────────────────────────────────
+// Pi is the agent harness at pi.dev, not a board. It has no built-in MCP, so the one thing this
+// block must never do for it is print an `mcpServers` stanza under its label — that is an
+// instruction pointing at a config file which does not exist, for a subsystem the runtime does not
+// have. The old `generic` label said "Raspberry Pi" and this repo read it as hardware while
+// planning the walk, which is how the wrong block gets picked in the first place.
+const pi = help.find(h => h.id === 'pi')
+check(!!pi && pi.kind === 'none', 'Pi is present and is neither a CLI nor a file-configured runtime')
+check(!pi.json && !pi.line && !pi.config,
+  '  …so it is given NO stanza, NO command line and NO config path — there is nothing to paste')
+check(/no MCP/i.test(pi.instead), '  …and it SAYS there is no MCP, rather than rendering an empty block')
+check(/agent-inbox\.mjs/.test(pi.instead) && /agent-send\.mjs/.test(pi.instead),
+  '  …and names both tools that ARE the participation surface — listen and speak, not one of them')
+check(runtime('pi')?.startupFile === 'AGENTS.md', 'Pi reads AGENTS.md — same filename as Codex, different search path')
+check(!fileRuntimes().some(r => r.id === 'pi') && !cliRuntimes().some(r => r.id === 'pi'),
+  '  …and neither runtime filter picks it up, so no caller renders it as one of those')
+
+// BOTH DIRECTIONS. "No runtime prints a stanza" would pass every assertion above and is the change
+// that silently breaks the other four. Every runtime that is not `none` must still get something
+// pasteable, and no label may name the board again.
+check(help.filter(h => h.kind !== 'none').every(h => h.line || h.json),
+  'BOTH DIRECTIONS — every other runtime still gets a command or a stanza')
+check(help.filter(h => h.kind === 'none').length === 1, '  …and exactly one runtime claims to have no MCP')
+check(RUNTIMES.every(r => !/raspberry/i.test(r.label)),
+  'no runtime label says Raspberry — in this repo "Pi" now names the harness, and an operator picks by label')
+// Where the file has to land. `--startup` writes into the agent root and tells the operator to
+// point the runtime at it, which is not one place for Pi: `~/.pi/agent/`, parent directories, and
+// the cwd. A file in none of the three is read by nothing and looks identical to one that was read.
+const note = runtime('pi').startupNote
+check(/~\/\.pi\/agent\//.test(note) && /parent director/i.test(note) && /current directory/.test(note),
+  'the Pi row names all three places Pi loads AGENTS.md from')
+check(/cwd|current directory/.test(note) && /~\/\.pi\/agent\//.test(note) && /place|start/.test(note),
+  '  …and names an act that puts the file in reach, not only the locations')
+check(RUNTIMES.filter(r => r.startupNote).length === 1,
+  '  …and it is carried on the row, so a second such runtime says it too rather than being special-cased')
 
 // SHELL QUOTING (#464 review). These lines are printed for the operator to paste, and the old
 // `.join(' ')` did not fail on a path with a space in it — it produced a DIFFERENT, valid command
