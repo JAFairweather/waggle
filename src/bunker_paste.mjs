@@ -50,12 +50,19 @@ export function checkPastedBunkerUri(text) {
   }
   const match = BUNKER_URI.exec(raw)
   if (!match) {
-    // The commonest paste failure by far, and it does not look like a failure: the string is
-    // plausible and merely short, so a length-blind check would hand it to the signer and report
-    // the bunker's refusal instead of the truncation.
+    // Two different faults reach here and they need two different sentences. A short pubkey is a
+    // truncated paste; a full-length one with a stray character in it is not, and telling that
+    // operator "it is 64 characters, not 64" sends them to re-copy a string that is already
+    // complete. Branch on length first, then on charset.
     const after = raw.slice('bunker://'.length).split('?')[0]
-    return { error: `the pubkey in the URI is ${after.length} characters, not 64 — the paste looks ` +
-      'truncated. Copy the whole string.' }
+    if (after.length !== 64) {
+      return { error: `the pubkey in the URI is ${after.length} characters, not 64 — the paste looks ` +
+        `${after.length < 64 ? 'truncated' : 'to have picked up extra characters'}. Copy the whole string.` }
+    }
+    const bad = [...after].filter(c => !/[0-9a-f]/i.test(c))
+    return { error: 'the pubkey in the URI is the right length but is not hex — it contains ' +
+      `${JSON.stringify(bad[0])}. A pubkey is 64 characters of 0-9 and a-f; check for a character ` +
+      'your terminal or chat client substituted while copying.' }
   }
 
   let url
@@ -95,13 +102,24 @@ export function findBunkerUriExposure(argv = [], env = {}) {
       '  not echoed and it is not written down.\n' +
       '  Your shell history now holds that secret. Rotate the pairing in your signer.' }
   }
-  const named = Object.keys(env || {}).filter(k => /bunker/i.test(k) && /uri/i.test(k) && !/_FILE$/i.test(k))
-    .filter(k => /bunker:\/\//i.test(String(env[k] || '')))
+  // Scanned by VALUE, not by name. This previously required the variable to be named something
+  // matching /bunker/ AND /uri/, which is a guess about what the operator called it — and the
+  // guess is wrong for every one of `SIGNER=bunker://…`, `NOSTR_CONNECT=…`, `BUNKER=…` and
+  // `NIP46_URI=…`. A check that only catches the exposure when it is helpfully labelled is not a
+  // check; the secret is in the value either way, and the value is what /proc and the shell
+  // history hold.
+  //
+  // The `_FILE` convention needs no exemption once the value is what is read: those variables hold
+  // a path, and a path does not contain `bunker://`. Exempting them by NAME would reopen the same
+  // hole one rename along — `WAGGLE_BUNKER_URI_FILE` set to the URI itself rather than to a path
+  // is precisely the mistake this refusal exists to catch.
+  const named = Object.keys(env || {}).filter(k => /bunker:\/\//i.test(String(env[k] ?? '')))
   if (named.length) {
     return { error: `${named[0]} holds a bunker:// URI, and this tool will not take one from the ` +
       'environment.\n' +
       '  It is readable from /proc on Linux and it is in the history of whoever exported it.\n' +
-      '  Use --bunker and paste at the prompt, or WAGGLE_BUNKER_URI_FILE with a mode-0600 file.' }
+      '  Use --bunker and paste at the prompt, or WAGGLE_BUNKER_URI_FILE with a mode-0600 file.\n' +
+      '  That variable now holds a connect secret. Rotate the pairing in your signer.' }
   }
   return {}
 }
