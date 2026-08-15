@@ -583,10 +583,19 @@ check(ARTIFACTS.some(a => a.blocking) && ARTIFACTS.some(a => !a.blocking),
 // a scope that excuses every row, and both look like a suite that went green.
 {
   const brokerKeys = ARTIFACTS.filter(a => a.lanes?.length === 1 && a.lanes[0] === 'broker').map(a => a.key)
-  check(brokerKeys.length === 7, `seven rows are scoped to the broker lane (found ${brokerKeys.length})`)
+  check(brokerKeys.length === 6, `six rows are scoped to the broker lane (found ${brokerKeys.length})`)
   check(ARTIFACTS.filter(a => !a.lanes).length > 0,
     'and most rows are scoped to no lane at all, which means every lane needs them')
   check(Object.keys(LANES).sort().join(',') === 'broker,sealed', 'two lanes, named')
+
+  // `mcp-exclusive` is NOT one of them, and the distinction is what the row reads, not where it sits
+  // in the list. It went out with the broker block for one commit because it was adjacent to it:
+  // `foreignNvoyServers` reads THIS machine's MCP runtime configs, so it needs no ssh and no other
+  // box. It is worst on the sealed lane — `foreignServers(names, name)` excludes `nvoy-<name>`, and
+  // a sealed-lane agent has no such server, so every nvoy server in that session counts as foreign.
+  // The lane it was scoped out of is the one where it has nothing of its own to compare against.
+  check(!ARTIFACTS.find(a => a.key === 'mcp-exclusive').lanes,
+    'mcp-exclusive is scoped to no lane — it reads this machine, not the broker')
 
   // The tool's own observations: everything found and verified, so nothing here is MISSING for a
   // reason other than the lane. That isolates the property — any refusal below is the scope.
@@ -596,22 +605,27 @@ check(ARTIFACTS.some(a => a.blocking) && ARTIFACTS.some(a => !a.blocking),
   //    and "never asked for" are different reasons for a row not to be a problem, and a model that
   //    spells them the same way is how a genuinely missing credential reads green.
   check(brokerKeys.every(k => sealed.rows.find(r => r.key === k).state === NOT_APPLICABLE),
-    'a sealed-lane agent reports all seven broker rows NOT-APPLICABLE')
+    'a sealed-lane agent reports all six broker rows NOT-APPLICABLE')
   check(brokerKeys.every(k => sealed.rows.find(r => r.key === k).state !== PRESENT),
     '  …and not one of them as PRESENT — "did not apply" is never "satisfied"')
+  check(sealed.rows.find(r => r.key === 'mcp-exclusive').state === PRESENT,
+    '  …and mcp-exclusive is still CHECKED on the sealed lane, not scoped out beside them')
+  check(installState({ ...complete, 'mcp-exclusive': { found: false } }, { lane: 'sealed' })
+    .missing.includes('mcp-exclusive'),
+    '  …BOTH DIRECTIONS — and a foreign nvoy server still fails a sealed-lane agent')
   check(!sealed.notApplicable.some(k => sealed.missing.includes(k) || sealed.unverified.includes(k) || sealed.unknown.includes(k)),
     '  …and a scoped-out row appears in exactly one bucket, so no count double-reports it')
   check(sealed.counts.present === Object.keys(complete).length - brokerKeys.length,
-    '  …and the present count drops by exactly seven — the rows left the tally, they were not renamed into it')
+    '  …and the present count drops by exactly six — the rows left the tally, they were not renamed into it')
 
-  // 2. The row still exists and still says so. Dropping the seven rows from the render would be the
+  // 2. The row still exists and still says so. Dropping the six rows from the render would be the
   //    same defect one layer out: the reader cannot audit a scope they cannot see.
   const shown = renderState(sealed)
   check(brokerKeys.every(k => shown.includes(ARTIFACTS.find(a => a.key === k).title)),
-    'the seven are still printed, so the scope is auditable rather than invisible')
+    'the six are still printed, so the scope is auditable rather than invisible')
   check(!/\[ok \] The broker's host key/.test(shown) && /\[n\/a\] The broker's host key/.test(shown),
     '  …with their own glyph, never a tick')
-  check(/7 rows did not apply to the sealed lane/.test(sealed.headline) && /not the same as satisfied/.test(sealed.headline),
+  check(/6 rows did not apply to the sealed lane/.test(sealed.headline) && /not the same as satisfied/.test(sealed.headline),
     '  …and the headline says how many were skipped, and that skipped is not satisfied')
 
   // 3. The point of the change: this agent is no longer told it cannot run.
@@ -627,7 +641,7 @@ check(ARTIFACTS.some(a => a.blocking) && ARTIFACTS.some(a => !a.blocking),
   check(asBroker.exitCode === 1 && asBroker.outcome === 'incomplete',
     'BOTH DIRECTIONS — a BROKER-lane agent with no broker artifacts still cannot run')
   check(asBroker.missing.length === brokerKeys.length && brokerKeys.every(k => asBroker.missing.includes(k)),
-    '  …and it names all seven, rather than refusing for some other reason')
+    '  …and it names all six, rather than refusing for some other reason')
   check(installState(withoutBroker, { lane: 'sealed' }).exitCode !== 1,
     '  …and the SAME observations pass on the sealed lane — the lane is what differs, not the box')
 
@@ -718,8 +732,8 @@ check(ARTIFACTS.some(a => a.blocking) && ARTIFACTS.some(a => !a.blocking),
   }
   check(/\[ok \] Declared participation lane/.test(live.out) && /sealed —/.test(live.out),
     'a live --lane sealed run reports the declaration as its own row')
-  check((live.out.match(/\[n\/a\]/g) || []).length === 7,
-    '  …and renders exactly seven n/a rows')
+  check((live.out.match(/\[n\/a\]/g) || []).length === 6,
+    '  …and renders exactly six n/a rows')
   const undeclaredRun = run(base)
   if (undeclaredRun === null || !undeclaredRun.out || undeclaredRun.out.length < 500) {
     console.error('agent_install_state: INCONCLUSIVE — the undeclared control never produced a report')

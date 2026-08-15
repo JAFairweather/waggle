@@ -36,6 +36,12 @@ const LANE_TITLES = {
   'signer-identity': 'Signer resolves to the right key',
 }
 
+// The lane names, inlined for the same reason and exported so `tests/console_first_prompt.mjs` can
+// pin them against `LANES` in `src/agent_install_state.mjs`. A stale list here does not render a
+// wrong sentence — it renders a `--lane` flag the node side would reject, which is a command an
+// agent is told to run and cannot.
+export const LANES = Object.freeze({ sealed: true, broker: true })
+
 // Anything that looks like a credential. Checked against the rendered text, not against the inputs,
 // because the failure that matters is what reaches the file.
 const HEX64 = /^[0-9a-f]{64}$/
@@ -98,6 +104,16 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, brief
   // true of the system whatever this install looks like, and mixing the two is how a document tells
   // an agent it holds a pairing it does not have. Absent row reads as never-checked, never as fine.
   const stateOf = key => { const r = row(key); return r ? (SAYS[r.state] || r.state) : SAYS[UNKNOWN] }
+
+  // The check command this agent should actually run, rendered from the lane it was checked under.
+  // `--lane` is not cosmetic: declaring `sealed` scopes six broker rows out (#513), so a document
+  // that hardcodes one lane tells an agent on the other one to scope out the rows it depends on —
+  // `applies` refusing to assume the cheaper lane, arriving through the document instead of the
+  // flag. Undeclared renders no flag at all, for the same reason `installState` treats undeclared
+  // as "every row applies": absent is not sealed. An unknown name is dropped rather than echoed,
+  // because a command printed with a lane `installState` would reject is a command that fails.
+  const lane = Object.prototype.hasOwnProperty.call(LANES, String(report?.lane)) ? String(report.lane) : null
+  const checkCmd = `connect-agent --check${lane ? ` --lane ${lane}` : ''}`
 
   // Only the rows an agent's own behaviour depends on. A wall of install state is a wall nobody
   // reads, and this file competes for the top of a context window.
@@ -242,7 +258,7 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, brief
       : `${laneTitle(k)} is not in place`
     out.push('')
     out.push(`⚠ **Neither command works yet.** ${laneOpen.map(laneSays).join('; ')}.`)
-    out.push(`Settle that first with \`connect-agent --check\`; running either tool before then fails in a`)
+    out.push(`Settle that first with \`${checkCmd}\`; running either tool before then fails in a`)
     out.push(`way that looks like the lane being down.`)
   }
   out.push('')
@@ -255,7 +271,7 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, brief
     out.push(`- **${neverChecked.length} further artifact${neverChecked.length === 1 ? ' was' : 's were'} never checked` +
       ` — do not assume either way:** ${titles}.`)
     out.push(`  Whatever wrote this could not observe ${neverChecked.length === 1 ? 'it' : 'them'};` +
-      ` run \`connect-agent --check --lane sealed\` on the agent's own machine to settle ${neverChecked.length === 1 ? 'it' : 'them'}.`)
+      ` run \`${checkCmd}\` on the agent's own machine to settle ${neverChecked.length === 1 ? 'it' : 'them'}.`)
   }
   out.push('')
   if (open.length) {

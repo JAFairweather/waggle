@@ -19,7 +19,7 @@
 //   not-applicable — this agent's declared lane never needed it. NOT the same as satisfied.
 //
 // The lane (#513) exists because there are two ways to participate and this model could describe
-// only one of them. Seven of the rows below reach an ssh channel on the broker box; an agent on
+// only one of them. Six of the rows below reach an ssh channel on the broker box; an agent on
 // the sealed lane authenticates to the bridge by signature and needs none of them. Until it could
 // say so, `--check` told a correctly-onboarded agent it could not run — a wrong answer given
 // confidently, which is the failure this file was written to prevent.
@@ -101,7 +101,16 @@ export const ARTIFACTS = [
     why: 'Six tools read it and none write it. Every field is validated; one bad field refuses the whole runtime.' },
   { key: 'state-dirs', title: 'Runtime directories', blocking: true,
     why: 'Five of them, two with non-default modes. Nothing creates them and nothing lists them.' },
-  // ── Broker-lane only, all seven. Every one of them exists to reach an ssh channel on another
+  // NOT broker-lane, though it sat inside that block for one commit and was scoped out by list
+  // position rather than by what it reads. `foreignNvoyServers` reads THIS machine's MCP runtime
+  // configs; no ssh, no other box. #338's hazard belongs to the session, not to the transport.
+  // It is worst on the sealed lane specifically: `foreignServers(names, name)` excludes
+  // `nvoy-<name>`, and a sealed-lane agent has no such server — so every nvoy server in that
+  // session counts as foreign. The one lane with nothing of its own to compare against was the
+  // lane the row was scoped out of.
+  { key: 'mcp-exclusive', title: 'No other nvoy server registered', blocking: true,
+    why: 'Registered is not sole. A generically-named server alongside carries the tools that sign, bound to somebody else.' },
+  // ── Broker-lane only, all six. Every one of them exists to reach an ssh channel on another
   // box, and a sealed-lane agent reaches the bridge by signature instead. Two of these were the
   // rows telling a correctly-onboarded agent it could not run (#513).
   { key: 'channel-key', title: 'Channel keypair', blocking: true, lanes: ['broker'],
@@ -114,8 +123,6 @@ export const ARTIFACTS = [
     why: "The other box's authorized_keys, under its forced command. Nothing on this machine can see it, so it is UNKNOWN until an operator confirms it — never assumed from the key existing here." },
   { key: 'mcp-registration', title: 'Registered as an MCP server', blocking: true, lanes: ['broker'],
     why: 'How a new session becomes this agent. Needs the instance root set explicitly; the default path does not exist here.' },
-  { key: 'mcp-exclusive', title: 'No other nvoy server registered', blocking: true, lanes: ['broker'],
-    why: 'Registered is not sole. A generically-named server alongside carries the tools that sign, bound to somebody else.' },
   // #338. Sole is not YOURS. An agent was handed a session whose attached server answered `whoami`
   // with a different agent's identity — it would have read that identity's sealed inbox and posted
   // under its key, and neither would have errored, because a wrong-identity binding signs and seals
@@ -202,7 +209,7 @@ export function installState(observations = {}, { lane = null } = {}) {
   // applies", which is the demanding answer. `--lane brokr` must not quietly become `--lane sealed`.
   //
   // `typeof === 'string'` is not belt-and-braces. `String(['sealed'])` is `'sealed'`, so without it
-  // a single-element array declares a lane and scopes seven rows out — measured, not reasoned
+  // a single-element array declares a lane and scopes six rows out — measured, not reasoned
   // about. `hasOwnProperty` rather than `in` for the same reason one layer down: `'toString'` is a
   // property of every object and would otherwise name a lane.
   const declared = typeof lane === 'string' && Object.prototype.hasOwnProperty.call(LANES, lane) ? lane : null
@@ -265,7 +272,7 @@ export function installState(observations = {}, { lane = null } = {}) {
     headline = 'Every piece present and observed doing its job.'
   }
   // Say out loud how many rows were scoped out, and by which lane. A report that quietly stops
-  // asking about seven artifacts is the same shape as a report that quietly passes them — the
+  // asking about six artifacts is the same shape as a report that quietly passes them — the
   // reader cannot tell the two apart unless the count is on the page.
   if (notApplicable.length) {
     headline += ` ${notApplicable.length} row${notApplicable.length === 1 ? '' : 's'} did not apply to the ${declared} lane and ${notApplicable.length === 1 ? 'was' : 'were'} not checked — that is not the same as satisfied.`
