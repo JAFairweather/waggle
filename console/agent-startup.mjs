@@ -112,8 +112,19 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, brief
   // flag. Undeclared renders no flag at all, for the same reason `installState` treats undeclared
   // as "every row applies": absent is not sealed. An unknown name is dropped rather than echoed,
   // because a command printed with a lane `installState` would reject is a command that fails.
+  //
+  // It is rendered RUNNABLE, which it was not: `connect-agent --check --lane sealed` is not a
+  // command — there is no `bin` entry and nothing puts it on PATH, so it exits 127 — and it omits
+  // the `--name` the tool cannot run without. Correcting only the path is not enough, and neither
+  // failure is the sharp one: the usage line the tool printed back did not list `--lane`, so an
+  // agent that followed the document was told, in effect, that the document was stale (#522). The
+  // two tools named a few lines above render as `node tools/…`; this one now matches them.
   const lane = Object.prototype.hasOwnProperty.call(LANES, String(report?.lane)) ? String(report.lane) : null
-  const checkCmd = `connect-agent --check${lane ? ` --lane ${lane}` : ''}`
+  // A name with a space is a real name here (#168), and it would split into two argv words. Quote
+  // anything the tool's own --name pattern would not accept, rather than rendering a command whose
+  // breakage depends on who is reading it.
+  const nameArg = /^[a-z0-9][a-z0-9._-]{1,63}$/.test(String(agent)) ? String(agent) : `'${String(agent).replace(/'/g, `'\\''`)}'`
+  const checkCmd = `node tools/connect-agent.mjs --name ${nameArg} --check${lane ? ` --lane ${lane}` : ''}`
 
   // Only the rows an agent's own behaviour depends on. A wall of install state is a wall nobody
   // reads, and this file competes for the top of a context window.

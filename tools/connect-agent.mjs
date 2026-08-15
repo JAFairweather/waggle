@@ -54,17 +54,23 @@ import { dirname, join } from 'node:path'
 import { LANES, boundIdentity, installState, renderState } from '../src/agent_install_state.mjs'
 import { exportTemplate, importTemplate } from '../src/agent_manifest_transfer.mjs'
 import { channelCommand, credentialPaths, credentialReport, registeredForm, sameVector } from '../src/channel_registration.mjs'
+import { knownFlag, usageLine } from '../src/connect_flags.mjs'
 import { RUNTIMES, channelStanza, cliRuntimes, exclusivityVerdict, foreignServers, isMine, registrationHelp, runtime } from '../src/mcp_runtimes.mjs'
 import { startupDoc } from '../src/agent_startup.mjs'
 
-const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (process.argv[i + 1] || '') }
-const has = n => process.argv.includes(n)
+// Reading a flag that is not in the catalogue throws rather than quietly returning ''. That is what
+// keeps `usageLine` from drifting away from what this tool actually parses — it had drifted to five
+// of nineteen, and the flags missing from it were the ones the startup document tells an agent to
+// run (#522).
+const declared = n => { if (!knownFlag(n)) throw new Error(`connect-agent: reads ${n}, which is not declared in src/connect_flags.mjs`); return n }
+const flag = n => { const i = process.argv.indexOf(declared(n)); return i < 0 ? '' : (process.argv[i + 1] || '') }
+const has = n => process.argv.includes(declared(n))
 const die = m => { console.error(`connect-agent: ${m}`); process.exit(1) }
 const HEX64 = /^[0-9a-f]{64}$/i
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const name = flag('--name').toLowerCase()
-if (!/^[a-z0-9][a-z0-9._-]{1,63}$/.test(name)) die('usage: --name <short-stable-id> [--pubkey <64-hex>] [--owner <64-hex>] [--from <instance>] [--check]')
+if (!/^[a-z0-9][a-z0-9._-]{1,63}$/.test(name)) die(usageLine())
 const CHECK = has('--check')
 const ROOT = flag('--root') || join(homedir(), '.nvoy', 'desktop')
 const HERE = join(ROOT, name)

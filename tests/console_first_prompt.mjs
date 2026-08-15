@@ -136,7 +136,7 @@ for (const [what, extra] of MATRIX) {
 for (const [label, copy] of [['node', node], ['browser', web]]) {
   const remedy = lane => (copy.startupDoc({ agent: 'Pi Agent', pubkey: PUB,
     report: { lane, rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } })
-    .split('\n').filter(l => l.includes('connect-agent --check')))
+    .split('\n').filter(l => l.includes('connect-agent.mjs') && l.includes('--check')))
   const broker = remedy('broker')
   check(broker.length >= 2 && broker.every(l => l.includes('--lane broker')),
     `${label}: a broker-lane report renders --lane broker in every remedy line`)
@@ -279,7 +279,7 @@ check(consoleShape.split('\n').filter(l => /further artifacts? w(as|ere) never c
 const beforeYouSpeak = (consoleShape.split('## Before you speak, know what is actually true')[1] || '').split('\n## ')[0]
 check(beforeYouSpeak.trim().length > 0,
   '  …and the section being measured is actually present — an empty slice passes every filter below')
-check((beforeYouSpeak.match(/connect-agent --check/g) || []).length === 1,
+check((beforeYouSpeak.match(/connect-agent\.mjs [^`]*--check/g) || []).length === 1,
   '  …and the remedy once, not eight times')
 // Nothing may be lost in the collapse: an agent has to be able to name what was not checked.
 for (const k of ['bunker-uri', 'dm-relays', 'mcp-identity', 'profile']) {
@@ -307,7 +307,7 @@ check(realNegative.includes('nothing can reach you'),
 // The size claim the change was made for, measured rather than asserted in prose. The block those
 // eight rows occupy was ~1,100 bytes; the collapsed form is the two lines between the observed row
 // and the blank line that follows. A ceiling here fails if someone re-expands it one row at a time.
-const block = beforeYouSpeak.split('\n').filter(l => /never checked|connect-agent --check/.test(l)).join('\n')
+const block = beforeYouSpeak.split('\n').filter(l => /never checked|connect-agent\.mjs [^`]*--check/.test(l)).join('\n')
 check(block.length > 0 && block.length < 400,
   `NEVER-CHECKED BLOCK is ${block.length} bytes, down from ~1,100 — and non-empty, so this is measuring something`)
 
