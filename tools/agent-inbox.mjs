@@ -28,6 +28,7 @@ import { loadNostrSigner } from '../src/nostr_signer.mjs'
 import { spawn } from 'node:child_process'
 import { invokeHook, notifyLine } from '../src/return_lane_notify.mjs'
 import { inboxSummary, openTracker, rumorVerdict, sealAuthor, wrapAddressedTo } from '../src/return_lane_inbox.mjs'
+import { openWakeSpool } from '../src/wake_spool.mjs'
 
 const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (process.argv[i + 1] || '') }
 const has = n => process.argv.includes(n)
@@ -88,6 +89,23 @@ const say = jsonl ? (...a) => console.error(...a) : (...a) => console.log(...a)
 const signer = loadNostrSigner()
 if (!signer) die('no signer configured — set WAGGLE_BUNKER_URI_FILE (and WAGGLE_NIP46_CLIENT_NSEC_FILE) or BUZZ_PRIVATE_KEY. Without one, sealed mail cannot be opened and this is INCONCLUSIVE, not empty')
 
+// --spool TURNS THE DEDUPE INDEX DURABLE (#557). Without it this tool keeps an in-memory `seen`
+// set, which dies with the process — so every restart is a first-ever start, the whole relay
+// backfill reads as unseen, and it is seeded without waking. That is the correct rule for a first
+// start and the wrong one for the 400th restart, and in memory there is no difference between them.
+// The pilot unit runs `Restart=always` with `RestartSec=5`.
+//
+// Absent, behaviour is exactly what it was: in-memory dedupe, per-connection bootstrap. Present,
+// both facts come from disk and survive a restart.
+const spoolDir = flag('--spool')
+if (has('--spool') && !spoolDir) die('--spool needs a directory')
+const spool = spoolDir ? openWakeSpool({ dir: spoolDir, log: m => console.error(`  ${m}`) }) : null
+// EXIT 3, NOT 1, AND BEFORE ANY MAIL IS READ. An inconclusive spool directory is one whose two
+// records of what has been delivered disagree — a wiped index, an interrupted bootstrap. Continuing
+// would either re-wake everything or seed a backlog into permanent silence, and the second is
+// unrecoverable. Being unable to check is not the same as being fine.
+if (spool && spool.state === 'inconclusive') die(`the spool at ${spoolDir} cannot be trusted — ${spool.reason}`)
+
 let failed = 0
 let hookFailed = 0
 const verdicts = []
@@ -121,15 +139,28 @@ async function open(wrap, live = true, bootstrap = false) {
     console.error(`  a wrap did not verify — its id or signature is not the event it claims to be; not counted as read`)
     return
   }
+  // THE FIRST-SEEN CLAIM, and with --spool it is the durable one. This is the fact `notifyLine`
+  // serialises as `first_seen` and gates `wake` on, so it is claimed once, here, and carried rather
+  // than re-derived downstream.
+  //
+  // THE CLAIM IS CHECKED HERE AND COMMITTED AFTER THE RECORD IS DURABLE, never the other way round.
+  // A claim is irreversible — once the index holds an id no replay ever surfaces that message again
+  // — so a crash between the two must leave a duplicate, which somebody notices, and never a
+  // dropped wake, which nobody does. `spool.deliver()` enforces that ordering; all this line does
+  // is ask.
+  //
+  // BOTH INDEXES ARE CONSULTED. The in-memory one still runs even with a spool, because two relays
+  // delivering the same wrap microseconds apart would both pass a durable check that neither has
+  // committed to yet.
   if (seen.has(wrap.id)) return
-  // THE FIRST-SEEN CLAIM. Reaching past this line means this id was not in the index, which is the
-  // fact `notifyLine` serialises as `first_seen` and gates `wake` on — so it is claimed here, once,
-  // and carried rather than re-derived downstream. In this process the index is in memory and dies
-  // with it; the durable one is the daemon's half of #557.
+  if (spool && !spool.firstSeen(wrap.id)) return
   seen.add(wrap.id)
   // Stamped ONCE per message, not once per emit site: three calls to Date.now() would put three
   // different `received_at` values on records describing the same arrival.
-  const meta = { ...stamp(wrap), firstSeen: true, live, bootstrap }
+  // With a spool, bootstrap is a DURABLE per-run fact — true only on a first-ever start, latched
+  // for the whole run. Without one it is the per-connection approximation computed at the
+  // subscription, which is the best an in-memory index can do.
+  const meta = { ...stamp(wrap), firstSeen: true, live, bootstrap: spool ? spool.bootstrap : bootstrap }
   if (wrapAddressedTo(wrap, self).ok !== true) return
   let seal
   try { seal = JSON.parse(await signer.nip44Decrypt(wrap.pubkey, wrap.content)) }
@@ -160,10 +191,18 @@ async function open(wrap, live = true, bootstrap = false) {
   if (Number(verdict.at) > 0 && Number(verdict.at) < freshAfter) { stale++; return }
 
   verdicts.push(verdict)
-  if (jsonl) {
-    // One record per line on stdout, refusals included. Dropping a refusal silently would leave a
-    // reader unable to tell a quiet lane from one being fed forgeries.
-    process.stdout.write(notifyLine(verdict, meta) + '\n')
+  if (jsonl || spool) {
+    // One record per line, refusals included. Dropping a refusal silently would leave a reader
+    // unable to tell a quiet lane from one being fed forgeries.
+    const line = notifyLine(verdict, meta)
+    // THE SPOOL FIRST, because it is the durable copy and stdout is not. A reader that took the
+    // stdout line and then lost the process would have been woken by a record nothing remembers.
+    if (spool) {
+      const w = spool.deliver({ id: wrap.id, line })
+      if (!w.ok) { failed++; console.error(`  the spool refused a record — ${w.reason}`) }
+      else if (!w.claimed) console.error(`  ${w.reason}`)
+    }
+    if (jsonl) process.stdout.write(line + '\n')
   } else if (verdict.ok === true) {
     const mark = verdict.disposition === 'trusted' ? 'TRUSTED' : verdict.disposition.toUpperCase()
     console.log(`\n[${mark}] ${verdict.author.slice(0, 16)}…${verdict.forMe ? '' : '  (this agent was copied, not addressed)'}`)
@@ -235,6 +274,10 @@ const { track, drain } = openTracker()
 
 const report = async () => {
   const stillOpen = await drain()
+  // A ONE-SHOT RUN SEALS ITS BOOTSTRAP TOO. Without this a `--spool` read with no `--watch` would
+  // record its backfill, never write the marker, and refuse to start ever again — index without
+  // marker is exactly the "began and did not finish seeding" state `inspectSpoolDir` stops on.
+  endBootstrap('the read finished')
   if (stillOpen) console.error(`  ${stillOpen} wrap(s) were still being opened when the read ended — counted as unread, not as absent`)
   const summary = inboxSummary({ verdicts, failed: failed + stillOpen, reachable: answered, scanned: seen.size })
   say(`\n${summary.text}`)
@@ -255,6 +298,26 @@ const report = async () => {
 // the exit-3 contract reachable in --watch, which they were not — `Promise.all` only settled on the
 // 24-day timer.
 if (watch) process.on('SIGINT', () => { console.error('\n  interrupted — draining what is in flight, then reporting'); report() })
+
+// SEALING THE BOOTSTRAP IS ITS OWN FUNCTION BECAUSE TWO THINGS CAN END IT, and which one did is
+// worth saying. Once it is sealed, this directory never bootstraps again — every later start reads
+// the marker and lets the durable index decide what wakes.
+//
+// The deadline exists so a relay that never answers cannot hold bootstrap open forever. Nothing
+// wakes while it is open, so "waiting for the last relay" and "silently not delivering anything"
+// are the same observable state, and this lane exists to remove exactly that ambiguity. Ending it
+// early risks a flood, which is noisy; not ending it is silence, which is not.
+const BOOTSTRAP_DEADLINE_MS = 30_000
+function endBootstrap(why) {
+  if (!spool || !spool.bootstrap) return
+  const r = spool.finishBootstrap()
+  if (!r.ok) { console.error(`  the bootstrap marker could not be written — ${r.reason}`); return }
+  console.error(`  bootstrap complete (${why}) — ${r.seeded} id(s) recorded without waking anybody; from here the durable index decides`)
+}
+if (spool && spool.bootstrap && watch) {
+  const deadline = setTimeout(() => endBootstrap(`${BOOTSTRAP_DEADLINE_MS / 1000}s deadline — ${answered}/${RELAYS.length} relay(s) had reached EOSE`), BOOTSTRAP_DEADLINE_MS)
+  deadline.unref?.()
+}
 
 // --watch had no `onclose` and no reconnect (#505 review, must-fix 2). When a relay closed cleanly —
 // a restart, an idle reap, the ordinary case over the days this mode is meant to run — the promise
@@ -308,7 +371,18 @@ await Promise.all(RELAYS.map(url => new Promise(resolve => {
         }))
         return
       }
-      if (m[0] === 'EOSE') { answered++; live = true; everSynced = true; if (!watch) { clearTimeout(t); end() } }
+      if (m[0] === 'EOSE') {
+        answered++; live = true; everSynced = true
+        // BOOTSTRAP ENDS WHEN EVERY RELAY HAS DRAINED ITS HISTORY, not at the first EOSE. Ending it
+        // early would mark a second relay's still-arriving backfill as live, and wake once per
+        // message of it — the flood, arriving through the correct gate.
+        //
+        // A relay that never answers must not hold bootstrap open forever, because nothing wakes
+        // while it is open and that is a silent lane. `endBootstrap` is therefore also called from
+        // the deadline below, and says which of the two ended it.
+        if (spool && spool.bootstrap && answered >= RELAYS.length) endBootstrap('every relay reached EOSE')
+        if (!watch) { clearTimeout(t); end() }
+      }
     }
     // `ws` emits 'close' after 'error', so the close handler is the single place this is decided.
     ws.onerror = () => {}
