@@ -63,7 +63,13 @@ export function buildCustodyChallenge({ expectedPubkeyHex, nonce, now }) {
 /// to READ and act on, and they are four different actions: fix the pairing, enrol the right key,
 /// distrust the signer, try again. `!ok` cannot tell those apart, and a refusal whose reason is
 /// wrong sends someone hunting in the wrong place.
-export async function proveCustody({ expectedPubkeyHex, sign, verifyEvent, nonce, now = Date.now() / 1000 }) {
+/// `keySource` decides only what the WRONG_KEY refusal TELLS the operator to do, and it matters
+/// because that is the one message on this path someone acts on. The minted flow's advice — "enrol
+/// the key this page made" — is actively wrong for an adopted identity: nothing was made here, and
+/// the operator's real error is a mistyped pubkey or the wrong URI. Sending them to enrol a key that
+/// does not exist is a refusal with a misleading explanation, which `!ok` cannot distinguish from a
+/// correct one (#538 review).
+export async function proveCustody({ expectedPubkeyHex, sign, verifyEvent, nonce, keySource = 'minted', now = Date.now() / 1000 }) {
   let challenge
   try {
     challenge = buildCustodyChallenge({ expectedPubkeyHex, nonce, now })
@@ -118,7 +124,9 @@ export async function proveCustody({ expectedPubkeyHex, sign, verifyEvent, nonce
     return {
       proven: false,
       code: 'WRONG_KEY',
-      reason: `this bunker holds a DIFFERENT key: it signed as ${got.slice(0, 12)}… but the key made here is ${want.slice(0, 12)}…. Enrol the key this page made, not another one. Nothing has been cleared.`,
+      reason: keySource === 'adopted'
+        ? `this bunker holds a DIFFERENT key: it signed as ${got.slice(0, 12)}… but the key you named is ${want.slice(0, 12)}…. Check the public key you pasted, and that this is the right bunker:// URI for it. Nothing has been cleared.`
+        : `this bunker holds a DIFFERENT key: it signed as ${got.slice(0, 12)}… but the key made here is ${want.slice(0, 12)}…. Enrol the key this page made, not another one. Nothing has been cleared.`,
     }
   }
 
