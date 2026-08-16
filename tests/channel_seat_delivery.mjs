@@ -128,6 +128,14 @@ const receiptFor = (result, over = {}) => canonicalJson({
   result, ...over,
 })
 
+// THE PRODUCER AND THE READER, HELD TOGETHER. `seatReceipt` lives in channel_seat.mjs and
+// RECEIPT_KEYS lives here, so a field added to one and not the other merges with no conflict and
+// turns every honest receipt into "not the shape this bridge understands". That happened: #488's
+// `unreadable` landed upstream and 14 checks here went red. They went red because this key set is
+// load-bearing, which is the reason to bind it rather than restate it.
+check(Object.keys(JSON.parse(receiptFor('seated'))).sort().join(',') === 'agent,at,fingerprint,instance,op,reason,result,unreadable,v',
+  'the reader\'s pinned key set is exactly what seatReceipt produces — drift between the two files is a red suite, not a silent INCONCLUSIVE')
+
 for (const [result, seated] of [['seated', true], ['already-seated', true], ['conflict', false], ['refused', false]]) {
   const r = readSeatReceipt(receiptFor(result), good)
   check(r.ok === true && r.terminal === true && r.seated === seated && r.result === result,

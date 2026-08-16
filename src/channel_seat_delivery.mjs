@@ -29,7 +29,11 @@ import { SEAT_OP, SEAT_VERSION, keyFingerprint, parseSeatIntent } from './channe
 
 const HEX64 = /^[0-9a-f]{64}$/
 const RESULTS = new Set(['seated', 'already-seated', 'conflict', 'refused'])
-const RECEIPT_KEYS = 'agent,at,fingerprint,instance,op,reason,result,v'
+// Sorted, and pinned EXACTLY — a receipt in a shape this bridge does not understand is
+// INCONCLUSIVE, never a refusal. `unreadable` joined the set with #488 fix 2. The suite asserts
+// this string against what `seatReceipt` actually produces, because producer and reader living
+// in two files is exactly the drift that merges without a conflict.
+const RECEIPT_KEYS = 'agent,at,fingerprint,instance,op,reason,result,unreadable,v'
 // The receipt comes off a pipe. A broker that has gone wrong in an interesting way can put a great
 // deal on stdout, and a megabyte of it parsed as JSON is a denial of service against the bridge
 // rather than a diagnosis.
