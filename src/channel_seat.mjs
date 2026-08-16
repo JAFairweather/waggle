@@ -200,11 +200,18 @@ export function seatDecision(intent, existingText, { command, instance } = {}) {
   }
   // The reason carries the qualifier, not just the receipt, because this string is what an operator
   // reads. "not present" is a claim about the whole file; what was actually established is weaker.
+  //
+  // AND IT SAYS "ATTRIBUTE", NOT "PARSE". The predicate moved from parse to attribution and this
+  // sentence did not follow it, so an upper-cased comment — an ordinary line sshd honours — was
+  // reported as "not in a shape it parses" and sent the operator hunting for a malformed line that
+  // does not exist. Same shape as the defect it sits on: the count was accurate and the explanation
+  // misdirected. Asserted below, because a mutation to "written entirely in Latin" left the suite
+  // at 99/0 — nothing read this clause.
   return Object.freeze({
     result: 'seated',
     reason: unreadable === 0
       ? 'not present — the line will be appended'
-      : `not present among the lines this runner could read — ${unreadable} line(s) were not in a shape it parses and were NOT compared, so the absence of an older grant is not established`,
+      : `not present among the lines this runner could attribute — ${unreadable} line(s) carry no comment this module wrote, so each may hold an older grant for this agent; they were NOT compared and the absence of one is not established`,
     line,
     unreadable,
   })
@@ -265,7 +272,7 @@ export function seatVerdict(receipt, { fingerprint, agent } = {}) {
       // agent. The broker's scan could not read those lines, so it did not check them.
       reason: missed === 0
         ? `${receipt.result} on the broker for ${want} — a saved capture, so it proves the seat happened, not that it still stands`
-        : `${receipt.result} on the broker for ${want} — but ${missed} line(s) in the broker file were not in a shape it could read, so an OLDER grant for this agent may still be there. The seat happened; it is not proven to be the only one`,
+        : `${receipt.result} on the broker for ${want} — but ${missed} line(s) in the broker file carry no comment the broker could attribute, so an OLDER grant for this agent may still be there. The seat happened; it is not proven to be the only one`,
     })
   }
   return Object.freeze({ seated: false, reason: `the broker refused this seat: ${String(receipt.reason || receipt.result || 'no reason given').slice(0, 200)}` })

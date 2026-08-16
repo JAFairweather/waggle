@@ -174,6 +174,23 @@ console.log('\n4. seated, already-seated and conflict are three different answer
       `  …and it reaches the agent-side verdict, which is the only place anyone acts on it — ${what}`)
   }
 
+  // AND THE SENTENCE IS READ, not merely checked for "not established". Every fixture above passed
+  // while the clause claimed the line "was not in a shape it parses" — a property the hazardous line
+  // demonstrably does not have, since it parses. An operator acting on that goes looking for a
+  // malformed entry that is not there. Caught on review by mutating the clause to "written entirely
+  // in Latin" and watching the suite stay green.
+  {
+    const d = seatDecision(intent, `ssh-ed25519 ${ROTATED} ${AGENT.toUpperCase()}\n`, opts)
+    check(/could attribute/.test(d.reason) && /carry no comment this module wrote/.test(d.reason),
+      'the reason names the real population — lines it could not ATTRIBUTE, which is what the count now measures')
+    check(!/shape it parses/.test(d.reason),
+      '  …and does NOT say the line failed to parse, because it parsed fine — that is the whole finding')
+    const v = seatVerdict(seatReceipt(intent, d, { instance: INSTANCE, at: 1_700_000_000 }),
+      { fingerprint: keyFingerprint(BLOB), agent: AGENT })
+    check(/could attribute/.test(v.reason) && !/shape it could read/.test(v.reason),
+      '  …and the agent-side verdict says the same thing, since that is the string an operator acts on')
+  }
+
   // THE CONTROL THAT MUST STAY ZERO, or the predicate above is just "count every line". A comment
   // that is a valid id for a DIFFERENT agent is attributable and legitimately not this agent's.
   const other = seatDecision(intent, `ssh-ed25519 ${ROTATED} ${'b'.repeat(64)}\n`, opts)
