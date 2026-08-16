@@ -472,6 +472,34 @@ check(runsInShell(unquoted) === 1 && /Cannot find module/.test(bareErr),
 // print quotes nobody needs and the reader would learn to ignore them.
 check(!/'/.test(laneDoc('sealed', { repo: ROOT }).split('\n').find(l => l.startsWith('**To listen:**')) || "'"),
   '  BOTH DIRECTIONS — a checkout path that needs no quoting does not get any')
+
+// ── 5i. the seating command is a command too ────────────────────────────────────────────────
+console.log('\n5i. the pairing remedy runs in a shell, and is withheld once the pairing is seated')
+// `pair-agent` is the one artifact in this document an agent can settle by itself (#528), and until
+// this block existed the pairing row said `MISSING — this does not work yet` with no remedy beside
+// it. It is run rather than matched for the same reason as 5h: this is a path the reader pastes.
+// The stub is `process.exit(0)` — nothing here pairs with anything.
+writeFileSync(join(spacedRepo, 'tools', 'pair-agent.mjs'), 'process.exit(0)\n')
+const seatOf = doc => ((doc.split('\n').find(l => l.includes('pair-agent.mjs')) || '').match(/`([^`]+)`/)?.[1] || '')
+const spacedSeatCmd = seatOf(laneDoc('sealed', { repo: spacedRepo }))
+check(/pair-agent\.mjs/.test(spacedSeatCmd), `ANCHOR — a seating command was extracted (${spacedSeatCmd.slice(0, 60)}…)`)
+check(runsInShell(spacedSeatCmd) === 0,
+  'the rendered SEATING command RUNS in a real shell under a spaced, apostrophed checkout path')
+check(runsInShell(spacedSeatCmd.replace(/'/g, '')) === 1,
+  '  NEGATIVE CONTROL — strip its quoting and it fails at exit 1, so the quoting is what carries it')
+// The pin, both directions. `--expect` is what makes a signer answering as someone else a refusal,
+// and rendering it as a placeholder would print a command that dies on its own argument.
+check(new RegExp(`--expect ${PUB}$`).test(spacedSeatCmd),
+  '  it pins the identity to the key this same document names above')
+const unpinnedSeat = seatOf(startupDoc({ agent: 'oliver', repo: spacedRepo,
+  report: { rows: [{ key: 'bunker-uri', title: 'Bunker pairing', state: MISSING }] } }))
+check(unpinnedSeat && !/--expect/.test(unpinnedSeat) && runsInShell(unpinnedSeat) === 0,
+  '  BOTH DIRECTIONS — with no key known it omits --expect and still runs, rather than printing a placeholder')
+// And it is absent once the pairing is there: `pair-agent` exits rather than overwrite a seated
+// credential, so a paired agent handed this command is handed one whose first act is to refuse.
+check(!seatOf(startupDoc({ agent: 'oliver', pubkey: PUB, repo: spacedRepo,
+  report: { rows: [{ key: 'bunker-uri', title: 'Bunker pairing', state: PRESENT }] } })),
+  '  BOTH DIRECTIONS — a SEATED pairing renders no seating command at all')
 rmSync(spaceRoot, { recursive: true, force: true })
 
 // The usage line is the message an agent acts on when it gets the call wrong, and it had drifted to
