@@ -165,6 +165,33 @@ export function withPinnedCustody(signer, expect = '') {
       if (!valid) fail(`the signer returned ${where} that does not verify — nothing published`, 2)
       if (pinned && signed.pubkey !== pinned)
         fail(`CUSTODY MISMATCH on ${where}: the signer signed as ${signed.pubkey}, not ${pinned}. Nothing published.`, 1)
+      // A verified signature by the pinned key proves the responder holds that key ONLY if the event
+      // it signed is the event that was submitted. Nothing above compared the two, so a responder
+      // holding no key at all could answer with a SCRAPED PUBLIC NOTE authored by the pinned
+      // identity — every identity here publishes a kind:0 by design, so a qualifying event always
+      // exists and is always public — and it verifies, and its pubkey matches, and the pin passes.
+      //
+      // Where the signed event IS the artifact being published, that substitution fails visibly
+      // downstream and the wrapper is not what catches it. Where it is not, it is invisible and the
+      // conclusion drawn from it is printed as fact: `tools/join.mjs` signs a challenge, discards
+      // the return value, never publishes it, and prints `custody proved` — which gates the seat
+      // write. `buildTripwireAlarmWrap` and `console/bunker-custody.mjs` each already do this
+      // comparison for their own caller (#491). Doing it here is the same argument as the pin
+      // itself: a check at the wrapper is the only shape that cannot be applied to some of the
+      // signatures and not the others.
+      const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+      const changed = []
+      if (Number(event && event.kind) !== Number(signed.kind)) changed.push('kind')
+      if (String((event && event.content) ?? '') !== String(signed.content ?? '')) changed.push('content')
+      if (!same((event && event.tags) || [], signed.tags || [])) changed.push('tags')
+      // `created_at` only when the caller set one — NIP-46 lets a signer stamp an absent one, and
+      // refusing that would be refusing a compliant signer rather than an impostor.
+      if (event && event.created_at != null && Number(event.created_at) !== Number(signed.created_at))
+        changed.push('created_at')
+      if (changed.length)
+        fail(`the signer returned ${where} over a DIFFERENT event than the one submitted — ` +
+          `${changed.join(', ')} changed. A signature by the right key over the wrong event proves ` +
+          'the responder can fetch one of that key\'s public notes, not that it can sign. Nothing published.', 1)
       return signed
     },
     nip44Encrypt: (peer, plaintext) => signer.nip44Encrypt(peer, plaintext),
