@@ -165,8 +165,16 @@ const scraped = await runSeat(scrapedRoot, ['--expect', ID_PUB])
 check(sawSignRequest, 'ANCHOR — the tool actually asked for a signature, so this run reached the custody proof')
 check(scraped.rc !== 0, `it exits non-zero (rc=${scraped.rc})`)
 check(!existsSync(seatOf(scrapedRoot)), 'and NOTHING is seated')
-check(/DIFFERENT event than the one it was asked to sign/.test(scraped.out) && /challenge tag is/.test(scraped.out),
-  '…and it says the signer returned a DIFFERENT event, naming the clause that failed')
+// This is asserted ACROSS BOTH LAYERS on purpose. The comment below predicted #531 would catch this
+// twice; what it actually does is catch it FIRST, in the \`src/nostr_signer.mjs\` wrapper, which
+// short-circuits before \`assertChallengeProof\` is ever reached and reports in its own words
+// ("than the one submitted — kind, content, tags, created_at changed"). Pinning either layer's
+// sentence makes this suite a test of which guard fired, and it broke on exactly that. The property
+// the operator needs is unchanged: they are told a different event came back, and told which fields
+// carried the substitution.
+check(/DIFFERENT event than the one (it was asked to sign|submitted)/.test(scraped.out) &&
+  /(the challenge tag is|tags(,| )|, tags)/.test(scraped.out),
+  '…and it says the signer returned a DIFFERENT event, naming the fields that carried it')
 // On `main` the pinned wrapper checks that the signature verifies and that the KEY is right — not
 // that the event came back unchanged. So what catches this here is the tool's own
 // `assertChallengeProof`, and the assertion below records that: `CUSTODY MISMATCH` is the wrapper's
