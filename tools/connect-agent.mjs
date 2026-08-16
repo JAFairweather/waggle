@@ -566,21 +566,11 @@ if (has('--startup')) {
   const rt = runtime(target)
   if (!rt) die(`--runtime ${target} is not one of: ${RUNTIMES.map(r => r.id).join(', ')}`)
   const dest = join(HERE, rt.startupFile)
+  const exists = existsSync(dest)
   console.log(`\nstartup file — ${rt.label}`)
-  if (existsSync(dest)) {
-    console.log(`  unchanged: ${dest} already exists and was NOT overwritten`)
-    // Carries --root and --channel through. Without them the pasted line reads a DIFFERENT agent
-    // root and renders a document with no channel, so the comparison it exists for is against the
-    // wrong file (#466 review §4).
-    const carried = [flag('--root') ? `--root ${flag('--root')}` : '', channel ? `--channel ${channel}` : '']
-      .filter(Boolean).join(' ')
-    console.log(`  compare it against a fresh one with: ${process.argv[1]} --name ${name}${carried ? ` ${carried}` : ''} --check --startup --runtime ${target} --print`)
-  } else if (CHECK && !has('--print')) {
-    console.log(`  would write: ${dest}  (--check: nothing was written)`)
-  } else {
-    let body
+  const render = () => {
     try {
-      body = startupDoc({
+      return startupDoc({
         agent: name, pubkey: pubkey || manifestPubkey, channel,
         // Nothing on this machine models waggle's own public key — no artifact, no manifest field.
         // Passed through when the operator supplies it, and left undefined otherwise so the
@@ -589,12 +579,33 @@ if (has('--startup')) {
         runtimeLabel: rt.label, runtimeId: rt.id, repo: REPO, report,
       })
     } catch (e) { die(e.message) }
-    if (has('--print')) console.log(body.split('\n').map(l => `  | ${l}`).join('\n'))
-    else {
-      mkdirSync(HERE, { recursive: true, mode: 0o700 })
-      writeFileSync(dest, body, { mode: 0o600, flag: 'wx' })
-      console.log(`  wrote ${dest} (mode 600)`)
-    }
+  }
+  // --print renders a fresh document and writes nothing, whether or not one is already on disk.
+  //
+  // It used to be consulted only when the file was ABSENT, which disabled it in the single case it
+  // exists for (#539). The file is never overwritten, so the only defence against a stale document
+  // is comparing it with a fresh one — and the message below says exactly that, then suggested a
+  // command that landed back in this branch and printed the suggestion again. The remedy was
+  // circular, because the file existing is the precondition of the branch that emits it. Meanwhile
+  // an agent whose credentials had since been seated was still reading `this does not work yet`.
+  if (has('--print')) {
+    if (exists) console.log(`  unchanged: ${dest} already exists and was NOT overwritten — printed below is the FRESH one, for comparison`)
+    console.log(render().split('\n').map(l => `  | ${l}`).join('\n'))
+  } else if (exists) {
+    console.log(`  unchanged: ${dest} already exists and was NOT overwritten`)
+    // Carries --root, --channel and --lane through. Without them the pasted line reads a DIFFERENT
+    // agent root and renders a document with no channel (#466 review §4) — and without the lane it
+    // renders a different lane's rows, so the comparison reports differences that are the missing
+    // flag rather than the file being stale.
+    const carried = [flag('--root') ? `--root ${flag('--root')}` : '', channel ? `--channel ${channel}` : '',
+      flag('--lane') ? `--lane ${flag('--lane')}` : ''].filter(Boolean).join(' ')
+    console.log(`  compare it against a fresh one with: ${process.argv[1]} --name ${name}${carried ? ` ${carried}` : ''} --startup --runtime ${target} --print`)
+  } else if (CHECK) {
+    console.log(`  would write: ${dest}  (--check: nothing was written)`)
+  } else {
+    mkdirSync(HERE, { recursive: true, mode: 0o700 })
+    writeFileSync(dest, render(), { mode: 0o600, flag: 'wx' })
+    console.log(`  wrote ${dest} (mode 600)`)
   }
   console.log(`  point ${rt.label} at ${HERE} so it reads this at session start — registering the MCP`)
   console.log(`  server does not make a runtime read a file next to it.`)
