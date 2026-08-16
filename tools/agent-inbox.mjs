@@ -54,6 +54,11 @@ const watch = has('--watch')
 // quoting bug waiting for a display name with a space in it, and this project has already shipped
 // that outage once. The envelope arrives on the hook's stdin. If you need arguments, write a
 // two-line wrapper — that is a deliberate refusal to build a shell-string interface.
+//
+// KNOW WHAT --trust BUYS. On the return lane the seal author is always the bridge, so trusting the
+// bridge key is the only configuration in which the hook fires at all — and from there it fires for
+// every mention any community member sends. The trust list authenticates the COURIER, not the
+// author: mayAct means a trusted courier delivered this, never a trusted party said it.
 const jsonl = has('--jsonl')
 const onMessage = flag('--on-message')
 if (has('--on-message') && !onMessage) die('--on-message needs a path to an executable')
@@ -64,6 +69,7 @@ const signer = loadNostrSigner()
 if (!signer) die('no signer configured — set WAGGLE_BUNKER_URI_FILE (and WAGGLE_NIP46_CLIENT_NSEC_FILE) or BUZZ_PRIVATE_KEY. Without one, sealed mail cannot be opened and this is INCONCLUSIVE, not empty')
 
 let failed = 0
+let hookFailed = 0
 const verdicts = []
 const seen = new Set()
 
@@ -97,7 +103,15 @@ async function open(wrap) {
     return
   }
   const author = sealAuthor(seal, verifyEvent)
-  if (author.ok !== true) { verdicts.push(author); return }
+  if (author.ok !== true) {
+    verdicts.push(author)
+    // EMITTED, not dropped. This is the forgery class — a seal whose signature does not hold names
+    // nobody — and it used to return before the emit below. A lane being fed forged seals then put
+    // zero lines on stdout and looked exactly like a quiet one, which is the sentence this record
+    // stream exists to prevent.
+    if (jsonl) process.stdout.write(notifyLine(author) + '\n')
+    return
+  }
   let rumor
   try { rumor = JSON.parse(await signer.nip44Decrypt(seal.pubkey, seal.content)) }
   catch (e) { failed++; console.error(`  could not open a seal from ${author.author.slice(0, 12)}… — ${String(e?.message || e).slice(0, 160)}`); return }
@@ -133,7 +147,12 @@ async function open(wrap) {
 // there is the exact failure this tool exists to remove.
 async function runHook(verdict) {
   const r = await invokeHook({ command: onMessage, verdict, spawn })
-  if (!r.ok) { failed++; console.error(`  ${r.why}`) }
+  // ITS OWN COUNTER, NEVER `failed`. `failed` is what inboxSummary renders as "could not be opened",
+  // whose stated cause is a signer that signs but will not decrypt. A hook that exits non-zero AFTER
+  // the message was opened and emitted would have sent the operator to debug their bunker about a
+  // read that was perfect. Worse in --watch, where the counter never resets: one bad hook made every
+  // later summary INCONCLUSIVE for the life of the process.
+  if (!r.ok) { hookFailed++; console.error(`  ${r.why}`) }
   else if (!r.ran && !jsonl) console.error(`  hook not run — ${r.why}`)
 }
 
@@ -159,7 +178,13 @@ const report = async () => {
   if (stillOpen) console.error(`  ${stillOpen} wrap(s) were still being opened when the read ended — counted as unread, not as absent`)
   const summary = inboxSummary({ verdicts, failed: failed + stillOpen, reachable: answered, scanned: seen.size })
   say(`\n${summary.text}`)
-  process.exit(summary.inconclusive ? 3 : 0)
+  // Said separately from the read, because they are different failures with different remedies: the
+  // read is about the signer, this is about the command. Still exit 3 — a wake that did not happen
+  // is not a clean run — but the operator is now told which one to go and look at.
+  if (hookFailed > 0) {
+    console.error(`${hookFailed} message(s) were read and emitted, but the --on-message hook failed for them. The READ is fine; the WAKE-UP is what did not happen. Check the hook, not the signer.`)
+  }
+  process.exit(summary.inconclusive || hookFailed > 0 ? 3 : 0)
 }
 
 // Registered BEFORE the subscription, not after: in --watch the promise below never settles, so a

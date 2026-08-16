@@ -11,6 +11,13 @@
 // mention that fires the hook hands every stranger on the open internet a trigger on this session —
 // no code execution, the body is never executed, but an unauthenticated wake-up whenever they like.
 // `forMe` is carried in the envelope for the agent to read. It is never a reason to run something.
+//
+// AND KNOW WHAT THE GATE ACTUALLY SAYS. On the return lane the seal author is always the bridge, so
+// `--trust <bridge-key>` is the only configuration in which the hook can fire at all — and from
+// there `mayAct` is true for every mention any community member sends. It means A TRUSTED COURIER
+// DELIVERED THIS, never a trusted party said it. The original poster is in the rendered body as
+// prose and not yet as a field, so a consumer wanting to re-gate on the author cannot do it from
+// this record. Do not read `mayAct` as authorship.
 
 // Built with fromCharCode so this source stays pure ASCII. A class holding two invisible
 // characters is a class nobody can review, and this repo has already paid for one.
@@ -88,6 +95,11 @@ export function notifyDecision(verdict, { hasCommand = true } = {}) {
  * a message and executing it. `command` is an executable path — this function never splits a string
  * into arguments, so there is no quoting to get wrong.
  *
+ * THE CHILD'S STDOUT GOES TO STDERR, not to ours. Under --jsonl our stdout IS the record stream,
+ * and a hook that prints anything would land a non-JSON line between two records — "print a line
+ * saying what you woke" is the first thing anyone writes in a wake script. The operator still sees
+ * that output; it just cannot corrupt the stream a reader is parsing.
+ *
  * A hook that cannot be started, or that exits non-zero, is reported as a FAILURE. An alarm that
  * never fires and one that always fires are indistinguishable from outside, and a wake adapter that
  * is silently absent is the exact thing this exists to remove.
@@ -101,7 +113,7 @@ export async function invokeHook({ command, verdict, spawn, hasCommand = Boolean
     const fail = e => resolve(Object.freeze({
       ran: false, ok: false, why: `the hook could not be started — ${String(e?.message || e).slice(0, 160)}`,
     }))
-    try { child = spawn(command, [], { shell: false, stdio: ['pipe', 'inherit', 'inherit'] }) }
+    try { child = spawn(command, [], { shell: false, stdio: ['pipe', 2, 'inherit'] }) }
     catch (e) { return fail(e) }
     let settled = false
     child.on('error', e => { if (!settled) { settled = true; fail(e) } })

@@ -18,7 +18,7 @@
 // every string assertion and dies when something actually runs it, and the production names in this
 // project have spaces in them ("Pi Dog", "My Dude"). The child reports back what it received on
 // stdin, so the envelope's arrival is observed and not assumed.
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -153,6 +153,51 @@ check(noShell.ran === true && noShell.ok === true,
   'a filename containing shell metacharacters is still executed — the positive half, so the assertion below cannot pass by nothing having run')
 check(leaked === false,
   'and the shell statement embedded in that filename did NOT execute — spawn runs with shell: false')
+
+// ---------------------------------------------------------------- the record stream
+
+console.log('\nthe hook cannot corrupt the record stream')
+
+// #549 review, must-fix 1: the child inherited OUR stdout, which under --jsonl IS the record stream.
+// A wake script that prints anything — and "echo waking session" is the first thing anyone writes —
+// put a non-JSON line between two records.
+//
+// This has to be observed on a REAL stdout, so it runs in a subprocess: the driver writes records
+// around a hook that deliberately prints, and the parent asserts every line it got back parses.
+// Asserting the stdio option instead would assert the mechanism, and the mechanism is what changed.
+const modulePath = new URL('../src/return_lane_notify.mjs', import.meta.url).href
+const noisy = join(dir, 'noisy hook')
+writeFileSync(noisy, '#!/bin/sh\ncat > /dev/null\necho "waking claude session 7"\n')
+chmodSync(noisy, 0o755)
+
+const driver = join(dir, 'driver.mjs')
+writeFileSync(driver, [
+  "import { spawn } from 'node:child_process'",
+  `import { invokeHook, notifyLine } from '${modulePath}'`,
+  "const v = { ok: true, author: 'a'.repeat(64), content: 'x', forMe: false, at: 1, disposition: 'trusted', mayAct: true, reason: 'r' }",
+  'process.stdout.write(notifyLine(v) + String.fromCharCode(10))',
+  `await invokeHook({ command: ${JSON.stringify(noisy)}, verdict: v, spawn })`,
+  'process.stdout.write(notifyLine(v) + String.fromCharCode(10))',
+].join('\n'))
+
+// spawnSync, not execFileSync: execFileSync RETURNS stdout and gives you stderr only by throwing,
+// so a first version of this check read driverErr as empty on every successful run and reported a
+// failure for a stream it had never looked at.
+const driven = spawnSync(process.execPath, [driver], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+const driverOut = driven.stdout || ''
+const driverErr = driven.stderr || ''
+
+const outLines = driverOut.split('\n').filter(Boolean)
+check(outLines.length === 2,
+  `stdout carries exactly the two records and nothing else — got ${outLines.length}`)
+check(outLines.every(l => { try { JSON.parse(l); return true } catch { return false } }),
+  'every line on stdout parses as JSON — the hook\'s own output did not land between two records')
+check(driverOut.includes('waking claude session 7') === false,
+  'and the hook\'s line is not on stdout at all')
+
+// The positive half: the operator must not LOSE that output, only have it moved.
+check(driverErr.includes('waking claude session 7'),
+  'the hook\'s output is still visible on stderr — moved, not suppressed, or an operator loses their own logging')
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
