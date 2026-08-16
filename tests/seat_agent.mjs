@@ -25,7 +25,7 @@
 
 import { spawn, execFileSync } from 'node:child_process'
 import { createServer } from 'node:https'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -210,6 +210,57 @@ check(!sawSignRequest,
   '…without contacting the bunker — a spent secret cannot be re-spent, so asking is the harm')
 check(readFileSync(join(seatOf(goodRoot), 'identity'), 'utf8').trim() === ID_PUB,
   '…and the pairing that was already there is untouched')
+
+console.log('\n4b. a manifest that exists and cannot be read is a REFUSAL, not a fallback')
+
+// The degradation this closes: the parse error was swallowed, so `fromManifest` stayed empty and the
+// pin fell through to the URI's own key — the signer's TRANSPORT key, which NIP-46 permits to differ
+// from the identity, so the check passes for any bunker that answers. And the note printed "no
+// manifest and no --expect". Both false, both in the direction that reads as having worked.
+const withManifest = (dir, contents) => {
+  const p = join(dir, 'probe-agent', 'instances', 'probe-agent.json')
+  mkdirSync(dirname(p), { recursive: true })
+  writeFileSync(p, contents)
+  return p
+}
+
+mode = 'honest'
+const brokenRoot = join(workdir, 'r-broken')
+const brokenPath = withManifest(brokenRoot, '{ this is not json')
+const broken = await runSeat(brokenRoot)
+check(broken.rc !== 0, `a malformed manifest with no --expect refuses (rc=${broken.rc})`)
+check(broken.out.includes(brokenPath), '…and NAMES the file, so the operator knows which one to fix')
+check(!/no manifest and no --expect/.test(broken.out),
+  '…and does NOT claim there is no manifest — the old note said that while a manifest sat right there')
+check(!existsSync(seatOf(brokenRoot)), '…and nothing is seated')
+
+const emptyRoot = join(workdir, 'r-nopub')
+const emptyPath = withManifest(emptyRoot, JSON.stringify({ instance: 'probe-agent' }))
+const empty = await runSeat(emptyRoot)
+check(empty.rc !== 0 && empty.out.includes(emptyPath),
+  'a manifest carrying no pubkey refuses the same way, and names the file too')
+
+// POSITIVE CONTROL, and it is the one that matters: a refusal on every manifest would satisfy both
+// assertions above while making the tool useless. A VALID manifest is read, is named as the pin
+// source, and the run goes on to the custody proof.
+mode = 'wrong-key'
+const validRoot = join(workdir, 'r-validman')
+withManifest(validRoot, JSON.stringify({ instance: 'probe-agent', pubkey: ID_PUB }))
+const valid = await runSeat(validRoot)
+check(/runtime manifest/.test(valid.out),
+  'POSITIVE CONTROL — a valid manifest IS read, and named as where the pin came from')
+check(valid.out.includes(ID_PUB) && /signs as/.test(valid.out),
+  '…and the run reaches the custody proof, refusing on the KEY rather than on the manifest')
+
+// --expect is the explicit override, so a manifest this run was never going to read must not stop
+// it. Refusing here would block an operator who already named the key they mean.
+const overrideRoot = join(workdir, 'r-override')
+const overridePath = withManifest(overrideRoot, '{ this is not json')
+const override = await runSeat(overrideRoot, ['--expect', ID_PUB])
+check(!override.out.includes(overridePath),
+  'with --expect given, a broken manifest is not consulted and not complained about')
+check(/signs as/.test(override.out),
+  '…and the run proceeds to the custody proof on the key the operator named')
 
 console.log('\n5. nothing that must stay secret reaches the terminal')
 

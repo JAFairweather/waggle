@@ -80,8 +80,25 @@ if (!relayCount) die('that bunker:// URI carries no wss relay, so nothing can re
 // hex would make the check tautological: it would pass for any bunker that answers.
 const manifestPath = join(root, name, 'instances', `${name}.json`)
 let fromManifest = ''
-if (existsSync(manifestPath)) {
-  try { fromManifest = String(JSON.parse(readFileSync(manifestPath, 'utf8')).pubkey || '').toLowerCase() } catch { /* reported below */ }
+// A MANIFEST THAT EXISTS AND CANNOT BE READ IS A REFUSAL, NOT A FALLBACK. Swallowing the parse
+// error left `fromManifest` empty, so the pin degraded to `uriKey` — the signer's TRANSPORT key,
+// which is the tautological check three lines above say this must never be — while the note printed
+// "no manifest and no --expect". Both false, and both in the direction that reads as working.
+//
+// Only consulted when there is no --expect: that flag is the explicit override, and a broken file
+// the run was never going to read is not a reason to stop.
+if (!arg('expect') && existsSync(manifestPath)) {
+  let manifest
+  try { manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) }
+  catch (error) {
+    die(`${manifestPath} exists and is not readable JSON (${String(error.message).slice(0, 80)}). ` +
+      'Fix it or pass --expect. Refusing rather than falling back to the URI\'s own key, which would pin this to the signer\'s transport key and pass for any bunker that answers.')
+  }
+  fromManifest = String(manifest && manifest.pubkey ? manifest.pubkey : '').toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(fromManifest)) {
+    die(`${manifestPath} exists but names no usable pubkey. ` +
+      'Fix it or pass --expect. Refusing rather than falling back to the URI\'s own key, which would pin this to the signer\'s transport key and pass for any bunker that answers.')
+  }
 }
 const expect = String(arg('expect', '') || fromManifest || uriKey).toLowerCase()
 if (!/^[0-9a-f]{64}$/.test(expect)) die('--expect takes a 64-character hex pubkey')
