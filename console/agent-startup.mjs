@@ -142,8 +142,17 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, repo,
   // A path that is already absolute is passed through, so a caller supplying its own `briefPath`
   // does not get it prefixed twice.
   const at = p => (String(p).startsWith('/') ? String(p) : `${base}/${p}`)
+  // A checkout path is whatever a human named the directory, and on macOS a space in one is
+  // ordinary: `My Drive`, `Application Support`, `My Repos`. Interpolated bare,
+  // `node /Users/me/My Repos/waggle/tools/agent-inbox.mjs` dies with `Cannot find module
+  // '/Users/me/My'` and exit 1 — the same message and the same code as the failure this whole
+  // change removes, and this time with no caveat to explain it, because a path WAS supplied
+  // (#525 review). So anything going into a COMMAND is shell-quoted when it needs to be. Prose
+  // paths are not: a quoted `docs/…` reference reads as a defect, and nobody pastes it to a shell.
+  const shq = s => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`)
+  const cmd = p => shq(at(p))
   const checkCmd = acceptableName(agent)
-    ? `node ${at('tools/connect-agent.mjs')} --name ${normaliseName(agent)} --check${lane ? ` --lane ${lane}` : ''}`
+    ? `node ${cmd('tools/connect-agent.mjs')} --name ${normaliseName(agent)} --check${lane ? ` --lane ${lane}` : ''}`
     : null
   const nameRule = `\`--name\` takes a short stable id — lowercase, 2\u201364 characters, from ` +
     `\`a-z0-9._-\` and starting with a letter or digit \u2014 and \`${String(agent)}\` is not one. ` +
@@ -250,14 +259,15 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, repo,
     // Only when the path could not be resolved. An absolute command needs no explanation; a
     // placeholder one does, and without this the reader is left to guess that `<your waggle
     // checkout>` is a substitution rather than part of the path.
-    out.push(`⚠ **\`<your waggle checkout>\` in the commands below is a placeholder** — substitute the`)
-    out.push(`directory this repo is cloned into on your machine. It is not where you are: your working`)
+    out.push(`⚠ **\`<your waggle checkout>\` in the commands and paths below is a placeholder** — substitute`)
+    out.push(`the directory this repo is cloned into on your machine. It is not where you are: your working`)
     out.push(`directory holds this file and nothing else, so running these as written fails with a`)
     out.push(`module error — and node exits **1** for that, the same code an unseated credential gives.`)
-    out.push(`Do not read that failure as your install being incomplete.`)
+    out.push(`Do not read that failure as your install being incomplete. If there is no clone on this`)
+    out.push(`machine at all, you cannot run these — report THAT, not an unseated credential.`)
     out.push('')
   }
-  out.push(`**To listen:** \`node ${at('tools/agent-inbox.mjs')} --pubkey ${arg(pubkey, '<your 64-hex>')} --watch\``)
+  out.push(`**To listen:** \`node ${cmd('tools/agent-inbox.mjs')} --pubkey ${arg(pubkey, '<your 64-hex>')} --watch\``)
   out.push(`Opens the return lane and holds it. A \`kind:14\` rumor is unsigned by construction, so its`)
   out.push(`\`pubkey\` field is a **claim** — the tool attributes a message only to the key whose seal`)
   out.push(`carried it, and refuses one where the two disagree. A sender not on your trust list is`)
@@ -272,7 +282,7 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, repo,
   // does not write it. So it is printed as a flag always, filled in when the caller knew the value,
   // and flagged as an open piece when it did not — never silently omitted.
   const bridgeKey = HEX64.test(String(bridge || '').toLowerCase()) ? String(bridge).toLowerCase() : null
-  out.push(`**To speak:** \`echo "@Name — your message" | node ${at('tools/agent-send.mjs')} --channel ${arg(channel, '<uuid>')}` +
+  out.push(`**To speak:** \`echo "@Name — your message" | node ${cmd('tools/agent-send.mjs')} --channel ${arg(channel, '<uuid>')}` +
     ` --bridge ${bridgeKey || "<waggle's 64-hex>"}\``)
   if (!bridgeKey) {
     // Stated on its own line rather than folded into the paragraph, because it is the one argument

@@ -439,6 +439,40 @@ check(noRepo.includes('<your waggle checkout>/tools/agent-inbox.mjs'),
   'with NO checkout known, the commands render the placeholder rather than a path nobody verified')
 check(/placeholder/.test(noRepo) && /exits \*\*1\*\*/.test(noRepo),
   '  …and the document says so, and names the exit code that would otherwise read as a missing credential')
+check(/no clone on this[\s\S]{0,40}machine at all, you cannot run these/.test(noRepo),
+  '  …and tells an agent with NO checkout to report that, rather than substituting nothing and reading exit 1 as a bad credential')
+
+// ── 5h. the command survives a checkout path a human named ──────────────────────────────────
+console.log('\n5h. a checkout path with a space is a command, not a module error')
+// #525 review. `at()` interpolated bare, so `/Users/me/My Repos/waggle` rendered
+// `node /Users/me/My Repos/waggle/tools/agent-inbox.mjs`, which dies `Cannot find module
+// '/Users/me/My'` at exit 1 — the same message and the same code as the failure this whole change
+// removes, and this time with no caveat above it, because a path WAS supplied. On macOS that class
+// of directory name is ordinary. So the command is RUN here rather than pattern-matched: what is
+// under test is whether a shell can execute it.
+const spaceRoot = mkdtempSync(join(tmpdir(), 'wb-space-'))
+const spacedRepo = join(spaceRoot, 'My Repos', "it's waggle")
+mkdirSync(join(spacedRepo, 'tools'), { recursive: true })
+writeFileSync(join(spacedRepo, 'tools', 'agent-inbox.mjs'), 'process.exit(0)\n')
+const spacedDoc = laneDoc('sealed', { repo: spacedRepo })
+const spacedListenLine = spacedDoc.split('\n').find(l => l.startsWith('**To listen:**'))
+const spacedListenCmd = (spacedListenLine || '').match(/`([^`]+)`/)?.[1] || ''
+check(/agent-inbox\.mjs/.test(spacedListenCmd), `ANCHOR — a listen command was extracted from the document (${spacedListenCmd.slice(0, 60)}…)`)
+const runsInShell = c => { try { execFileSync('/bin/sh', ['-c', c], { stdio: 'pipe' }); return 0 } catch (e) { return e.status ?? -1 } }
+check(runsInShell(spacedListenCmd) === 0,
+  'the rendered command RUNS in a real shell when the checkout path holds a space and an apostrophe')
+// NEGATIVE CONTROL. Strip the quoting the fix adds and the same command must fail the same way it
+// failed before — otherwise this proves the temp tree exists, not that the quoting is what fixed it.
+const unquoted = spacedListenCmd.replace(/'/g, '')
+let bareErr = ''
+try { execFileSync('/bin/sh', ['-c', unquoted], { stdio: 'pipe' }) } catch (e) { bareErr = `${e.stderr || ''}` }
+check(runsInShell(unquoted) === 1 && /Cannot find module/.test(bareErr),
+  '  NEGATIVE CONTROL — with the quotes removed it is `Cannot find module` at exit 1, the failure this PR exists to remove')
+// And the quoting is not applied to everything: an ordinary path stays bare, or the document would
+// print quotes nobody needs and the reader would learn to ignore them.
+check(!/'/.test(laneDoc('sealed', { repo: ROOT }).split('\n').find(l => l.startsWith('**To listen:**')) || "'"),
+  '  BOTH DIRECTIONS — a checkout path that needs no quoting does not get any')
+rmSync(spaceRoot, { recursive: true, force: true })
 
 // The usage line is the message an agent acts on when it gets the call wrong, and it had drifted to
 // five of nineteen flags — omitting every flag #513, #514 and #519 added. Rendered from the
