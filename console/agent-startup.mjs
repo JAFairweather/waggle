@@ -120,9 +120,6 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, brief
   // agent that followed the document was told, in effect, that the document was stale (#522). The
   // two tools named a few lines above render as `node tools/…`; this one now matches them.
   const lane = Object.prototype.hasOwnProperty.call(LANES, String(report?.lane)) ? String(report.lane) : null
-  // A name with a space is a real name here (#168), and it would split into two argv words. Quote
-  // anything the tool's own --name pattern would not accept, rather than rendering a command whose
-  // breakage depends on who is reading it.
   // Twin of `src/agent_startup.mjs`. The predicate is inlined rather than imported because this file
   // is served to a browser and imports nothing from `src/`; `tests/console_first_prompt.mjs` pins the
   // two renderers to byte-identical output, so a drift in either copy fails there.
