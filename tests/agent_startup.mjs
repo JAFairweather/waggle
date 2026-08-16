@@ -281,7 +281,7 @@ console.log('\n5d. the remedy command carries the right lane')
 // its own provenance, and that line is not a remedy. A filter that swept it in would assert the
 // lane flag against a line that has no business carrying one.
 const remedies = doc => doc.split('\n').filter(l => l.includes('tools/connect-agent.mjs') && l.includes('--check'))
-const laneDoc = lane => startupDoc({ agent: 'oliver', pubkey: PUB,
+const laneDoc = (lane, extra = {}) => startupDoc({ agent: 'oliver', pubkey: PUB, ...extra,
   report: { lane, rows: [{ key: 'bunker-uri', title: 'Bunker pairing', state: MISSING },
     { key: 'profile', title: 'Published profile', state: UNKNOWN }] } })
 
@@ -307,27 +307,42 @@ console.log('\n5e. the remedy command is one that RUNS')
 // was not: `connect-agent --check --lane sealed` is not on PATH (exit 127) and omits the --name the
 // tool requires. Asserting the property means running it, not grepping it (#522).
 const cmdOf = doc => {
-  const m = doc.match(/`(node tools\/connect-agent\.mjs[^`]*)`/)
+  const m = doc.match(/`(node \S*tools\/connect-agent\.mjs[^`]*)`/)
   return m ? m[1] : null
 }
-const sealedCmd = cmdOf(laneDoc('sealed'))
-check(sealedCmd !== null, 'the remedy renders as `node tools/…`, the same form as the two tools named beside it')
+const sealedCmd = cmdOf(laneDoc('sealed', { repo: ROOT }))
+check(sealedCmd !== null, 'the remedy renders as `node …/tools/…`, the same form as the two tools named beside it')
 check(/--name \S+/.test(sealedCmd || ''), '…and carries --name, which the tool cannot run without')
 
-// Drive it. Exit 127 is "no such command", exit 1 with a usage line is "you called it wrong"; both
-// were what the old string produced, and neither is what a remedy may do.
+// AND IT IS RUN FROM WHERE THE AGENT STANDS, which is not the checkout. `--startup` writes into the
+// instance directory and the runtime reads it there, so that directory — holding this file and
+// nothing else — is the cwd every command in the document is executed from. Running the probe in
+// ROOT was the whole reason a repo-relative command passed this suite and failed on a real Pi
+// (#524). The temp root doubles as that cwd: same shape, no `tools/`.
 const remedyRoot = mkdtempSync(join(tmpdir(), 'wb-remedy-'))
 let remedyRc = -1, remedyOut = ''
 try {
-  execFileSync('/bin/sh', ['-c', `${sealedCmd} --root ${remedyRoot}`], { cwd: ROOT, encoding: 'utf8', stdio: 'pipe' })
+  execFileSync('/bin/sh', ['-c', `${sealedCmd} --root ${remedyRoot}`], { cwd: remedyRoot, encoding: 'utf8', stdio: 'pipe' })
   remedyRc = 0
 } catch (e) { remedyRc = e.status; remedyOut = `${e.stdout || ''}${e.stderr || ''}` }
 check(remedyRc !== 127, `the documented command EXISTS — it exited 127, command-not-found, until #522 (rc=${remedyRc})`)
+check(!/Cannot find module/.test(remedyOut), 'and it RESOLVES from the agent\'s own directory — a repo-relative path dies here with a module error (#524)')
 check(!/usage:/.test(remedyOut), 'and it is not a usage error — the tool understood every flag the document told the agent to pass')
 check(/Declared participation lane/.test(remedyOut) && /sealed/.test(remedyOut),
   '…and it did the thing it was documented to do: reported install state, scoped to the declared lane')
-// POSITIVE CONTROL on the probe itself. If `execFileSync` silently succeeded on anything, the three
-// checks above would pass for a command that does nothing.
+
+// NEGATIVE CONTROL, and the sharp one. The pre-#524 rendering — the same command, repo-relative —
+// run from the same cwd. It must fail, and it must fail with exit 1: identical to the exit an
+// unseated credential gives, which is why the agent read "I am in the wrong place" as "I am not
+// onboarded" and reported itself unable to participate.
+const relCmd = sealedCmd.replace(`${ROOT}/`, '')
+check(!relCmd.includes(ROOT), 'ANCHOR — the control really is the repo-relative form, not a copy of the absolute one')
+let relRc = 0, relOut = ''
+try { execFileSync('/bin/sh', ['-c', `${relCmd} --root ${remedyRoot}`], { cwd: remedyRoot, encoding: 'utf8', stdio: 'pipe' }) } catch (e) { relRc = e.status; relOut = `${e.stdout || ''}${e.stderr || ''}` }
+check(relRc === 1 && /Cannot find module/.test(relOut),
+  'NEGATIVE CONTROL — the OLD repo-relative rendering dies here, and exits 1: the same code as a missing credential')
+// POSITIVE CONTROL on the probe itself. If `execFileSync` silently succeeded on anything, the checks
+// above would pass for a command that does nothing.
 let bogusRc = 0
 try { execFileSync('/bin/sh', ['-c', 'connect-agent --check'], { cwd: ROOT, stdio: 'pipe' }) } catch (e) { bogusRc = e.status }
 check(bogusRc === 127, 'POSITIVE CONTROL — the OLD rendering still exits 127 here, so the probe can tell the difference')
@@ -390,6 +405,74 @@ check(NAME_FIXTURES.some(acceptableName) && !NAME_FIXTURES.every(acceptableName)
 check(normaliseName('Pi Dog') === 'pi dog' && !acceptableName('pi dog'),
   'normalising is not accepting — lowercasing a name with a space does not make it a name')
 rmSync(nameRoot, { recursive: true, force: true })
+
+console.log('\n5g. every path the document names resolves from the agent, or says it does not')
+// Both directions. With a repo, nothing repo-relative may survive anywhere in the document — the
+// listen and speak commands and the three doc references are as unrunnable from the instance
+// directory as the remedy was, and fixing only the one that had an issue number is how the next
+// one gets found by a Pi instead of by this suite.
+// The provenance line is excluded, and by an anchored sentinel rather than by matching its words:
+// it names the command that WROTE this file, on the machine that wrote it, which is not a path the
+// reader resolves. A filter that swept it in would demand an absolute path for a line nobody runs —
+// the same shape of mistake as the remedy filter in 5d, which caught it for the opposite reason.
+const withRepo = laneDoc('sealed', { repo: ROOT, writtenBy: 'PROVENANCE-SENTINEL tools/connect-agent.mjs' })
+check(withRepo.includes('PROVENANCE-SENTINEL'), 'ANCHOR — the provenance line is present, so excluding it excludes something')
+const bareRefs = withRepo.split('\n')
+  .filter(l => !l.includes('PROVENANCE-SENTINEL'))
+  .filter(l => /`[^`]*(?<![\w/])(?:node )?(?:tools|docs)\//.test(l) && !l.includes(ROOT))
+check(bareRefs.length === 0, `no repo-relative path survives when the checkout is known${bareRefs.length ? ` — left: ${bareRefs[0]}` : ''}`)
+for (const p of ['tools/agent-inbox.mjs', 'tools/agent-send.mjs', 'docs/AGENT_BRIEF.md', 'docs/KEY_CUSTODY.md'])
+  check(withRepo.includes(`${ROOT}/${p}`), `  …${p} is named absolutely`)
+check(!withRepo.includes('<your waggle checkout>'), 'and no placeholder is left over when a real path was supplied')
+check(!/placeholder/.test(withRepo), '  …nor the caveat that explains one — an absolute command needs no explanation')
+// A trailing slash on the caller's path must not produce a doubled separator.
+check(laneDoc('sealed', { repo: `${ROOT}/` }).includes(`${ROOT}/tools/agent-send.mjs`),
+  'a trailing slash on the supplied checkout does not render `//` into the command')
+// A caller that already resolved its own brief is not prefixed twice.
+check(startupDoc({ agent: 'oliver', repo: ROOT, briefPath: '/srv/brief/AGENT_BRIEF.md', report: { rows: [] } })
+  .includes('`/srv/brief/AGENT_BRIEF.md`'), 'an ALREADY-ABSOLUTE briefPath is passed through, not prefixed twice')
+
+// The other direction: the console renders this for a machine it has never seen, so it has no path
+// to give. The placeholder is correct there; a guessed path would be worse than an honest gap.
+const noRepo = laneDoc('sealed')
+check(noRepo.includes('<your waggle checkout>/tools/agent-inbox.mjs'),
+  'with NO checkout known, the commands render the placeholder rather than a path nobody verified')
+check(/placeholder/.test(noRepo) && /exits \*\*1\*\*/.test(noRepo),
+  '  …and the document says so, and names the exit code that would otherwise read as a missing credential')
+check(/no clone on this[\s\S]{0,40}machine at all, you cannot run these/.test(noRepo),
+  '  …and tells an agent with NO checkout to report that, rather than substituting nothing and reading exit 1 as a bad credential')
+
+// ── 5h. the command survives a checkout path a human named ──────────────────────────────────
+console.log('\n5h. a checkout path with a space is a command, not a module error')
+// #525 review. `at()` interpolated bare, so `/Users/me/My Repos/waggle` rendered
+// `node /Users/me/My Repos/waggle/tools/agent-inbox.mjs`, which dies `Cannot find module
+// '/Users/me/My'` at exit 1 — the same message and the same code as the failure this whole change
+// removes, and this time with no caveat above it, because a path WAS supplied. On macOS that class
+// of directory name is ordinary. So the command is RUN here rather than pattern-matched: what is
+// under test is whether a shell can execute it.
+const spaceRoot = mkdtempSync(join(tmpdir(), 'wb-space-'))
+const spacedRepo = join(spaceRoot, 'My Repos', "it's waggle")
+mkdirSync(join(spacedRepo, 'tools'), { recursive: true })
+writeFileSync(join(spacedRepo, 'tools', 'agent-inbox.mjs'), 'process.exit(0)\n')
+const spacedDoc = laneDoc('sealed', { repo: spacedRepo })
+const spacedListenLine = spacedDoc.split('\n').find(l => l.startsWith('**To listen:**'))
+const spacedListenCmd = (spacedListenLine || '').match(/`([^`]+)`/)?.[1] || ''
+check(/agent-inbox\.mjs/.test(spacedListenCmd), `ANCHOR — a listen command was extracted from the document (${spacedListenCmd.slice(0, 60)}…)`)
+const runsInShell = c => { try { execFileSync('/bin/sh', ['-c', c], { stdio: 'pipe' }); return 0 } catch (e) { return e.status ?? -1 } }
+check(runsInShell(spacedListenCmd) === 0,
+  'the rendered command RUNS in a real shell when the checkout path holds a space and an apostrophe')
+// NEGATIVE CONTROL. Strip the quoting the fix adds and the same command must fail the same way it
+// failed before — otherwise this proves the temp tree exists, not that the quoting is what fixed it.
+const unquoted = spacedListenCmd.replace(/'/g, '')
+let bareErr = ''
+try { execFileSync('/bin/sh', ['-c', unquoted], { stdio: 'pipe' }) } catch (e) { bareErr = `${e.stderr || ''}` }
+check(runsInShell(unquoted) === 1 && /Cannot find module/.test(bareErr),
+  '  NEGATIVE CONTROL — with the quotes removed it is `Cannot find module` at exit 1, the failure this PR exists to remove')
+// And the quoting is not applied to everything: an ordinary path stays bare, or the document would
+// print quotes nobody needs and the reader would learn to ignore them.
+check(!/'/.test(laneDoc('sealed', { repo: ROOT }).split('\n').find(l => l.startsWith('**To listen:**')) || "'"),
+  '  BOTH DIRECTIONS — a checkout path that needs no quoting does not get any')
+rmSync(spaceRoot, { recursive: true, force: true })
 
 // The usage line is the message an agent acts on when it gets the call wrong, and it had drifted to
 // five of nineteen flags — omitting every flag #513, #514 and #519 added. Rendered from the

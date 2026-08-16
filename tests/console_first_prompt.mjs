@@ -304,7 +304,12 @@ check(consoleShape.split('\n').filter(l => /further artifacts? w(as|ere) never c
 const beforeYouSpeak = (consoleShape.split('## Before you speak, know what is actually true')[1] || '').split('\n## ')[0]
 check(beforeYouSpeak.trim().length > 0,
   '  …and the section being measured is actually present — an empty slice passes every filter below')
-check((beforeYouSpeak.match(/connect-agent\.mjs [^`]*--check/g) || []).length === 1,
+// `\S*` after the filename rather than a bare space: the checkout path is shell-quoted when it
+// needs one (#525 review), so the console's placeholder renders `…/connect-agent.mjs'` with a
+// closing quote before the arguments. A regex that demanded a space there counted ZERO remedies and
+// reported a collapse regression that had not happened — the same false reading this assertion's
+// own comment records from #512, arrived at from the other side.
+check((beforeYouSpeak.match(/connect-agent\.mjs\S* [^`]*--check/g) || []).length === 1,
   '  …and the remedy once, not eight times')
 // Nothing may be lost in the collapse: an agent has to be able to name what was not checked.
 for (const k of ['bunker-uri', 'dm-relays', 'mcp-identity', 'profile']) {
