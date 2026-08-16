@@ -177,10 +177,17 @@ try {
     // BOTH DIRECTIONS, and this is the one that keeps the check from being "refuse everything":
     // NIP-46 lets a signer stamp a created_at the caller did not supply. Refusing that would be
     // refusing a compliant signer rather than an impostor.
-    const stamped = await wrapOf(async e => finalizeEvent({ ...e, created_at: 1234 }, idKey))
-      .signEvent({ kind: 24242, tags: [], content: '' })
-    ok('BOTH DIRECTIONS — a signer stamping an ABSENT created_at is accepted, not refused',
-      stamped.created_at === 1234 && stamped.pubkey === idPub)
+    // Caught rather than awaited bare: a refusal here must land as a named FAIL, not as an uncaught
+    // throw that takes the suite down before it prints one. Verified by mutation — comparing
+    // created_at unconditionally killed the run with zero FAIL lines, which reads like an anchor
+    // miss rather than a detection.
+    let stamped = null, stampedErr = ''
+    try {
+      stamped = await wrapOf(async e => finalizeEvent({ ...e, created_at: 1234 }, idKey))
+        .signEvent({ kind: 24242, tags: [], content: '' })
+    } catch (e) { stampedErr = e.message }
+    ok(`BOTH DIRECTIONS — a signer stamping an ABSENT created_at is accepted, not refused${stampedErr ? ` — ${stampedErr}` : ''}`,
+      stamped !== null && stamped.created_at === 1234 && stamped.pubkey === idPub)
     // …and the earlier refusals are not the pin firing by accident: the pinned key is what signs in
     // every fixture above, so `CUSTODY MISMATCH` never appears.
     ok('…and none of these are the PIN firing — the pinned key signed every one of them',
