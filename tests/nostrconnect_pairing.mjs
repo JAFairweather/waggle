@@ -198,6 +198,14 @@ check(proofRefuses(wrongNonce) !== null,
 const noTag = wire(finalizeEvent({ kind: CUSTODY_KIND, created_at: Math.floor(Date.now() / 1000),
   tags: [], content: 'proof' }, SIGNER_KEY))
 check(proofRefuses(noTag) !== null, 'and so is one with no challenge tag at all')
+// The KIND half, separately. Found by mutation: dropping the kind comparison left every assertion
+// above green, because the scraped note has no challenge tag and was already refused on that. A
+// signer that answers a kind:22242 request with a kind:1 carrying the right tag is signing a
+// PUBLISHABLE note — 22242 is ephemeral and inert, kind:1 is a public post by the pinned key.
+const rightTagWrongKind = wire(finalizeEvent({ kind: 1, created_at: Math.floor(Date.now() / 1000),
+  tags: [['challenge', nonce]], content: 'gm' }, SIGNER_KEY))
+check(proofRefuses(rightTagWrongKind) !== null,
+  'a kind:1 carrying the CORRECT challenge is still refused — the kind is part of what was asked for')
 check(assertChallengeProof(honestProof, { kind: CUSTODY_KIND, challenge: nonce }) && proofRefuses(null) !== null,
   'BOTH DIRECTIONS — it still accepts the honest proof, and a missing event is a refusal rather than a crash')
 
