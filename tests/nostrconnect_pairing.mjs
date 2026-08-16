@@ -204,8 +204,14 @@ check(proofRefuses(noTag) !== null, 'and so is one with no challenge tag at all'
 // PUBLISHABLE note — 22242 is ephemeral and inert, kind:1 is a public post by the pinned key.
 const rightTagWrongKind = wire(finalizeEvent({ kind: 1, created_at: Math.floor(Date.now() / 1000),
   tags: [['challenge', nonce]], content: 'gm' }, SIGNER_KEY))
-check(proofRefuses(rightTagWrongKind) !== null,
+const wrongKindErr = proofRefuses(rightTagWrongKind)
+check(wrongKindErr !== null,
   'a kind:1 carrying the CORRECT challenge is still refused — the kind is part of what was asked for')
+// …and for the RIGHT reason. One combined sentence reported the tag as "not the one submitted" here
+// when the tag it was handed IS the one submitted, and the operator acts on the reason — they go
+// hunting a nonce mismatch that does not exist (#529 review).
+check(/kind:1/.test(wrongKindErr.message) && !/challenge tag/.test(wrongKindErr.message),
+  '  …naming the KIND and not the tag, because the tag it got back is the one it asked for')
 check(assertChallengeProof(honestProof, { kind: CUSTODY_KIND, challenge: nonce }) && proofRefuses(null) !== null,
   'BOTH DIRECTIONS — it still accepts the honest proof, and a missing event is a refusal rather than a crash')
 
@@ -216,6 +222,14 @@ check(/assertChallengeProof\(signed, \{ kind: 22242, challenge: nonce \}\)/.test
   'and `pair-agent` calls it on the event it got back, with the nonce it submitted')
 check(/tags: \[\['challenge', nonce\]\]/.test(toolSrc) && !/tags: \[\['challenge', secret\]\]/.test(toolSrc),
   '…over a FRESH nonce, not the binding secret — one leak must not satisfy two independent checks')
+// The ordering, which is the one thing here nothing held: swapping the two guards back was 57/0.
+// It is unreachable today — `awaitApproval` withholds every unbound response, so `approval.bound` is
+// always true by the time the tool sees it — and that is the argument for pinning it, not against.
+// Its own comment says it keeps the property true "if it ever stops", and an unreachable guard is
+// exactly the one a future edit reorders with nothing to say so (#529 review).
+check(toolSrc.indexOf('if (!approval.bound)') > 0 &&
+  toolSrc.indexOf('if (!approval.bound)') < toolSrc.indexOf('if (approval.refused)'),
+  'and BOUND is checked before REFUSED — an unbound error string is attacker text, not the signer\'s words')
 
 console.log('\n4. what gets written is what the loader reads')
 

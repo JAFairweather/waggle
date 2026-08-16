@@ -203,12 +203,19 @@ export function awaitApproval({ relays, clientKey, secret, timeoutMs = 180000,
 export function assertChallengeProof(signed, { kind, challenge } = {}) {
   const tag = ((signed && signed.tags) || []).find(t => t[0] === 'challenge')
   const gotKind = Number(signed && signed.kind)
-  const matches = String((tag && tag[1]) || '') === String(challenge) && String(challenge || '') !== ''
-  if (gotKind !== Number(kind) || !matches) {
+  // Two independent failures, so two independent clauses. One combined sentence reported a challenge
+  // tag as wrong when only the kind was — and the operator acts on the reason, so that sends them
+  // hunting a nonce mismatch that is not there (#529 review).
+  const kindOk = gotKind === Number(kind)
+  const tagOk = String((tag && tag[1]) || '') === String(challenge) && String(challenge || '') !== ''
+  if (!kindOk || !tagOk) {
+    const why = [
+      kindOk ? null : `asked for kind:${kind}, got kind:${gotKind || 'none'}`,
+      tagOk ? null : `the challenge tag is ${tag ? 'not the one submitted' : 'absent'}`,
+    ].filter(Boolean).join(', and ')
     const e = new Error(
       `the signer returned a valid signature over a DIFFERENT event than the one it was asked to ` +
-      `sign — asked for kind:${kind}, got kind:${gotKind || 'none'} with a challenge tag that is ` +
-      `${tag ? 'not the one submitted' : 'absent'}. A signature by the right key over the wrong ` +
+      `sign — ${why}. A signature by the right key over the wrong ` +
       'event proves the responder can fetch one of that key\'s public notes, not that it can sign.')
     e.exitCode = 1
     throw e
