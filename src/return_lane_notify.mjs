@@ -30,6 +30,10 @@ const U2028 = String.fromCharCode(0x2028)
 const U2029 = String.fromCharCode(0x2029)
 
 const HEX64 = /^[0-9a-f]{64}$/i
+// `relay_ack_ok`'s slots, sorted. Deliberately a literal and not an import: this module is the
+// AGENT side, and reaching into the bridge's egress catalogue to read it would pull the bridge's
+// key handling into a tool that runs on somebody else's laptop. The suite holds the two together.
+const ACK_KEYS = 'buzz_event_id,channel,ok,ts'
 
 /**
  * Is this the bridge acknowledging THIS agent's own send, rather than somebody speaking to it?
@@ -40,9 +44,22 @@ const HEX64 = /^[0-9a-f]{64}$/i
  * nobody said it. On a lane where every send produces one, that is a session woken by its own echo,
  * and an agent that wakes for its own sends stops reading the ones that wake it for real.
  *
- * THE SHAPE IS OBSERVED, NOT CONTRACTED. The broker emits this, not this repo, so there is no
- * emitter here to pin against and this must fail SAFE: anything it cannot positively identify as a
- * receipt stays a message and still wakes. Hence all four conditions, not one.
+ * THE KEY SET IS PINNED EXACTLY, and `buzz_event_id` may be null. The first version required a
+ * 64-hex id, and `relay_ack_ok` renders `buzz_event_id: null` whenever the caller's id is falsy
+ * (`nostr_egress.mjs`) — which `bridge.mjs` passes for real, because `parseBuzzEventId` coming back
+ * empty is an already-logged condition (#334) that falls through to the ack. So #550 was closed for
+ * ordinary sends and left open for exactly the sends that lost their id: the ones least worth being
+ * woken by. Caught in review, not by this suite, because the fixture was written from a receipt that
+ * happened to have an id.
+ *
+ * Pinning the whole key set is the pattern `channel_seat_delivery.mjs` already uses, and it is what
+ * makes accepting null safe: `{ok:true, buzz_event_id:null}` alone is a shape anything could take.
+ * It also fails in the right direction — if the ack ever grows a field, this stops matching and the
+ * receipts go back to waking somebody, which is noisy rather than silent.
+ *
+ * THE SHAPE IS OBSERVED, NOT CONTRACTED. The broker emits it, not this repo, so there is no emitter
+ * here to pin against — the suite binds these conditions to the real `buildBody('relay_ack_ok')`
+ * rather than to a hand-written string, so a renderer change breaks the test instead of the lane.
  *
  * A community member cannot dress a mention up as one. The bridge renders a carried mention as prose
  * with the sender quoted inside it ("📥 … you were mentioned … > their text"), so the body never
@@ -56,7 +73,12 @@ export function isCarriageReceipt(content) {
   let r
   try { r = JSON.parse(s) } catch { return false }
   if (!r || typeof r !== 'object' || Array.isArray(r)) return false
-  return r.ok === true && HEX64.test(String(r.buzz_event_id || '')) && typeof r.channel === 'string'
+  if (Object.keys(r).sort().join(',') !== ACK_KEYS) return false
+  // `ok:false` is NOT swallowed. A send that did not land is news, and it is the one ack an agent
+  // most needs to be woken by.
+  if (r.ok !== true) return false
+  if (!(r.buzz_event_id === null || HEX64.test(String(r.buzz_event_id)))) return false
+  return typeof r.channel === 'string' && Number.isFinite(r.ts)
 }
 
 /**

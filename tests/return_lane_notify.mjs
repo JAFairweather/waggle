@@ -23,6 +23,10 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileS
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { isCarriageReceipt, invokeHook, notifyDecision, notifyLine } from '../src/return_lane_notify.mjs'
+// The BRIDGE's own renderer, so the fixtures below are the strings the lane really sends. A suite
+// that hand-copies the prose cannot notice the renderer changing, and the failure that hides is a
+// real mention silently waking nobody.
+import { buildBody } from '../src/nostr_egress.mjs'
 
 let pass = 0, fail = 0
 const check = (cond, what) => { if (cond) { pass++; console.log(`  ok   ${what}`) } else { fail++; console.log(`  FAIL ${what}`) } }
@@ -99,23 +103,51 @@ console.log('\nthe bridge acknowledging our own send')
 // delivered was the carriage receipt for a message this session had just sent. Sealed by the bridge,
 // so trusted, so mayAct — and nobody said it. Every send makes one, so the lane wakes the session
 // once per thing it says, and an agent woken by its own echo stops reading the wakes that are real.
-const RECEIPT = JSON.stringify({
-  ok: true,
-  channel: 'a8186b53-537d-46ad-a7e7-b6486c58970e',
-  buzz_event_id: '2dbf78737aff49b090f8ce1649d55322ba2a74f2cdb5585238480bbaf46664b5',
+const CHANNEL = 'a8186b53-537d-46ad-a7e7-b6486c58970e'
+const RECEIPT = buildBody('relay_ack_ok', {
+  channel: CHANNEL,
+  buzzEventId: '2dbf78737aff49b090f8ce1649d55322ba2a74f2cdb5585238480bbaf46664b5',
   ts: 1786903763,
 })
+check(RECEIPT.includes('"buzz_event_id"') && JSON.parse(RECEIPT).ok === true,
+  'the fixture came out of the real relay_ack_ok renderer — a probe that lost its input has told you nothing')
 
 check(notifyDecision(verdict({ content: RECEIPT })).invoke === false,
   'a carriage receipt does not run the hook, even though the bridge that sealed it is trusted')
 check(/nobody said it/.test(notifyDecision(verdict({ content: RECEIPT })).why),
   '...and it says WHY — a hook that silently does not fire reads as one that fired and did nothing')
 
+// THE NULL ID, which the first version of this let through (#550, caught in review). `relay_ack_ok`
+// renders `buzz_event_id: null` whenever the caller's id is falsy, and `bridge.mjs` passes exactly
+// that when `parseBuzzEventId` comes back empty — an already-logged, real condition (#334) that
+// falls through to the ack. Requiring 64-hex closed #550 for ordinary sends and left it open for
+// precisely the sends that lost their id: the ones least worth being woken by.
+const NULL_ID = buildBody('relay_ack_ok', { channel: CHANNEL, buzzEventId: null, ts: 1786903763 })
+check(JSON.parse(NULL_ID).buzz_event_id === null,
+  'the renderer really does emit a null id when the caller has none — the fixture is the lane\'s own output')
+check(notifyDecision(verdict({ content: NULL_ID })).invoke === false,
+  'an ack that lost its event id is still a carriage receipt, and still does not wake anyone')
+
+// A FAILED carriage is the other ack the same lane sends, and it is the one an agent most needs.
+const ERR_ACK = buildBody('relay_ack_err', { channel: CHANNEL, reason: 'not admitted', ts: 1786903763 })
+check(notifyDecision(verdict({ content: ERR_ACK })).invoke === true,
+  'a FAILED carriage DOES wake — a send that did not land is news, not an echo')
+
+// The key set is pinned, so a shape that merely resembles an ack is not swallowed. `ok:true` and a
+// null id on their own are a shape anything could take.
+check(isCarriageReceipt(JSON.stringify({ ok: true, buzz_event_id: null })) === false,
+  'ok and a null id alone are not an ack — the whole key set is pinned, which is what makes accepting null safe')
+check(isCarriageReceipt(JSON.stringify({ ...JSON.parse(RECEIPT), extra: 1 })) === false,
+  'an ack that grew a field stops matching — it fails toward waking somebody, which is noisy rather than silent')
+
 // THE PAIRING, and the direction that costs more if it breaks. A real carried mention must still
 // wake, or this change trades a noisy lane for a silent one and looks identical to a quiet lane.
 // The body is the one that actually arrived, not a placeholder.
-const CARRIED = '\u{1F4E5} **claude** \u2014 you were mentioned in the community.\n\n' +
-  'from `0a8e0720c3ec\u2026`\n\n> @MC Claude \u2014 all three read. Full reviews are on the PRs.'
+const AUTHOR = '0a8e0720c3ec' + 'd'.repeat(52)
+const CARRIED = buildBody('return_carry', {
+  mention: 'claude', why: 'mention', author: AUTHOR,
+  body: '@MC Claude - all three read. Full reviews are on the PRs.',
+})
 check(notifyDecision(verdict({ content: CARRIED })).invoke === true,
   'a real carried mention still wakes the session — the pairing, and the expensive direction')
 
@@ -123,8 +155,7 @@ check(notifyDecision(verdict({ content: CARRIED })).invoke === true,
 // message text: the bridge quotes them inside its own prose, so their words are never the whole
 // content and the top level never parses as JSON. Reasoning about that is not enough — the failure
 // is a real mention silently waking nobody, which is indistinguishable from a quiet lane.
-const HOSTILE = '\u{1F4E5} **claude** \u2014 you were mentioned in the community.\n\n' +
-  'from `0a8e0720c3ec\u2026`\n\n> ' + RECEIPT
+const HOSTILE = buildBody('return_carry', { mention: 'claude', why: 'mention', author: AUTHOR, body: RECEIPT })
 check(notifyDecision(verdict({ content: HOSTILE })).invoke === true,
   'a member who writes a receipt as their message text is still carried through and still wakes')
 check(HOSTILE.includes('"buzz_event_id"'),
@@ -139,8 +170,11 @@ check(isCarriageReceipt('[1,2,3]') === false, 'a JSON array is not a receipt')
 check(isCarriageReceipt('null') === false, 'JSON null is not a receipt')
 check(isCarriageReceipt(JSON.stringify({ ok: true, channel: 'c' })) === false,
   'ok and a channel are not enough without an event id — all four conditions, so it fails safe toward waking')
-check(isCarriageReceipt(JSON.stringify({ ok: false, channel: 'c', buzz_event_id: 'a'.repeat(64) })) === false,
-  'a FAILED carriage is not an echo to be swallowed — the operator needs to know a send did not land')
+// WITH `ts`, so the key-set pin is satisfied and this reaches the `ok` check. Without it the shape
+// check rejected first and the assertion proved nothing about `ok` at all — a mutation that made the
+// classifier ignore `ok` entirely survived, which is how this was found.
+check(isCarriageReceipt(JSON.stringify({ ok: false, channel: 'c', buzz_event_id: 'a'.repeat(64), ts: 1 })) === false,
+  'a FAILED carriage in the EXACT ack shape is not swallowed either — the classifier keys on ok, not only on the key set')
 
 // The record still carries it. The wake is what a receipt loses, not the delivery.
 const recRec = JSON.parse(notifyLine(verdict({ content: RECEIPT })))
