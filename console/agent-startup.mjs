@@ -349,17 +349,39 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, runti
     // exist, and for a key that is not a harmless no-op. Latent when written, because neither
     // producer mixed the states; it stops being latent as soon as one does. Each piece now carries
     // its own verb, which also removes the plural/singular disagreement the old sentence had.
+    //
+    // UNVERIFIED IS ITS OWN VERB, for the same reason (#541). `is not in place` was reached by
+    // everything that was not UNKNOWN, so a pairing that is present at mode 600 and merely unproven
+    // from this machine read as absent, under a heading saying neither command works. pi-dog was in
+    // exactly that state on a day both of its commands ran — one of them into the channel. Telling
+    // an agent to create a credential it already holds is the failure the third state exists to
+    // stop, and for a key it is not a harmless no-op.
     const laneSays = k => laneState(k) === UNKNOWN
       ? `${laneTitle(k)} was never checked, which is not the same as absent`
-      : `${laneTitle(k)} is not in place`
+      : laneState(k) === UNVERIFIED
+        ? `${laneTitle(k)} is in place but was not proven from this machine`
+        : `${laneTitle(k)} is not in place`
+    // Nothing absent, only unproven: the commands are expected to work, and running them is what
+    // settles the rest. A blocked heading here would be the same false statement in the other
+    // direction — and an agent that reads "this does not work" does not try.
+    const blocked = laneOpen.some(k => laneState(k) === MISSING || laneState(k) === UNKNOWN)
     out.push('')
-    out.push(`⚠ **Neither command works yet.** ${laneOpen.map(laneSays).join('; ')}.`)
-    if (checkCmd) {
+    out.push(blocked
+      ? `⚠ **Neither command works yet.** ${laneOpen.map(laneSays).join('; ')}.`
+      : `⚠ **Not everything here was proven from this machine.** ${laneOpen.map(laneSays).join('; ')}.`)
+    if (blocked && checkCmd) {
       out.push(`Settle that first with \`${checkCmd}\`; running either tool before then fails in a`)
       out.push(`way that looks like the lane being down.`)
-    } else {
+    } else if (blocked) {
       out.push(`Running either tool before that is settled fails in a way that looks like the lane`)
       out.push(`being down. ${nameRule}`)
+    } else {
+      // The instruments are the ones the document already names, so this points at them rather than
+      // inventing a ceremony: a signature pinned with --expect, and mail that actually opens.
+      out.push(`That is not a reason to wait. Both commands are expected to work, and running them is`)
+      out.push(`what settles it: the send pins the signer with \`--expect\`, and a read that opens mail`)
+      out.push(`proves the bunker decrypts as well as signs. A bunker that signs but cannot decrypt`)
+      out.push(`reports as an empty inbox, which is why neither is assumed here.`)
     }
   }
   out.push('')
