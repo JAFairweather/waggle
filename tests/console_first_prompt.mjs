@@ -125,6 +125,11 @@ const MATRIX = [
     { agent: 'Oliver', report: { rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } }],
   ['a name that is REFUSED — Pi Dog, no command exists for it at all',
     { agent: 'Pi Dog', report: { rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } }],
+  // The pairing remedy branches on whether a key is known, and every fixture above supplies one, so
+  // the unpinned half of it was off the byte axis entirely. `no pubkey` above drops the key but also
+  // drops the `bunker-uri` row, so the remedy never renders there.
+  ['an unseated pairing and NO key — the remedy that cannot pin an identity',
+    { report: { rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } }],
 ]
 
 for (const [what, extra] of MATRIX) {
@@ -133,6 +138,7 @@ for (const [what, extra] of MATRIX) {
     runtimeLabel: 'Any other MCP host (Raspberry Pi, headless, self-hosted)', ...extra,
   }
   if (what.startsWith('no runtime label')) { delete args.runtimeLabel; delete args.channel; delete args.pubkey }
+  if (what.startsWith('an unseated pairing and NO key')) delete args.pubkey
   const a = node.startupDoc(args), b = web.startupDoc(args)
   check(a === b, `${what} — the two copies render the same ${a.length} bytes`)
 }
@@ -168,6 +174,31 @@ for (const [label, copy] of [['node', node], ['browser', web]]) {
     `${label}:   …and names the offending name and the rule instead`)
   check(/Neither command works yet/.test(doc) && /never checked/.test(doc),
     `${label}:   NEGATIVE CONTROL — it withholds the command, not the surrounding warning`)
+}
+
+// The pairing remedy, per copy, because byte-identity is blind to a line BOTH copies dropped — the
+// same blindness `briefPath` and `report.lane` are asserted against above. Three branches: the
+// remedy appears when the pairing is unseated, carries `--expect` only when a key is known, and is
+// ABSENT once the pairing is seated. That last one is the direction that matters operationally:
+// `pair-agent` exits rather than overwrite a seated credential, so printing it to a paired agent
+// hands them a command whose first act is to refuse (#528).
+for (const [label, copy] of [['node', node], ['browser', web]]) {
+  // A real `repo`, because with none the path renders as the quoted `<your waggle checkout>`
+  // placeholder and a regex over the command would be matching prose, not a command.
+  const doc = (state, key) => copy.startupDoc({ agent: 'pi-agent', repo: '/opt/waggle', ...(key ? { pubkey: PUB } : {}),
+    report: { lane: 'sealed', rows: rows({ 'bunker-uri': state, profile: UNKNOWN }) } })
+  const seatLine = d => d.split('\n').find(l => l.includes('pair-agent.mjs')) || ''
+  check(/pair-agent\.mjs --name pi-agent --expect [0-9a-f]{64}/.test(seatLine(doc(MISSING, true))),
+    `${label}: an unseated pairing renders pair-agent, pinned to the key the document already names`)
+  const unpinned = doc(MISSING, false)
+  check(seatLine(unpinned).includes('pair-agent.mjs --name pi-agent') && !/--expect/.test(seatLine(unpinned)) &&
+    /nothing will check WHICH identity answers/.test(unpinned),
+    `${label}:   …and with no key it omits --expect and SAYS the identity is unpinned, not a placeholder`)
+  check(!seatLine(doc(PRESENT, true)) && /\*\*Yours:\*\* confirmed/.test(doc(PRESENT, true)),
+    `${label}:   BOTH DIRECTIONS — a SEATED pairing renders no seating command at all`)
+  check(!seatLine(copy.startupDoc({ agent: 'Pi Dog', pubkey: PUB,
+    report: { lane: 'sealed', rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } })),
+    `${label}:   …and a refused name withholds this command too, for the same reason as --check`)
 }
 
 // The lane names themselves, pinned. A stale list in the browser copy does not render a wrong

@@ -164,6 +164,13 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, runti
   const checkCmd = acceptableName(agent)
     ? `node ${cmd('tools/connect-agent.mjs')} --name ${normaliseName(agent)} --check${lane ? ` --lane ${lane}` : ''}${rtArg ? ` --runtime ${rtArg}` : ''}`
     : null
+  // Same construction, same refusal rule. `--expect` is included only when a key is actually known:
+  // rendering `--expect <your 64-hex>` would print a command that dies on its own placeholder, and
+  // omitting the flag silently would claim a pin the run never made. So the flag is present or the
+  // prose says the identity is unpinned — never a placeholder inside a runnable command (#528).
+  const pairCmd = acceptableName(agent)
+    ? `node ${cmd('tools/pair-agent.mjs')} --name ${normaliseName(agent)}${pubkey ? ` --expect ${pubkey}` : ''}`
+    : null
   const nameRule = `\`--name\` takes a short stable id — lowercase, 2\u201364 characters, from ` +
     `\`a-z0-9._-\` and starting with a letter or digit \u2014 and \`${String(agent)}\` is not one. ` +
     `Settle the agent's id first; no command is printed here because the one that would be printed ` +
@@ -216,6 +223,29 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, runti
   out.push(`  owner's Bunker and is reached through that pairing, so a restart, a compaction or a new`)
   out.push(`  instance re-pairs to the same identity. That is the design, not a limitation worked around.`)
   out.push(`  **Yours:** ${stateOf('bunker-uri')}.`)
+  // The remedy, and it is the last link in the walk: until this line existed the document reported
+  // `MISSING \u2014 this does not work yet` for the one artifact an agent CAN settle by itself, and
+  // offered nothing to settle it with. `pair-agent` runs client-first, so nothing transports a
+  // credential: this machine generates its own transport key, prints a request, and the owner
+  // approves it in their signer (#528). Rendered only when the pairing is not already present \u2014
+  // an agent that is paired must not be handed a command whose first act is to refuse, because
+  // `pair-agent` exits rather than overwrite a seated credential.
+  if (row('bunker-uri') && row('bunker-uri').state !== PRESENT) {
+    if (pairCmd) {
+      out.push(`  **To seat it yourself:** \`${pairCmd}\`, then approve the request in the owner's`)
+      out.push(`  signer. Nothing is carried anywhere \u2014 the transport key is minted here and the`)
+      out.push(`  owner's only gesture is the approval.`)
+      // `--expect` is the difference between "a pairing" and "the RIGHT pairing", and its absence is
+      // reported by the tool rather than hidden \u2014 so the document says which of the two this
+      // agent is about to get, instead of implying the stronger one.
+      out.push(pubkey
+        ? `  It pins the identity to your key, so a signer that answers as anyone else is refused.`
+        : `  **No key is known here, so nothing will check WHICH identity answers.** The tool says so`)
+      if (!pubkey) out.push(`  when it finishes. Re-run it with \`--expect <your 64-hex>\` once you know the key.`)
+    } else {
+      out.push(`  No command is printed for seating it: ${nameRule}`)
+    }
+  }
   out.push(`  Never print a pairing, and never ask anyone for a key — yours or anyone else's.`)
   out.push('')
   out.push('## What you can and cannot do')
