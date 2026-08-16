@@ -165,6 +165,22 @@ check(readSeatReceipt(receiptFor('refused'), good).terminal === true,
 check(readSeatReceipt(receiptFor('refused', { fingerprint: null }), good).ok === true,
   'a refusal with no fingerprint is still readable — the broker refused before it had a key to name')
 
+// AND THE OTHER HALF, which the prose above claimed and this suite did not check. The exemption was
+// written against every falsy fingerprint, so a receipt claiming a SEAT and naming no key came back
+// terminal and seated — a completed seat on nothing, with the watermark advanced behind it. Both
+// results that mean "a key is in place now" are asserted; only `refused` gets the exemption.
+for (const claim of ['seated', 'already-seated']) {
+  const v = readSeatReceipt(receiptFor(claim, { fingerprint: null }), good)
+  check(v.ok === false && v.terminal !== true && v.seated !== true,
+    `a receipt claiming ${claim} and naming NO key is INCONCLUSIVE — not a completed seat on nothing`)
+  check(/names no key/.test(String(v.reason || '')),
+    `  …and it says why — !ok cannot tell a correct refusal from one with a misleading reason (${claim})`)
+}
+// The pairing. A seat that DOES name its key is still terminal, or the guard above would read as
+// correct while refusing every real seat this bridge will ever make.
+check(readSeatReceipt(receiptFor('seated'), good).terminal === true,
+  'a seat that names its key is still terminal — the guard narrows the claim, it does not close the lane')
+
 // ---------------------------------------------------------------------------------------------
 console.log('\n§3 the line somebody reads at 2am')
 

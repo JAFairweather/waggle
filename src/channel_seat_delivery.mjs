@@ -120,6 +120,15 @@ export function readSeatReceipt(stdout, { intent, fingerprint } = {}) {
   }
 
   const seated = receipt.result === 'seated' || receipt.result === 'already-seated'
+  // THE EXEMPTION ABOVE IS FOR REFUSALS, AND THE CODE DID NOT SAY SO. Written as
+  // `receipt.fingerprint &&` it exempted EVERY falsy fingerprint, a receipt claiming a seat
+  // included — which came back terminal and `seated: true`, advanced the watermark and rendered as
+  // a completed seat, while `seatVerdict`, this project's other reader of the same field, refuses
+  // exactly that. The comment stated the rule; the check did not implement it. Not reachable from an
+  // honest broker, which is the point: this is the guard the unsigned-receipt argument leans on.
+  if (seated && !receipt.fingerprint) {
+    return unknown('the receipt claims a seat but names no key — INCONCLUSIVE')
+  }
   return Object.freeze({ ok: true, terminal: true, seated, result: receipt.result, receipt: Object.freeze(receipt) })
 }
 
