@@ -37,7 +37,7 @@ import WebSocket from 'ws'
 // (A3 §2.5). Verification is a public-key operation and belongs wherever input is judged.
 import { getEventHash, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
-import { emit, query, checkConfigRenderable, runPolicyShadowSsh, runPolicyWriterSsh } from './egress.mjs'
+import { emit, query, checkConfigRenderable, runPolicyShadowSsh, runPolicyWriterSsh, runChannelSeatSsh } from './egress.mjs'
 import { bridgePubkey, bridgeSignerMode, hasBridgeKey, openSeal, openRumor, sealAndWrap, consentTosBlock, signControlState, prepareRelayActionReaction, submitRelayActionReaction } from './nostr_egress.mjs'
 import { verifyConsent } from './consent.mjs'   // in-door consent (#131/#132, docs/CONSENT.md §8)
 import { consentState } from './consent_state.mjs'   // one honest word per watched author (#389)
@@ -55,6 +55,8 @@ import { log, err } from './log.mjs'
 import { markLatency } from './latency.mjs'
 import { durableSet, durableQueue } from './stores.mjs'
 import { parseLifecycleCommand, lifecycleAdmissible, lifecycleReceipt, LIFECYCLE_COMMAND_D, AGENT_STATUSES, CREDENTIAL_SHAPED } from './agent_lifecycle.mjs'   // #309
+import { seatIntentToForward, readSeatReceipt, seatLogLine } from './channel_seat_delivery.mjs'   // #502
+import { SEAT_COMMAND_D } from './channel_seat_runner.mjs'   // #488 — the same tag the broker filters on
 import { fanout } from './fanout.mjs'
 import { recipientDmRelays } from './dm_relays.mjs'
 import { quarantineSlotsFromSource } from './buzz_policy_core.mjs'
@@ -382,6 +384,20 @@ const policyWriter = policyWriterMode === 'off' ? Object.freeze({ mode: 'off', o
   identityFile: String(process.env.POLICY_WRITER_IDENTITY_FILE || policyWriterRaw.ssh_identity_file || ''),
   knownHostsFile: String(process.env.POLICY_WRITER_KNOWN_HOSTS_FILE || policyWriterRaw.ssh_known_hosts_file || ''),
 })
+// The broker seat lane (#502). Default OFF — and off means the handler REFUSES with a reason, not
+// that the subscription quietly never matches. A bridge that ignores a seat command addressed to it
+// is indistinguishable from one that never received it, and the operator is left reading a console
+// that says nothing happened.
+const channelSeatRaw = cfg.public?.channel_seat || {}
+const channelSeatMode = String(channelSeatRaw.mode || 'off').toLowerCase()
+if (!['off', 'remote-only'].includes(channelSeatMode)) throw new Error('public.channel_seat.mode must be off or remote-only')
+const channelSeat = channelSeatMode === 'off' ? Object.freeze({ mode: 'off' }) : Object.freeze({
+  mode: channelSeatMode,
+  host: String(channelSeatRaw.ssh_host || ''),
+  user: String(channelSeatRaw.ssh_user || 'waggle-channel-seat'),
+  identityFile: String(process.env.CHANNEL_SEAT_IDENTITY_FILE || channelSeatRaw.ssh_identity_file || ''),
+  knownHostsFile: String(process.env.CHANNEL_SEAT_KNOWN_HOSTS_FILE || channelSeatRaw.ssh_known_hosts_file || ''),
+})
 function bumpPubWatermark(ts) {
   if (!Number.isFinite(ts) || ts <= 0 || (pubWatermark && ts <= pubWatermark)) return
   pubWatermark = ts
@@ -528,6 +544,10 @@ const PUB = cfg.public ? {
   trustCommandAt: Number(cfg.public.trust_command_at || 0),
   policyShadow,
   policyWriter,
+  channelSeat,
+  seatCommandAt: Number(cfg.public.seat_command_at || 0),
+  seatCommandIds: (cfg.public.seat_command_ids || []).map(String)
+    .filter(id => /^[0-9a-f]{64}$/i.test(id)).map(id => id.toLowerCase()),
 } : null
 
 // §7 version-binding, from ONE producer (crew review of #199 → #200). The gate's expected hash, the
@@ -2981,6 +3001,78 @@ function handleAgentLifecycleCommand(ev) {
   return { ok: true, op: command.op, agent: command.agent, noop: Boolean(admissible.noop), receipt }
 }
 
+// The broker seat (#502). The console signs an intent, this forwards it, the broker decides.
+//
+// The bridge is a WIRE here and deliberately not a second approver: it forwards `ev` byte for byte,
+// and the broker verifies the same signature against its own roster. Everything this handler
+// refuses locally, the broker would refuse too — the point of checking twice is to not spend an ssh
+// call, not to be the authority.
+//
+// Async, so it is dispatched like `handleModerationControlCommand` rather than in the synchronous
+// `.ok` chain. Its watermark is advanced only on a TERMINAL answer, which is the ordering decision
+// worth attacking: an unreachable broker leaves the command replayable, because "we could not ask"
+// must never become "the answer was no". The cost is that a genuinely unreachable broker will see
+// the same intent again while it remains fresh, and the broker's own O_EXCL journal is what makes
+// that safe — one seat per event id, however many times it arrives.
+async function handleChannelSeatCommand(ev) {
+  if (!ev || ev.kind !== CONTROL_COMMAND_KIND || !PUB || !BRIDGE_PK) return { ok: false, reason: 'not a seat command' }
+  const author = String(ev.pubkey || '').toLowerCase()
+  let sigOk; try { sigOk = verifyEvent(ev) } catch { sigOk = false }
+  if (!sigOk) return { ok: false, reason: 'invalid signature' }
+  const forward = seatIntentToForward(ev, {
+    approvers: PUB.approvers, bridgePubkey: BRIDGE_PK, commandD: SEAT_COMMAND_D,
+  })
+  if (!forward.ok) return { ok: false, reason: forward.reason }
+
+  // Off is a refusal with a reason, in the log, not a silent no-match. An operator who has clicked
+  // seat and sees nothing at all cannot tell a bridge that is not configured for this from a bridge
+  // that never received the command.
+  if (PUB.channelSeat?.mode !== 'remote-only') {
+    err(`channel-seat: refusing ${forward.intent.agent.slice(0, 12)}… — public.channel_seat.mode is off on this bridge`)
+    return { ok: false, reason: 'channel seat lane is off on this bridge' }
+  }
+
+  const commandId = String(ev.id || '').toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(commandId)) return { ok: false, reason: 'invalid command id' }
+  // Same watermark shape as the lifecycle handler, and for the same reason: seats target
+  // INDEPENDENT agents, so a same-second pair is legitimate work rather than a duplicate, and a
+  // timestamp-only watermark would drop the second one silently.
+  if (ev.created_at < PUB.seatCommandAt) return { ok: false, reason: 'superseded command' }
+  if (ev.created_at === PUB.seatCommandAt &&
+      (!PUB.seatCommandIds.length || PUB.seatCommandIds.includes(commandId))) {
+    return { ok: false, reason: 'superseded command' }
+  }
+
+  let outcome
+  try {
+    const stdout = await runChannelSeatSsh(JSON.stringify(ev), PUB.channelSeat)
+    outcome = readSeatReceipt(stdout, { intent: forward.intent, fingerprint: forward.fingerprint })
+  } catch (e) {
+    // A transport failure is UNKNOWN, never a refusal. The broker made no decision, and saying it
+    // refused would send an operator to re-mint a key that is probably fine.
+    outcome = { ok: false, terminal: false, reason: e.message }
+  }
+
+  const line = seatLogLine(outcome, { agent: forward.intent.agent, approver: author, eventId: commandId })
+  if (outcome.ok !== true) { err(line); return { ok: false, reason: outcome.reason, terminal: false } }
+  log(line)
+
+  const acceptedIds = ev.created_at === PUB.seatCommandAt
+    ? Array.from(new Set([...PUB.seatCommandIds, commandId]))
+    : [commandId]
+  if (!mutateConfig(c => {
+    c.public.seat_command_at = ev.created_at
+    c.public.seat_command_ids = acceptedIds
+  })) return { ok: false, reason: 'could not persist seat watermark' }
+  PUB.seatCommandIds = acceptedIds
+  PUB.seatCommandAt = ev.created_at
+
+  // The receipt is what the console renders, so publish the projection now rather than waiting on
+  // the refresh interval — the same reason the lifecycle path does it.
+  scheduleControlState()
+  return { ok: true, result: outcome.result, seated: outcome.seated, agent: forward.intent.agent, receipt: outcome.receipt }
+}
+
 // Public owner-command twin of the private staging verbs.  The event is itself the signed audit
 // artifact.  Its target is the already-public Nostr source id, never the private Buzz staging id;
 // reject is intentionally absent because a durable public denial would identify the stranger.
@@ -4077,7 +4169,7 @@ function connectPublic(url) {
       // #206: owner-console control events. NIP-78 is shared with the read-only state record,
       // but a distinct `d` tag, an approver author filter, and a bridge p-tag make this a narrow
       // command inbox rather than a general public-event subscription.
-      if (BRIDGE_PK && PUB.approvers.length) ws.send(JSON.stringify(['REQ', 'pctl', { kinds: [CONTROL_COMMAND_KIND], authors: PUB.approvers, '#d': [CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TRUST_COMMAND_D, MODERATION_COMMAND_D, LIFECYCLE_COMMAND_D], '#p': [BRIDGE_PK], since: Math.floor(Date.now() / 1000) - CONTROL_COMMAND_MAX_AGE_SECS, limit: 100 }]))
+      if (BRIDGE_PK && PUB.approvers.length) ws.send(JSON.stringify(['REQ', 'pctl', { kinds: [CONTROL_COMMAND_KIND], authors: PUB.approvers, '#d': [CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, TRUST_COMMAND_D, MODERATION_COMMAND_D, LIFECYCLE_COMMAND_D, SEAT_COMMAND_D], '#p': [BRIDGE_PK], since: Math.floor(Date.now() / 1000) - CONTROL_COMMAND_MAX_AGE_SECS, limit: 100 }]))
       // Re-open the record-id subscriptions on reconnect. New 440s refresh this live after
       // verification; these existing ids cover a revocation that arrives without a bridge p-tag.
       subscribeConsentRevocations()
@@ -4110,6 +4202,12 @@ function connectPublic(url) {
           const d = (ev.tags || []).find(tag => tag[0] === 'd')?.[1]
           if (d === MODERATION_COMMAND_D) {
             handleModerationControlCommand(ev).catch(e => err(`moderation: command failed: ${e.message}`))
+            return
+          }
+          // Dispatched by tag like moderation, not through the synchronous `.ok` chain below: it
+          // makes an ssh call, so it cannot answer before the next handler would be tried.
+          if (d === SEAT_COMMAND_D) {
+            handleChannelSeatCommand(ev).catch(e => err(`channel-seat: command failed: ${e.message}`))
             return
           }
           if (handleControlStateCommand(ev).ok) return
@@ -4170,7 +4268,7 @@ export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, c
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, defuseInvisible, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, revokedGrants, activeReturnLane, seatGrantee, unseatGrantee, seated, seatingCoverageGap, unseatPending, retryPendingUnseats, UNSEATPENDING_MAX_ATTEMPTS, rosterRole, isElevated, seatingAuthority, ELEVATED_ROLES, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, relayRefusals, powDemands, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL, rosterChannel, removalChannel }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, defuseInvisible, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, revokedGrants, activeReturnLane, seatGrantee, unseatGrantee, seated, seatingCoverageGap, unseatPending, retryPendingUnseats, UNSEATPENDING_MAX_ATTEMPTS, rosterRole, isElevated, seatingAuthority, ELEVATED_ROLES, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, relayRefusals, powDemands, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, handleChannelSeatCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL, rosterChannel, removalChannel }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests,
   policyRequests, policyWriterInFlight, remotePolicyGatePublic, processRemotePolicyRequest,
   retryRemotePolicyRequests, __setPolicyWriterRunnerForTests, unframePolicyWriterResponse,

@@ -462,6 +462,44 @@ export function runPolicyWriterSsh(requestRaw, {
   })
 }
 
+// The broker seat transport (#502). A third forced account, a third key, a third known-hosts file —
+// the same reason the shadow and the writer are separate capabilities rather than one with a flag:
+// a seat can add a line to an authorized_keys file, which is a grant of execution, and it must not
+// be reachable by anything holding a credential issued for reading policy.
+//
+// The caller supplies the already-signed control event bytes and nothing else. Every byte of the
+// authorized_keys line is chosen on the far side from the broker's own root-owned config; this
+// function chooses the executable, the account, the host-key policy and the environment. What
+// crosses is an intent, and it is verified again by the runner that receives it — the ssh channel
+// authenticates the broker to us, not us to ourselves.
+export function runChannelSeatSsh(intentRaw, {
+  host, user = 'waggle-channel-seat', identityFile, knownHostsFile, timeoutMs = 20_000,
+} = {}, exec = execFile, inspect = lstatSync) {
+  const hostOk = /^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-Fa-f:]+\])$/.test(String(host || ''))
+  const userOk = /^[a-z_][a-z0-9_-]{0,31}$/.test(String(user || ''))
+  if (!hostOk || !userOk || !String(identityFile || '').startsWith('/') || !String(knownHostsFile || '').startsWith('/')) reject('channel seat ssh', 'fixed boundary configuration is invalid')
+  let identity, knownHosts
+  try { identity = inspect(identityFile); knownHosts = inspect(knownHostsFile) } catch { reject('channel seat ssh', 'credential files are unavailable') }
+  if (!identity.isFile() || identity.isSymbolicLink() || (identity.mode & 0o077)) reject('channel seat ssh', 'identity must be a private regular non-symlink file')
+  if (!knownHosts.isFile() || knownHosts.isSymbolicLink() || (knownHosts.mode & 0o022)) reject('channel seat ssh', 'known-hosts must be a non-writable regular non-symlink file')
+  const args = ['-F', '/dev/null', '-T', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes',
+    '-o', `UserKnownHostsFile=${knownHostsFile}`, '-o', 'GlobalKnownHostsFile=/dev/null',
+    '-o', 'ClearAllForwardings=yes', '-o', 'ConnectTimeout=10',
+    '-i', identityFile, `${user}@${host}`]
+  return new Promise((resolve, rejectP) => {
+    const child = exec('/usr/bin/ssh', args, { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024,
+      env: { PATH: '/usr/bin:/bin', LANG: 'C' } }, (error, stdout) => {
+      // Deliberately not distinguishing "refused" from "unreachable" out of ssh's exit status: the
+      // runner reports a refusal in its RECEIPT, on stdout, with exit 0. A non-zero exit here means
+      // the transport failed, and the bridge must report that as unknown rather than as a refusal.
+      if (error) return rejectP(new Error('channel seat broker unavailable'))
+      resolve(String(stdout || ''))
+    })
+    child.stdin.on('error', () => {})
+    child.stdin.end(intentRaw)
+  })
+}
+
 // --- Reads --------------------------------------------------------------------------------
 //
 // Read verbs author nothing and are out of A3's scope for what waggle can SAY — but they live
