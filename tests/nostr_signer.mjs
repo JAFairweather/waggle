@@ -1,12 +1,12 @@
 // Remote-signer boundary: URI/client credentials are descriptor-checked and the bridge identity
 // is derived from the Bunker pointer without ever loading its nsec on this host.
-import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import * as nip44 from 'nostr-tools/nip44'
-import { loadNostrSigner, makeBunkerSigner, makeLocalSigner } from '../src/nostr_signer.mjs'
+import { loadNostrSigner, makeBunkerSigner, makeLocalSigner, withPinnedCustody } from '../src/nostr_signer.mjs'
 import { buildTripwireAlarmWrap } from '../tools/tripwire_alarm_lib.mjs'
 
 let pass = 0, fail = 0
@@ -116,6 +116,89 @@ try {
       /malformed pubkey/.test(refusedId) && !/^$/.test(refusedId))
     ok('…and says why it matters, rather than only that it failed', /cannot establish which identity/.test(refusedId))
     split.close(); mute.close()
+  }
+
+  // ── The signature has to be over the event that was SUBMITTED ─────────────────────────────────
+  // The pin above answers "which key signed". It does not answer "signed WHAT", and a responder
+  // holding no key at all can close that gap with a scraped public note authored by the pinned
+  // identity: every identity here publishes a kind:0 by design, so a qualifying event always exists
+  // and is always public. It verifies, its pubkey matches, and the pin passes.
+  //
+  // Where the signed event is published, the substitution fails visibly downstream. `tools/join.mjs`
+  // is the caller where it does not: it signs a challenge, discards the return value, never
+  // publishes it, and prints `custody proved` — which gates the seat write (#529 review).
+  {
+    const idKey = generateSecretKey(), idPub = getPublicKey(idKey)
+    const base = { pubkey: idPub, remote: false, userPubkey: async () => idPub, close() {},
+      nip44Encrypt: async () => '', nip44Decrypt: async () => '' }
+    const wrapOf = signEvent => withPinnedCustody({ ...base, signEvent }, idPub)
+    const refusal = async (signEvent, event) => {
+      try { await wrapOf(signEvent).signEvent(event); return null } catch (e) { return e }
+    }
+    const asked = { kind: 24242, created_at: 5, tags: [['challenge', 'the-one-submitted']], content: '' }
+
+    // POSITIVE CONTROL first, or every refusal below is indistinguishable from a check that refuses
+    // everything. Four signatures, because the wrapper is per-signature and one proves nothing.
+    const honest = wrapOf(async e => finalizeEvent({ ...e }, idKey))
+    let honestOk = true
+    for (const k of [0, 1, 22242, 24242]) {
+      const s = await honest.signEvent({ ...asked, kind: k })
+      honestOk = honestOk && s.kind === k && s.pubkey === idPub && verifyEvent(JSON.parse(JSON.stringify(s)))
+    }
+    ok('POSITIVE CONTROL — four honest signatures over four different kinds all still pass', honestOk && honest.signatures === 4)
+
+    // THE ATTACK. A real, valid, public note by the pinned identity, returned no matter what was
+    // asked for. Built once and handed back — which is exactly how an attacker gets it: off a relay.
+    const scraped = finalizeEvent({ kind: 1, created_at: 4, tags: [], content: 'gm' }, idKey)
+    const scrapedErr = await refusal(async () => scraped, asked)
+    ok('a SCRAPED public note authored by the pinned key is refused — a valid signature is not a signature over this',
+      scrapedErr !== null && scrapedErr.exitCode === 1)
+    ok('…and the reason names every field that changed, because the operator acts on the reason',
+      /kind/.test(scrapedErr?.message || '') && /content/.test(scrapedErr?.message || '') &&
+      /tags/.test(scrapedErr?.message || '') && /created_at/.test(scrapedErr?.message || ''))
+
+    // One field at a time, each asserted to name ITS field and not the others — a single combined
+    // sentence sends the operator hunting a mismatch that is not there.
+    const only = async (mutate, field) => {
+      const e = await refusal(async ev => finalizeEvent(mutate({ ...ev }), idKey), asked)
+      const others = ['kind', 'content', 'tags', 'created_at'].filter(f => f !== field)
+      return e !== null && e.exitCode === 1 && new RegExp(`${field} changed|${field},`).test(e.message) &&
+        !others.some(f => new RegExp(`\\b${f}\\b`).test(e.message.split('—')[1] || ''))
+    }
+    ok('a signer that changes the KIND is refused, naming the kind and nothing else',
+      await only(e => ({ ...e, kind: 1 }), 'kind'))
+    ok('a signer that changes the TAGS is refused, naming the tags — this is the challenge swap',
+      await only(e => ({ ...e, tags: [['challenge', 'one-i-signed-earlier']] }), 'tags'))
+    ok('a signer that changes the CONTENT is refused, naming the content',
+      await only(e => ({ ...e, content: 'something else entirely' }), 'content'))
+    ok('a signer that changes a SUPPLIED created_at is refused, naming it',
+      await only(e => ({ ...e, created_at: 999 }), 'created_at'))
+
+    // BOTH DIRECTIONS, and this is the one that keeps the check from being "refuse everything":
+    // NIP-46 lets a signer stamp a created_at the caller did not supply. Refusing that would be
+    // refusing a compliant signer rather than an impostor.
+    // Caught rather than awaited bare: a refusal here must land as a named FAIL, not as an uncaught
+    // throw that takes the suite down before it prints one. Verified by mutation — comparing
+    // created_at unconditionally killed the run with zero FAIL lines, which reads like an anchor
+    // miss rather than a detection.
+    let stamped = null, stampedErr = ''
+    try {
+      stamped = await wrapOf(async e => finalizeEvent({ ...e, created_at: 1234 }, idKey))
+        .signEvent({ kind: 24242, tags: [], content: '' })
+    } catch (e) { stampedErr = e.message }
+    ok(`BOTH DIRECTIONS — a signer stamping an ABSENT created_at is accepted, not refused${stampedErr ? ` — ${stampedErr}` : ''}`,
+      stamped !== null && stamped.created_at === 1234 && stamped.pubkey === idPub)
+    // …and the earlier refusals are not the pin firing by accident: the pinned key is what signs in
+    // every fixture above, so `CUSTODY MISMATCH` never appears.
+    ok('…and none of these are the PIN firing — the pinned key signed every one of them',
+      !/CUSTODY MISMATCH/.test(scrapedErr?.message || ''))
+
+    // The caller. `join.mjs` discards what it signs, so nothing downstream would notice — and its
+    // challenge must not be `request.id`, which that tool prints and tells the operator to circulate.
+    const joinSrc = readFileSync(new URL('../tools/join.mjs', import.meta.url), 'utf8')
+    ok('tools/join.mjs proves custody over a FRESH nonce, not the request id it publishes',
+      /tags: \[\['challenge', randomBytes\(16\)\.toString\('hex'\)\]\]/.test(joinSrc) &&
+      !/tags: \[\['challenge', request\.id\]\]/.test(joinSrc))
   }
 
   const alarmKey = generateSecretKey(), recipientKey = generateSecretKey(), recipient = getPublicKey(recipientKey)

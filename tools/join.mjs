@@ -32,6 +32,7 @@
 // in memory dies with a dropped connection. It is deleted on exit, on failure, and on signal.
 // It is never printed.
 
+import { randomBytes } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join as joinPath, resolve } from 'node:path'
@@ -222,10 +223,16 @@ let pairingUri = opened.pairing.take()
 let signer = null
 try {
   signer = withPinnedCustody(makeBunkerSigner(pairingUri, clientNsec), opened.identityPubkey)
-  // Signed, verified against the pinned pubkey, and never published. The challenge is the proof;
-  // putting it on a relay would only tell the world a pairing happened.
+  // Signed, verified against the pinned pubkey, compared back against what was submitted, and never
+  // published. The challenge is the proof; putting it on a relay would only tell the world a pairing
+  // happened.
+  //
+  // A FRESH nonce, not `request.id`. That id is printed above and the operator is told to circulate
+  // it, so anyone who has seen it can pre-sign — or scrape — an event carrying it. A challenge whose
+  // value is public is not a challenge, and this is the one call in the tree where the signed event
+  // is discarded rather than published, so nothing downstream would notice.
   await signer.signEvent({ kind: PAIRING_TOKEN_KIND, created_at: Math.floor(Date.now() / 1000),
-    tags: [['challenge', request.id]], content: '' })
+    tags: [['challenge', randomBytes(16).toString('hex')]], content: '' })
   console.log(`join: custody proved — the signer signs as ${opened.identityPubkey}`)
 } catch (e) {
   pairingUri = null
