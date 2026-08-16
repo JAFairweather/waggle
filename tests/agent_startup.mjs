@@ -395,6 +395,10 @@ rmSync(nameRoot, { recursive: true, force: true })
 // five of nineteen flags — omitting every flag #513, #514 and #519 added. Rendered from the
 // catalogue now, so this asserts the catalogue and the tool agree rather than re-checking a literal.
 const usage = usageLine()
+// The flag loop below asserts every flag NAME and never the program name, so the line could have
+// read `usage: connect-agent` — the exact 127 this change removes — and stayed green (#523 review).
+check(usage.startsWith('usage: node tools/connect-agent.mjs'),
+  'the usage line names a command that RUNS — `connect-agent` alone is the 127 this change removed')
 for (const f of FLAGS) check(usage.includes(f.flag), `usage names ${f.flag}`)
 const readsFlags = [...readFileSync(join(ROOT, 'tools', 'connect-agent.mjs'), 'utf8')
   .matchAll(/(?:flag|has)\('(--[a-z-]+)'\)/g)].map(m => m[1])

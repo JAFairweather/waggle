@@ -115,6 +115,16 @@ const MATRIX = [
   ['a SEALED-lane report', { report: { lane: 'sealed', rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } }],
   ['an unrecognised lane — dropped, not echoed', { report: { lane: 'brokr',
     rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } }],
+  // The NAME is on this axis, because it is the one input the two copies judge with SEPARATE code:
+  // the browser cannot import `src/connect_flags.mjs`, so it inlines the predicate. Every other
+  // fixture here is `pi-agent` — already lowercase, already acceptable — and two predicates cannot
+  // disagree about it, so the byte comparison was blind to exactly the drift it exists to catch
+  // (#523 review). These two cover both halves and both verdicts: drop `.toLowerCase()` from the
+  // console copy and `Oliver` diverges; drop the pattern and `Pi Dog` does.
+  ['a name that only NORMALISES — Oliver, a command exists once it is lowercased',
+    { agent: 'Oliver', report: { rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } }],
+  ['a name that is REFUSED — Pi Dog, no command exists for it at all',
+    { agent: 'Pi Dog', report: { rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } }],
 ]
 
 for (const [what, extra] of MATRIX) {
