@@ -537,7 +537,7 @@ $('sign').addEventListener('click', async () => {
 // are `connect-agent --check`'s to answer.
 function renderHandoff(allLanded, proven) {
   const name = $('agent-name').value.trim() || 'agent'
-  const unseen = (key, title) => ({ key, title, state: UNKNOWN, note: 'not observable from the console — run `connect-agent --check` on the agent' })
+  const unseen = (key, title) => ({ key, title, state: UNKNOWN, note: 'not observable from the console — only a --check run on the machine the agent runs on can answer it' })
   const report = { rows: [
     { key: 'admit-grant', title: 'Admitted to the channel',
       state: allLanded ? PRESENT : MISSING,

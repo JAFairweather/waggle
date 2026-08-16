@@ -10,13 +10,14 @@
 //      the wall as broken — that exact confusion has cost this project a day more than once.
 import { strict as assert } from 'node:assert'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { MISSING, PRESENT, UNKNOWN, installState } from '../src/agent_install_state.mjs'
 import { secretInText, startupDoc } from '../src/agent_startup.mjs'
 import { RUNTIMES } from '../src/mcp_runtimes.mjs'
+import { FLAGS, acceptableName, knownFlag, normaliseName, usageLine } from '../src/connect_flags.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 let pass = 0, fail = 0
@@ -276,19 +277,22 @@ console.log('\n5d. the remedy command carries the right lane')
 // written with `--lane sealed` baked into the string, so a BROKER-lane agent following its own
 // onboarding document scoped out the rows it depends on — `applies` refusing to assume the cheaper
 // lane, arriving through the document instead of the flag.
-const remedies = doc => doc.split('\n').filter(l => l.includes('connect-agent --check'))
+// `--check`, not just the tool name: the document also names `tools/connect-agent.mjs --startup` as
+// its own provenance, and that line is not a remedy. A filter that swept it in would assert the
+// lane flag against a line that has no business carrying one.
+const remedies = doc => doc.split('\n').filter(l => l.includes('tools/connect-agent.mjs') && l.includes('--check'))
 const laneDoc = lane => startupDoc({ agent: 'oliver', pubkey: PUB,
   report: { lane, rows: [{ key: 'bunker-uri', title: 'Bunker pairing', state: MISSING },
     { key: 'profile', title: 'Published profile', state: UNKNOWN }] } })
 
 const broker = remedies(laneDoc('broker'))
 check(broker.length >= 2, 'the document prints the remedy command more than once, so one right and one wrong is possible')
-check(broker.every(l => /connect-agent --check --lane broker/.test(l)),
+check(broker.every(l => /--check --lane broker/.test(l)),
   'a BROKER-lane report renders --lane broker in EVERY remedy line')
 check(!broker.some(l => /--lane sealed/.test(l)),
   '  …and never the other lane — this rendered `--lane sealed` for a broker agent')
 const sealedDoc = remedies(laneDoc('sealed'))
-check(sealedDoc.every(l => /connect-agent --check --lane sealed/.test(l)),
+check(sealedDoc.every(l => /--check --lane sealed/.test(l)),
   'BOTH DIRECTIONS — a SEALED-lane report still renders --lane sealed, so the fix is not "drop the flag"')
 // Undeclared is not sealed — `installState` treats silence as "every row applies", and a document
 // that supplied the flag anyway would talk an undeclared agent into the permissive reading.
@@ -297,6 +301,111 @@ check(noLane.length >= 2 && noLane.every(l => !/--lane/.test(l)),
   'an UNDECLARED lane prints no --lane at all — silence is not a declaration here either')
 check(remedies(laneDoc('brokr')).every(l => !/--lane/.test(l)),
   'an unrecognised lane is DROPPED, not echoed — `installState` would refuse it, so printing it hands over a command that fails')
+
+console.log('\n5e. the remedy command is one that RUNS')
+// Every assertion above is about the text of the command, and the text was right while the command
+// was not: `connect-agent --check --lane sealed` is not on PATH (exit 127) and omits the --name the
+// tool requires. Asserting the property means running it, not grepping it (#522).
+const cmdOf = doc => {
+  const m = doc.match(/`(node tools\/connect-agent\.mjs[^`]*)`/)
+  return m ? m[1] : null
+}
+const sealedCmd = cmdOf(laneDoc('sealed'))
+check(sealedCmd !== null, 'the remedy renders as `node tools/…`, the same form as the two tools named beside it')
+check(/--name \S+/.test(sealedCmd || ''), '…and carries --name, which the tool cannot run without')
+
+// Drive it. Exit 127 is "no such command", exit 1 with a usage line is "you called it wrong"; both
+// were what the old string produced, and neither is what a remedy may do.
+const remedyRoot = mkdtempSync(join(tmpdir(), 'wb-remedy-'))
+let remedyRc = -1, remedyOut = ''
+try {
+  execFileSync('/bin/sh', ['-c', `${sealedCmd} --root ${remedyRoot}`], { cwd: ROOT, encoding: 'utf8', stdio: 'pipe' })
+  remedyRc = 0
+} catch (e) { remedyRc = e.status; remedyOut = `${e.stdout || ''}${e.stderr || ''}` }
+check(remedyRc !== 127, `the documented command EXISTS — it exited 127, command-not-found, until #522 (rc=${remedyRc})`)
+check(!/usage:/.test(remedyOut), 'and it is not a usage error — the tool understood every flag the document told the agent to pass')
+check(/Declared participation lane/.test(remedyOut) && /sealed/.test(remedyOut),
+  '…and it did the thing it was documented to do: reported install state, scoped to the declared lane')
+// POSITIVE CONTROL on the probe itself. If `execFileSync` silently succeeded on anything, the three
+// checks above would pass for a command that does nothing.
+let bogusRc = 0
+try { execFileSync('/bin/sh', ['-c', 'connect-agent --check'], { cwd: ROOT, stdio: 'pipe' }) } catch (e) { bogusRc = e.status }
+check(bogusRc === 127, 'POSITIVE CONTROL — the OLD rendering still exits 127 here, so the probe can tell the difference')
+rmSync(remedyRoot, { recursive: true, force: true })
+
+console.log('\n5f. the name in the rendered command is one --name accepts')
+// This line used to QUOTE a name it could not use, which buys a clean argv split and nothing else:
+// `--name` is lowercased and matched against a pattern, so a name that needed quoting to survive
+// splitting is a name the tool then refuses. The operator who named an agent `Pi Dog` pasted the
+// rendered command and got exit 1 and a usage line (#523 review).
+const nameDoc = agent => startupDoc({ agent, pubkey: PUB,
+  report: { lane: 'sealed', rows: [{ key: 'bunker-uri', title: 'Bunker pairing', state: MISSING },
+    { key: 'profile', title: 'Published profile', state: UNKNOWN }] } })
+
+const okName = remedies(nameDoc('oliver'))
+check(okName.length >= 2 && okName.every(l => /--name oliver\b/.test(l)),
+  'BOTH DIRECTIONS — a name the tool ACCEPTS still renders a command, in every remedy line')
+// The exact disagreement the hand-copied predicate had on day one: it omitted `.toLowerCase()`, so
+// `Oliver` was quoted by the renderer and accepted by the tool. One predicate now, so both lower.
+const upper = remedies(nameDoc('Oliver'))
+check(upper.length >= 2 && upper.every(l => /--name oliver\b/.test(l) && !/--name ['"]/.test(l)),
+  'a name that only needed LOWERCASING is lowercased and rendered bare, not quoted')
+
+const badDoc = nameDoc('Pi Dog')
+check(remedies(badDoc).length === 0,
+  'a name the tool REFUSES renders no command at all — the document does not state a fact it does not have')
+// `--name` still appears, inside the rule the document states; what must not appear is an ARGUMENT
+// after it — a quoted one is the old behaviour and a bare one would split into two argv words.
+check(!/--name\s/.test(badDoc), '…and --name is never given an argument, quoted or bare')
+check(badDoc.includes('Pi Dog') && /Settle the agent's id first/.test(badDoc),
+  'it names the offending name and what to settle — "settle your name" with neither is not actionable')
+check(/lowercase, 2–64 characters/.test(badDoc) && /a-z0-9\._-/.test(badDoc),
+  '…and states the rule, so the reader can pick a name that will work rather than guess again')
+// NEGATIVE CONTROL on the block above: a document that simply went silent would pass every
+// "no command" assertion. The two sections that carry the remedy must still be present and say why.
+check(/Neither command works yet/.test(badDoc) && /never checked/.test(badDoc),
+  'NEGATIVE CONTROL — the refusing document still renders both sections; it withholds the command, not the warning')
+
+// The renderer and the tool must AGREE, and the only way to know is to drive the tool. Ten fixtures,
+// both verdicts represented, run through the real argv path — spaces and all, hence execFileSync
+// with an array rather than a shell string.
+const nameRoot = mkdtempSync(join(tmpdir(), 'wb-name-'))
+const toolTakes = n => {
+  try {
+    execFileSync(process.execPath, [join(ROOT, 'tools', 'connect-agent.mjs'), '--name', n,
+      '--check', '--root', nameRoot], { cwd: ROOT, encoding: 'utf8', stdio: 'pipe' })
+    return true
+  } catch (e) { return !/usage:/.test(`${e.stdout || ''}${e.stderr || ''}`) }
+}
+const NAME_FIXTURES = ['oliver', 'Oliver', 'pi-dog', 'Pi Dog', 'mc-claude', 'my.dude_1',
+  'a', '@dennis', 'Dennis', 'has/slash']
+let agreed = 0
+for (const n of NAME_FIXTURES) {
+  const r = acceptableName(n), t = toolTakes(n)
+  check(r === t, `renderer and tool agree on ${JSON.stringify(n)} — both ${r ? 'accept' : 'refuse'}`)
+  if (r === t) agreed++
+}
+check(NAME_FIXTURES.some(acceptableName) && !NAME_FIXTURES.every(acceptableName),
+  `POSITIVE CONTROL — the fixture set exercises BOTH verdicts (${agreed}/${NAME_FIXTURES.length} agreed), so agreement is not "it refuses everything"`)
+check(normaliseName('Pi Dog') === 'pi dog' && !acceptableName('pi dog'),
+  'normalising is not accepting — lowercasing a name with a space does not make it a name')
+rmSync(nameRoot, { recursive: true, force: true })
+
+// The usage line is the message an agent acts on when it gets the call wrong, and it had drifted to
+// five of nineteen flags — omitting every flag #513, #514 and #519 added. Rendered from the
+// catalogue now, so this asserts the catalogue and the tool agree rather than re-checking a literal.
+const usage = usageLine()
+// The flag loop below asserts every flag NAME and never the program name, so the line could have
+// read `usage: connect-agent` — the exact 127 this change removes — and stayed green (#523 review).
+check(usage.startsWith('usage: node tools/connect-agent.mjs'),
+  'the usage line names a command that RUNS — `connect-agent` alone is the 127 this change removed')
+for (const f of FLAGS) check(usage.includes(f.flag), `usage names ${f.flag}`)
+const readsFlags = [...readFileSync(join(ROOT, 'tools', 'connect-agent.mjs'), 'utf8')
+  .matchAll(/(?:flag|has)\('(--[a-z-]+)'\)/g)].map(m => m[1])
+check(readsFlags.length > 0, 'the source scan found flags at all — a scan that matches nothing reports everything clean')
+const undeclared = [...new Set(readsFlags)].filter(f => !knownFlag(f))
+check(undeclared.length === 0, `every flag the tool reads is declared${undeclared.length ? ` — undeclared: ${undeclared.join(' ')}` : ''}`)
+check(!knownFlag('--not-a-flag'), 'NEGATIVE CONTROL — knownFlag says no to a name that is not in the catalogue')
 
 // ── 6. The tool, not the function ───────────────────────────────────────────────────────────
 console.log('\n6. what connect-agent actually writes')

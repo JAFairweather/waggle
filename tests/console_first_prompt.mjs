@@ -115,11 +115,21 @@ const MATRIX = [
   ['a SEALED-lane report', { report: { lane: 'sealed', rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } }],
   ['an unrecognised lane — dropped, not echoed', { report: { lane: 'brokr',
     rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } }],
+  // The NAME is on this axis, because it is the one input the two copies judge with SEPARATE code:
+  // the browser cannot import `src/connect_flags.mjs`, so it inlines the predicate. Every other
+  // fixture here is `pi-agent` — already lowercase, already acceptable — and two predicates cannot
+  // disagree about it, so the byte comparison was blind to exactly the drift it exists to catch
+  // (#523 review). These two cover both halves and both verdicts: drop `.toLowerCase()` from the
+  // console copy and `Oliver` diverges; drop the pattern and `Pi Dog` does.
+  ['a name that only NORMALISES — Oliver, a command exists once it is lowercased',
+    { agent: 'Oliver', report: { rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } }],
+  ['a name that is REFUSED — Pi Dog, no command exists for it at all',
+    { agent: 'Pi Dog', report: { rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } }],
 ]
 
 for (const [what, extra] of MATRIX) {
   const args = {
-    agent: 'Pi Agent', pubkey: PUB, channel: CHAN,
+    agent: 'pi-agent', pubkey: PUB, channel: CHAN,
     runtimeLabel: 'Any other MCP host (Raspberry Pi, headless, self-hosted)', ...extra,
   }
   if (what.startsWith('no runtime label')) { delete args.runtimeLabel; delete args.channel; delete args.pubkey }
@@ -134,9 +144,9 @@ for (const [what, extra] of MATRIX) {
 // byte for byte. Each is asserted to render it, and to render the other branches differently — a
 // copy that hardcoded one lane passes the identity check and fails here.
 for (const [label, copy] of [['node', node], ['browser', web]]) {
-  const remedy = lane => (copy.startupDoc({ agent: 'Pi Agent', pubkey: PUB,
+  const remedy = lane => (copy.startupDoc({ agent: 'pi-agent', pubkey: PUB,
     report: { lane, rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } })
-    .split('\n').filter(l => l.includes('connect-agent --check')))
+    .split('\n').filter(l => l.includes('connect-agent.mjs') && l.includes('--check')))
   const broker = remedy('broker')
   check(broker.length >= 2 && broker.every(l => l.includes('--lane broker')),
     `${label}: a broker-lane report renders --lane broker in every remedy line`)
@@ -145,6 +155,21 @@ for (const [label, copy] of [['node', node], ['browser', web]]) {
   check(remedy(null).every(l => !l.includes('--lane')) && remedy('brokr').every(l => !l.includes('--lane')),
     `${label}:   …and neither an undeclared nor an unrecognised lane prints a flag`)
 }
+// BOTH DIRECTIONS on the name predicate, across the twin. The fixtures above use `pi-agent`, an id
+// the tool accepts; the console's `agent-name` field is free text, so a DISPLAY name reaches this
+// renderer in production and it must withhold the command rather than print one that exits 1 — the
+// failure an operator who typed `Pi Dog` actually hit (#523 review). Both copies, because a browser
+// copy that kept the old quoting would render a failing command to the only producer that can.
+for (const [label, copy] of [['node', node], ['browser', web]]) {
+  const doc = copy.startupDoc({ agent: 'Pi Dog', pubkey: PUB,
+    report: { lane: 'sealed', rows: rows({ 'bunker-uri': MISSING, profile: UNKNOWN }) } })
+  check(!/--name\s/.test(doc), `${label}: a DISPLAY name renders no --name argument at all`)
+  check(doc.includes('Pi Dog') && /Settle the agent's id first/.test(doc),
+    `${label}:   …and names the offending name and the rule instead`)
+  check(/Neither command works yet/.test(doc) && /never checked/.test(doc),
+    `${label}:   NEGATIVE CONTROL — it withholds the command, not the surrounding warning`)
+}
+
 // The lane names themselves, pinned. A stale list in the browser copy does not render a wrong
 // sentence — it drops a valid `--lane` flag, or prints one `installState` would refuse.
 check(Object.keys(web.LANES).sort().join(',') === Object.keys(nodeState.LANES).sort().join(','),
@@ -152,7 +177,7 @@ check(Object.keys(web.LANES).sort().join(',') === Object.keys(nodeState.LANES).s
 
 for (const copy of [['node', node], ['browser', web]]) {
   const [label, mod] = copy
-  const doc = mod.startupDoc({ agent: 'Pi Agent', briefPath: 'docs/OTHER_BRIEF.md', report: { rows: [] } })
+  const doc = mod.startupDoc({ agent: 'pi-agent', briefPath: 'docs/OTHER_BRIEF.md', report: { rows: [] } })
   check(doc.includes('docs/OTHER_BRIEF.md') && !doc.includes('docs/AGENT_BRIEF.md'),
     `the ${label} copy renders the briefPath it was GIVEN, and drops the default it replaced`)
   let threw = null
@@ -162,15 +187,15 @@ for (const copy of [['node', node], ['browser', web]]) {
 
 // A property the byte-comparison alone cannot state: that the comparison is comparing something.
 // Two functions that both returned '' would pass every assertion above.
-const sample = node.startupDoc({ agent: 'Pi Agent', pubkey: PUB, report: { rows: rows({ 'admit-grant': PRESENT }) } })
-check(sample.length > 1500 && sample.includes('# Pi Agent — you are a participant'),
+const sample = node.startupDoc({ agent: 'pi-agent', pubkey: PUB, report: { rows: rows({ 'admit-grant': PRESENT }) } })
+check(sample.length > 1500 && sample.includes('# pi-agent — you are a participant'),
   `SIZE FLOOR — the rendered body is real (${sample.length} bytes, headed by the agent's name)`)
 check(sample.includes('You do not get read'),
   'and carries the wall paragraph, the one claim an agent most often reports as a defect')
 
 // The names differ between copies, so a stale twin cannot pass by echoing a constant.
-const other = web.startupDoc({ agent: 'Second Agent', pubkey: 'b'.repeat(64), report: { rows: [] } })
-check(other.includes('# Second Agent —') && !other.includes('Pi Agent'),
+const other = web.startupDoc({ agent: 'second-agent', pubkey: 'b'.repeat(64), report: { rows: [] } })
+check(other.includes('# second-agent —') && !other.includes('pi-agent'),
   'the twin renders the name it was given, not a baked-in one')
 
 // ------------------------------------------------------------------------------------------
@@ -178,7 +203,7 @@ console.log('\n4. NEGATIVE CONTROL — a report carrying a credential refuses, i
 // #490 asks for a control that FIRES. A `bunker://` reaches the document through a row NOTE, which
 // is machine-generated text from a tool this file does not control — the exact path the sweep was
 // put there to cover.
-const poisoned = { agent: 'Pi Agent', pubkey: PUB, report: { rows: [
+const poisoned = { agent: 'pi-agent', pubkey: PUB, report: { rows: [
   { key: 'bunker-uri', title: 'bunker-uri', state: MISSING, note: 'try bunker://deadbeef?relay=wss://r' },
 ] } }
 let nodeErr = null, webErr = null
@@ -192,7 +217,7 @@ check(String(nodeErr).includes('a bunker:// pairing URI'),
 
 // The bound, stated rather than implied. `src/agent_startup.mjs` says this in its header; a suite
 // that left it out would read as if the sweep were a guarantee of "nothing secret".
-const rawKeyRow = { agent: 'Pi Agent', pubkey: PUB, report: { rows: [
+const rawKeyRow = { agent: 'pi-agent', pubkey: PUB, report: { rows: [
   { key: 'admit-grant', title: 'admit-grant', state: MISSING, note: `seeded from ${'f'.repeat(64)}` },
 ] } }
 const rendered = web.startupDoc(rawKeyRow)
@@ -207,13 +232,13 @@ console.log('\n5. provenance — the document says who actually wrote it')
 // that nothing unproven is stated as fact. `--startup` writes one; the console pastes one; each
 // has to name itself, because the agent's first instinct on reading "regenerate it" is to run the
 // named command, and the wrong name sends it to a machine nothing observed.
-const provenance = args => node.startupDoc({ agent: 'Pi Agent', report: { rows: [] }, ...args }).split('\n')[2]
+const provenance = args => node.startupDoc({ agent: 'pi-agent', report: { rows: [] }, ...args }).split('\n')[2]
 check(provenance({}) === "Written by `tools/connect-agent.mjs --startup` from this agent's own install state.",
   'the DEFAULT is unchanged — the tool\'s output is byte-for-byte what it was before #490')
 check(provenance({ writtenBy: 'the waggle console, at connect time,' })
     === "Written by the waggle console, at connect time, from this agent's own install state.",
   'and an override reads as a sentence, not as a slot with a command dropped into it')
-check(provenance({ writtenBy: 'X' }) === web.startupDoc({ agent: 'Pi Agent', report: { rows: [] }, writtenBy: 'X' }).split('\n')[2],
+check(provenance({ writtenBy: 'X' }) === web.startupDoc({ agent: 'pi-agent', report: { rows: [] }, writtenBy: 'X' }).split('\n')[2],
   'both copies carry the override — the twin did not keep the old hard-coded line')
 
 // ------------------------------------------------------------------------------------------
@@ -257,7 +282,7 @@ console.log('\n7. the never-checked rows collapse, and the alarm stays variable'
 // perfect install. A constant is not a signal; an alarm that always fires and one that never fires
 // fail identically. Both directions are asserted below, because "collapse the rows" done wrong is
 // indistinguishable from "stop reporting them".
-const consoleShape = node.startupDoc({ agent: 'Pi Agent', pubkey: PUB, report: { rows: rows({
+const consoleShape = node.startupDoc({ agent: 'pi-agent', pubkey: PUB, report: { rows: rows({
   'bunker-uri': UNKNOWN, 'bunker-client': UNKNOWN, 'signer-identity': UNKNOWN, 'dm-relays': UNKNOWN,
   'admit-grant': PRESENT, 'mcp-registration': UNKNOWN, 'mcp-exclusive': UNKNOWN,
   'mcp-identity': UNKNOWN, profile: UNKNOWN }) } })
@@ -279,7 +304,7 @@ check(consoleShape.split('\n').filter(l => /further artifacts? w(as|ere) never c
 const beforeYouSpeak = (consoleShape.split('## Before you speak, know what is actually true')[1] || '').split('\n## ')[0]
 check(beforeYouSpeak.trim().length > 0,
   '  …and the section being measured is actually present — an empty slice passes every filter below')
-check((beforeYouSpeak.match(/connect-agent --check/g) || []).length === 1,
+check((beforeYouSpeak.match(/connect-agent\.mjs [^`]*--check/g) || []).length === 1,
   '  …and the remedy once, not eight times')
 // Nothing may be lost in the collapse: an agent has to be able to name what was not checked.
 for (const k of ['bunker-uri', 'dm-relays', 'mcp-identity', 'profile']) {
@@ -293,7 +318,7 @@ check(!/Every artifact above is confirmed/.test(consoleShape),
 // POSITIVE CONTROL, the direction that matters most. Same shape, one row that was actually looked
 // at and found MISSING: the alarm must fire. Without this the assertions above are satisfied by a
 // document that has simply stopped warning about anything.
-const realNegative = node.startupDoc({ agent: 'Pi Agent', pubkey: PUB, report: { rows: rows({
+const realNegative = node.startupDoc({ agent: 'pi-agent', pubkey: PUB, report: { rows: rows({
   'bunker-uri': UNKNOWN, 'bunker-client': UNKNOWN, 'signer-identity': UNKNOWN, 'dm-relays': MISSING,
   'admit-grant': PRESENT, 'mcp-registration': UNKNOWN, 'mcp-exclusive': UNKNOWN,
   'mcp-identity': UNKNOWN, profile: UNKNOWN }) } })
@@ -307,7 +332,7 @@ check(realNegative.includes('nothing can reach you'),
 // The size claim the change was made for, measured rather than asserted in prose. The block those
 // eight rows occupy was ~1,100 bytes; the collapsed form is the two lines between the observed row
 // and the blank line that follows. A ceiling here fails if someone re-expands it one row at a time.
-const block = beforeYouSpeak.split('\n').filter(l => /never checked|connect-agent --check/.test(l)).join('\n')
+const block = beforeYouSpeak.split('\n').filter(l => /never checked|connect-agent\.mjs [^`]*--check/.test(l)).join('\n')
 check(block.length > 0 && block.length < 400,
   `NEVER-CHECKED BLOCK is ${block.length} bytes, down from ~1,100 — and non-empty, so this is measuring something`)
 
