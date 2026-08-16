@@ -179,7 +179,6 @@ export const NEVER_CHECKED = Object.freeze({
   'profile': 'no sockets here — settled by fetching the kind 0 back BY ID from a fresh connection',
   'admit-grant': 'no sockets here — settled by cold-reading the 440 per relay, EOSE/ERROR/TIMEOUT reported separately',
   'dm-relays': 'no sockets here — settled by tools/publish-dm-relay-list.mjs, which cold-reads it back by id',
-  'channel-authorized': "on the broker's disk — settled by an operator confirming the public half is seated under the forced command",
 })
 
 /// Rows this build can see but never observe DOING their job. Permanently UNVERIFIED once present —
