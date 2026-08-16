@@ -45,8 +45,28 @@ const trusted = trustArg.split(/[\s,]+/).map(s => s.trim().toLowerCase()).filter
 const relayArg = flag('--relays')
 const RELAYS = (relayArg ? relayArg.split(',') : ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub'])
   .map(s => s.trim()).filter(Boolean)
-const since = Math.floor(Date.now() / 1000) - (Number(flag('--since')) || 172800)
+// TWO CLOCKS, AND THEY ARE NOT THE SAME ONE (#554).
+//
+// A relay filters kind 1059 on the WRAP's created_at, and NIP-59 says that value is randomised into
+// the past on purpose, to stop an observer correlating send times. So `since` on the wire does not
+// mean "recent mail"; it means "wraps that happen to be stamped recently", and fresh mail is
+// routinely stamped a day and a half ago. Measured on a live lane: of 48 wraps, the NEWEST was
+// stamped 5.9h old, the median 34.1h, and `--since 30` matched none of them.
+//
+// That made a short window structurally blind while the tool reported "Nothing new — and that is a
+// measured answer, not a failed read." A `--watch --since 30` waker ran two hours against a live
+// lane and could not have fired; a 4h read returned zero over a window that provably held two
+// messages. Widening `--since` until mail appears — which is what the Pi runtime did to get its
+// waker working — treats the symptom and then replays the whole backfill.
+//
+// So: ask the wire for the full randomisation horizon always, and answer "is this recent" from the
+// RUMOR's own created_at, which is the real send time and is already parsed further down.
+const WIRE_FLOOR = 172800
+const sinceArg = Number(flag('--since')) || WIRE_FLOOR
+const wireSince = Math.floor(Date.now() / 1000) - WIRE_FLOOR
+const freshAfter = Math.floor(Date.now() / 1000) - sinceArg
 const watch = has('--watch')
+let stale = 0
 
 // --jsonl puts one opened message per line on STDOUT and moves every human sentence to stderr, so a
 // reader can consume stdout without parsing prose out of it. --on-message names an EXECUTABLE, not a
@@ -76,7 +96,7 @@ const seen = new Set()
 // Two decrypts with a signature check BETWEEN them, exactly as src/nostr_egress.mjs insists: the
 // seal's signature is the authorship proof, and doing the second (expensive) decrypt before it holds
 // would run unauthenticated input through the signer.
-async function open(wrap) {
+async function open(wrap, live = true) {
   // VERIFY BEFORE DEDUPING. `seen` is keyed on `wrap.id`, and until this line nothing had proved
   // that id was the event's own hash — it was a field in unauthenticated relay JSON. An event
   // carrying a colliding id, delivered first, would take the slot and silently suppress the real
@@ -116,6 +136,12 @@ async function open(wrap) {
   try { rumor = JSON.parse(await signer.nip44Decrypt(seal.pubkey, seal.content)) }
   catch (e) { failed++; console.error(`  could not open a seal from ${author.author.slice(0, 12)}… — ${String(e?.message || e).slice(0, 160)}`); return }
   const verdict = rumorVerdict(rumor, { author: author.author, self, trusted })
+
+  // THE MESSAGE CLOCK. `--since` is answered here, from the rumor, not on the wire — see WIRE_FLOOR.
+  // Counted rather than dropped: a run that discarded 40 messages for age and one that received
+  // none are different states, and only one of them means the lane is quiet.
+  if (Number(verdict.at) > 0 && Number(verdict.at) < freshAfter) { stale++; return }
+
   verdicts.push(verdict)
   if (jsonl) {
     // One record per line on stdout, refusals included. Dropping a refusal silently would leave a
@@ -131,7 +157,17 @@ async function open(wrap) {
   } else {
     console.log(`\n[REFUSED] ${verdict.reason}`)
   }
-  if (onMessage) track(runHook(verdict))
+  // THE BACKFILL MUST NOT WAKE ANYONE (#554). In --watch, every relay replays its history before
+  // EOSE, so a hook gated only on the verdict fires once per historical message the moment the
+  // watcher starts — the Pi runtime widened its window to see fresh mail at all and got a flood of
+  // old ones instead. A restart replays it again, so this also removes the need for a persisted
+  // seen-set: the backfill simply never reaches the hook.
+  //
+  // A ONE-SHOT RUN IS THE OTHER CASE and it deliberately still fires. There `live` defaults to true,
+  // because a read with no --watch IS an intentional drain of the mailbox into whatever the hook
+  // does with it. The two modes want opposite things from the same history and this is the line
+  // where they part.
+  if (onMessage && (live || !watch)) track(runHook(verdict))
 }
 
 // The wake hook. Gated on notifyDecision, which is gated on the trust list and NOTHING else — a
@@ -178,6 +214,9 @@ const report = async () => {
   if (stillOpen) console.error(`  ${stillOpen} wrap(s) were still being opened when the read ended — counted as unread, not as absent`)
   const summary = inboxSummary({ verdicts, failed: failed + stillOpen, reachable: answered, scanned: seen.size })
   say(`\n${summary.text}`)
+  // Said out loud. "Nothing new" next to 40 messages held back for age is the same false all-clear
+  // this whole change exists to remove, just arrived at from the other direction.
+  if (stale > 0) console.error(`${stale} message(s) were opened and held back as older than --since ${sinceArg}s. They are NOT absent — widen --since to see them.`)
   // Said separately from the read, because they are different failures with different remedies: the
   // read is about the signer, this is about the command. Still exit 3 — a wake that did not happen
   // is not a clean run — but the operator is now told which one to go and look at.
@@ -202,23 +241,27 @@ await Promise.all(RELAYS.map(url => new Promise(resolve => {
   const end = () => { if (done) return; done = true; try { ws?.close() } catch { /* already gone */ } resolve() }
   const t = setTimeout(end, watch ? 0x7fffffff : 12000)
 
+  let live = false
   const connect = () => {
     try { ws = new WebSocket(url) } catch { return end() }
     ws.onopen = () => {
       backoff = 1000
-      ws.send(JSON.stringify(['REQ', 'inbox', { kinds: [1059], '#p': [self], since, limit: 200 }]))
+      ws.send(JSON.stringify(['REQ', 'inbox', { kinds: [1059], '#p': [self], since: wireSince, limit: 200 }]))
     }
     ws.onmessage = e => {
       let m
       try { m = JSON.parse(e.data) } catch { return /* a relay that speaks nonsense is one relay, not a crash */ }
       if (m[0] === 'EVENT' && m[2]) {
-        track(open(m[2]).catch(err => {
+        // `live` is per-connection and flips at THIS relay's EOSE, so an envelope is live only if it
+        // arrived after the backfill that relay owed us. On a reconnect the subscription replays and
+        // `live` goes false again, which is correct: those are old messages arriving a second time.
+        track(open(m[2], live).catch(err => {
           failed++
           console.error(`  an opener threw — ${String(err?.message || err).slice(0, 160)}`)
         }))
         return
       }
-      if (m[0] === 'EOSE') { answered++; if (!watch) { clearTimeout(t); end() } }
+      if (m[0] === 'EOSE') { answered++; live = true; if (!watch) { clearTimeout(t); end() } }
     }
     // `ws` emits 'close' after 'error', so the close handler is the single place this is decided.
     ws.onerror = () => {}
