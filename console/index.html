@@ -309,6 +309,28 @@
 
       <button class="btn ghost" id="mint-use" style="margin-top:12px">Use this key below</button>
     </div>
+
+    <!-- #537. Admission used to be reachable only from a key minted in THIS page session, so an
+         identity that already existed — minted earlier, already in the bunker, with a working URI —
+         could not be admitted from here at all, and the operator was pushed to a terminal for a step
+         that is inherently repetitive. What actually gates admission is CUSTODY, and a fresh mint is
+         only one way to reach it. This is the other way, and it proves the same thing the same way. -->
+    <div id="adopt" style="margin-top:20px;padding-top:16px;border-top:1px solid var(--line)">
+      <label>Already have an identity? <span class="hint">one your bunker already holds</span></label>
+      <div class="hint" style="margin:6px 0 10px">
+        Nothing is made here. Give the identity's public half and the bunker URI that signs for it,
+        and this page proves custody exactly as it does for a key it just minted — one throwaway
+        challenge, checked against <strong>the key you name below</strong>, never against the key the
+        URI names. Those can differ, and a proof against the URI's own key would pass for any bunker
+        that answers.
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="adopt-pubkey" placeholder="npub1… or 64-hex — the identity's public key" autocomplete="off" spellcheck="false" style="flex:1 1 260px">
+        <input id="adopt-bunker" placeholder="bunker://… that signs for it" autocomplete="off" spellcheck="false" style="flex:1 1 260px">
+        <button class="btn" id="adopt-prove" style="flex:0 0 auto">Prove custody</button>
+      </div>
+      <div class="status" id="adoptst"></div>
+    </div>
     <div class="status" id="mintst"></div>
   </div>
 
@@ -403,6 +425,7 @@ import { scopeHash } from './scope-hash.mjs'
 import { mintAgentKey } from './mint-agent-key.mjs'
 import { proveCustody, custodyNonce } from './bunker-custody.mjs'
 import { claimInvite, mintInvite, readPolicy } from './admission-client.mjs'
+import { resolveAdoptedPubkey } from './adopt-identity.mjs'
 import { loadRelayUrl, probeRelay, rememberRelayUrl } from './relay-reach.mjs'
 import { checkMintBounds } from './relay-admission.mjs'
 import { adoptFrom, nameVerdict, profileTemplate, publishCommunity, publishPublic, readBackCommunity, readPublic } from './profile-publish.mjs'
@@ -851,9 +874,23 @@ let minted = null
 // the handler — so anything added there that meant "the operator" would silently have got the
 // agent's bunker, and the relay answers 200 to that mistake.
 let agentSigner = null
+// #537. An identity this page did NOT mint, whose custody has been proved all the same. It holds a
+// public half and nothing else — there is no secret here and there must never be one, which is why
+// every check that needs the secret stays bound to `minted` below instead of moving onto this.
+let adoptedIdentity = null
+// What the steps after custody actually need: the public identity whose custody is proved. A fresh
+// mint and an adopted key arrive at that state by different routes and are the same thing after it,
+// so gating on `minted` was gating on provenance where the property that matters is custody.
+const activeIdentity = () => (minted ? minted.display : adoptedIdentity)
 function forgetMintedKey() {
   if (minted) minted.secret.forget()
   minted = null
+  adoptedIdentity = null
+  $('adopt-pubkey').value = ''
+  $('adopt-bunker').value = ''
+  $('adoptst').className = 'status'; $('adoptst').textContent = ''
+  $('mint-secret-row').style.display = ''
+  $('mint-use').style.display = ''
   try { agentSigner?.close?.() } catch { /* a pairing that will not close is still being dropped */ }
   agentSigner = null
   $('mint-out').style.display = 'none'
@@ -956,6 +993,71 @@ $('mint-prove').addEventListener('click', async () => {
   st.textContent = `Custody proved — ${verdict.reason} This page has now cleared its copy. ` +
     'The pairing stays open for the admission step below, and is dropped when you make another key.'
 })
+
+// #537. The same proof, for an identity this page never minted. Deliberately the same
+// `proveCustody` call over the same fresh nonce: an adopted identity is admitted on identical
+// evidence to a minted one, and anything weaker here would be a second, quieter door into the
+// same relay.
+$('adopt-prove').addEventListener('click', async () => {
+  const st = $('adoptst')
+  const say = (cls, text) => { st.className = `status${cls ? ` ${cls}` : ''}`; st.textContent = text }
+  const rawKey = $('adopt-pubkey').value.trim()
+  const uri = $('adopt-bunker').value.trim()
+  if (!rawKey) { say('err', 'Give the identity being admitted — its npub, or its 64-hex public key.'); return }
+  if (!uri) { say('err', 'Paste the bunker:// URI that signs for that identity.'); return }
+
+  // The pin is whatever the operator NAMED, resolved here so a typo is a refusal rather than a
+  // proof against the wrong key. An nsec pasted into this field is refused by type and never
+  // echoed back — the field wants a public half, and saying which type arrived is enough.
+  const resolved = resolveAdoptedPubkey(rawKey, nip19)
+  if (!resolved.ok) { say('err', resolved.reason); return }
+  const { pubkeyHex, npub } = resolved
+
+  // Whatever is in flight belongs to a different identity. Cleared first, so a failed adopt cannot
+  // leave the page half-pointed at the previous one — the two fields are put back because losing
+  // what the operator typed on a recoverable failure is its own small defeat.
+  forgetMintedKey()
+  $('adopt-pubkey').value = rawKey
+  $('adopt-bunker').value = uri
+
+  say('', 'Asking that bunker to sign a challenge — approve it there if it asks…')
+  let paired = null, verdict = null
+  try {
+    const { nip46Signer } = await nc()
+    paired = await nip46Signer(uri)
+    verdict = await proveCustody({
+      expectedPubkeyHex: pubkeyHex,
+      sign: (event) => paired.signEvent(event),
+      verifyEvent,
+      nonce: custodyNonce(b => crypto.getRandomValues(b)),
+    })
+  } catch (e) {
+    try { paired?.close?.() } catch { /* dropping it either way */ }
+    say('err', `Could not reach that bunker (${e.message}). Nothing was adopted.`)
+    return
+  }
+  if (!verdict.proven) {
+    // Dropped, never kept "in case" — same rule as the minted path. Keeping an unproven pairing is
+    // how a signer that was NOT shown to hold this key ends up signing the claim that admits it.
+    try { paired?.close?.() } catch { /* dropping it either way */ }
+    say('err', `${verdict.code}: ${verdict.reason}`)
+    return
+  }
+
+  adoptedIdentity = Object.freeze({ pubkeyHex, npub })
+  agentSigner = paired
+  // Reuse the minted flow's container, because #admit and #name live inside it. The secret controls
+  // are HIDDEN rather than disabled: an adopted identity has no secret on this page, and a greyed
+  // "show it" button reads as one that could be pressed under some condition.
+  $('mint-npub').textContent = npub
+  $('mint-secret-row').style.display = 'none'
+  $('mint-secret').style.display = 'none'; $('mint-secret').textContent = ''
+  $('mint-custody').style.display = 'none'
+  $('mint-out').style.display = ''
+  $('admit').style.display = ''
+  say('ok', `Custody proved — ${verdict.reason} This identity can now be made a member below. Its private half ` +
+    'was never on this page and is not now.')
+})
 // Admission (#487) — the invite sequence, without a terminal.
 //
 // The invite CODE is a bearer secret: whoever holds it can join this relay. It lives in this
@@ -997,7 +1099,7 @@ $('admit-check').addEventListener('click', async () => {
 })
 
 $('admit-mint').addEventListener('click', async () => {
-  if (!minted) { admitSt('err', 'Make a key first.'); return }
+  if (!activeIdentity()) { admitSt('err', 'Make a key first, or prove custody of one you already have.'); return }
   if (!signer) { admitSt('err', 'Sign in first — minting an invite is signed by YOUR key, and it needs owner or admin on the relay.'); return }
   const relayUrl = $('admit-relay').value.trim()
   if (!relayUrl) { admitSt('err', 'Give the relay URL — the same one the buzz CLI uses.'); return }
@@ -1072,7 +1174,7 @@ $('admit-claim').addEventListener('click', async () => {
     // The name step opens here and not before: its community half is a write to this relay, and a
     // key that is not on the member list cannot make it.
     $('name').style.display = ''
-    if (minted && !$('name-display').value.trim()) $('name-display').focus()
+    if (activeIdentity() && !$('name-display').value.trim()) $('name-display').focus()
     admitSt('ok', `${out.outcome} — ${out.note} The relay now says this key is a member. That is NOT the ` +
       'same as having watched it authenticate: the proof is one kind:0 published from this key ' +
       'against the community relay and read back cold.')
@@ -1086,7 +1188,7 @@ $('admit-claim').addEventListener('click', async () => {
 $('name-go').addEventListener('click', async () => {
   const st = $('namest')
   const say = (cls, text) => { st.className = `status${cls ? ` ${cls}` : ''}`; st.textContent = text }
-  if (!minted) { say('err', 'Make a key first.'); return }
+  if (!activeIdentity()) { say('err', 'Make a key first, or prove custody of one you already have.'); return }
   if (!agentSigner) { say('err', 'The agent\'s bunker pairing is gone — prove custody again. This profile must be signed by the AGENT\'s key; the relay refuses any event whose key is not the one that signed in.'); return }
   const relayUrl = $('admit-relay').value.trim()
   const display = $('name-display').value.trim()
@@ -1095,8 +1197,8 @@ $('name-go').addEventListener('click', async () => {
   try {
     // Adopt first. A second, drifting profile that disagrees with the one already published is the
     // failure worth preventing, and it is invisible until somebody sees the wrong face.
-    const before = await readPublic(minted.display.pubkeyHex)
-    const adopted = adoptFrom(before.events, minted.display.pubkeyHex)
+    const before = await readPublic(activeIdentity().pubkeyHex)
+    const adopted = adoptFrom(before.events, activeIdentity().pubkeyHex)
     const template = profileTemplate({ name: display, about: $('name-about').value, adopted })
     say('', 'Signing — the agent\'s bunker will prompt, three times: the profile, then the two requests that carry it.')
     const signed = await signFresh(template, agentSigner)
@@ -1108,7 +1210,7 @@ $('name-go').addEventListener('click', async () => {
     // Attempted, and whatever happens is reported as itself. This is expected to be refused:
     // membership buys write, not read, so the refusal distinguishes nothing.
     const communityRead = community.ok
-      ? await readBackCommunity({ relayUrl, pubkey: minted.display.pubkeyHex, sign: t => signFresh(t, agentSigner), nip98 })
+      ? await readBackCommunity({ relayUrl, pubkey: activeIdentity().pubkeyHex, sign: t => signFresh(t, agentSigner), nip98 })
       : null
     const v = nameVerdict({ pub, community, communityRead })
     say(v.proven && v.communityAccepted ? 'ok' : 'err', v.text)
@@ -1118,14 +1220,17 @@ $('name-go').addEventListener('click', async () => {
 })
 
 $('mint-use').addEventListener('click', () => {
-  if (!minted) return
+  if (!activeIdentity()) return
   // Only the public half crosses into the grant form. There is no field on `display` that could
   // carry anything else, which is the point of it being a separate frozen object.
-  $('g-to').value = minted.display.npub
+  $('g-to').value = activeIdentity().npub
   refreshCaps()
   $('issue-panel').scrollIntoView({ behavior: 'smooth', block: 'center' })
   const st = $('mintst')
-  if (!minted.secret.taken()) {
+  // Only a MINTED key can have an unsaved secret. An adopted one has none on this page, so warning
+  // that it was not saved would be false — and a warning that fires when nothing is wrong is how a
+  // real one stops being read.
+  if (minted && !minted.secret.taken()) {
     st.className = 'status err'
     st.textContent = 'Filled in below — but you have not saved the private half yet. Without it nobody can act as this key.'
   }
