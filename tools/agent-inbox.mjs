@@ -7,6 +7,7 @@
 //
 //   node tools/agent-inbox.mjs --pubkey <64-hex> --trust <64-hex>[,<64-hex>…]
 //   node tools/agent-inbox.mjs --pubkey <64-hex> --since 3600 --watch
+//   node tools/agent-inbox.mjs --pubkey <64-hex> --trust <64-hex> --watch --jsonl --on-message ./wake
 //
 // --watch holds the subscription open instead of exiting at EOSE. That is the difference between
 // this and polling, and it is the whole point: an event arrives when it arrives, and the agent is
@@ -24,6 +25,8 @@
 import { readFileSync } from 'node:fs'
 import { verifyEvent } from 'nostr-tools/pure'
 import { loadNostrSigner } from '../src/nostr_signer.mjs'
+import { spawn } from 'node:child_process'
+import { invokeHook, notifyLine } from '../src/return_lane_notify.mjs'
 import { inboxSummary, openTracker, rumorVerdict, sealAuthor, wrapAddressedTo } from '../src/return_lane_inbox.mjs'
 
 const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (process.argv[i + 1] || '') }
@@ -44,6 +47,18 @@ const RELAYS = (relayArg ? relayArg.split(',') : ['wss://nos.lol', 'wss://relay.
   .map(s => s.trim()).filter(Boolean)
 const since = Math.floor(Date.now() / 1000) - (Number(flag('--since')) || 172800)
 const watch = has('--watch')
+
+// --jsonl puts one opened message per line on STDOUT and moves every human sentence to stderr, so a
+// reader can consume stdout without parsing prose out of it. --on-message names an EXECUTABLE, not a
+// command line: there is no argument splitting anywhere in this tool, because a command string is a
+// quoting bug waiting for a display name with a space in it, and this project has already shipped
+// that outage once. The envelope arrives on the hook's stdin. If you need arguments, write a
+// two-line wrapper — that is a deliberate refusal to build a shell-string interface.
+const jsonl = has('--jsonl')
+const onMessage = flag('--on-message')
+if (has('--on-message') && !onMessage) die('--on-message needs a path to an executable')
+if (onMessage && trusted.length === 0) die('--on-message with an empty trust list can never fire — pass --trust/--trust-file, or drop the hook. A hook that cannot fire is indistinguishable from one that is not working')
+const say = jsonl ? (...a) => console.error(...a) : (...a) => console.log(...a)
 
 const signer = loadNostrSigner()
 if (!signer) die('no signer configured — set WAGGLE_BUNKER_URI_FILE (and WAGGLE_NIP46_CLIENT_NSEC_FILE) or BUZZ_PRIVATE_KEY. Without one, sealed mail cannot be opened and this is INCONCLUSIVE, not empty')
@@ -88,7 +103,11 @@ async function open(wrap) {
   catch (e) { failed++; console.error(`  could not open a seal from ${author.author.slice(0, 12)}… — ${String(e?.message || e).slice(0, 160)}`); return }
   const verdict = rumorVerdict(rumor, { author: author.author, self, trusted })
   verdicts.push(verdict)
-  if (verdict.ok === true) {
+  if (jsonl) {
+    // One record per line on stdout, refusals included. Dropping a refusal silently would leave a
+    // reader unable to tell a quiet lane from one being fed forgeries.
+    process.stdout.write(notifyLine(verdict) + '\n')
+  } else if (verdict.ok === true) {
     const mark = verdict.disposition === 'trusted' ? 'TRUSTED' : verdict.disposition.toUpperCase()
     console.log(`\n[${mark}] ${verdict.author.slice(0, 16)}…${verdict.forMe ? '' : '  (this agent was copied, not addressed)'}`)
     console.log(`  ${verdict.reason}`)
@@ -98,6 +117,24 @@ async function open(wrap) {
   } else {
     console.log(`\n[REFUSED] ${verdict.reason}`)
   }
+  if (onMessage) track(runHook(verdict))
+}
+
+// The wake hook. Gated on notifyDecision, which is gated on the trust list and NOTHING else — a
+// mention must never fire this, because anyone may seal mail to this key and a mention that runs a
+// command hands every stranger a trigger on this session.
+//
+// The envelope goes in on STDIN. It is never interpolated into argv and never near a shell:
+// `shell: false` is explicit rather than merely the default, because this is the line that would
+// turn a display name into a command.
+//
+// A hook that cannot be spawned is counted as FAILED, not ignored. An alarm that never fires and
+// one that always fires are indistinguishable from outside, and a wake adapter that silently is not
+// there is the exact failure this tool exists to remove.
+async function runHook(verdict) {
+  const r = await invokeHook({ command: onMessage, verdict, spawn })
+  if (!r.ok) { failed++; console.error(`  ${r.why}`) }
+  else if (!r.ran && !jsonl) console.error(`  hook not run — ${r.why}`)
 }
 
 let answered = 0
@@ -121,7 +158,7 @@ const report = async () => {
   const stillOpen = await drain()
   if (stillOpen) console.error(`  ${stillOpen} wrap(s) were still being opened when the read ended — counted as unread, not as absent`)
   const summary = inboxSummary({ verdicts, failed: failed + stillOpen, reachable: answered, scanned: seen.size })
-  console.log(`\n${summary.text}`)
+  say(`\n${summary.text}`)
   process.exit(summary.inconclusive ? 3 : 0)
 }
 
