@@ -763,9 +763,31 @@ check(ARTIFACTS.some(a => a.blocking) && ARTIFACTS.some(a => !a.blocking),
     "a runtime with no MCP client scopes the exclusivity row out — Pi is kind:'none', so the hazard cannot reach it")
   check(!/\[ok \][^\n]*No other nvoy server/.test(piRun.out),
     '  …as NOT-APPLICABLE and never as ok — "did not apply" and "passed" must not collapse into one cell')
-  // The direction that matters more. A fix that simply stopped checking would pass the line above.
-  check(rowState(claudeRun.out, EXCL) === 'x' || rowState(claudeRun.out, EXCL) === 'ok',
-    'BOTH DIRECTIONS — a runtime that HAS an MCP is still judged on the row, not scoped out of it')
+  // The direction that matters more, and the LIVE run cannot always answer it: the exclusivity row
+  // is only rendered on a machine that has an MCP host installed at all. On CI there is none, the
+  // row is absent, and an absent row is INCONCLUSIVE — it is not evidence that the runtime was
+  // judged. This assertion pinned the verdict itself (`x`) and went green here and red on CI, for
+  // the plain reason that it was a statement about what is registered on this laptop.
+  //
+  // So it is pinned twice. On the function, where it is the same everywhere; and live, where it is
+  // asserted only when the row exists and SAYS SO when it does not, rather than passing by silence.
+  const claudeCell = rowState(claudeRun.out, EXCL)
+  if (claudeCell === null) {
+    console.log('  --   the live run could not judge the exclusivity row — no MCP host on this machine, ' +
+      'so the row is absent. INCONCLUSIVE here; the function-level check below is the one that binds.')
+  } else {
+    check(claudeCell !== 'n/a',
+      `BOTH DIRECTIONS — live, a runtime that HAS an MCP is still JUDGED on the row, whatever the verdict — never scoped out (rendered [${claudeCell}])`)
+  }
+  // The same property on `installState`, which does not depend on what this machine has installed.
+  const exclState = mcp => (installState({ 'mcp-exclusive': { found: false, verified: false } },
+    { lane: 'sealed', mcp }).rows.find(r => r.key === 'mcp-exclusive') || {}).state
+  check(exclState(false) === NOT_APPLICABLE,
+    'a runtime with no MCP client scopes the exclusivity row out — on the function, so CI proves it too')
+  check(exclState(true) !== NOT_APPLICABLE && exclState(true) !== undefined,
+    `BOTH DIRECTIONS — mcp:true keeps the row in scope (${exclState(true)}), so the fix is not "stop checking"`)
+  check(exclState(null) !== NOT_APPLICABLE,
+    '  …and an unknown runtime keeps it too — silence is not a claim that the hazard is absent')
   check(rowState(undeclaredRun.out, EXCL) !== 'n/a',
     'and an UNDECLARED runtime still applies it — silence is not a claim that the hazard is absent')
   const badRt = run([...base, '--runtime', 'nope'])
