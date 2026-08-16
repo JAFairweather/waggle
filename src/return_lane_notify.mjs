@@ -18,11 +18,46 @@
 // DELIVERED THIS, never a trusted party said it. The original poster is in the rendered body as
 // prose and not yet as a field, so a consumer wanting to re-gate on the author cannot do it from
 // this record. Do not read `mayAct` as authorship.
+//
+// ONE THING NARROWS THAT GATE AND NOTHING WIDENS IT. The bridge's own carriage receipt for a send
+// this agent just made is trusted, is `mayAct`, and is nobody speaking — so it does not wake anyone
+// (#550). That test reads content, which would be unsafe if it could ever grant, so it is applied
+// after the trust check and is only ever able to take away.
 
 // Built with fromCharCode so this source stays pure ASCII. A class holding two invisible
 // characters is a class nobody can review, and this repo has already paid for one.
 const U2028 = String.fromCharCode(0x2028)
 const U2029 = String.fromCharCode(0x2029)
+
+const HEX64 = /^[0-9a-f]{64}$/i
+
+/**
+ * Is this the bridge acknowledging THIS agent's own send, rather than somebody speaking to it?
+ *
+ * Found by being woken by one (#550). The wake path fired end to end for the first time and what it
+ * delivered was `{"ok":true,"channel":…,"buzz_event_id":…,"ts":…}` — the carriage receipt for a
+ * message this agent had just sent. Sealed by the bridge, so on the trust list, so `mayAct`; but
+ * nobody said it. On a lane where every send produces one, that is a session woken by its own echo,
+ * and an agent that wakes for its own sends stops reading the ones that wake it for real.
+ *
+ * THE SHAPE IS OBSERVED, NOT CONTRACTED. The broker emits this, not this repo, so there is no
+ * emitter here to pin against and this must fail SAFE: anything it cannot positively identify as a
+ * receipt stays a message and still wakes. Hence all four conditions, not one.
+ *
+ * A community member cannot dress a mention up as one. The bridge renders a carried mention as prose
+ * with the sender quoted inside it ("📥 … you were mentioned … > their text"), so the body never
+ * parses as JSON at the top level and their text can never be the whole content. Asserted with a
+ * hostile fixture rather than reasoned, because the failure — a real mention silently not waking
+ * anyone — is the expensive direction and looks exactly like a quiet lane.
+ */
+export function isCarriageReceipt(content) {
+  const s = String(content ?? '').trim()
+  if (!s.startsWith('{') || !s.endsWith('}')) return false
+  let r
+  try { r = JSON.parse(s) } catch { return false }
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return false
+  return r.ok === true && HEX64.test(String(r.buzz_event_id || '')) && typeof r.channel === 'string'
+}
 
 /**
  * One opened message as one line of JSON.
@@ -51,6 +86,9 @@ export function notifyLine(verdict) {
         // Addressed to this agent on the inside, under the sender's own signature — as opposed to
         // copied. Informational. See the header: this is not an authorisation.
         forMe: v.forMe === true,
+        // Reported, never hidden. A receipt is still a record on the stream — it is the wake it does
+        // not get, not the delivery. A reader tallying sends against acknowledgements needs these.
+        receipt: isCarriageReceipt(v.content),
         at: Number.isSafeInteger(v.at) ? v.at : null,
         reason: String(v.reason || ''),
         content: String(v.content ?? ''),
@@ -78,6 +116,15 @@ export function notifyDecision(verdict, { hasCommand = true } = {}) {
       why: v.forMe === true
         ? `sealed by ${who}…, which is not on the trust list — being addressed is not authority, so the hook did not run`
         : `sealed by ${who}…, which is not on the trust list — the hook did not run`,
+    })
+  }
+  // A TRUSTED COURIER'S ECHO IS NOT NEWS (#550). This sits after the trust check, not before it,
+  // so it can only ever narrow what the trust list already allowed — it is incapable of opening the
+  // hook to anything, which is the property that makes a content-shaped test safe here at all.
+  if (isCarriageReceipt(v.content)) {
+    return Object.freeze({
+      invoke: false,
+      why: 'a carriage receipt for this agent\'s own send — delivered and recorded, but nobody said it, so the hook did not run',
     })
   }
   return Object.freeze({ invoke: true, why: `sealed by ${String(v.author || '').slice(0, 12)}…, which is on the trust list` })

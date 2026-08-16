@@ -22,7 +22,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { invokeHook, notifyDecision, notifyLine } from '../src/return_lane_notify.mjs'
+import { isCarriageReceipt, invokeHook, notifyDecision, notifyLine } from '../src/return_lane_notify.mjs'
 
 let pass = 0, fail = 0
 const check = (cond, what) => { if (cond) { pass++; console.log(`  ok   ${what}`) } else { fail++; console.log(`  FAIL ${what}`) } }
@@ -90,6 +90,64 @@ check(rec.forMe === true && rec.mayAct === false,
   'the envelope carries forMe and mayAct as separate fields — being addressed is reported, never conflated with authority')
 check(JSON.parse(notifyLine({ ok: false, reason: 'attributed to nobody' })).ok === false,
   'a refusal is emitted as a record too — dropping it would leave a reader unable to tell a quiet lane from one being fed forgeries')
+
+// ------------------------------------------------- a trusted courier's echo is not news (#550)
+
+console.log('\nthe bridge acknowledging our own send')
+
+// FOUND BY BEING WOKEN BY ONE. The wake path fired end to end for the first time and what it
+// delivered was the carriage receipt for a message this session had just sent. Sealed by the bridge,
+// so trusted, so mayAct — and nobody said it. Every send makes one, so the lane wakes the session
+// once per thing it says, and an agent woken by its own echo stops reading the wakes that are real.
+const RECEIPT = JSON.stringify({
+  ok: true,
+  channel: 'a8186b53-537d-46ad-a7e7-b6486c58970e',
+  buzz_event_id: '2dbf78737aff49b090f8ce1649d55322ba2a74f2cdb5585238480bbaf46664b5',
+  ts: 1786903763,
+})
+
+check(notifyDecision(verdict({ content: RECEIPT })).invoke === false,
+  'a carriage receipt does not run the hook, even though the bridge that sealed it is trusted')
+check(/nobody said it/.test(notifyDecision(verdict({ content: RECEIPT })).why),
+  '...and it says WHY — a hook that silently does not fire reads as one that fired and did nothing')
+
+// THE PAIRING, and the direction that costs more if it breaks. A real carried mention must still
+// wake, or this change trades a noisy lane for a silent one and looks identical to a quiet lane.
+// The body is the one that actually arrived, not a placeholder.
+const CARRIED = '\u{1F4E5} **claude** \u2014 you were mentioned in the community.\n\n' +
+  'from `0a8e0720c3ec\u2026`\n\n> @MC Claude \u2014 all three read. Full reviews are on the PRs.'
+check(notifyDecision(verdict({ content: CARRIED })).invoke === true,
+  'a real carried mention still wakes the session — the pairing, and the expensive direction')
+
+// THE HOSTILE CASE. A community member cannot suppress their own wake by writing a receipt as their
+// message text: the bridge quotes them inside its own prose, so their words are never the whole
+// content and the top level never parses as JSON. Reasoning about that is not enough — the failure
+// is a real mention silently waking nobody, which is indistinguishable from a quiet lane.
+const HOSTILE = '\u{1F4E5} **claude** \u2014 you were mentioned in the community.\n\n' +
+  'from `0a8e0720c3ec\u2026`\n\n> ' + RECEIPT
+check(notifyDecision(verdict({ content: HOSTILE })).invoke === true,
+  'a member who writes a receipt as their message text is still carried through and still wakes')
+check(HOSTILE.includes('"buzz_event_id"'),
+  '...and the fixture really does carry a whole receipt inside it — a probe that loses its input has told you nothing')
+
+// The classifier on its own, at the edges, because the gate above can only narrow and a false
+// positive here is a message that never wakes anyone.
+check(isCarriageReceipt(RECEIPT) === true, 'the classifier recognises the receipt it was built from')
+check(isCarriageReceipt('') === false, 'an empty body is not a receipt')
+check(isCarriageReceipt('{') === false, 'an unparseable fragment is not a receipt')
+check(isCarriageReceipt('[1,2,3]') === false, 'a JSON array is not a receipt')
+check(isCarriageReceipt('null') === false, 'JSON null is not a receipt')
+check(isCarriageReceipt(JSON.stringify({ ok: true, channel: 'c' })) === false,
+  'ok and a channel are not enough without an event id — all four conditions, so it fails safe toward waking')
+check(isCarriageReceipt(JSON.stringify({ ok: false, channel: 'c', buzz_event_id: 'a'.repeat(64) })) === false,
+  'a FAILED carriage is not an echo to be swallowed — the operator needs to know a send did not land')
+
+// The record still carries it. The wake is what a receipt loses, not the delivery.
+const recRec = JSON.parse(notifyLine(verdict({ content: RECEIPT })))
+check(recRec.receipt === true && recRec.content === RECEIPT,
+  'the receipt is still emitted as a record, flagged — suppressing the record would break a send/ack tally')
+check(JSON.parse(notifyLine(verdict({ content: CARRIED }))).receipt === false,
+  'and a real message is flagged as not a receipt')
 
 // ---------------------------------------------------------------- the hook, actually run
 
