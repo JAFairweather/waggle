@@ -94,11 +94,86 @@ export function isCarriageReceipt(content) {
  * something that happened; dropping it silently would leave a reader unable to tell a quiet lane
  * from one being fed forgeries.
  */
-export function notifyLine(verdict) {
+export function notifyLine(verdict, { id = null, receivedAt = null, firstSeen = true, live = null, bootstrap = false } = {}) {
   const v = verdict && typeof verdict === 'object' ? verdict : {}
+  // The wrap id, and the only thing on this record an adapter can be idempotent on (#559). It is the
+  // caller's job to pass one that has been VERIFIED — `open()` runs `verifyEvent` before it dedupes,
+  // precisely so the id is a hash the relay cannot choose. An unverified id here would let a relay
+  // pick which message a spool cursor believes it has already delivered.
+  //
+  // Absent serialises as null and the key is always present. A missing key and a null are different
+  // states — "this daemon does not emit ids" versus "this record has none" — and an adapter that
+  // cannot tell them apart will treat the first as the second and dedupe every record together.
+  const wrapId = typeof id === 'string' && id ? id : null
+  // Rumor time (`at`) is set by the SENDER; this is when this daemon saw it. They are separate keys
+  // because a spool ordered by sender-controlled time is a spool a sender can reorder.
+  const seenAt = Number.isSafeInteger(receivedAt) ? receivedAt : null
+  // THE WAKE VERDICT, emitted as ONE field so no adapter re-derives it (#559).
+  //
+  // The stream is deliberately ungated — every record reaches stdout, refusals included, so a lane
+  // being fed forgeries cannot look quiet. That is right, and it made an adapter filtering this
+  // stream on `receipt:false` wake on mail from anyone who can seal a wrap to this key, which under
+  // NIP-59 is everyone: a stranger's ordinary message is `ok:true, mayAct:false, receipt:false`. The
+  // hook path refused exactly what that adapter woke on, and `tools/agent-inbox.mjs` had already
+  // written down why — "anyone may seal mail to this key and a mention that runs a command hands
+  // every stranger a trigger on this session". An adapter filters on `wake` and nothing else; the
+  // alternative is every adapter re-deriving a conjunction, which is the adapter owning protocol
+  // semantics, the thing this boundary exists to prevent. `hasCommand: true` because this asks the
+  // gate's question, not "is a hook configured": the record must say the same thing whether or not
+  // this process happens to have one.
+  //
+  // THE TRUST GATE IS NOT THE WHOLE ANSWER, and the two wrong ways to finish it both shipped as
+  // proposals here before this landed (#557 review):
+  //
+  //   wake = invoke                — floods. Every relay replays its history pre-EOSE, so an adapter
+  //                                  fires once per historical message on arm (#554). A Monitor is
+  //                                  automatically STOPPED by a flood, so the flood ends as silence.
+  //   wake = live && invoke        — drops mail. The reconnect replay holds two populations a relay
+  //                                  cannot separate: messages already delivered, and messages that
+  //                                  ARRIVED DURING THE DISCONNECT. Both land pre-EOSE. Gating on
+  //                                  liveness suppresses the second forever, which is the very bug
+  //                                  #557 was filed about, rebuilt inside the field meant to fix it.
+  //
+  // So the gate is FIRST-SEEN, not liveness. Liveness was only ever a stand-in for a dedupe index
+  // that did not exist yet; a durable index retires the stand-in, and keeping both is what loses the
+  // disconnect-window mail. `live` and `bootstrap` stay on the record as audit facts — they explain
+  // why something arrived as replay — and they do not gate.
+  //
+  // `firstSeen` IS THE CALLER'S CLAIM AND THIS MODULE CANNOT CHECK IT. The index is durable state
+  // and lives in the daemon. Reaching this function is supposed to mean the caller's dedupe already
+  // claimed this id — `tools/agent-inbox.mjs` returns early on a hit, so every record it emits is
+  // first-seen by construction.
+  //
+  // BOTH DEFAULTS POINT AT WAKING, deliberately. A caller that forgets either flag gets duplicate
+  // wakes; a caller that forgets them under the opposite defaults gets silence. Those are not
+  // symmetric: a duplicate is noise somebody notices, and a suppression is permanent, because a
+  // first-seen claim is irreversible and no replay ever surfaces that message again. Wrong-and-loud
+  // over wrong-and-quiet, the same direction the spool's fsync ordering takes.
+  //
+  // BOOTSTRAP IS THE ONE CASE LIVENESS STILL OWNS. A first-ever start has an empty index, so a relay
+  // full of history is all-unseen and all-wake — the flood, arriving through the correct gate. The
+  // daemon seeds the index from that population without waking and passes `bootstrap: true` to say
+  // so. That is a per-run fact, not a per-message one, which is why it is a separate argument and
+  // not folded into `firstSeen`: those records ARE first-seen, and recording them as anything else
+  // would make the spool lie about what the index now contains.
+  const isFirstSeen = firstSeen === true
+  const isBootstrap = bootstrap === true
+  const { wake, why: wakeReason } = wakeVerdict(v, { firstSeen, bootstrap })
   const record = v.ok === true
     ? {
         ok: true,
+        id: wrapId,
+        received_at: seenAt,
+        wake,
+        wake_reason: wakeReason,
+        // THE THREE FACTS THE WAKE WAS COMPUTED FROM, each serialised on its own. One `wake:false`
+        // cannot say whether this was history, an already-delivered replay, or a stranger — and an
+        // operator debugging a quiet lane needs to tell those apart before they know what is wrong.
+        // `live` never gates; it is here so a replay is explicable rather than mysterious, and it is
+        // null when the emitter has no notion of a connection at all.
+        first_seen: isFirstSeen,
+        bootstrap: isBootstrap,
+        live: live === null || live === undefined ? null : live === true,
         author: String(v.author || ''),
         disposition: String(v.disposition || ''),
         // The gate, restated in the record rather than left to be re-derived by every adapter that
@@ -115,7 +190,19 @@ export function notifyLine(verdict) {
         reason: String(v.reason || ''),
         content: String(v.content ?? ''),
       }
-    : { ok: false, reason: String(v.reason || 'refused'), disposition: 'refused', mayAct: false, forMe: false }
+    // THE REFUSAL CARRIES AN ID TOO, and it is the branch that most needs one. An adapter that cannot
+    // dedupe a refusal re-wakes on every restart for a lane being fed forgeries — the one case where
+    // the records keep coming and none of them is worth waking for.
+    : {
+        ok: false, id: wrapId, received_at: seenAt,
+        // Carried on this branch too, and not hardcoded to false. An adapter greps one field; a
+        // record that simply omits it on refusals makes "absent" and "false" indistinguishable to
+        // that grep, and the refusal branch is the one a forgery-fed lane produces in volume.
+        wake, wake_reason: wakeReason,
+        first_seen: isFirstSeen, bootstrap: isBootstrap,
+        live: live === null || live === undefined ? null : live === true,
+        reason: String(v.reason || 'refused'), disposition: 'refused', mayAct: false, forMe: false,
+      }
   return JSON.stringify(record).split(U2028).join(String.raw`\u2028`).split(U2029).join(String.raw`\u2029`)
 }
 
@@ -153,6 +240,37 @@ export function notifyDecision(verdict, { hasCommand = true } = {}) {
 }
 
 /**
+ * Should this record wake anybody? The trust gate, plus the two delivery facts it does not know.
+ *
+ * ONE FUNCTION SO THE TWO PATHS CANNOT DISAGREE. `notifyLine` serialises this as `wake` and
+ * `invokeHook` gates on it, and they are the same call rather than two derivations of the same
+ * rule. The version of this that had a hook gate on one side and a stream an adapter re-derived on
+ * the other is how a proven, briefed adapter ended up waking on mail the hook path refused — a
+ * stranger's ordinary message is `ok:true, mayAct:false, receipt:false`, and the adapter matched it.
+ *
+ * The reason is returned either way, and it names the FIRST fact that refused rather than the last
+ * one checked, because this string is what an operator debugging a quiet lane reads before they know
+ * what is wrong. "Refused" and "refused with a misleading explanation" are indistinguishable to an
+ * assertion that only checks `!wake`.
+ */
+export function wakeVerdict(verdict, { firstSeen = true, bootstrap = false, hasCommand = true } = {}) {
+  if (firstSeen !== true) {
+    return Object.freeze({
+      wake: false,
+      why: 'already delivered — no durable first-seen claim was made for this id, so nobody is woken again',
+    })
+  }
+  if (bootstrap === true) {
+    return Object.freeze({
+      wake: false,
+      why: 'seeding the dedupe index on a first start — this history is recorded, not announced',
+    })
+  }
+  const decision = notifyDecision(verdict, { hasCommand })
+  return Object.freeze({ wake: decision.invoke === true, why: String(decision.why || '') })
+}
+
+/**
  * Run the wake hook for one message.
  *
  * `spawn` is injected so a suite can drive this with the REAL `node:child_process.spawn` against a
@@ -173,10 +291,14 @@ export function notifyDecision(verdict, { hasCommand = true } = {}) {
  * never fires and one that always fires are indistinguishable from outside, and a wake adapter that
  * is silently absent is the exact thing this exists to remove.
  */
-export async function invokeHook({ command, verdict, spawn, hasCommand = Boolean(command) } = {}) {
-  const decision = notifyDecision(verdict, { hasCommand })
-  if (!decision.invoke) return Object.freeze({ ran: false, ok: true, why: decision.why })
-  const line = notifyLine(verdict) + '\n'
+export async function invokeHook({ command, verdict, spawn, id = null, receivedAt = null, firstSeen = true, live = null, bootstrap = false, hasCommand = Boolean(command) } = {}) {
+  // THE SAME CALL `notifyLine` SERIALISES AS `wake`. Not the same rule written twice.
+  const decision = wakeVerdict(verdict, { firstSeen, bootstrap, hasCommand })
+  if (!decision.wake) return Object.freeze({ ran: false, ok: true, why: decision.why })
+  // THE SAME RECORD THE STREAM GETS, id included. A hook reading one shape and a spool reading
+  // another would disagree about what arrived, and the disagreement would only show up as an adapter
+  // that re-wakes on messages the stream considers already delivered.
+  const line = notifyLine(verdict, { id, receivedAt, firstSeen, live, bootstrap }) + '\n'
   return await new Promise(resolve => {
     let child
     const fail = e => resolve(Object.freeze({
