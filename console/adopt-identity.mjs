@@ -58,3 +58,77 @@ export function resolveAdoptedPubkey(raw, nip19) {
   // actually be pinned, so a value that round-trips differently cannot be shown as if it matched.
   return { ok: true, pubkeyHex, npub: nip19.npubEncode(pubkeyHex) }
 }
+
+/// The whole adopt decision, in one place a test can drive.
+///
+/// THE RESOLVER IS NOT THE DECISION — THE CALL SITE IS, and that is why this function exists.
+/// `resolveAdoptedPubkey` was driven hard in both directions while the line that consumes it lived
+/// inline in `index.html`, where the only available assertions were "the page imports the module"
+/// and "the string appears". Both stay true when the pin is wrong: replacing
+/// `expectedPubkeyHex: pubkeyHex` with the URI's own transport hex — the exact failure this path
+/// exists to prevent — left the suite reporting 24 passed, 0 failed (#538 review).
+///
+/// So the pin is computed AND consumed here, with every collaborator injected. A test supplies a
+/// pairing whose transport key deliberately differs from the identity being adopted, and the
+/// tautological pin then fails outright instead of passing for any bunker that answers.
+///
+/// Returns a verdict rather than throwing, for the same reason `proveCustody` does: each refusal is
+/// a different action for the operator, and `!ok` cannot tell them apart.
+///
+/// @param {{
+///   rawKey: string, uri: string,
+///   nip19: { decode: Function, npubEncode: Function },
+///   openPairing: (uri: string) => Promise<{ signEvent: Function, close?: Function }>,
+///   proveCustody: Function, verifyEvent: Function, nonce: string,
+///   onResolved?: () => void,
+/// }} deps
+/// @returns {Promise<{ok: true, pubkeyHex: string, npub: string, signer: object, reason: string}
+///                  | {ok: false, code: string, reason: string}>}
+export async function proveAdoptedIdentity({
+  rawKey, uri, nip19, openPairing, proveCustody, verifyEvent, nonce, onResolved,
+}) {
+  const key = String(rawKey == null ? '' : rawKey).trim()
+  const bunkerUri = String(uri == null ? '' : uri).trim()
+  if (!key) {
+    return { ok: false, code: 'NO_KEY', reason: 'Give the identity being admitted — its npub, or its 64-hex public key.' }
+  }
+  if (!bunkerUri) {
+    return { ok: false, code: 'NO_URI', reason: 'Paste the bunker:// URI that signs for that identity.' }
+  }
+
+  const resolved = resolveAdoptedPubkey(key, nip19)
+  if (!resolved.ok) return { ok: false, code: 'BAD_KEY', reason: resolved.reason }
+  const { pubkeyHex, npub } = resolved
+
+  // ONLY ONCE THE INPUT IS GOOD. The page uses this to drop whatever identity it was holding, and
+  // doing that on a typo would cost the operator a proved pairing to punish a misspelling.
+  try { onResolved?.() } catch { /* the caller's own bookkeeping — never a reason to refuse */ }
+
+  let paired = null
+  try {
+    paired = await openPairing(bunkerUri)
+  } catch (e) {
+    try { paired?.close?.() } catch { /* dropping it either way */ }
+    return { ok: false, code: 'UNREACHABLE', reason: `Could not reach that bunker (${e && e.message ? e.message : e}). Nothing was adopted.` }
+  }
+
+  const verdict = await proveCustody({
+    // THE PIN. Not `bunkerUri` — `bunker://<hex>` names the signer's TRANSPORT key, and NIP-46
+    // permits that to differ from the identity it holds, so pinning to it would prove nothing and
+    // pass for any bunker that answers.
+    expectedPubkeyHex: pubkeyHex,
+    sign: (event) => paired.signEvent(event),
+    verifyEvent,
+    nonce,
+    keySource: 'adopted',
+  })
+
+  if (!verdict.proven) {
+    // Dropped, never kept "in case" — same rule as the minted path. Keeping an unproven pairing is
+    // how a signer that was NOT shown to hold this key ends up signing the claim that admits it.
+    try { paired?.close?.() } catch { /* dropping it either way */ }
+    return { ok: false, code: verdict.code, reason: verdict.reason }
+  }
+
+  return { ok: true, pubkeyHex, npub, signer: paired, reason: verdict.reason }
+}

@@ -425,7 +425,7 @@ import { scopeHash } from './scope-hash.mjs'
 import { mintAgentKey } from './mint-agent-key.mjs'
 import { proveCustody, custodyNonce } from './bunker-custody.mjs'
 import { claimInvite, mintInvite, readPolicy } from './admission-client.mjs'
-import { resolveAdoptedPubkey } from './adopt-identity.mjs'
+import { proveAdoptedIdentity } from './adopt-identity.mjs'
 import { loadRelayUrl, probeRelay, rememberRelayUrl } from './relay-reach.mjs'
 import { checkMintBounds } from './relay-admission.mjs'
 import { adoptFrom, nameVerdict, profileTemplate, publishCommunity, publishPublic, readBackCommunity, readPublic } from './profile-publish.mjs'
@@ -1003,49 +1003,40 @@ $('adopt-prove').addEventListener('click', async () => {
   const say = (cls, text) => { st.className = `status${cls ? ` ${cls}` : ''}`; st.textContent = text }
   const rawKey = $('adopt-pubkey').value.trim()
   const uri = $('adopt-bunker').value.trim()
-  if (!rawKey) { say('err', 'Give the identity being admitted — its npub, or its 64-hex public key.'); return }
-  if (!uri) { say('err', 'Paste the bunker:// URI that signs for that identity.'); return }
-
-  // The pin is whatever the operator NAMED, resolved here so a typo is a refusal rather than a
-  // proof against the wrong key. An nsec pasted into this field is refused by type and never
-  // echoed back — the field wants a public half, and saying which type arrived is enough.
-  const resolved = resolveAdoptedPubkey(rawKey, nip19)
-  if (!resolved.ok) { say('err', resolved.reason); return }
-  const { pubkeyHex, npub } = resolved
-
-  // Whatever is in flight belongs to a different identity. Cleared first, so a failed adopt cannot
-  // leave the page half-pointed at the previous one — the two fields are put back because losing
-  // what the operator typed on a recoverable failure is its own small defeat.
-  forgetMintedKey()
-  $('adopt-pubkey').value = rawKey
-  $('adopt-bunker').value = uri
 
   say('', 'Asking that bunker to sign a challenge — approve it there if it asks…')
-  let paired = null, verdict = null
-  try {
-    const { nip46Signer } = await nc()
-    paired = await nip46Signer(uri)
-    verdict = await proveCustody({
-      expectedPubkeyHex: pubkeyHex,
-      sign: (event) => paired.signEvent(event),
-      verifyEvent,
-      nonce: custodyNonce(b => crypto.getRandomValues(b)),
-    })
-  } catch (e) {
-    try { paired?.close?.() } catch { /* dropping it either way */ }
-    say('err', `Could not reach that bunker (${e.message}). Nothing was adopted.`)
+  // EVERY DECISION IS IN THE MODULE, and that is the point of the shape rather than a tidiness
+  // preference. What makes this path safe is what the proof is pinned to, and while that line lived
+  // here the only assertions available over it were source scans that stayed true when it was wrong
+  // (#538 review). This handler now does DOM work and nothing else, so there is nothing left in it
+  // to get wrong quietly.
+  const outcome = await proveAdoptedIdentity({
+    rawKey,
+    uri,
+    nip19,
+    openPairing: async (u) => (await nc()).nip46Signer(u),
+    proveCustody,
+    verifyEvent,
+    nonce: custodyNonce(b => crypto.getRandomValues(b)),
+    // Whatever is in flight belongs to a different identity, and it goes only once the input is
+    // good — the two fields are put back because losing what the operator typed on a recoverable
+    // failure is its own small defeat.
+    onResolved: () => {
+      forgetMintedKey()
+      $('adopt-pubkey').value = rawKey
+      $('adopt-bunker').value = uri
+    },
+  })
+  if (!outcome.ok) {
+    say('err', ['NO_KEY', 'NO_URI', 'BAD_KEY', 'UNREACHABLE'].includes(outcome.code)
+      ? outcome.reason
+      : `${outcome.code}: ${outcome.reason}`)
     return
   }
-  if (!verdict.proven) {
-    // Dropped, never kept "in case" — same rule as the minted path. Keeping an unproven pairing is
-    // how a signer that was NOT shown to hold this key ends up signing the claim that admits it.
-    try { paired?.close?.() } catch { /* dropping it either way */ }
-    say('err', `${verdict.code}: ${verdict.reason}`)
-    return
-  }
+  const { pubkeyHex, npub } = outcome
 
   adoptedIdentity = Object.freeze({ pubkeyHex, npub })
-  agentSigner = paired
+  agentSigner = outcome.signer
   // Reuse the minted flow's container, because #admit and #name live inside it. The secret controls
   // are HIDDEN rather than disabled: an adopted identity has no secret on this page, and a greyed
   // "show it" button reads as one that could be pressed under some condition.
@@ -1055,7 +1046,7 @@ $('adopt-prove').addEventListener('click', async () => {
   $('mint-custody').style.display = 'none'
   $('mint-out').style.display = ''
   $('admit').style.display = ''
-  say('ok', `Custody proved — ${verdict.reason} This identity can now be made a member below. Its private half ` +
+  say('ok', `Custody proved — ${outcome.reason} This identity can now be made a member below. Its private half ` +
     'was never on this page and is not now.')
 })
 // Admission (#487) — the invite sequence, without a terminal.
