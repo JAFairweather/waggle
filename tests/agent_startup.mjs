@@ -561,6 +561,63 @@ check(unseated !== null && !/act as this key/.test(unseated),
 check(unseated !== null && /nomanifest/.test(unseated),
   'and the file is still written and still addressed to the agent')
 
+// ── 6b. A document already on disk can still be compared against a fresh one (#539) ─────────
+console.log('\n6b. --print renders a FRESH document even when one already exists')
+// The file is never overwritten, deliberately. So the only defence against a stale one is reading
+// a fresh copy beside it — and `--print` was consulted only when the file was ABSENT, which turned
+// it off in the one case it is for. The message told the operator to compare, and the command it
+// suggested landed back in the same branch and printed the suggestion again.
+//
+// This is not hypothetical: pi-dog's document, written before its bunker was seated, still said
+// `this does not work yet` on a day when both of its commands were exercised live. Nothing in the
+// tool would show the operator otherwise.
+const runStartupRaw = (agent, extra = []) => {
+  const args = [join(ROOT, 'tools', 'connect-agent.mjs'), '--name', agent, '--root', probeRoot,
+    '--startup', '--runtime', 'generic', ...extra]
+  try { return execFileSync(process.execPath, args, { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'] }) }
+  catch (e) { return typeof e?.stdout === 'string' ? e.stdout : null }
+}
+const STALE = 'stalecheck'
+const stalePath = join(probeRoot, STALE, 'AGENTS.md')
+
+// 1. Written while the agent has NO manifest — so the document cannot name a key.
+const wrote = runStartupRaw(STALE)
+check(wrote !== null && /wrote /.test(wrote), 'a first run with no --print writes the file')
+const onDisk = readFileSync(stalePath, 'utf8')
+check(!onDisk.includes(TOOL_PUB), 'and that file does NOT name a key, because there was no manifest to hold one')
+
+// 2. The state then changes underneath it — exactly what a seating does.
+mkdirSync(join(probeRoot, STALE, 'instances'), { recursive: true })
+writeFileSync(join(probeRoot, STALE, 'instances', `${STALE}.json`), JSON.stringify({
+  version: 1, id: STALE, pubkey: TOOL_PUB, grantors: [], task_carriers: [],
+  relays: ['wss://nos.lol'], broker_mode: 'local', delivery_mode: 'notify_only',
+}) + '\n')
+
+const printed = runStartupRaw(STALE, ['--print'])
+check(printed !== null && /act as this key/.test(printed),
+  'a later run WITH --print prints a document, instead of only reporting that one exists')
+// The property that matters. Echoing the file back would satisfy "prints a document" and would be
+// useless — what is needed is the document the tool would write TODAY.
+check(printed !== null && printed.includes(TOOL_PUB),
+  'and it is rendered fresh — it names the key seated AFTER the file was written, which the file cannot')
+check(printed !== null && /NOT overwritten/.test(printed),
+  'and it still says the existing file was not overwritten, so nobody reads the fresh copy as the saved one')
+check(readFileSync(stalePath, 'utf8') === onDisk,
+  'and the file on disk is byte-identical afterwards — --print writes nothing')
+
+// NEGATIVE CONTROL, both halves. Without --print the existing branch must still refuse to render,
+// or "it prints a document" is a statement about the tool always printing rather than about --print.
+const quiet = runStartupRaw(STALE)
+check(quiet !== null && /NOT overwritten/.test(quiet) && !/act as this key/.test(quiet),
+  'NEGATIVE CONTROL — without --print it reports the file and renders nothing')
+check(quiet !== null && /--print/.test(quiet),
+  'and the command it suggests ends in --print, which is now a command that prints')
+// The suggestion has to carry the lane, or the fresh copy is rendered for a DIFFERENT lane and the
+// comparison reports differences that are the missing flag rather than the file being stale.
+const laned = runStartupRaw(STALE, ['--lane', 'sealed'])
+check(laned !== null && /--lane sealed/.test(laned),
+  'and it carries --lane through, so the comparison is against the same lane')
+
 // ── 7. The boundary allowlist ───────────────────────────────────────────────────────────────
 console.log('\n7. the two pasted fields are held to a shape before anything renders them')
 // `secretInText` is a denylist over rendered text, and no denylist can be proven complete. The two
