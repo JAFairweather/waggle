@@ -293,6 +293,19 @@ export function wakeVerdict(verdict, { firstSeen = true, bootstrap = false, hasC
  */
 export async function invokeHook({ command, verdict, spawn, id = null, receivedAt = null, firstSeen = true, live = null, bootstrap = false, hasCommand = Boolean(command) } = {}) {
   // THE SAME CALL `notifyLine` SERIALISES AS `wake`. Not the same rule written twice.
+  //
+  // `hasCommand` IS THE ONE ARGUMENT THE TWO SITES DELIBERATELY DISAGREE ON, and the asymmetry is the
+  // point rather than an oversight (#561 review, item 3). This site passes `Boolean(command)`, because
+  // it is about to run something and there must be something to run. `notifyLine` takes the default
+  // `true`, because a record answers the GATE's question — "would this have been allowed to wake
+  // anybody" — not "does this particular process happen to have a hook wired up". A spool written by
+  // a daemon with no hook must say the same thing as one written by a daemon with one, or an adapter
+  // reading it inherits a fact about somebody else's configuration.
+  //
+  // It cannot produce a disagreeing pair. With no command this returns before `notifyLine` is reached,
+  // so no record is emitted here at all; the only record in that case is the stream's, which is
+  // correct on its own terms. The suite pins the direction: `wake_reason` never blames a missing
+  // --on-message.
   const decision = wakeVerdict(verdict, { firstSeen, bootstrap, hasCommand })
   if (!decision.wake) return Object.freeze({ ran: false, ok: true, why: decision.why })
   // THE SAME RECORD THE STREAM GETS, id included. A hook reading one shape and a spool reading
