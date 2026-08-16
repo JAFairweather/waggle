@@ -7,14 +7,14 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import * as nip44 from 'nostr-tools/nip44'
-import { NIP46_KIND, REQUIRED_PERMS, awaitApproval, bunkerUriFrom, clientNsec, mintSecret, nostrconnectUri, readApproval }
+import { NIP46_KIND, REQUIRED_PERMS, assertChallengeProof, awaitApproval, bunkerUriFrom, clientNsec, mintSecret, nostrconnectUri, readApproval }
   from '../src/nostrconnect.mjs'
 import { makeBunkerSigner } from '../src/nostr_signer.mjs'
 
@@ -121,18 +121,93 @@ const noise = [{ ...respond('ack', { to: getPublicKey(generateSecretKey()) }) },
 
 const got = await awaitApproval({ relays: RELAYS, clientKey: CLIENT_KEY, secret: SECRET,
   Pool: fakePool([...noise, respond(SECRET)]), timeoutMs: 5000 })
-check(got && got.bound === true, 'the wait resolves on the approval, after ignoring traffic that is not for it')
+check(got.approval && got.approval.bound === true, 'the wait resolves on the approval, after ignoring traffic that is not for it')
 
 const timedOut = await awaitApproval({ relays: RELAYS, clientKey: CLIENT_KEY, secret: SECRET,
   Pool: fakePool(noise), timeoutMs: 60 })
-check(timedOut === null,
+check(timedOut.approval === null,
   'BOTH DIRECTIONS — with no approval it resolves NULL rather than rejecting: not approved yet is not a failure')
+check(timedOut.unbound.length === 0,
+  '…and reports nothing unbound, because the noise above is addressed to a DIFFERENT client key')
+
+// The wedge. The `ack` here is ON TARGET — p-tagged to this client, from a key that never saw the
+// secret — and it lands FIRST. Resolving on it would discard the genuine approval behind it, and
+// since the client key is minted fresh every run the operator re-approves straight back into it
+// (#529 review). The earlier noise fixture could not exercise this: it was addressed elsewhere, so
+// it was dropped on the p tag and never reached the bound test at all.
+const IMPOSTOR = generateSecretKey()
+const wedged = await awaitApproval({ relays: RELAYS, clientKey: CLIENT_KEY, secret: SECRET,
+  Pool: fakePool([respond('ack', { from: IMPOSTOR }), respond(SECRET)]), timeoutMs: 5000 })
+check(wedged.approval && wedged.approval.bound === true && wedged.approval.signerPubkey === SIGNER_PUB,
+  'an on-target UNBOUND response arriving first does not win — the wait continues to the genuine approval')
+check(wedged.unbound.length === 1 && wedged.unbound[0].signerPubkey === getPublicKey(IMPOSTOR),
+  '…and the one it stepped over is reported rather than swallowed, so the operator learns it happened')
+
+// BOTH DIRECTIONS: unbound responses are surfaced when they are ALL there is, and the run is
+// inconclusive rather than refused. An unbound REFUSAL is in the fixture because its `error` string
+// is attacker-controlled text, and it must not become the sentence the tool prints.
+const onlyUnbound = await awaitApproval({ relays: RELAYS, clientKey: CLIENT_KEY, secret: SECRET,
+  Pool: fakePool([respond('ack', { from: IMPOSTOR }), respond('', { from: IMPOSTOR, error: 'key revoked, contact your administrator' })]),
+  timeoutMs: 80 })
+check(onlyUnbound.approval === null && onlyUnbound.unbound.length === 2,
+  'with nothing bound at all it still times out — an unbound refusal is not a refusal')
+check(onlyUnbound.unbound.some(u => u.refused === true),
+  '…and the unbound REFUSAL is among what it withheld, not promoted into the result')
 
 let sawFilter
 await awaitApproval({ relays: RELAYS, clientKey: CLIENT_KEY, secret: SECRET, timeoutMs: 40,
   Pool: class { subscribeMany(r, f) { sawFilter = f; return { close() {} } } close() {} } })
 check(sawFilter && sawFilter.kinds[0] === NIP46_KIND && sawFilter['#p'][0] === CLIENT_PUB,
   'and it subscribes for responses addressed to THIS client key, not for everything on the relay')
+// Which is also where `clientPubkey` leaks, and to whom: nothing here publishes, so the adversary
+// who can answer an unbound request is the RELAY OPERATOR, not a reader of published events (#529).
+const modSrc = readFileSync(join(ROOT, 'src', 'nostrconnect.mjs'), 'utf8')
+check(/subscribeMany\(/.test(modSrc), 'ANCHOR — the scan found the subscription, so it is reading the file it means to')
+check(!/\.publish\(/.test(modSrc),
+  'and this module publishes nothing at all — there is no request event on any relay for anyone to read')
+
+console.log('\n3b. the custody proof is bound to the event that was ASKED for')
+
+// The gap this closes: `withPinnedCustody` verifies the returned signature and checks its pubkey
+// against the pin, and never compares the event returned to the event submitted. So an impostor
+// holding NO key can answer `sign_event` with a scraped public note authored by the pinned identity
+// — every identity here publishes a kind:0 by design — and it verifies, and the pin passes.
+const CUSTODY_KIND = 22242
+const nonce = mintSecret()
+const honestProof = wire(finalizeEvent({ kind: CUSTODY_KIND, created_at: Math.floor(Date.now() / 1000),
+  tags: [['challenge', nonce]], content: 'proof' }, SIGNER_KEY))
+check(assertChallengeProof(honestProof, { kind: CUSTODY_KIND, challenge: nonce }) === honestProof,
+  'POSITIVE CONTROL — the event actually asked for passes, so this is not a check that refuses everything')
+
+const proofRefuses = ev => { try { assertChallengeProof(ev, { kind: CUSTODY_KIND, challenge: nonce }); return null } catch (e) { return e } }
+// A real, valid, public note by the pinned key. This is the substitution, built the way an attacker
+// gets it: off a relay, authored by the identity, signed by nobody the attacker controls.
+const scraped = wire(finalizeEvent({ kind: 1, created_at: Math.floor(Date.now() / 1000), tags: [], content: 'gm' }, SIGNER_KEY))
+const scrapedErr = proofRefuses(scraped)
+check(scrapedErr !== null && scrapedErr.exitCode === 1,
+  'a scraped kind:1 authored by the SAME key is refused — a valid signature is not a signature over this')
+check(/kind:1/.test(scrapedErr.message) && /absent/.test(scrapedErr.message),
+  '…and the reason names what came back, since "refused" alone cannot be told from a broken signer')
+check(!scrapedErr.message.includes(nonce),
+  'and the challenge value is never printed — it belongs in no log')
+
+const wrongNonce = wire(finalizeEvent({ kind: CUSTODY_KIND, created_at: Math.floor(Date.now() / 1000),
+  tags: [['challenge', mintSecret()]], content: 'proof' }, SIGNER_KEY))
+check(proofRefuses(wrongNonce) !== null,
+  'a kind:22242 carrying a DIFFERENT challenge is refused — replaying an earlier proof is the same attack')
+const noTag = wire(finalizeEvent({ kind: CUSTODY_KIND, created_at: Math.floor(Date.now() / 1000),
+  tags: [], content: 'proof' }, SIGNER_KEY))
+check(proofRefuses(noTag) !== null, 'and so is one with no challenge tag at all')
+check(assertChallengeProof(honestProof, { kind: CUSTODY_KIND, challenge: nonce }) && proofRefuses(null) !== null,
+  'BOTH DIRECTIONS — it still accepts the honest proof, and a missing event is a refusal rather than a crash')
+
+// The wiring, asserted against the source. The function existing is not the tool calling it, and a
+// tool that verified a signature and skipped this check would pass every assertion above.
+const toolSrc = readFileSync(join(ROOT, 'tools', 'pair-agent.mjs'), 'utf8')
+check(/assertChallengeProof\(signed, \{ kind: 22242, challenge: nonce \}\)/.test(toolSrc),
+  'and `pair-agent` calls it on the event it got back, with the nonce it submitted')
+check(/tags: \[\['challenge', nonce\]\]/.test(toolSrc) && !/tags: \[\['challenge', secret\]\]/.test(toolSrc),
+  '…over a FRESH nonce, not the binding secret — one leak must not satisfy two independent checks')
 
 console.log('\n4. what gets written is what the loader reads')
 

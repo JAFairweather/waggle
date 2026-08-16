@@ -20,17 +20,18 @@
 //
 // ── Exit codes ─────────────────────────────────────────────────────────────────────────────────
 //
-//   0  paired AND custody proven by a verified signature
-//   1  refused — declined at the signer, an unbound response, a custody mismatch, or bad input
+//   0  paired AND custody proven — a verified signature over THIS run's own challenge
+//   1  refused — declined at the signer, a custody mismatch, a substituted event, or bad input
 //   2  the signer returned a signature that does not verify at all
-//   3  INCONCLUSIVE — nothing arrived before the timeout. Not the same as refused, and not fine.
+//   3  INCONCLUSIVE — no bound approval before the timeout, whether or not something answered.
+//      Not the same as refused, and not fine.
 
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure'
-import { awaitApproval, bunkerUriFrom, clientNsec, mintSecret, nostrconnectUri, REQUIRED_PERMS } from '../src/nostrconnect.mjs'
+import { assertChallengeProof, awaitApproval, bunkerUriFrom, clientNsec, mintSecret, nostrconnectUri, REQUIRED_PERMS } from '../src/nostrconnect.mjs'
 import { makeBunkerSigner, withPinnedCustody } from '../src/nostr_signer.mjs'
 import { DEFAULT_PUBLIC_RELAYS } from '../src/relays.mjs'
 import { acceptableName, normaliseName } from '../src/connect_flags.mjs'
@@ -92,28 +93,49 @@ if (has('--print-only')) {
 }
 console.log(`Waiting up to ${Math.round(timeoutMs / 1000)}s…`)
 
-const approval = await awaitApproval({ relays, clientKey, secret, timeoutMs })
+const { approval, unbound } = await awaitApproval({ relays, clientKey, secret, timeoutMs })
 
 if (!approval) {
-  die(`nothing arrived in ${Math.round(timeoutMs / 1000)}s. That is INCONCLUSIVE, not a refusal — the ` +
-      'approval may still be sitting in your signer, or the request may have reached no relay it watches. ' +
-      'Nothing was written.', 3)
+  // Two different silences, and the operator's next move differs. Nothing at all points at the
+  // request never reaching a relay the signer watches. Something that answered but could not be
+  // bound points at either a signer that does not implement the secret echo, or someone else on
+  // one of these relays answering ahead of it — and this tool cannot tell those apart, which is
+  // exactly why it seats neither.
+  die(`no BOUND approval arrived in ${Math.round(timeoutMs / 1000)}s. That is INCONCLUSIVE, not a refusal.\n` +
+      (unbound.length
+        ? `  ${unbound.length} response${unbound.length === 1 ? '' : 's'} DID arrive and ${unbound.length === 1 ? 'was' : 'were'} not acted on, ` +
+          'because none echoed this request\'s secret. Either your signer does not implement the echo, ' +
+          'or something else on these relays answered. Try a relay your signer alone watches; if it ' +
+          'still cannot echo, that signer cannot be seated by this tool.'
+        : '  Nothing answered at all — the approval may still be sitting in your signer, or the ' +
+          'request may have reached no relay it watches.') +
+      '\n  Nothing was written.', 3)
 }
-if (approval.refused) die(`the signer declined: ${approval.error}. Nothing was written.`)
+// Bound first. A refusal that does not echo the secret is attacker-controlled text, and printing it
+// as "the signer declined: <string>" attributes to the operator's own signer a sentence this tool
+// has just said it will not attribute (#529 review). `awaitApproval` already withholds those, so
+// this is the guard that keeps that true if it ever stops.
 if (!approval.bound) {
   die('the response did not echo this request\'s secret, so it cannot be attributed to the approval ' +
-      'you gave. Anyone watching the relay can answer an unbound request from a key of their own, and ' +
-      'this tool will not seat a pairing it cannot bind. Nothing was written.')
+      'you gave. This tool will not seat a pairing it cannot bind. Nothing was written.')
 }
+if (approval.refused) die(`the signer declined: ${approval.error}. Nothing was written.`)
 
-// Custody. `get_public_key` is NOT this check and cannot be: whoever answered controls every RPC
-// response it sends, so it will answer with any key you were hoping for. What it cannot produce is
-// a signature that VERIFIES as that key — so the proof is a signed challenge, run through
-// `withPinnedCustody`, which verifies the signature and compares the signing key against the pin.
+// Custody, and it takes BOTH checks below. `get_public_key` is neither and cannot be: whoever
+// answered controls every RPC response it sends, so it will answer with any key you were hoping
+// for. `withPinnedCustody` verifies the returned signature and compares the signing key to the pin
+// — necessary, and on its own still satisfiable by an impostor holding no key at all, which answers
+// `sign_event` with a scraped public note authored by that key. `assertChallengeProof` is the half
+// that closes it: the event that comes back must be the event that went out.
 //
 // kind:22242 is NIP-42's client-auth kind: ephemeral, so relays do not store it, and inert without
 // a matching relay challenge. Signing one proves custody and authorises nothing. It is never
 // published.
+//
+// The challenge is a FRESH nonce rather than the binding secret. They answer different questions —
+// which approval this is, and who holds the key — and reusing one value for both would make a
+// single leak satisfy two independent checks.
+const nonce = mintSecret()
 const bunkerUri = bunkerUriFrom({ signerPubkey: approval.signerPubkey, relays, secret })
 const signer = withPinnedCustody(makeBunkerSigner(bunkerUri, clientNsec(clientKey), {
   uriLabel: 'the pairing you just approved', clientLabel: 'the client key this run generated',
@@ -122,7 +144,8 @@ const signer = withPinnedCustody(makeBunkerSigner(bunkerUri, clientNsec(clientKe
 let signed
 try {
   signed = await signer.signEvent({ kind: 22242, created_at: Math.floor(Date.now() / 1000),
-    tags: [['challenge', secret]], content: `waggle pair-agent custody proof for ${name} — not published` })
+    tags: [['challenge', nonce]], content: `waggle pair-agent custody proof for ${name} — not published` })
+  assertChallengeProof(signed, { kind: 22242, challenge: nonce })
 } catch (e) {
   try { signer.close() } catch { /* already closed */ }
   die(`${e.message} Nothing was written.`, e.exitCode ?? 1)
@@ -136,8 +159,15 @@ writeFileSync(uriPath, `${bunkerUri}\n`, { mode: 0o600, flag: 'wx' })
 writeFileSync(clientPath, `${clientNsec(clientKey)}\n`, { mode: 0o600, flag: 'wx' })
 
 console.log('')
-console.log(`PAIRED. Custody proven by a verified signature, not by asking.`)
-console.log(`  signs as   ${signed.pubkey}${expect ? '  (matches --expect)' : ''}`)
+// Without `--expect` there is no pin, so `withPinnedCustody` skips its comparison and this run has
+// established that the pairing can sign SOMETHING — not that it signs as the identity you meant.
+// The request-time line above says so; a success banner that says otherwise is the contradiction an
+// operator believes, because it is the last thing printed (#529 review).
+console.log(expect
+  ? 'PAIRED. Custody proven: a signature over this run\'s own challenge, verified against --expect.'
+  : 'PAIRED, IDENTITY UNPINNED. The pairing signed this run\'s own challenge, so it holds a key —\n' +
+    '  but no --expect was given, so nothing checked WHICH key. Re-run with --expect to pin it.')
+console.log(`  signs as   ${signed.pubkey}${expect ? '  (matches --expect)' : '  (reported, not enforced)'}`)
 console.log(`  wrote      ${uriPath}`)
 console.log(`             ${clientPath}`)
 console.log(`  both mode 0600. Neither value is printed here, and neither should ever be.`)

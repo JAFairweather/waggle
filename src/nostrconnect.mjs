@@ -17,14 +17,20 @@
 //
 //   1. **Which approval this is.** The request carries a `secret`, and the signer echoes it back.
 //      Only someone shown the request knows it, so the echo binds the response to the operator's
-//      approval. A response that does not echo it is UNBOUND: anyone watching the relay sees the
-//      request event and can answer it from a key of their own.
+//      approval. A response that does not echo it is UNBOUND, and the adversary who can send one is
+//      the **relay operator**, not a reader of published events: nothing here publishes anything.
+//      The URI is printed to a terminal and `awaitApproval` only subscribes — but the subscription
+//      filter is `{kinds:[24133], '#p':[clientPubkey]}`, so every relay passed in `--relay` is
+//      handed the address to answer at. Correcting who this defends against because it is the
+//      sentence the next person reasons from (#529 review).
 //
 //   2. **Which identity it holds.** Nothing in the handshake establishes this, and `get_public_key`
 //      cannot: an impostor controls every RPC response it sends, so it will happily answer with the
-//      key you were hoping for. The only thing an impostor cannot produce is a SIGNATURE that
-//      verifies as that key. So custody is proven by signing a challenge and verifying it — which
-//      is what `withPinnedCustody` in `nostr_signer.mjs` already does — never by asking.
+//      key you were hoping for. What it cannot produce is a signature by that key **over the event
+//      it was handed** — so custody is proven by signing a fresh challenge, verifying the signature
+//      against the pinned key (`withPinnedCustody`) AND comparing the returned event back against
+//      the one submitted (`assertChallengeProof`). Verification alone is not the claim: see that
+//      function's header for the impostor it does not stop.
 //
 // Neither claim implies the other, and the caller is expected to establish both before it writes
 // anything to disk.
@@ -132,11 +138,19 @@ export function readApproval(event, { clientKey, clientPubkey, secret, decrypt =
 }
 
 /**
- * Hold the relays open until an approval addressed to this request arrives.
+ * Hold the relays open until a BOUND approval addressed to this request arrives.
  *
- * Resolves `null` on timeout rather than rejecting: not being approved yet is an ordinary outcome
- * of a flow that waits on a human, and the caller reports it as INCONCLUSIVE (exit 3) rather than
- * as a failure. Being unable to check is not the same as being fine.
+ * Resolving on the first response would hand an observer a wedge rather than merely a detection:
+ * an unbound `ack` arriving milliseconds ahead of the operator's genuine approval would win, the
+ * real approval behind it would be discarded, and — since the client key is minted fresh every run
+ * — the operator would re-approve straight back into it, forever (#529 review). So an unbound
+ * response is recorded and the wait CONTINUES; only a bound one ends it.
+ *
+ * Always resolves `{ approval, unbound }`. `approval` is `null` on timeout rather than rejecting:
+ * not being approved yet is an ordinary outcome of a flow that waits on a human, and the caller
+ * reports it as INCONCLUSIVE (exit 3) rather than as a failure. `unbound` is what was seen and not
+ * acted on, which is the difference between "nothing arrived" and "something answered and could not
+ * be attributed" — being unable to check is not the same as being fine.
  */
 export function awaitApproval({ relays, clientKey, secret, timeoutMs = 180000,
   Pool = SimplePool, decrypt = nip44.v2.decrypt, onEvent } = {}) {
@@ -144,23 +158,62 @@ export function awaitApproval({ relays, clientKey, secret, timeoutMs = 180000,
   const pool = new Pool()
   return new Promise(resolve => {
     let done = false, timer
-    const finish = value => {
+    const unbound = []
+    const finish = approval => {
       if (done) return
       done = true
       clearTimeout(timer)
       try { sub && sub.close && sub.close() } catch { /* already closed */ }
       try { pool.close(relays) } catch { /* already closed */ }
-      resolve(value)
+      resolve({ approval, unbound })
     }
     const sub = pool.subscribeMany(relays, { kinds: [NIP46_KIND], '#p': [clientPubkey] }, {
       onevent(event) {
         if (onEvent) onEvent(event)
         const got = readApproval(event, { clientKey, clientPubkey, secret, decrypt })
-        if (got) finish(got)
+        if (!got) return
+        // Including a refusal. An unbound error is attacker-controlled text, and reporting it as
+        // the operator's own signer's words is exactly the attribution this module refuses to make.
+        if (!got.bound) { unbound.push(got); return }
+        finish(got)
       },
     })
     timer = setTimeout(() => finish(null), timeoutMs)
   })
+}
+
+/**
+ * The custody proof, checked against what was ASKED — not only against the pin.
+ *
+ * `withPinnedCustody` verifies the returned event and compares its pubkey to the pinned key. That
+ * is a weaker claim than "the responder signed this", because nothing there compares the event
+ * returned against the event submitted. An impostor holding no key at all can answer `sign_event`
+ * with a **scraped public note authored by the pinned identity** — every identity here publishes a
+ * `kind:0` by design, so a qualifying event always exists and is always public — and it verifies,
+ * and its pubkey matches, and the pin passes (#529 review).
+ *
+ * Elsewhere that substitution fails visibly downstream, because the signed event IS the artifact
+ * being published. Here nothing is published, so it would be invisible and the conclusion drawn
+ * from it printed as fact. `console/bunker-custody.mjs` compares the challenge back for the same
+ * reason (#491); this is that check on the node side.
+ *
+ * Throws with `exitCode` 1 — a wrong event is bad input, the same class as a custody mismatch. The
+ * challenge value is never printed: it is the binding secret's sibling and belongs in no log.
+ */
+export function assertChallengeProof(signed, { kind, challenge } = {}) {
+  const tag = ((signed && signed.tags) || []).find(t => t[0] === 'challenge')
+  const gotKind = Number(signed && signed.kind)
+  const matches = String((tag && tag[1]) || '') === String(challenge) && String(challenge || '') !== ''
+  if (gotKind !== Number(kind) || !matches) {
+    const e = new Error(
+      `the signer returned a valid signature over a DIFFERENT event than the one it was asked to ` +
+      `sign — asked for kind:${kind}, got kind:${gotKind || 'none'} with a challenge tag that is ` +
+      `${tag ? 'not the one submitted' : 'absent'}. A signature by the right key over the wrong ` +
+      'event proves the responder can fetch one of that key\'s public notes, not that it can sign.')
+    e.exitCode = 1
+    throw e
+  }
+  return signed
 }
 
 /// The client transport key, in the form `credentials/bunker-client` holds it.
