@@ -153,7 +153,7 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, runti
   // change removes, and this time with no caveat to explain it, because a path WAS supplied
   // (#525 review). So anything going into a COMMAND is shell-quoted when it needs to be. Prose
   // paths are not: a quoted `docs/…` reference reads as a defect, and nobody pastes it to a shell.
-  const shq = s => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'\''`)}'`)
+  const shq = s => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`)
   const cmd = p => shq(at(p))
   // `--runtime` for the same reason as `--lane`, and it is not cosmetic either: the MCP rows are
   // scoped by whether the runtime HAS an MCP client, and absent means they apply (#526). So a Pi
