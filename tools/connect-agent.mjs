@@ -54,7 +54,7 @@ import { dirname, join } from 'node:path'
 import { LANES, boundIdentity, installState, renderState } from '../src/agent_install_state.mjs'
 import { exportTemplate, importTemplate } from '../src/agent_manifest_transfer.mjs'
 import { channelCommand, credentialPaths, credentialReport, registeredForm, sameVector } from '../src/channel_registration.mjs'
-import { knownFlag, usageLine } from '../src/connect_flags.mjs'
+import { acceptableName, knownFlag, normaliseName, usageLine } from '../src/connect_flags.mjs'
 import { RUNTIMES, channelStanza, cliRuntimes, exclusivityVerdict, foreignServers, isMine, registrationHelp, runtime } from '../src/mcp_runtimes.mjs'
 import { startupDoc } from '../src/agent_startup.mjs'
 
@@ -69,8 +69,10 @@ const die = m => { console.error(`connect-agent: ${m}`); process.exit(1) }
 const HEX64 = /^[0-9a-f]{64}$/i
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-const name = flag('--name').toLowerCase()
-if (!/^[a-z0-9][a-z0-9._-]{1,63}$/.test(name)) die(usageLine())
+// One predicate, from `connect_flags.mjs`. The pattern used to be a literal here and a second
+// literal in `src/agent_startup.mjs`, and the two already disagreed (#523 review).
+const name = normaliseName(flag('--name'))
+if (!acceptableName(name)) die(usageLine())
 const CHECK = has('--check')
 const ROOT = flag('--root') || join(homedir(), '.nvoy', 'desktop')
 const HERE = join(ROOT, name)

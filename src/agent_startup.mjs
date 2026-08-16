@@ -28,6 +28,7 @@
 //      An agent that believes it is reachable and is not will report the wall as broken, and that
 //      exact confusion has cost this project a day more than once.
 import { ARTIFACTS, LANES, MISSING, PRESENT, UNKNOWN, UNVERIFIED } from './agent_install_state.mjs'
+import { acceptableName, normaliseName } from './connect_flags.mjs'
 
 // Anything that looks like a credential. Checked against the rendered text, not against the inputs,
 // because the failure that matters is what reaches the file.
@@ -107,11 +108,31 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, brief
   // agent that followed the document was told, in effect, that the document was stale (#522). The
   // two tools named a few lines above render as `node tools/…`; this one now matches them.
   const lane = Object.prototype.hasOwnProperty.call(LANES, String(report?.lane)) ? String(report.lane) : null
-  // A name with a space is a real name here (#168), and it would split into two argv words. Quote
-  // anything the tool's own --name pattern would not accept, rather than rendering a command whose
-  // breakage depends on who is reading it.
-  const nameArg = /^[a-z0-9][a-z0-9._-]{1,63}$/.test(String(agent)) ? String(agent) : `'${String(agent).replace(/'/g, `'\\''`)}'`
-  const checkCmd = `node tools/connect-agent.mjs --name ${nameArg} --check${lane ? ` --lane ${lane}` : ''}`
+  // A name with a space is a real name here (#168) — and QUOTING IT IS THE WRONG FIX, which is what
+  // this line used to do. Quoting buys the command a clean parse and nothing else: `--name` is
+  // lowercased and matched against the pattern, so a name that needed quoting to survive argv
+  // splitting is a name the tool then refuses. The failure quoting prevents is not the failure that
+  // occurs (#523 review).
+  //
+  // The predicate comes from `connect_flags.mjs` rather than being copied here. A copy of it lived
+  // on this line and already disagreed with the tool on day one — it omitted the `.toLowerCase()`,
+  // so `Oliver` was quoted by the renderer and accepted by the tool. Two copies of one predicate,
+  // disagreeing immediately, inside the change whose thesis is that copies drift.
+  //
+  // An unacceptable name renders NO command at all. Rule 2 is that nothing unproven is stated as
+  // fact, and a command that exits 1 on the name it was rendered with is a fact the document does
+  // not have. The reader is told what to settle instead — which is what the operator who typed
+  // `Pi Dog` needed and did not get.
+  const checkCmd = acceptableName(agent)
+    ? `node tools/connect-agent.mjs --name ${normaliseName(agent)} --check${lane ? ` --lane ${lane}` : ''}`
+    : null
+  // What is said INSTEAD of a command, when the name would be refused. It names the rule and the
+  // offending name, because "settle your name" without either is an instruction the reader cannot
+  // act on — and being unable to act on it is how `Pi Dog` became a pasted command that exited 1.
+  const nameRule = `\`--name\` takes a short stable id — lowercase, 2\u201364 characters, from ` +
+    `\`a-z0-9._-\` and starting with a letter or digit \u2014 and \`${String(agent)}\` is not one. ` +
+    `Settle the agent's id first; no command is printed here because the one that would be printed ` +
+    `would fail on that name.`
 
   // Only the rows an agent's own behaviour depends on. A wall of install state is a wall nobody
   // reads, and this file competes for the top of a context window.
@@ -256,8 +277,13 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, brief
       : `${laneTitle(k)} is not in place`
     out.push('')
     out.push(`⚠ **Neither command works yet.** ${laneOpen.map(laneSays).join('; ')}.`)
-    out.push(`Settle that first with \`${checkCmd}\`; running either tool before then fails in a`)
-    out.push(`way that looks like the lane being down.`)
+    if (checkCmd) {
+      out.push(`Settle that first with \`${checkCmd}\`; running either tool before then fails in a`)
+      out.push(`way that looks like the lane being down.`)
+    } else {
+      out.push(`Running either tool before that is settled fails in a way that looks like the lane`)
+      out.push(`being down. ${nameRule}`)
+    }
   }
   out.push('')
   out.push('## Before you speak, know what is actually true')
@@ -268,8 +294,10 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, brief
     const titles = neverChecked.map(k => row(k).title).join(', ')
     out.push(`- **${neverChecked.length} further artifact${neverChecked.length === 1 ? ' was' : 's were'} never checked` +
       ` — do not assume either way:** ${titles}.`)
-    out.push(`  Whatever wrote this could not observe ${neverChecked.length === 1 ? 'it' : 'them'};` +
-      ` run \`${checkCmd}\` on the agent's own machine to settle ${neverChecked.length === 1 ? 'it' : 'them'}.`)
+    out.push(`  Whatever wrote this could not observe ${neverChecked.length === 1 ? 'it' : 'them'}.` +
+      (checkCmd
+        ? ` Run \`${checkCmd}\` on the agent's own machine to settle ${neverChecked.length === 1 ? 'it' : 'them'}.`
+        : ` ${nameRule}`))
   }
   out.push('')
   if (open.length) {

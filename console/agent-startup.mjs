@@ -123,8 +123,18 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, brief
   // A name with a space is a real name here (#168), and it would split into two argv words. Quote
   // anything the tool's own --name pattern would not accept, rather than rendering a command whose
   // breakage depends on who is reading it.
-  const nameArg = /^[a-z0-9][a-z0-9._-]{1,63}$/.test(String(agent)) ? String(agent) : `'${String(agent).replace(/'/g, `'\\''`)}'`
-  const checkCmd = `node tools/connect-agent.mjs --name ${nameArg} --check${lane ? ` --lane ${lane}` : ''}`
+  // Twin of `src/agent_startup.mjs`. The predicate is inlined rather than imported because this file
+  // is served to a browser and imports nothing from `src/`; `tests/console_first_prompt.mjs` pins the
+  // two renderers to byte-identical output, so a drift in either copy fails there.
+  const normaliseName = s => String(s ?? '').toLowerCase()
+  const acceptableName = s => /^[a-z0-9][a-z0-9._-]{1,63}$/.test(normaliseName(s))
+  const checkCmd = acceptableName(agent)
+    ? `node tools/connect-agent.mjs --name ${normaliseName(agent)} --check${lane ? ` --lane ${lane}` : ''}`
+    : null
+  const nameRule = `\`--name\` takes a short stable id — lowercase, 2\u201364 characters, from ` +
+    `\`a-z0-9._-\` and starting with a letter or digit \u2014 and \`${String(agent)}\` is not one. ` +
+    `Settle the agent's id first; no command is printed here because the one that would be printed ` +
+    `would fail on that name.`
 
   // Only the rows an agent's own behaviour depends on. A wall of install state is a wall nobody
   // reads, and this file competes for the top of a context window.
@@ -269,8 +279,13 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, brief
       : `${laneTitle(k)} is not in place`
     out.push('')
     out.push(`⚠ **Neither command works yet.** ${laneOpen.map(laneSays).join('; ')}.`)
-    out.push(`Settle that first with \`${checkCmd}\`; running either tool before then fails in a`)
-    out.push(`way that looks like the lane being down.`)
+    if (checkCmd) {
+      out.push(`Settle that first with \`${checkCmd}\`; running either tool before then fails in a`)
+      out.push(`way that looks like the lane being down.`)
+    } else {
+      out.push(`Running either tool before that is settled fails in a way that looks like the lane`)
+      out.push(`being down. ${nameRule}`)
+    }
   }
   out.push('')
   out.push('## Before you speak, know what is actually true')
@@ -281,8 +296,10 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, brief
     const titles = neverChecked.map(k => row(k).title).join(', ')
     out.push(`- **${neverChecked.length} further artifact${neverChecked.length === 1 ? ' was' : 's were'} never checked` +
       ` — do not assume either way:** ${titles}.`)
-    out.push(`  Whatever wrote this could not observe ${neverChecked.length === 1 ? 'it' : 'them'};` +
-      ` run \`${checkCmd}\` on the agent's own machine to settle ${neverChecked.length === 1 ? 'it' : 'them'}.`)
+    out.push(`  Whatever wrote this could not observe ${neverChecked.length === 1 ? 'it' : 'them'}.` +
+      (checkCmd
+        ? ` Run \`${checkCmd}\` on the agent's own machine to settle ${neverChecked.length === 1 ? 'it' : 'them'}.`
+        : ` ${nameRule}`))
   }
   out.push('')
   if (open.length) {

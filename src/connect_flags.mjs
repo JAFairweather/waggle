@@ -42,6 +42,21 @@ const KNOWN = new Set(FLAGS.map(f => f.flag))
 /** Is this a flag the tool declares? Used to refuse reading one that is not. */
 export const knownFlag = n => KNOWN.has(n)
 
+/**
+ * The `--name` predicate, exported so there is ONE of it.
+ *
+ * This module exists because a literal drifted from what the tool parses. The first cut of it then
+ * hand-copied the name pattern into `src/agent_startup.mjs`, and the two disagreed on day one — the
+ * renderer's copy omitted the `.toLowerCase()`, so `--name Oliver` was quoted by the renderer and
+ * accepted by the tool. Two copies of one predicate, disagreeing immediately, inside the change
+ * whose thesis is that copies drift (#523 review).
+ *
+ * `normaliseName` is half the predicate and must be applied before it: the tool lowercases before
+ * matching, so a renderer that tests the raw string answers a different question than the tool.
+ */
+export const normaliseName = s => String(s ?? '').toLowerCase()
+export const acceptableName = s => /^[a-z0-9][a-z0-9._-]{1,63}$/.test(normaliseName(s))
+
 /** One token as it appears in usage: `--name <short-stable-id>`, or `[--check]` when optional. */
 const token = f => {
   const body = f.value ? `${f.flag} <${f.value}>` : f.flag
@@ -57,7 +72,12 @@ const token = f => {
  */
 export function usageLine(width = 96) {
   const lines = []
-  let cur = 'usage: connect-agent'
+  // `node tools/connect-agent.mjs`, not `connect-agent`. The whole premise of #522 is that
+  // `connect-agent` is not a command — there is no bin entry and nothing puts it on PATH — so a
+  // usage line opening with it sends the reader to the exact 127 this change removed from the
+  // startup document. A refusal that explains itself incorrectly is worse than one that says
+  // nothing, and this was the one message left still doing it (#523 review, must-fix).
+  let cur = 'usage: node tools/connect-agent.mjs'
   for (const f of FLAGS) {
     const t = token(f)
     if (cur.length + 1 + t.length > width) { lines.push(cur); cur = '       ' + t } else { cur += ' ' + t }
