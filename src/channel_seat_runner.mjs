@@ -14,7 +14,7 @@
 // O_EXCL journal entry per event id, which also makes an honest retry idempotent: the same intent
 // delivered twice returns the recorded receipt rather than deciding again.
 
-import { closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs'
+import { closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { TextDecoder } from 'node:util'
 import { verifyEvent } from 'nostr-tools/pure'
@@ -144,6 +144,31 @@ function readExisting(path) {
   } finally { closeSync(fd) }
 }
 
+// ONE LOCK OVER READ, DECIDE AND APPEND. `readExisting` and `appendLine` are two independent opens
+// with the whole decision between them, so two runs that interleave there both read "not present"
+// and both append — the duplicate line `seatDecision`'s conflict branch exists to prevent, arrived
+// at by a route that branch cannot see. The journal does not cover it: it dedups an event ID, and
+// two intents for the same agent signed at different moments have different ids.
+//
+// O_EXCL, the same claim the journal uses, rather than a lock library. Contention THROWS, and it is
+// taken OUTSIDE the journal claim on purpose — inside, a collision would leave the event id claimed
+// and unwritten, so the honest retry of a merely-unlucky run would come back "already presented and
+// its outcome was not recorded" forever.
+//
+// A run killed between open and unlink leaves the file behind, and this does not guess at staleness:
+// an mtime test is a race dressed up as a fix, and clearing a lock somebody still holds is the
+// failure it exists to prevent. It names the path and stops, which an operator can act on.
+function withSeatLock(path, run) {
+  const lock = `${path}.waggle-seat.lock`
+  let fd
+  try { fd = openSync(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600) }
+  catch { fail(`another channel-seat run holds ${lock} — INCONCLUSIVE, nothing was read or written. If no run is in flight, remove it`) }
+  try { return run() } finally {
+    try { closeSync(fd) } catch { /* already closed */ }
+    try { unlinkSync(lock) } catch { /* a lock we cannot clear is better reported by the next run */ }
+  }
+}
+
 /**
  * One intent, start to finish. Returns the receipt text the caller writes to stdout.
  *
@@ -158,11 +183,15 @@ export function runChannelSeat(raw, config, { now = Math.floor(Date.now() / 1000
   if (verdict.ok !== true) {
     // A refused envelope is never journalled: the id of an event this runner would not verify is not
     // a fact worth keeping, and writing one would let an unsigned caller fill the journal directory.
-    return `${canonicalJson({ v: 1, op: 'channel_seat', result: 'refused', agent: null, fingerprint: null, instance: config.instance, reason: verdict.reason, at: now })}\n`
+    return `${canonicalJson({ v: 1, op: 'channel_seat', result: 'refused', agent: null, fingerprint: null, instance: config.instance, unreadable: null, reason: verdict.reason, at: now })}\n`
   }
+  return withSeatLock(config.authorized_keys_path, () => seatUnderLock(verdict, config, now))
+}
+
+function seatUnderLock(verdict, config, now) {
   const claim = recallOrClaim(config.journal_path, verdict.event.id)
   if (claim.replay) {
-    return `${canonicalJson(claim.prior || { v: 1, op: 'channel_seat', result: 'refused', agent: verdict.intent.agent, fingerprint: null, instance: config.instance, reason: 'this intent was already presented and its outcome was not recorded — read the broker file rather than trusting this', at: now })}\n`
+    return `${canonicalJson(claim.prior || { v: 1, op: 'channel_seat', result: 'refused', agent: verdict.intent.agent, fingerprint: null, instance: config.instance, unreadable: null, reason: 'this intent was already presented and its outcome was not recorded — read the broker file rather than trusting this', at: now })}\n`
   }
   let receipt
   try {

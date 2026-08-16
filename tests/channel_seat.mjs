@@ -14,7 +14,7 @@
 //      different key is a real negative. Only a receipt naming THIS key promotes it — and even then
 //      it is a saved capture, which the row says out loud rather than implying more.
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync, readdirSync, chmodSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync, readdirSync, chmodSync, existsSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -131,6 +131,41 @@ console.log('\n4. seated, already-seated and conflict are three different answer
 
   check(seatDecision(parseSeatIntent({ v: 1, op: 'channel_seat', agent: 'x', key: PUB_LINE }), '', opts).result === 'refused',
     'and an inadmissible intent is `refused`, which is not one of the other three')
+
+  // WHAT THE SCAN COULD NOT READ. Every conflict above is found by parsing the existing line, and
+  // `splitLine` anchors on "ssh-ed25519 " — so a rotated key for this same agent held in any other
+  // key type is invisible to it, filtered away, and the result is `seated`: the new line is appended
+  // beside the old one and both still authenticate. Re-driven on review, 6 of 7 rotated-key fixtures
+  // did exactly that. Counting them does not make the scan see them; it stops `seated` from reading
+  // as "checked, and clear" when it means "clear among the lines I could read".
+  const OPAQUE = `ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCstillAuthenticates ${AGENT}`
+  const missed = seatDecision(intent, `${OPAQUE}\n`, opts)
+  check(missed.result === 'seated',
+    'a rotated key in a line this scan cannot parse still seats — it was never compared, and pretending otherwise would refuse every real broker file')
+  check(missed.unreadable === 1,
+    '  …but the count of lines it could not attribute is carried, not filtered away in silence')
+  check(/not established/.test(missed.reason),
+    '  …and the reason stops saying "not present", which is a claim about the whole file it did not make')
+
+  // THE PAIRING, and it is the one that matters: a count that is always non-zero says nothing.
+  check(fresh.unreadable === 0 && /^not present — /.test(fresh.reason),
+    'PAIRING — a file this scan CAN read reports zero and keeps the plain reason')
+  check(seatDecision(intent, '# operator note\n\n   \n', opts).unreadable === 0,
+    'comments and blank lines are not "unreadable" — they are legitimately not entries, and counting them would make every file look unchecked')
+
+  // Carried to the agent side, which is the only place it can be acted on: the agent never sees the
+  // broker's file. The seat still reads TRUE — the receipt is evidence the seat happened. What the
+  // count takes away is the other half an operator reads into it.
+  const missedReceipt = seatReceipt(intent, missed, { instance: INSTANCE, at: 1_700_000_000 })
+  check(missedReceipt.unreadable === 1, 'the receipt carries the count to the agent side')
+  const missedVerdict = seatVerdict(missedReceipt, { fingerprint: keyFingerprint(BLOB), agent: AGENT })
+  check(missedVerdict.seated === true,
+    'the seat still reads as true — a receipt is evidence the seat happened, and that much did happen')
+  check(/may still be there/.test(missedVerdict.reason),
+    '  …and the reason warns that an OLDER grant for this agent may still be seated — the half nobody checked')
+  const cleanVerdict = seatVerdict(seatReceipt(intent, fresh, { instance: INSTANCE, at: 1_700_000_000 }), { fingerprint: keyFingerprint(BLOB), agent: AGENT })
+  check(cleanVerdict.seated === true && !/may still be there/.test(cleanVerdict.reason),
+    'PAIRING — a clean scan carries no warning, so the warning means something when it appears')
 }
 
 // ------------------------------------------------------------------------------------------
@@ -244,6 +279,33 @@ console.log('\n7. the runner writes one line, once')
   check(readdirSync(journal).length === before,
     '  …and is NOT journalled — an event this runner would not verify is not a fact worth keeping, and writing it would let a stranger fill the directory')
   check(readFileSync(keysPath, 'utf8') === afterFirst, '  …and writes nothing, which is the only part that matters')
+
+  // ONE LOCK OVER READ, DECIDE AND APPEND. Without it those are two independent opens with the whole
+  // decision between them: two runs that interleave there both read "not present" and both append,
+  // producing the duplicate the conflict branch exists to prevent, by a route it cannot see. The
+  // journal does not cover this — it dedups an event id, and two intents for the same agent signed a
+  // second apart have different ids, which the `again` case above already relies on.
+  const LOCK = `${keysPath}.waggle-seat.lock`
+  check(!existsSync(LOCK), 'every run above left no lock behind — a lock that is never released is a broker that seats once')
+  const beforeLock = readdirSync(journal).length
+  writeFileSync(LOCK, '', { mode: 0o600 })
+  let lockThrew = ''
+  try { runChannelSeat(sign(approverSk, BODY, { at: NOW + 4 }), config, { now: NOW + 4 }) } catch (error) { lockThrew = String(error.message) }
+  check(lockThrew.includes(LOCK) && /holds/.test(lockThrew),
+    'a held lock stops the run and NAMES the file — a lock nobody can find is a broker nobody can restart')
+  check(/INCONCLUSIVE/.test(lockThrew),
+    '  …and says INCONCLUSIVE, because being unable to take the lock is not the broker refusing the seat')
+  check(readFileSync(keysPath, 'utf8') === afterFirst, '  …and nothing was written')
+  check(readdirSync(journal).length === beforeLock,
+    '  …and NO journal entry was claimed — the lock is taken outside the claim on purpose, or an unlucky collision would leave that event id answering "already presented" forever')
+
+  // POSITIVE CONTROL. Every assertion above is a refusal; a runner that threw unconditionally would
+  // satisfy all of them, and the lock would look correct while the broker seated nothing ever again.
+  unlinkSync(LOCK)
+  const freed = JSON.parse(runChannelSeat(sign(approverSk, BODY, { at: NOW + 5 }), config, { now: NOW + 5 }))
+  check(freed.result === 'already-seated',
+    'POSITIVE CONTROL — with the lock removed the same run proceeds and decides on the file')
+  check(!existsSync(LOCK), '  …and releases the lock again on the way out')
 }
 
 // ------------------------------------------------------------------------------------------

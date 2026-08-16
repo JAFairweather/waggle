@@ -113,6 +113,28 @@ const splitLine = line => {
 }
 
 /**
+ * How many lines the conflict scan below could not attribute.
+ *
+ * `splitLine` returns null for blanks and comments, which are legitimately not entries, and ALSO
+ * for any line whose shape it cannot parse — another key type, an option string it cannot anchor
+ * against `ssh-ed25519 `. The scan then `.filter(Boolean)`s them away and compares against what is
+ * left, so a rotated key sitting in a line this module cannot read is not seen, and the result is
+ * `seated`: the new line is appended beside the old one, both still authenticate, and nothing about
+ * the file looks wrong. Re-driven on review, 6 of 7 rotated-key fixtures appended beside the old
+ * line with the control passing.
+ *
+ * So the guard degrades to "no duplicates among my own writes" — and on a broker whose
+ * authorized_keys this module did not write, that is every line in the file. Counting them does not
+ * make the scan see them. It stops `seated` from reading as "checked, and clear" when it means
+ * "clear among the lines I could read", which is the difference an operator acts on.
+ */
+const unreadableCount = rawLines => rawLines.reduce((count, raw) => {
+  const text = String(raw || '').trim()
+  if (!text || text.startsWith('#')) return count
+  return splitLine(raw) ? count : count + 1
+}, 0)
+
+/**
  * Whether to write, and what the caller is allowed to conclude if not.
  *
  * Four outcomes, and the distinction between the middle two is the whole point:
@@ -134,24 +156,34 @@ export function seatDecision(intent, existingText, { command, instance } = {}) {
   catch (error) { return Object.freeze({ result: 'refused', reason: String(error.message).replace(/^channel-seat: /, '') }) }
 
   const rawLines = String(existingText == null ? '' : existingText).split('\n')
+  const unreadable = unreadableCount(rawLines)
   // Exact match on the whole line, not on a reconstruction of it. Rebuilding the line from parsed
   // fields would call two lines equal whenever the parse dropped whatever made them differ.
   if (rawLines.some(raw => raw.trim() === line)) {
-    return Object.freeze({ result: 'already-seated', reason: 'this exact line is already present — nothing to write', line })
+    return Object.freeze({ result: 'already-seated', reason: 'this exact line is already present — nothing to write', line, unreadable })
   }
   for (const entry of rawLines.map(splitLine).filter(Boolean)) {
     const sameKey = entry.blob === intent.keyBlob
     const sameAgent = entry.comment === intent.agent
     if (!sameKey && !sameAgent) continue
     if (sameKey && !sameAgent) {
-      return Object.freeze({ result: 'conflict', reason: 'this key is already seated for a different agent — one key, one identity', line })
+      return Object.freeze({ result: 'conflict', reason: 'this key is already seated for a different agent — one key, one identity', line, unreadable })
     }
     if (sameAgent && !sameKey) {
-      return Object.freeze({ result: 'conflict', reason: 'this agent already has a DIFFERENT key seated — remove the old line deliberately, because appending would leave both able to connect', line })
+      return Object.freeze({ result: 'conflict', reason: 'this agent already has a DIFFERENT key seated — remove the old line deliberately, because appending would leave both able to connect', line, unreadable })
     }
-    return Object.freeze({ result: 'conflict', reason: 'this key is seated for this agent under different options — the existing grant is not the one being asked for', line })
+    return Object.freeze({ result: 'conflict', reason: 'this key is seated for this agent under different options — the existing grant is not the one being asked for', line, unreadable })
   }
-  return Object.freeze({ result: 'seated', reason: 'not present — the line will be appended', line })
+  // The reason carries the qualifier, not just the receipt, because this string is what an operator
+  // reads. "not present" is a claim about the whole file; what was actually established is weaker.
+  return Object.freeze({
+    result: 'seated',
+    reason: unreadable === 0
+      ? 'not present — the line will be appended'
+      : `not present among the lines this runner could read — ${unreadable} line(s) were not in a shape it parses and were NOT compared, so the absence of an older grant is not established`,
+    line,
+    unreadable,
+  })
 }
 
 /**
@@ -169,6 +201,10 @@ export function seatReceipt(intent, decision, { instance, at } = {}) {
     agent: intent.ok === true ? intent.agent : null,
     fingerprint: intent.ok === true ? keyFingerprint(intent.keyBlob) : null,
     instance: instance || null,
+    // Carried so the agent-side reader can qualify a seat it is told about, rather than re-deriving
+    // it from a file it will never see. Null when the decision predates the count, which reads as
+    // "not stated" and is deliberately NOT the same as zero.
+    unreadable: Number.isSafeInteger(decision.unreadable) ? decision.unreadable : null,
     reason: decision.reason,
     at: Number.isSafeInteger(at) ? at : null,
   })
@@ -197,7 +233,16 @@ export function seatVerdict(receipt, { fingerprint, agent } = {}) {
     return Object.freeze({ seated: false, reason: `the receipt seats ${receipt.fingerprint || 'no key'}, and this machine's channel key is ${want} — a seat was made, but not for this key` })
   }
   if (receipt.result === 'seated' || receipt.result === 'already-seated') {
-    return Object.freeze({ seated: true, reason: `${receipt.result} on the broker for ${want} — a saved capture, so it proves the seat happened, not that it still stands` })
+    const missed = Number.isSafeInteger(receipt.unreadable) && receipt.unreadable > 0 ? receipt.unreadable : 0
+    return Object.freeze({
+      seated: true,
+      // Still true — the seat happened, and that is what a receipt is evidence of. What the count
+      // takes away is the OTHER half an operator reads into it: that nothing else is seated for this
+      // agent. The broker's scan could not read those lines, so it did not check them.
+      reason: missed === 0
+        ? `${receipt.result} on the broker for ${want} — a saved capture, so it proves the seat happened, not that it still stands`
+        : `${receipt.result} on the broker for ${want} — but ${missed} line(s) in the broker file were not in a shape it could read, so an OLDER grant for this agent may still be there. The seat happened; it is not proven to be the only one`,
+    })
   }
   return Object.freeze({ seated: false, reason: `the broker refused this seat: ${String(receipt.reason || receipt.result || 'no reason given').slice(0, 200)}` })
 }
