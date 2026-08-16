@@ -42,6 +42,11 @@ const LANE_TITLES = {
 // agent is told to run and cannot.
 export const LANES = Object.freeze({ sealed: true, broker: true })
 
+// The runtime ids, inlined for the same reason and exported so `tests/console_first_prompt.mjs` can
+// pin them against `RUNTIMES` in `src/mcp_runtimes.mjs`. Same failure mode as a stale lane list: a
+// `--runtime` flag the node side rejects, in a command an agent is told to run.
+export const RUNTIME_IDS = Object.freeze(['claude', 'codex', 'gemini', 'pi', 'generic'])
+
 // Anything that looks like a credential. Checked against the rendered text, not against the inputs,
 // because the failure that matters is what reaches the file.
 const HEX64 = /^[0-9a-f]{64}$/
@@ -93,7 +98,7 @@ const SAYS = {
  * works. `facts` carries the public identifiers. Everything else here is invariant role text, and
  * every line of it is a rule an agent has broken confidently at least once.
  */
-export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, repo, briefPath = 'docs/AGENT_BRIEF.md', report,
+export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, runtimeId, repo, briefPath = 'docs/AGENT_BRIEF.md', report,
   writtenBy = '`tools/connect-agent.mjs --startup`' }) {
   if (!agent) throw new Error('startupDoc needs the agent name')
   const rows = report?.rows || []
@@ -151,8 +156,13 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, repo,
   // paths are not: a quoted `docs/…` reference reads as a defect, and nobody pastes it to a shell.
   const shq = s => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`)
   const cmd = p => shq(at(p))
+  // `--runtime` for the same reason as `--lane`, and it is not cosmetic either: the MCP rows are
+  // scoped by whether the runtime HAS an MCP client, and absent means they apply (#526). So a Pi
+  // whose document omits the flag runs a check that blocks it on a hazard its runtime cannot have.
+  // An unknown id is dropped rather than echoed, because the tool would die on it.
+  const rtArg = RUNTIME_IDS.includes(String(runtimeId)) ? String(runtimeId) : null
   const checkCmd = acceptableName(agent)
-    ? `node ${cmd('tools/connect-agent.mjs')} --name ${normaliseName(agent)} --check${lane ? ` --lane ${lane}` : ''}`
+    ? `node ${cmd('tools/connect-agent.mjs')} --name ${normaliseName(agent)} --check${lane ? ` --lane ${lane}` : ''}${rtArg ? ` --runtime ${rtArg}` : ''}`
     : null
   const nameRule = `\`--name\` takes a short stable id — lowercase, 2\u201364 characters, from ` +
     `\`a-z0-9._-\` and starting with a letter or digit \u2014 and \`${String(agent)}\` is not one. ` +

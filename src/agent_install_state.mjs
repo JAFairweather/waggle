@@ -108,7 +108,19 @@ export const ARTIFACTS = [
   // `nvoy-<name>`, and a sealed-lane agent has no such server — so every nvoy server in that
   // session counts as foreign. The one lane with nothing of its own to compare against was the
   // lane the row was scoped out of.
-  { key: 'mcp-exclusive', title: 'No other nvoy server registered', blocking: true,
+  // `needsMcp`, and deliberately NOT `lanes: ['broker']` — the paragraph above is right that the
+  // hazard belongs to the session rather than to the transport, and scoping this by lane would undo
+  // a decision already taken once. The axis that bounds the hazard is whether the session has an
+  // MCP client at all. Pi's runtime is `kind: 'none'` (#520): no config to register a server in and
+  // nothing in the session that could call one. A hazard that requires an MCP client cannot reach a
+  // runtime that has none, and this was the row standing between a correctly-seated Pi and a clean
+  // check.
+  //
+  // Measured, not reasoned about: it failed for EVERY agent seated on this machine, and for
+  // mc-claude — which participates daily — it was the only failing row, so its verdict was "this
+  // agent cannot run" (#526). A blocking row that every agent fails at once cannot separate a broken
+  // install from a working one, which is the single thing this module exists to do.
+  { key: 'mcp-exclusive', title: 'No other nvoy server registered', blocking: true, needsMcp: true,
     why: 'Registered is not sole. A generically-named server alongside carries the tools that sign, bound to somebody else.' },
   // ── Broker-lane only, all six. Every one of them exists to reach an ssh channel on another
   // box, and a sealed-lane agent reaches the bridge by signature instead. Two of these were the
@@ -121,7 +133,7 @@ export const ARTIFACTS = [
     why: "StrictHostKeyChecking refuses an unknown host, so without this the channel will not connect. It is the broker's host key and comes from the broker doctor on that box — it cannot be minted here, and this tool will never write one." },
   { key: 'channel-authorized', title: 'The public half is seated on the broker', blocking: true, lanes: ['broker'],
     why: "The other box's authorized_keys, under its forced command. Nothing on this machine can see it, so it is UNKNOWN until an operator confirms it — never assumed from the key existing here." },
-  { key: 'mcp-registration', title: 'Registered as an MCP server', blocking: true, lanes: ['broker'],
+  { key: 'mcp-registration', title: 'Registered as an MCP server', blocking: true, lanes: ['broker'], needsMcp: true,
     why: 'How a new session becomes this agent. Needs the instance root set explicitly; the default path does not exist here.' },
   // #338. Sole is not YOURS. An agent was handed a session whose attached server answered `whoami`
   // with a different agent's identity — it would have read that identity's sealed inbox and posted
@@ -129,7 +141,7 @@ export const ARTIFACTS = [
   // perfectly. The Bunker path has refused this since day one via EXPECT_PUBKEY. The MCP path had
   // no equivalent, so the same class of defect moved one layer up from Pair to Bind and found no
   // guard there.
-  { key: 'mcp-identity', title: 'The server answers as THIS agent', blocking: true, lanes: ['broker'],
+  { key: 'mcp-identity', title: 'The server answers as THIS agent', blocking: true, lanes: ['broker'], needsMcp: true,
     why: 'Registered is not sole, and sole is not yours. Proven by whoami equalling the minted key — never by the registration existing. That proof is a saved capture, not a live signer: it has no freshness and no binding to the session under test, so it passes forever once taken (#462).' },
   { key: 'channel-answers', title: 'Channel server answers', blocking: true, lanes: ['broker'],
     why: 'Registered is not running. Proven by initialize + tools/list, not by the registration existing.' },
@@ -203,7 +215,7 @@ export function ceilingReached({ unverified = [], unknown = [], missing = [] } =
  * it work" is the one people skip. Defaulting the skipped case to `present` is how a report
  * becomes a green light for an agent nobody checked.
  */
-export function installState(observations = {}, { lane = null } = {}) {
+export function installState(observations = {}, { lane = null, mcp = null } = {}) {
   // A lane counts as declared only if it is a string naming one we know. An unrecognised name is a
   // typo or a future lane, and neither may excuse a row: `applies` falls back to "every row
   // applies", which is the demanding answer. `--lane brokr` must not quietly become `--lane sealed`.
@@ -215,7 +227,13 @@ export function installState(observations = {}, { lane = null } = {}) {
   const declared = typeof lane === 'string' && Object.prototype.hasOwnProperty.call(LANES, lane) ? lane : null
   // No `lanes` on a row → every lane needs it. No declared lane → every row applies, because the
   // permissive reading of silence is the one this whole module exists to refuse.
-  const applies = artifact => !declared || !artifact.lanes || artifact.lanes.includes(declared)
+  // The same demanding reading of silence, on a second axis. `mcp` is a boolean or it is nothing:
+  // only an explicit `false` — "this runtime has no MCP client" — scopes an MCP row out. Undefined,
+  // null, `'false'`, 0 all mean undeclared, and undeclared means the row applies, because a caller
+  // that did not say is not a caller claiming the hazard is absent (#526).
+  const noMcp = mcp === false
+  const applies = artifact => (!declared || !artifact.lanes || artifact.lanes.includes(declared)) &&
+    !(artifact.needsMcp && noMcp)
 
   const rows = ARTIFACTS.map(artifact => {
     const seen = observations[artifact.key]

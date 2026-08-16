@@ -29,6 +29,12 @@
 //      exact confusion has cost this project a day more than once.
 import { ARTIFACTS, LANES, MISSING, PRESENT, UNKNOWN, UNVERIFIED } from './agent_install_state.mjs'
 import { acceptableName, normaliseName } from './connect_flags.mjs'
+import { RUNTIMES } from './mcp_runtimes.mjs'
+
+// Derived from the registry rather than listed, so a runtime added there is renderable here without
+// a second list to keep in step. The browser copy inlines the same ids and `console_first_prompt`
+// pins the two together — a stale list there renders a `--runtime` flag the node side would reject.
+const RUNTIME_IDS = RUNTIMES.map(r => r.id)
 
 // Anything that looks like a credential. Checked against the rendered text, not against the inputs,
 // because the failure that matters is what reaches the file.
@@ -81,7 +87,7 @@ const SAYS = {
  * works. `facts` carries the public identifiers. Everything else here is invariant role text, and
  * every line of it is a rule an agent has broken confidently at least once.
  */
-export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, repo, briefPath = 'docs/AGENT_BRIEF.md', report,
+export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, runtimeId, repo, briefPath = 'docs/AGENT_BRIEF.md', report,
   writtenBy = '`tools/connect-agent.mjs --startup`' }) {
   if (!agent) throw new Error('startupDoc needs the agent name')
   const rows = report?.rows || []
@@ -149,8 +155,13 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, repo,
   // paths are not: a quoted `docs/…` reference reads as a defect, and nobody pastes it to a shell.
   const shq = s => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`)
   const cmd = p => shq(at(p))
+  // `--runtime` for the same reason as `--lane`, and it is not cosmetic either: the MCP rows are
+  // scoped by whether the runtime HAS an MCP client, and absent means they apply (#526). So a Pi
+  // whose document omits the flag runs a check that blocks it on a hazard its runtime cannot have.
+  // An unknown id is dropped rather than echoed, because the tool would die on it.
+  const rtArg = RUNTIME_IDS.includes(String(runtimeId)) ? String(runtimeId) : null
   const checkCmd = acceptableName(agent)
-    ? `node ${cmd('tools/connect-agent.mjs')} --name ${normaliseName(agent)} --check${lane ? ` --lane ${lane}` : ''}`
+    ? `node ${cmd('tools/connect-agent.mjs')} --name ${normaliseName(agent)} --check${lane ? ` --lane ${lane}` : ''}${rtArg ? ` --runtime ${rtArg}` : ''}`
     : null
   // What is said INSTEAD of a command, when the name would be refused. It names the rule and the
   // offending name, because "settle your name" without either is an instruction the reader cannot

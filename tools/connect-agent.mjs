@@ -101,6 +101,20 @@ if (has('--lane') && !Object.prototype.hasOwnProperty.call(LANES, lane)) {
 }
 const SEALED = lane === 'sealed'
 
+// Whether this runtime has an MCP client, for the rows whose hazard needs one (#526). Refused the
+// same way `--lane` is: an unrecognised id dies here rather than resolving to `undefined` and
+// quietly declaring "no MCP", which would scope out the very rows it was mistyped past.
+//
+// Absent `--runtime` yields `null`, NOT `true` — the rows then apply, which is the demanding answer
+// and the same reading of silence `installState` gives an undeclared lane. It deliberately does not
+// borrow the `--startup` branch's default of `claude`: defaulting a CHECK to a runtime that has an
+// MCP would keep telling a Pi it cannot run, which is the defect.
+const runtimeId = flag('--runtime')
+if (has('--runtime') && !runtime(runtimeId)) {
+  die(`--runtime ${runtimeId} is not one of: ${RUNTIMES.map(r => r.id).join(', ')}`)
+}
+const HAS_MCP = runtimeId ? runtime(runtimeId).kind !== 'none' : null
+
 // Shape-check the two operator-pasted values HERE, at the boundary, before anything renders them
 // (#466 review §3). Both have a known shape, so an allowlist is available and an allowlist is
 // bounded: it makes `bunker://…` in `--channel` unreachable by construction rather than caught by
@@ -504,7 +518,7 @@ if (bind.match === false) warn.push(`this session answers as ${bind.resolved.sli
 see('channel-answers', registered === true ? true : null, false, 'registered is not running — prove with an initialize + tools/list handshake')
 
 // ── Report ──────────────────────────────────────────────────────────────────────────────────
-const report = installState(obs, { lane })
+const report = installState(obs, { lane, mcp: HAS_MCP })
 if (did.length) { console.log(`\nchanged:`); for (const d of did) console.log(`  + ${d}`) }
 if (CHECK) console.log(`\n(--check: nothing was changed)`)
 console.log(`\n${name} — ${HERE}\n`)
@@ -572,7 +586,7 @@ if (has('--startup')) {
         // Passed through when the operator supplies it, and left undefined otherwise so the
         // document prints the caveat rather than a command that exits 3 (#514 review).
         bridge: flag('--bridge') || process.env.WAGGLE_BRIDGE_PUBKEY || undefined,
-        runtimeLabel: rt.label, repo: REPO, report,
+        runtimeLabel: rt.label, runtimeId: rt.id, repo: REPO, report,
       })
     } catch (e) { die(e.message) }
     if (has('--print')) console.log(body.split('\n').map(l => `  | ${l}`).join('\n'))
