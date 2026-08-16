@@ -14,7 +14,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { MISSING, PRESENT, UNKNOWN, installState } from '../src/agent_install_state.mjs'
+import { MISSING, PRESENT, UNKNOWN, UNVERIFIED, installState } from '../src/agent_install_state.mjs'
 import { secretInText, startupDoc } from '../src/agent_startup.mjs'
 import { RUNTIMES } from '../src/mcp_runtimes.mjs'
 import { FLAGS, acceptableName, knownFlag, normaliseName, usageLine } from '../src/connect_flags.mjs'
@@ -270,6 +270,42 @@ const mixedLine = (laneMixed.split('\n').find(l => l.includes('Neither command w
 check(/Bunker pairing is not in place/.test(mixedLine), 'a MISSING piece beside an unchecked one is still reported missing')
 check(/Client transport key was never checked/.test(mixedLine),
   '  …and the unchecked one KEEPS its own state — all-or-nothing silenced this the moment the states mixed')
+
+// The same collapse, one state along (#541). UNVERIFIED reached the `is not in place` verb because
+// it was merely "not PRESENT", so a pairing sitting at mode 600 and only unproven read as absent,
+// under a heading saying neither command works. pi-dog was in that state on a day both commands ran,
+// one of them into the Buzz channel — so the document told a working agent its lane was down and
+// sent it to create a key it already held.
+const laneUnproven = startupDoc({ agent: 'oliver', pubkey: PUB, report: { rows: [
+  { key: 'bunker-uri', title: 'Bunker pairing', state: UNVERIFIED },
+  { key: 'bunker-client', title: 'Client transport key', state: PRESENT },
+  { key: 'signer-identity', title: 'Signer resolves to the right key', state: UNVERIFIED },
+] } })
+const unprovenLine = (laneUnproven.split('\n').find(l => l.includes('was not proven from this machine')) || '')
+check(/Bunker pairing is in place but was not proven/.test(unprovenLine),
+  'an UNVERIFIED pairing is reported as unproven, NOT as absent')
+check(!/is not in place/.test(unprovenLine),
+  '  …and the missing-verb never appears on that line — that verb sends an agent to re-create a key it holds')
+check(!/Neither command works yet/.test(laneUnproven),
+  'and the heading does not claim the commands are broken when nothing is actually absent')
+check(/Not everything here was proven from this machine/.test(laneUnproven),
+  '  …it says what is true instead: unproven, which is a different fact from broken')
+check(/running them is/.test(laneUnproven) && /--expect/.test(laneUnproven),
+  '  …and points at the instruments that settle it, because an agent told "this does not work" does not try')
+
+// NEGATIVE CONTROL, and it is the one that matters: a document that always warns and one that never
+// warns fail identically. One genuinely MISSING piece beside the unproven ones must still produce
+// the hard heading — otherwise the change above has just deleted the warning.
+const laneUnprovenPlusMissing = startupDoc({ agent: 'oliver', pubkey: PUB, report: { rows: [
+  { key: 'bunker-uri', title: 'Bunker pairing', state: UNVERIFIED },
+  { key: 'bunker-client', title: 'Client transport key', state: MISSING },
+  { key: 'signer-identity', title: 'Signer resolves to the right key', state: UNVERIFIED },
+] } })
+check(/Neither command works yet/.test(laneUnprovenPlusMissing),
+  'NEGATIVE CONTROL — one MISSING piece still produces the hard warning, unproven neighbours notwithstanding')
+const bothLine = (laneUnprovenPlusMissing.split('\n').find(l => l.includes('Neither command works yet')) || '')
+check(/Client transport key is not in place/.test(bothLine) && /Bunker pairing is in place but was not proven/.test(bothLine),
+  '  …and each piece still carries its OWN verb on that line, rather than the worst one spreading')
 
 // ── 5d. the check command names the lane it was checked under ───────────────────────────────
 console.log('\n5d. the remedy command carries the right lane')
