@@ -31,6 +31,12 @@ const HEX64 = /^[0-9a-f]{64}$/i
 // backslash, no space, no shell metacharacter can appear in it, so there is no byte with which to
 // end the quoted string early.
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+// What an authorized_keys comment looks like when THIS module wrote it. Case-sensitive on purpose,
+// and deliberately not `HEX64` above, which carries `/i`: `parseSeatIntent` lowercases the agent id
+// before it ever reaches `authorizedKeysLine`, so an upper-cased comment is by construction a line
+// this module did not write and cannot attribute. Reusing the case-insensitive one would call it
+// readable and put the count straight back where the review found it.
+const WROTE_COMMENT = /^[0-9a-f]{64}$/
 // Absolute path, and the same closed character set. The command is config-supplied rather than
 // caller-supplied, but a broker whose config was written carelessly should still not produce a line
 // that means something other than it reads.
@@ -127,11 +133,29 @@ const splitLine = line => {
  * authorized_keys this module did not write, that is every line in the file. Counting them does not
  * make the scan see them. It stops `seated` from reading as "checked, and clear" when it means
  * "clear among the lines I could read", which is the difference an operator acts on.
+ *
+ * THE POPULATION IS LINES THIS MODULE CANNOT ATTRIBUTE, NOT LINES IT CANNOT PARSE. The first
+ * version counted parse failures, and that is the smaller and less interesting set. The conflict
+ * scan identifies an agent by the authorized_keys COMMENT, a field sshd ignores entirely — so a
+ * line that parses perfectly and carries a comment this module did not write is a line whose key
+ * might be this agent's rotated one and might be somebody else's, and the scan cannot tell. Six
+ * hazardous fixtures, five of them parsing cleanly (an upper-cased comment, a trailing word, no
+ * comment at all, the npub instead of the hex, the id appearing only inside `command=`) came back
+ * `unreadable: 0` and an unqualified "not present". That is WORSE than no count: zero reads as
+ * "I checked and there was nothing I could not read".
+ *
+ * A comment that is a valid 64-hex id belonging to a DIFFERENT agent still counts as readable, and
+ * that is correct — that line is attributable, and legitimately not this agent's.
  */
 const unreadableCount = rawLines => rawLines.reduce((count, raw) => {
   const text = String(raw || '').trim()
   if (!text || text.startsWith('#')) return count
-  return splitLine(raw) ? count : count + 1
+  const entry = splitLine(raw)
+  if (!entry) return count + 1
+  // The comment is the whole basis of attribution. Anything that is not a bare agent id — a case
+  // variant, an id with a word after it, an empty comment, an npub — is a line the scan compares
+  // against and cannot conclude anything from.
+  return WROTE_COMMENT.test(entry.comment) ? count : count + 1
 }, 0)
 
 /**

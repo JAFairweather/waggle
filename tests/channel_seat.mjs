@@ -147,6 +147,39 @@ console.log('\n4. seated, already-seated and conflict are three different answer
   check(/not established/.test(missed.reason),
     '  …and the reason stops saying "not present", which is a claim about the whole file it did not make')
 
+  // AND THE FIVE THAT PARSE PERFECTLY. Found on review, and they are the more dangerous half: the
+  // scan attributes a line by its authorized_keys COMMENT — a field sshd ignores entirely — so a
+  // line whose comment is not exactly what this module writes is a line holding a key that might be
+  // this agent's rotated one and might be a stranger's, and nothing here can tell. Counting only
+  // parse failures reported `unreadable: 0` for all five, which is worse than no count at all:
+  // zero reads as "I checked, and there was nothing I could not read".
+  //
+  // Every one of these is a REAL authorized_keys line that sshd honours for whoever holds that key.
+  const ROTATED = 'AAAAC3NzaC1lZDI1NTE5AAAAIrotatedButStillAuthenticatesXXXXXXXXXXXX'
+  const hazards = [
+    ['the comment is the same id upper-cased', `ssh-ed25519 ${ROTATED} ${AGENT.toUpperCase()}`],
+    ['the comment has a trailing word after the id', `ssh-ed25519 ${ROTATED} ${AGENT} rotated-2026-08`],
+    ['there is no comment at all', `ssh-ed25519 ${ROTATED}`],
+    ['the comment is the npub rather than the hex', `ssh-ed25519 ${ROTATED} npub145zmqrhyjgqdt0f83ra6fqrzrwnqpy3y7q0y3vlfhnsszqzzr4wqtqq92y`],
+    ['the id appears only inside command=, never as the comment', `command="/usr/bin/x ${AGENT}" ssh-ed25519 ${ROTATED} someone-else`],
+  ]
+  for (const [what, line] of hazards) {
+    const d = seatDecision(intent, `${line}\n`, opts)
+    // Still `seated` — refusing would refuse every real broker file, and that is not the claim.
+    check(d.result === 'seated' && d.unreadable === 1 && /not established/.test(d.reason),
+      `a line that PARSES but cannot be attributed is counted and caveated — ${what}`)
+    const v = seatVerdict(seatReceipt(intent, d, { instance: INSTANCE, at: 1_700_000_000 }),
+      { fingerprint: keyFingerprint(BLOB), agent: AGENT })
+    check(v.seated === true && /may still be there/.test(v.reason),
+      `  …and it reaches the agent-side verdict, which is the only place anyone acts on it — ${what}`)
+  }
+
+  // THE CONTROL THAT MUST STAY ZERO, or the predicate above is just "count every line". A comment
+  // that is a valid id for a DIFFERENT agent is attributable and legitimately not this agent's.
+  const other = seatDecision(intent, `ssh-ed25519 ${ROTATED} ${'b'.repeat(64)}\n`, opts)
+  check(other.unreadable === 0 && /^not present — /.test(other.reason),
+    'another agent\'s line, correctly commented, is READ and not counted — this counts what it cannot attribute, not everything it did not write')
+
   // THE PAIRING, and it is the one that matters: a count that is always non-zero says nothing.
   check(fresh.unreadable === 0 && /^not present — /.test(fresh.reason),
     'PAIRING — a file this scan CAN read reports zero and keeps the plain reason')
