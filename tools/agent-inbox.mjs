@@ -322,37 +322,50 @@ const report = async () => {
 // 24-day timer.
 if (watch) process.on('SIGINT', () => { console.error('\n  interrupted — draining what is in flight, then reporting'); report() })
 
+const BOOTSTRAP_DEADLINE_MS = 30_000
+
 // SEALING THE BOOTSTRAP IS ITS OWN FUNCTION BECAUSE TWO THINGS CAN END IT, and which one did is
 // worth saying. Once it is sealed, this directory never bootstraps again — every later start reads
 // the marker and lets the durable index decide what wakes.
 //
+// THE MARKER IS WRITTEN LAST, AND "LAST" INCLUDES WHAT IS STILL IN FLIGHT. `wake_spool.mjs` argues
+// marker-last so a crash can never leave a marker beside a half-filled index — that state reads as
+// steady, and the unseeded remainder of the backlog then wakes, which is the flood. EOSE does not
+// mean the backfill is recorded: every `open()` for it is suspended inside two awaited
+// `nip44Decrypt` calls, which with a bunker are round trips over a relay. Sealing on the EOSE frame
+// wrote the marker after 1 of 8 seeded ids and reported "1 id(s)" for a backlog of 8. So the drain
+// lives in here, where every caller gets it, rather than in the one call site that remembered.
+//
+// THE LATCH IS A PROMISE, SO A SECOND CALLER WAITS RATHER THAN SKIPPING PAST. It was a boolean that
+// returned early, which quietly broke `report()`'s contract: it awaits this call precisely so a
+// one-shot `--spool` read seals before exiting, and a boolean let that await return while the EOSE
+// caller was still inside `drain()`. The process then exited holding an index and no marker —
+// `inspectSpoolDir`'s "began seeding and did not finish" — and every later start on that directory
+// dies at exit 3, permanently. Unmodified that ordering did not occur, because the EOSE call starts
+// first and resumes a microtask ahead; but that guarantee lives in `openTracker.drain` in another
+// module, where an early `if (!pending.size) return 0` would flip it with nothing in either file to
+// notice. A bricked spool directory is too much to rest on hop-counting across a module boundary.
+//
+// `finally`, not a trailing assignment, because both call sites already `.catch()` this. A throw
+// under the boolean left the latch set and `bootstrap` true, so every later message was seeded
+// without waking — a permanently silent lane, in a process `Restart=always` never restarts because
+// it never died. That is #557's own sentence, re-entered through the seal path.
+//
 // The deadline exists so a relay that never answers cannot hold bootstrap open forever. Nothing
-// wakes while it is open, so "waiting for the last relay" and "silently not delivering anything"
-// are the same observable state, and this lane exists to remove exactly that ambiguity. Ending it
-// early risks a flood, which is noisy; not ending it is silence, which is not.
-const BOOTSTRAP_DEADLINE_MS = 30_000
-let sealing = false
-async function endBootstrap(why) {
-  if (!spool || !spool.bootstrap || sealing) return
-  // THE MARKER IS WRITTEN LAST, AND "LAST" INCLUDES WHAT IS STILL IN FLIGHT. `wake_spool.mjs`
-  // argues marker-last so a crash can never leave a marker beside a half-filled index — that state
-  // reads as steady, and the unseeded remainder of the backlog then wakes, which is the flood.
-  //
-  // EOSE does not mean the backfill is recorded. Every `open()` for it is suspended inside two
-  // awaited `nip44Decrypt` calls, which with a bunker are round trips over a relay. Sealing on the
-  // EOSE frame wrote the marker after 1 of 8 seeded ids and reported "1 id(s)" for a backlog of 8.
-  // `report()` already had this right by awaiting `drain()` first; the drain belongs in here so
-  // every caller gets it, rather than in the one call site that remembered.
-  //
-  // Latched, because two callers can now reach this across an await — the EOSE frame and the
-  // deadline — and both would pass the `bootstrap` guard before either had sealed.
-  sealing = true
-  const stillOpen = await drain()
-  if (stillOpen > 0) console.error(`  ${stillOpen} message(s) were still opening when the bootstrap was sealed — they are recorded, but the count below undercounts them`)
-  const r = spool.finishBootstrap()
-  sealing = false
-  if (!r.ok) { console.error(`  the bootstrap marker could not be written — ${r.reason}`); return }
-  console.error(`  bootstrap complete (${why}) — ${r.seeded} id(s) recorded without waking anybody; from here the durable index decides`)
+// wakes while it is open, so "waiting for the last relay" and "silently not delivering anything" are
+// the same observable state, and this lane exists to remove exactly that ambiguity.
+let sealing = null
+function endBootstrap(why) {
+  if (!spool || !spool.bootstrap) return Promise.resolve()
+  if (sealing) return sealing
+  sealing = (async () => {
+    const stillOpen = await drain()
+    if (stillOpen > 0) console.error(`  ${stillOpen} message(s) were still opening when the bootstrap was sealed — they are recorded, but the count below undercounts them`)
+    const r = spool.finishBootstrap()
+    if (!r.ok) { console.error(`  the bootstrap marker could not be written — ${r.reason}`); return }
+    console.error(`  bootstrap complete (${why}) — ${r.seeded} id(s) recorded without waking anybody; from here the durable index decides`)
+  })().finally(() => { sealing = null })
+  return sealing
 }
 if (spool && spool.bootstrap && watch) {
   const deadline = setTimeout(() => {

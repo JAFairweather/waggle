@@ -190,8 +190,12 @@ console.log('\nthe bootstrap marker counts the whole backfill, not whatever fini
 
   const r = await runTool([...base, ...trust, '--spool', dir, '--watch'], {}, { killAfterMs: 2500 })
 
-  check(existsSync(join(dir, 'started')), 'the run sealed its bootstrap')
-  const marker = readFileSync(join(dir, 'started'), 'utf8')
+  // READ DEFENSIVELY. An unsealed bootstrap is a real failure mode — it leaves the directory in the
+  // index-without-marker state that refuses to start ever again — and it must be REPORTED, not
+  // thrown. A suite that dies on ENOENT here names no assertion and reads as a broken test.
+  const sealed = existsSync(join(dir, 'started'))
+  check(sealed, 'the run sealed its bootstrap — an unsealed directory refuses every later start')
+  const marker = sealed ? readFileSync(join(dir, 'started'), 'utf8') : ''
   const seeded = Number((marker.match(/seeded (\d+) id/) || [])[1])
   check(indexSize(dir) === 8, 'all 8 backfill ids reached the durable index', `index=${indexSize(dir)}`)
   check(seeded === 8,
