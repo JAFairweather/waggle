@@ -39,6 +39,7 @@ import { spawn } from 'node:child_process'
 import { invokeHook, notifyLine } from '../src/return_lane_notify.mjs'
 import { inboxSummary, openTracker, rumorVerdict, sealAuthor, wrapAddressedTo } from '../src/return_lane_inbox.mjs'
 import { openWakeSpool } from '../src/wake_spool.mjs'
+import { relaySet, thinRelaySet } from '../src/relays.mjs'
 
 const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (process.argv[i + 1] || '') }
 const has = n => process.argv.includes(n)
@@ -53,9 +54,20 @@ if (!HEX64.test(self)) die('--pubkey <64-hex> is required — this tool reads on
 const trustArg = flag('--trust') || (flag('--trust-file') ? readFileSync(flag('--trust-file'), 'utf8') : '')
 const trusted = trustArg.split(/[\s,]+/).map(s => s.trim().toLowerCase()).filter(k => HEX64.test(k))
 
-const relayArg = flag('--relays')
-const RELAYS = (relayArg ? relayArg.split(',') : ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub'])
-  .map(s => s.trim()).filter(Boolean)
+// The default set comes from `src/relays.mjs`, the same place `agent-send.mjs` takes it from. These
+// two lines used to disagree — send defaulted to two relays, listen to three, and neither list was
+// the module's four — so an onboarded agent spoke on one set and listened on another, and a reply
+// carried to a relay it does not subscribe to is lost with nothing anywhere reporting a failure
+// (#589). `WAGGLE_RELAY_RELAYS` is honoured here as well as in `agent-send.mjs`, so one variable
+// configures both halves of the lane; it was previously read by the speaking half only.
+// `allowLoopbackWs` keeps a capability this line had before it took its default from the module:
+// an explicitly-passed `ws://127.0.0.1:PORT`, which is how this tool is driven against a local relay.
+// Everything else is still wss-only, so the net effect is stricter than the hand-rolled parse — that one
+// admitted `ws://` to any host on the internet.
+const RELAYS = relaySet(flag('--relays') || process.env.WAGGLE_RELAY_RELAYS, undefined, { allowLoopbackWs: true })
+const thin = thinRelaySet(RELAYS)
+if (thin) console.error(`agent-inbox: THIN RELAY SET — ${thin}`)
+console.error(`agent-inbox: relays ${RELAYS.join(' ')}`)
 // TWO CLOCKS, AND THEY ARE NOT THE SAME ONE (#554).
 //
 // A relay filters kind 1059 on the WRAP's created_at, and NIP-59 says that value is randomised into

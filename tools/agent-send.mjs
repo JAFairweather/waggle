@@ -34,6 +34,7 @@ import { finalizeEvent, generateSecretKey, getEventHash } from 'nostr-tools/pure
 import * as nip44 from 'nostr-tools/nip44'
 import { loadNostrSigner, withPinnedCustody } from '../src/nostr_signer.mjs'
 import { buildIntent, envelopeTemplates, sendVerdict } from '../src/relay_send_intent.mjs'
+import { relaySet, thinRelaySet } from '../src/relays.mjs'
 
 const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (process.argv[i + 1] || '') }
 const has = n => process.argv.includes(n)
@@ -43,8 +44,24 @@ const die = (m, code = 3) => { console.error(`agent-send: ${m}`); process.exit(c
 const channel = flag('--channel') || process.env.WAGGLE_RELAY_CHANNEL || ''
 const bridge = String(flag('--bridge') || process.env.WAGGLE_BRIDGE_PUBKEY || '').toLowerCase()
 if (!HEX64.test(bridge)) die('--bridge <64-hex> (or WAGGLE_BRIDGE_PUBKEY) is required — this seals to waggle\'s own key and will not guess it')
-const RELAYS = (flag('--relays') || process.env.WAGGLE_RELAY_RELAYS || 'wss://nos.lol,wss://relay.primal.net')
-  .split(',').map(s => s.trim()).filter(Boolean)
+// The default set comes from `src/relays.mjs` and from nowhere else. This line used to hold its own
+// literal pair — nos.lol and primal — which is the exact duplication that module was created to end
+// (`src/relays.mjs:3`, "it was defined nine times"). It mattered here more than anywhere: nos.lol
+// has refused waggle's sealed wraps for want of 28 bits of proof-of-work since 2026-08-08 (#345), so
+// a two-relay default whose first entry always refuses is an effective set of ONE, below the floor
+// the module names — and this is the tool an onboarded agent speaks through every day. Measured on
+// the live lane this session: the old default reported `accepted by 0/2` and NOT SENT twice in a
+// row, while the same body on DEFAULT_PUBLIC_RELAYS landed 3/4.
+// `allowLoopbackWs` keeps a capability this line had before it took its default from the module:
+// an explicitly-passed `ws://127.0.0.1:PORT`, which is how this tool is driven against a local relay.
+// Everything else is still wss-only, so the net effect is stricter than the hand-rolled parse — that one
+// admitted `ws://` to any host on the internet.
+const RELAYS = relaySet(flag('--relays') || process.env.WAGGLE_RELAY_RELAYS, undefined, { allowLoopbackWs: true })
+// Printed before anything is signed, because a thin set is not a failure this run can report any
+// other way: a fan-out to one relay that then accepts reports a cheerful `1/1`.
+const thin = thinRelaySet(RELAYS)
+if (thin) console.error(`agent-send: THIN RELAY SET — ${thin}`)
+console.error(`agent-send: relays ${RELAYS.join(' ')}`)
 const dry = has('--dry-run')
 
 const base = loadNostrSigner()

@@ -109,5 +109,31 @@ const check = (cond, label) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${la
     'a missing list is thin, not healthy — being unable to see the set is not the same as the set being fine')
 }
 
+// ── the loopback exemption, and how narrow it is (#589) ─────────────────────────────────────
+// `agent-inbox`/`agent-send` accepted `ws://` to any host before they took their defaults from this
+// module. Routing them through it would have removed that, and a local relay is how both tools are
+// driven without a network — so the exemption exists. Every assertion here is paired, because a
+// scheme rule asserted only to refuse cannot be told from one that refuses everything.
+{
+  const LOOP = 'ws://127.0.0.1:7447'
+  check(relaySet(LOOP, ['wss://fb.example'], { allowLoopbackWs: true })[0] === LOOP,
+    'an explicit loopback ws:// is admitted when the caller opts in — this is how the tools are driven against a local relay')
+  check(relaySet(LOOP, ['wss://fb.example'])[0] === 'wss://fb.example',
+    'and is NOT admitted by default — the option is opt-in, so no existing caller silently gained it')
+  check(relaySet('ws://localhost:7447', ['wss://fb.example'], { allowLoopbackWs: true })[0] === 'ws://localhost:7447' &&
+    relaySet('ws://[::1]:7447', ['wss://fb.example'], { allowLoopbackWs: true })[0] === 'ws://[::1]:7447',
+    'all three loopback spellings are admitted — a rule that covers only 127.0.0.1 sends the next reader to add another exemption')
+  // The one that matters. A prefix match here admits a remote host whose NAME starts with a
+  // loopback address, which is the classic way an "it's only local" rule becomes a public one.
+  check(relaySet('ws://127.0.0.1.evil.example', ['wss://fb.example'], { allowLoopbackWs: true })[0] === 'wss://fb.example',
+    'NEGATIVE CONTROL — ws://127.0.0.1.evil.example is REFUSED even with the option on: it is a remote host, not a loopback one')
+  check(relaySet('ws://relay.example.org', ['wss://fb.example'], { allowLoopbackWs: true })[0] === 'wss://fb.example',
+    'and an ordinary remote ws:// is still refused — the exemption is about loopback, not about ws://')
+  check(relaySet(`wss://real.example,${LOOP}`, ['wss://fb.example'], { allowLoopbackWs: true }).join(' ') === `wss://real.example ${LOOP}`,
+    'a mixed list keeps both — the exemption widens what is admitted, it does not replace the wss rule')
+  check(relaySet('', ['wss://fb.example'], { allowLoopbackWs: true })[0] === 'wss://fb.example',
+    'and an empty value still falls back, so the option changes nothing about the default path')
+}
+
 console.log(`\n${pass ? 'RELAY SET PASS — the parser lets good entries through, and the alarm can both fire and stay quiet' : 'FAILURES ABOVE'}`)
 process.exit(pass ? 0 : 1)

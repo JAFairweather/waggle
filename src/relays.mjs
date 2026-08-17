@@ -58,7 +58,14 @@ export const REDUNDANCY_FLOOR = 3
 /// Returns `fallback` only when the input yields nothing at all, so `RELAYS=""` means "I did not
 /// set this", not "publish to nowhere" — a caller that fans out to an empty array reports a
 /// cheerful `0/0` and looks like a success.
-export function relaySet(value, fallback = DEFAULT_PUBLIC_RELAYS) {
+///
+/// `allowLoopbackWs` admits `ws://` for LOOPBACK HOSTS ONLY. The wss-only rule below exists to keep
+/// the envelope off the wire, and a socket to 127.0.0.1 is not on a wire — but the option is opt-in
+/// rather than the default because "it's only local" is how a rule like this gets widened by
+/// accident. It exists for `agent-inbox`/`agent-send`, which accepted `ws://` to ANY host before
+/// they took their defaults from here (#589); routing them through this function without it would
+/// have removed a live capability, and with it they end up stricter than they were.
+export function relaySet(value, fallback = DEFAULT_PUBLIC_RELAYS, { allowLoopbackWs = false } = {}) {
   const seen = new Set()
   const out = []
   for (const raw of String(value ?? '').split(/[,\s]+/)) {
@@ -67,7 +74,12 @@ export function relaySet(value, fallback = DEFAULT_PUBLIC_RELAYS) {
     // wss only. A `ws://` relay would carry the envelope in clear over the wire, and the sealed
     // lane's whole claim is that the envelope is the only thing anyone sees — no need to hand it
     // to the network as well.
-    if (!/^wss:\/\/[^\s/]+/i.test(url)) continue
+    //
+    // The loopback exemption names the three spellings and nothing else. `127.0.0.1` is matched as a
+    // whole octet — a `[^\s/]*` here would admit `ws://127.0.0.1.evil.example`, which is a remote
+    // host whose name starts with a loopback address.
+    const loopback = allowLoopbackWs && /^ws:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/|$)/i.test(url)
+    if (!loopback && !/^wss:\/\/[^\s/]+/i.test(url)) continue
     // Two spellings of one host are one relay, and counting them twice is redundancy that is not
     // there. Compared without the trailing slash and case-insensitively on the host.
     const key = url.replace(/\/+$/, '').toLowerCase()
