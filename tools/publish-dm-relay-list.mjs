@@ -62,6 +62,14 @@ const raw = String(process.env.NVOY_NSEC || process.env.SESSION_NSEC || '').trim
 // It throws when only one of the two paths is set, which is a misconfiguration worth stopping on
 // rather than falling through to "no signer configured" — that message would send someone looking
 // for the wrong thing entirely.
+//
+// The narrow cut and the label below are load-bearing on each other, so do not "simplify" one
+// without the other (#580 review). `sources` names this entry
+// `the seated pairing (WAGGLE_BUNKER_URI_FILE)`. Under `loadNostrSigner`, `seated` would be truthy
+// from `BUZZ_PRIVATE_KEY` with no such file set anywhere — and then every downstream message, the
+// collision refusal here and `signDmRelayList`'s identity-mismatch refusal alike, would name a file
+// the operator never touched. A refusal whose stated reason sends someone hunting for the wrong
+// thing is the failure this repo has paid for more than once.
 let seated = null
 try {
   seated = loadBunkerSignerFiles(
