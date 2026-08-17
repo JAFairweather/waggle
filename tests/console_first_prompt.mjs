@@ -105,7 +105,12 @@ const MATRIX = [
   // ignored `briefPath`, and one with the `!agent` guard removed — and both survived for the same
   // reason: no fixture passed the parameter, so no assertion could see it drop. This closes the
   // class rather than those two instances. `writtenBy` is the third defect of this shape.
+  // `repo` and `instanceRoot` join it for exactly that reason: a twin ignoring either would agree
+  // byte for byte with one that honoured it, because no fixture passed the parameter. `instanceRoot`
+  // is the newer of the two (#583) and is the one the console never supplies in production, so
+  // nothing else on this axis would exercise it at all.
   ['every non-default parameter supplied at once', { briefPath: 'docs/OTHER_BRIEF.md',
+    repo: '/opt/waggle', instanceRoot: '/opt/agents/pi-agent',
     writtenBy: 'a fixture, deliberately,', report: { rows: rows({ 'admit-grant': PRESENT }) } }],
   // `report.lane` renders the `--lane` flag on the remedy command (#515). It is a field on `report`
   // rather than a parameter, so nothing above walks it, and the two copies inline their own lane
@@ -214,6 +219,32 @@ for (const copy of [['node', node], ['browser', web]]) {
   let threw = null
   try { mod.startupDoc({ report: { rows: [] } }) } catch (e) { threw = e.message }
   check(threw !== null, `  …and the ${label} copy refuses to render a document with no agent name`)
+}
+
+// `instanceRoot`, per copy and in both directions (#583). It is the parameter this suite is most
+// exposed on: the console NEVER supplies it — it has not seen the agent's machine — so production
+// only ever exercises the placeholder half, and a twin that dropped the parameter entirely would
+// render identically to a correct one on every console-shaped fixture. The signer pair and the
+// spool are the two things the commands were shipped without, so this asserts they arrive.
+for (const [label, mod] of [['node', node], ['browser', web]]) {
+  const listen = d => (d.split('\n').find(l => l.startsWith('**To listen:**')) || '').match(/`([^`]+)`/)?.[1] || ''
+  const known = mod.startupDoc({ agent: 'pi-agent', pubkey: PUB, repo: '/opt/waggle',
+    instanceRoot: '/opt/agents/pi-agent', report: { rows: rows({ 'admit-grant': PRESENT }) } })
+  check(listen(known).includes('WAGGLE_BUNKER_URI_FILE=/opt/agents/pi-agent/credentials/bunker-uri')
+    && listen(known).includes('WAGGLE_NIP46_CLIENT_NSEC_FILE=/opt/agents/pi-agent/credentials/bunker-client'),
+    `the ${label} copy renders the signer pair from the instance directory it was given`)
+  check(listen(known).includes('--spool /opt/agents/pi-agent/spool'),
+    `  …and points --spool at that directory, so the first-seen index survives a restart`)
+  check(!known.includes('<your agent dir>'),
+    `  NEGATIVE CONTROL — and no placeholder survives in the ${label} copy when the path was supplied`)
+  // The other direction, which is the ONLY one the console produces.
+  const unknown = mod.startupDoc({ agent: 'pi-agent', pubkey: PUB, repo: '/opt/waggle',
+    report: { rows: rows({ 'admit-grant': PRESENT }) } })
+  check(listen(unknown).includes('WAGGLE_BUNKER_URI_FILE=') && listen(unknown).includes('--spool')
+    && listen(unknown).includes('<your agent dir>'),
+    `  BOTH DIRECTIONS — with no directory known the ${label} copy still prints both, against a placeholder`)
+  check(/`<your agent dir>` in the commands below is a placeholder/.test(unknown),
+    `  …and says it IS a placeholder, which is the only account the console can honestly give`)
 }
 
 // A property the byte-comparison alone cannot state: that the comparison is comparing something.
