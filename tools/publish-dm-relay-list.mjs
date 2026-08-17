@@ -13,6 +13,13 @@
 //   NVOY_NSEC=… EXPECT_PUBKEY=<npub|hex> \                   # local key
 //     node tools/publish-dm-relay-list.mjs --dm-relays wss://…
 //
+//   WAGGLE_BUNKER_URI_FILE=<path> WAGGLE_NIP46_CLIENT_NSEC_FILE=<path> \   # a seated pairing
+//     EXPECT_PUBKEY=<npub|hex> node tools/publish-dm-relay-list.mjs --dm-relays wss://…
+//
+// The third form is preferred for an agent, and is the only one available to an agent that paired
+// ITSELF: pair-agent.mjs spends the bunker URI's single-use secret, so the NVOY_BUNKER path can no
+// longer mint a client key and answers `Unknown client`. See resolveSigner (#579).
+//
 // Until #381 this tool took NVOY_NSEC and nothing else, so the sanctioned
 // custody model — key in the Bunker, nsec deleted — could not use it, and
 // completing onboarding meant putting an nsec back on disk. A tool that
@@ -36,6 +43,7 @@ import * as nip19 from 'nostr-tools/nip19'
 import { signDmRelayList } from './dm_relay_list_lib.mjs'
 import { recipientDmRelays } from '../src/dm_relays.mjs'
 import { DEFAULT_PUBLIC_RELAYS, relaySet } from '../src/relays.mjs'
+import { loadBunkerSignerFiles } from '../src/nostr_signer.mjs'
 
 const args = process.argv.slice(2)
 const flag = (name, fallback = '') => { const i = args.indexOf(name); return i < 0 ? fallback : args[i + 1] || '' }
@@ -43,8 +51,39 @@ const die = message => { console.error(`publish-dm-relay-list: ${message}`); pro
 const expected = flag('--expect-pubkey', process.env.EXPECT_PUBKEY || '').trim()
 const bunkerUri = String(process.env.NVOY_BUNKER || '').trim()
 const raw = String(process.env.NVOY_NSEC || process.env.SESSION_NSEC || '').trim()
-if (!bunkerUri && !raw) die('set NVOY_BUNKER (remote signer, preferred) or NVOY_NSEC/SESSION_NSEC; a secret is never accepted as an argument')
-if (bunkerUri && raw) die('both NVOY_BUNKER and NVOY_NSEC are set — refusing to guess which identity you meant')
+
+// A seated pairing is a THIRD source, read from files rather than the environment (#579).
+//
+// `loadBunkerSignerFiles`, NOT `loadNostrSigner`. The latter also falls back to `BUZZ_PRIVATE_KEY`,
+// which is set in the bridge host's environment — so using it here would make this tool see a
+// signer on the box where it previously saw none, and collide with an `NVOY_NSEC` that has always
+// worked. Widening what counts as a credential is not a side effect worth taking to save a line.
+//
+// It throws when only one of the two paths is set, which is a misconfiguration worth stopping on
+// rather than falling through to "no signer configured" — that message would send someone looking
+// for the wrong thing entirely.
+//
+// The narrow cut and the label below are load-bearing on each other, so do not "simplify" one
+// without the other (#580 review). `sources` names this entry
+// `the seated pairing (WAGGLE_BUNKER_URI_FILE)`. Under `loadNostrSigner`, `seated` would be truthy
+// from `BUZZ_PRIVATE_KEY` with no such file set anywhere — and then every downstream message, the
+// collision refusal here and `signDmRelayList`'s identity-mismatch refusal alike, would name a file
+// the operator never touched. A refusal whose stated reason sends someone hunting for the wrong
+// thing is the failure this repo has paid for more than once.
+let seated = null
+try {
+  seated = loadBunkerSignerFiles(
+    String(process.env.WAGGLE_BUNKER_URI_FILE || '').trim(),
+    String(process.env.WAGGLE_NIP46_CLIENT_NSEC_FILE || '').trim())
+} catch (e) { die(e.message) }
+
+// Refusing to guess is the existing rule for NVOY_BUNKER + NVOY_NSEC; two identities are two
+// identities however they were supplied, and this tool publishes the authority for where a person's
+// mail is delivered. Naming which pair collided matters — "more than one signer" sends someone
+// hunting through an environment they did not set.
+const sources = [seated && 'the seated pairing (WAGGLE_BUNKER_URI_FILE)', bunkerUri && 'NVOY_BUNKER', raw && 'NVOY_NSEC/SESSION_NSEC'].filter(Boolean)
+if (sources.length === 0) die('set WAGGLE_BUNKER_URI_FILE + WAGGLE_NIP46_CLIENT_NSEC_FILE (a pairing seated by tools/pair-agent.mjs, preferred), or NVOY_BUNKER, or NVOY_NSEC/SESSION_NSEC; a secret is never accepted as an argument')
+if (sources.length > 1) die(`more than one signer is configured — refusing to guess which identity you meant: ${sources.join(' and ')}`)
 if (!expected) die('set EXPECT_PUBKEY (or --expect-pubkey) so the target identity is explicit')
 
 const toHex = value => {
@@ -60,7 +99,35 @@ const wanted = toHex(expected)
 // The Bunker authorises a specific CLIENT keypair, not anyone holding the secret. A fresh key
 // each run is an app the signer has never seen ("Unknown client"), so it is persisted — the same
 // reasoning as tools/grant.mjs. This is the transport identity, never the signing one.
+//
+// ── And a pairing that already exists is the third source (#579) ────────────────────────────────
+//
+// The `NVOY_BUNKER` path below spends the URI's secret to authorise the client key it mints. That
+// secret is single-use. `tools/pair-agent.mjs` spends it at pairing time, so an agent that paired
+// ITSELF — the whole point of the nostrconnect path — arrives here with a perfectly good signer it
+// cannot use, and gets `Unknown client`.
+//
+// That was invisible while every agent was hand-seated on a machine the maintainer controls, where
+// a fresh URI was always to hand. It is not survivable for a remote agent, and it fails at the one
+// step that cannot be skipped: with no kind:10050 the bridge has NO public-relay fallback by design
+// (`src/bridge.mjs`), so it logs `RETURN not sent … no valid kind:10050` and drops every message.
+// The agent sees an empty inbox, which is what no mail looks like.
+//
+// So the seated pairing is preferred when present. It is the same credential every other first-day
+// tool reads — `agent-send`, `agent-inbox`, `publish_profile` — and reusing the client key
+// `pair-agent` persisted is what makes it work where a fresh one cannot.
 async function resolveSigner() {
+  if (seated) {
+    // NO `withPinnedCustody` here, deliberately. It was in the first draft of this change and a
+    // mutation test proved it dead: `signDmRelayList` below already refuses on identity mismatch
+    // BEFORE asking for a signature, then verifies the returned event, its author and its tags.
+    // Removing the pin changed no assertion — untested armour that reads as protection is worse
+    // than none, so it is gone rather than given a test that only exercises the wrapper.
+    //
+    // `userPubkey()` is a round trip to the signer, not a field: what a pairing CLAIMS to hold and
+    // what it holds are different things, and this is the value signDmRelayList checks.
+    return { pubkey: await seated.userPubkey(), sign: tmpl => seated.signEvent(tmpl), close: () => seated.close?.() }
+  }
   if (!bunkerUri) {
     let secretKey
     try { secretKey = raw.startsWith('nsec1') ? nip19.decode(raw).data : Uint8Array.from(Buffer.from(raw, 'hex')) }
