@@ -210,23 +210,51 @@ if (existsSync(webNip98)) {
 // ReferenceError exactly as it swallows a bad URL. On a runtime without the global the tool reports
 // NO CONNECTION instead of reporting that it cannot open one, and an agent reading an empty inbox
 // cannot tell that from no mail. Found onboarding an agent on Node 20.
-const usesWs = f => /\bnew\s+WebSocket\s*\(/.test(readFileSync(f, 'utf8'))
-const importsWs = f => /^import\s+WebSocket\s+from\s+'ws'/m.test(readFileSync(f, 'utf8'))
-const wsUsers = files.filter(usesWs)
-// A scan that found nothing to check has told you nothing.
-check(wsUsers.length >= 8, `found runtime modules that construct a WebSocket (${wsUsers.length}) — too few means the pattern moved, not that the risk went away`)
-const undeclared = wsUsers.filter(f => !importsWs(f)).map(f => relative(REPO, f))
-check(undeclared.length === 0,
-  `every module that constructs a WebSocket imports it — a global is not a dependency (${undeclared.join(', ') || 'none undeclared'})`)
+// FIXING THE DIRECT CONSTRUCTORS WAS HALF OF IT. `nostr-tools/pool` resolves its socket as
+// `opts.websocketImplementation || WebSocket` — the same bare global, reached through a dependency
+// rather than a call site, so the version of this check that only looked for `new WebSocket(` gave
+// the branch a clean bill while half the defect stood. That path is every bunker signature and
+// every pairing (`src/nostr_signer.mjs`, `src/nostrconnect.mjs`), and it fails by calling `oneose`
+// with `reason: "WebSocket is not defined"` — a healthy quiet relay and a runtime with no sockets
+// at all, reported in the same vocabulary. Both doors now go through `src/ws_runtime.mjs`.
+// The predicates are written against SOURCE, and the file-taking wrappers are the only thing that
+// touches disk — so the controls below exercise the same regexes the scan does, rather than second
+// copies of them that can drift into agreeing with a bug.
+const usesWsSrc = s => /\bnew\s+WebSocket\s*\(/.test(s)
+const usesPoolSrc = s => /\bnew\s+SimplePool\s*\(|Pool\s*=\s*SimplePool/.test(s)
+const importsRuntimeSrc = s => /^import\s+(WebSocket\s+from\s+)?'\.\.?\/(src\/)?ws_runtime\.mjs'/m.test(s)
+const usesWs = f => usesWsSrc(readFileSync(f, 'utf8'))
+const usesPool = f => usesPoolSrc(readFileSync(f, 'utf8'))
+const importsRuntime = f => importsRuntimeSrc(readFileSync(f, 'utf8'))
+const isRuntime = f => relative(REPO, f) === 'src/ws_runtime.mjs'
 
-// NEGATIVE CONTROL. The two assertions above both pass on a check that never looks at anything, so
-// prove the predicate can say no: a synthetic module that uses the global without importing it.
+const wsUsers = files.filter(f => !isRuntime(f) && (usesWs(f) || usesPool(f)))
+// A scan that found nothing to check has told you nothing.
+check(wsUsers.length >= 10, `found runtime modules that open a socket, directly or through a pool (${wsUsers.length}) — too few means the pattern moved, not that the risk went away`)
+// …and one that cannot tell the two doors apart would stay green while either half regressed.
+const poolUsers = files.filter(f => !isRuntime(f) && usesPool(f))
+check(poolUsers.length >= 3, `and specifically, modules reaching a socket through nostr-tools' pool (${poolUsers.length}) — the half that was missed`)
+
+const undeclared = wsUsers.filter(f => !importsRuntime(f)).map(f => relative(REPO, f))
+check(undeclared.length === 0,
+  `every module that opens a socket imports src/ws_runtime.mjs — a global is not a dependency (${undeclared.join(', ') || 'none undeclared'})`)
+check(/useWebSocketImplementation\s*\(\s*WebSocket\s*\)/.test(readFileSync(join(REPO, 'src/ws_runtime.mjs'), 'utf8')),
+  'src/ws_runtime.mjs installs the implementation into nostr-tools — importing it for a side effect it no longer has is the silent way this regresses')
+
+// NEGATIVE CONTROL. Every assertion above passes on a check that never looks at anything, so prove
+// each predicate can say no — and, for the pool door, that it says no to the exact code that shipped.
 {
   const bad = "const x = new WebSocket('wss://x')\n"
-  const good = "import WebSocket from 'ws'\n" + bad
-  const p = /\bnew\s+WebSocket\s*\(/, i = /^import\s+WebSocket\s+from\s+'ws'/m
-  check(p.test(bad) && !i.test(bad), '  …CONTROL: the predicate flags a module that uses the global without importing it')
-  check(p.test(good) && i.test(good), '  …CONTROL: and clears the same module once the import is there')
+  const good = "import WebSocket from '../src/ws_runtime.mjs'\n" + bad
+  check(usesWsSrc(bad) && !importsRuntimeSrc(bad), '  …CONTROL: the predicate flags a module that uses the global without importing the runtime')
+  check(usesWsSrc(good) && importsRuntimeSrc(good), '  …CONTROL: and clears the same module once the import is there')
+
+  const poolBad = "import { SimplePool } from 'nostr-tools/pool'\nconst pool = new SimplePool()\n"
+  const poolGood = "import './ws_runtime.mjs'\n" + poolBad
+  check(usesPoolSrc(poolBad) && !importsRuntimeSrc(poolBad), '  …CONTROL: it flags a pool user that installs no implementation — the shape that shipped')
+  check(usesPoolSrc(poolGood) && importsRuntimeSrc(poolGood), '  …CONTROL: and clears it once the runtime is imported')
+  // The default-argument spelling in src/nostr_signer.mjs, which reads nothing like `new SimplePool()`.
+  check(usesPoolSrc('  Pool = SimplePool,\n'), '  …CONTROL: and recognises the injectable-Pool spelling, not just the constructor call')
 }
 
 console.log(pass ? '\nSHIP IMPORTS PASS — runtime code stays inside the deployed tree' : '\nSHIP IMPORTS FAIL')

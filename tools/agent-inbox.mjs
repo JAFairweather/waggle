@@ -31,7 +31,7 @@
 // The catch swallows a ReferenceError exactly as it swallows a bad URL, so on a runtime without the
 // global this reports NO CONNECTION rather than reporting that it cannot open one — and an agent
 // reading an empty inbox has no way to tell that from no mail. Found onboarding an agent on Node 20.
-import WebSocket from 'ws'
+import WebSocket from '../src/ws_runtime.mjs'
 import { readFileSync } from 'node:fs'
 import { verifyEvent } from 'nostr-tools/pure'
 import { loadNostrSigner } from '../src/nostr_signer.mjs'

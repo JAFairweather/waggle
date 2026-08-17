@@ -40,6 +40,7 @@ import { getPublicKey, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import * as nip44 from 'nostr-tools/nip44'
 import { SimplePool } from 'nostr-tools/pool'
+import './ws_runtime.mjs'
 import { URLSearchParams } from 'node:url'
 
 /// NIP-46 request/response kind. The same kind carries the whole conversation in both directions.

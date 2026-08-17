@@ -2,6 +2,7 @@
 // Deletion on nostr is a REQUEST: relays may honour it, clients may cache, mirrors may keep
 // serving. Verify afterwards rather than assuming, and report honestly either way.
 import { SimplePool } from 'nostr-tools/pool'
+import '../src/ws_runtime.mjs'
 import { finalizeEvent } from 'nostr-tools/pure'
 import { nip19 } from 'nostr-tools'
 import { readFileSync } from 'node:fs'

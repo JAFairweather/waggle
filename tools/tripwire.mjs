@@ -19,7 +19,7 @@
 // ALARM_TO are set, it also sends a NIP-17 DM — signed by a SEPARATE alarm key, never the
 // poster key (which may be the compromised one). Wire it to a systemd timer; alert on exit 2.
 
-import WebSocket from 'ws'
+import WebSocket from '../src/ws_runtime.mjs'
 import { readFileSync, appendFileSync, mkdirSync, existsSync, lstatSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'

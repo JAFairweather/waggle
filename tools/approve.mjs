@@ -18,7 +18,7 @@
 // Env: BUZZ_PRIVATE_KEY (the bridge posting identity, same as the lane), CONFIG_PATH,
 // APPROVALS_PATH overrides for tests.
 
-import WebSocket from 'ws'
+import WebSocket from '../src/ws_runtime.mjs'
 import { verifyEvent } from 'nostr-tools/pure'
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'

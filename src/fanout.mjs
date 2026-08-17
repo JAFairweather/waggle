@@ -2,7 +2,7 @@
 //
 // Takes its relay list as an argument and its socket factory as an injectable, so it knows nothing
 // about config. That is what makes it testable without a network (tests/relay_fanout.mjs).
-import WebSocket from 'ws'
+import WebSocket from './ws_runtime.mjs'
 
 // One-shot relay fan-out: open a socket per relay, race them, settle exactly once, close everything.
 // Written three times before this (#153), and the copies diverged with a bug — one closed its

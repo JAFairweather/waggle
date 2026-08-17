@@ -25,7 +25,7 @@
 // alarm that has only ever passed, which is indistinguishable from one that never fires. Running
 // without it is exit 3, never exit 0.
 
-import WebSocket from 'ws'
+import WebSocket from '../src/ws_runtime.mjs'
 import { appendFileSync, mkdirSync, readFileSync, lstatSync } from 'node:fs'
 import { dirname, resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'

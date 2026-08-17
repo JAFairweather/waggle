@@ -22,7 +22,7 @@
 // cfg.public.grantors, defaulting to the approvers set). Kinds are provisional and read
 // from config/nipda_kinds.json when present (NIPDA_KINDS_PATH to override).
 
-import WebSocket from 'ws'
+import WebSocket from '../src/ws_runtime.mjs'
 import { randomBytes } from 'node:crypto'
 import { scopeHashSync, scopeHashOrNull } from '../src/scope_hash.mjs'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'

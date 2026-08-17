@@ -36,7 +36,7 @@
 // below are `try { ws = new WebSocket(url) } catch { return fin(...) }`, and that catch cannot tell
 // a missing global from a bad URL. On a runtime without one this reports a failed join rather than
 // an unusable runtime. Caught by the guard in tests/ship_imports.mjs, not by reading.
-import WebSocket from 'ws'
+import WebSocket from '../src/ws_runtime.mjs'
 import { randomBytes } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'

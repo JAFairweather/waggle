@@ -32,7 +32,7 @@
 // A relay matches a newly-arrived-but-backdated wrap against an active filter's
 // `since`, so a since=now subscription silently drops fresh DMs. We default the
 // lookback to 48h and lean on durable id-dedup to make re-delivery a no-op.
-import WebSocket from 'ws'
+import WebSocket from './ws_runtime.mjs'
 // Only verifyEvent remains here: every signing symbol moved to nostr_egress.mjs with the key
 // (A3 §2.5). Verification is a public-key operation and belongs wherever input is judged.
 import { getEventHash, verifyEvent } from 'nostr-tools/pure'

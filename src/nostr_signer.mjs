@@ -11,6 +11,7 @@ import { finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import * as nip44 from 'nostr-tools/nip44'
 import { SimplePool } from 'nostr-tools/pool'
+import './ws_runtime.mjs'
 
 const BUNKER = /^bunker:\/\/([0-9a-f]{64})/i
 

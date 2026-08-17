@@ -36,7 +36,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
-import WebSocket from 'ws'
+import WebSocket from '../src/ws_runtime.mjs'
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure'
 import { BunkerSigner, parseBunkerInput } from 'nostr-tools/nip46'
 import * as nip19 from 'nostr-tools/nip19'
