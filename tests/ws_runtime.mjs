@@ -79,6 +79,53 @@ pool.subscribeMany([url], { kinds: [1], limit: 3 }, {
 setTimeout(() => { console.log(JSON.stringify({ events, eose, closed })); process.exit(0) }, ms)
 `)
 
+// ── The third door (#578) ────────────────────────────────────────────────────────────────────────
+//
+// `nostr-tools/nip46` does not import `pool.js`. It inlines a copy, with its own `_WebSocket` and
+// its own `SimplePool`, and `BunkerSigner` builds THAT class when `params.pool` is absent. So the
+// two probes above — both of which exercise `pool.js` — say nothing about this path, and neither
+// does the ws_runtime import that both affected tools already had.
+//
+// These probes drive the signer's own `pool` rather than calling `connect()`, so no bunker has to
+// exist and nothing waits on a human. The pointer names a key nobody holds — the assertion is about
+// which socket implementation the signer's pool resolves, not about reaching a signer. It is DERIVED
+// rather than written down as a literal, because `fromBunker` computes a shared secret against it
+// and an off-curve 64-hex string throws inside @noble before any socket is opened, which the probe
+// would report as a failure of the thing under test.
+const PURE = import.meta.resolve('nostr-tools/pure')
+const NIP46 = import.meta.resolve('nostr-tools/nip46')
+
+const bunkerProbe = (build) => `
+${build.imports}
+import { getPublicKey } from ${JSON.stringify(PURE)}
+const [url, ms] = [process.argv[2], Number(process.argv[3] || 6000)]
+const remote = getPublicKey(new Uint8Array(32).fill(3))
+const bp = await parseBunkerInput('bunker://' + remote + '?relay=wss://nos.lol&secret=probe')
+if (!bp || !bp.pubkey) { console.error('PROBE INVALID: bunker pointer did not parse'); process.exit(9) }
+const signer = ${build.call}
+if (!signer.pool) { console.error('PROBE INVALID: signer exposes no pool to drive'); process.exit(9) }
+let events = 0, eose = false, closed = null
+signer.pool.subscribeMany([url], { kinds: [1], limit: 3 }, {
+  onevent() { events++ }, oneose() { eose = true }, onclose(r) { closed = r },
+})
+setTimeout(() => { console.log(JSON.stringify({ events, eose, closed })); process.exit(0) }, ms)
+`
+
+// The shape that shipped: nip46 imported directly, no pool injected.
+const PROBE_NIP46_BARE = join(TMP, 'probe-nip46-bare.mjs')
+writeFileSync(PROBE_NIP46_BARE, bunkerProbe({
+  imports: `import ${JSON.stringify(join(REPO, 'src/ws_runtime.mjs'))}\n` +
+           `import { BunkerSigner, parseBunkerInput } from ${JSON.stringify(NIP46)}`,
+  call: 'BunkerSigner.fromBunker(new Uint8Array(32).fill(7), bp, {})',
+}))
+
+// The fix: the same signer, built through the one module allowed to import nip46.
+const PROBE_NIP46_FIXED = join(TMP, 'probe-nip46-fixed.mjs')
+writeFileSync(PROBE_NIP46_FIXED, bunkerProbe({
+  imports: `import { bunkerSignerFromUri, parseBunkerInput } from ${JSON.stringify(join(REPO, 'src/nostr_signer.mjs'))}`,
+  call: 'bunkerSignerFromUri(new Uint8Array(32).fill(7), bp, {})',
+}))
+
 const run = (script, { killGlobal = false, url = 'wss://nos.lol', ms = 6000 } = {}) => {
   const args = killGlobal ? ['--import', `file://${KILL_GLOBAL}`] : []
   try {
@@ -143,6 +190,30 @@ check(fixed.events > 0, '  …and actually reads events, so the implementation r
   `events=${fixed.events}`)
 check(!undefinedWs(fixed), '  …with no "WebSocket is not defined" among the close reasons', reasons(fixed).slice(0, 120))
 
+// ── The third door, driven ───────────────────────────────────────────────────────────────────────
+//
+// Note what the first assertion is: with the global PRESENT, the bare nip46 signer works. Without
+// it, "the fixed one reads and the bare one does not" would be satisfied by a probe that was simply
+// broken, and this suite has already reported one pass on exactly that basis.
+const nip46Control = run(PROBE_NIP46_BARE, {})
+check(!nip46Control.crashed && nip46Control.events > 0,
+  'CONTROL: with the global present, a BunkerSigner built straight from nip46 reads from a real relay',
+  nip46Control.crashed ? String(nip46Control.detail).slice(0, 200) : `events=${nip46Control.events}`)
+
+const nip46Broken = run(PROBE_NIP46_BARE, { killGlobal: true })
+check(!nip46Broken.crashed && nip46Broken.events === 0,
+  'REPRODUCES: nip46 carries its own pool, so the ws_runtime import in the same file buys it nothing',
+  nip46Broken.crashed ? String(nip46Broken.detail).slice(0, 200) : `events=${nip46Broken.events}`)
+check(undefinedWs(nip46Broken),
+  '  …and the reason is the same "WebSocket is not defined", one module further in than #576',
+  reasons(nip46Broken).slice(0, 120))
+
+const nip46Fixed = run(PROBE_NIP46_FIXED, { killGlobal: true })
+check(!nip46Fixed.crashed && nip46Fixed.events > 0,
+  'FIX: built through src/nostr_signer.mjs, the signer’s pool reads events with no global present',
+  nip46Fixed.crashed ? String(nip46Fixed.detail).slice(0, 200) : `events=${nip46Fixed.events}`)
+check(!undefinedWs(nip46Fixed), '  …with no "WebSocket is not defined" among the close reasons', reasons(nip46Fixed).slice(0, 120))
+
 // ── The tools an agent runs on its first day, on the runtime it will run them on ─────────────────
 //
 // pair-agent is the one that matters: it is the FIRST command a remote agent runs, and with no
@@ -150,7 +221,8 @@ check(!undefinedWs(fixed), '  …with no "WebSocket is not defined" among the cl
 // approved the request. --print-only opens nothing and writes nothing, so this asserts only that
 // the module graph loads under the absent global — the failure it had was at import-and-connect
 // time, not at parse time.
-for (const tool of ['tools/pair-agent.mjs', 'tools/agent-inbox.mjs', 'tools/agent-send.mjs']) {
+for (const tool of ['tools/pair-agent.mjs', 'tools/agent-inbox.mjs', 'tools/agent-send.mjs',
+                    'tools/grant.mjs', 'tools/publish-dm-relay-list.mjs']) {
   let ok = false, detail = ''
   try {
     execFileSync('node', ['--import', `file://${KILL_GLOBAL}`, '--check', join(REPO, tool)],
@@ -172,6 +244,18 @@ for (const tool of ['tools/pair-agent.mjs', 'tools/agent-inbox.mjs', 'tools/agen
     ok = true
   } catch (e) { detail = String(e.stderr || e.message).slice(0, 300) }
   check(ok, 'src/nostrconnect.mjs — the pairing listener — loads and exports under the absent global', detail)
+}
+{
+  let ok = false, detail = ''
+  try {
+    execFileSync('node', ['--import', `file://${KILL_GLOBAL}`, '-e',
+      `import(${JSON.stringify(join(REPO, 'src/nostr_signer.mjs'))}).then(m => {
+         if (typeof m.bunkerSignerFromUri !== 'function' || typeof m.parseBunkerInput !== 'function')
+           { console.error('module loaded but exported nothing expected'); process.exit(1) }
+       })`], { cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    ok = true
+  } catch (e) { detail = String(e.stderr || e.message).slice(0, 300) }
+  check(ok, 'src/nostr_signer.mjs — the only module allowed to import nip46 — loads and re-exports it under the absent global', detail)
 }
 
 console.log(pass ? '\nWS RUNTIME PASS — the socket implementation is installed, not assumed'

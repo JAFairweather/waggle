@@ -11,9 +11,31 @@ import { finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import * as nip44 from 'nostr-tools/nip44'
 import { SimplePool } from 'nostr-tools/pool'
+import { BunkerSigner } from 'nostr-tools/nip46'
 import './ws_runtime.mjs'
 
 const BUNKER = /^bunker:\/\/([0-9a-f]{64})/i
+
+// `nostr-tools/nip46` does NOT import `pool.js`. It inlines its own copy — its own `_WebSocket`
+// (nip46.js:1253), its own `try { _WebSocket = WebSocket } catch {}` (:1255), its own `SimplePool`
+// (:1258) — and `BunkerSigner` constructs THAT class whenever no pool is passed (:1351). So the
+// `useWebSocketImplementation` call in `ws_runtime.mjs` sets a variable in a different module and
+// has no effect on this path, and nip46 exports no installer of its own. `params.pool` is the only
+// lever it offers.
+//
+// Left alone on Node 20 the door reports `WebSocket is not defined` on every relay, and that
+// surfaces as EOSE — byte-identical to a healthy relay with nothing to say (#578). It is the same
+// silent shape as #576, one module further in, and it is why the fix has to be applied here rather
+// than only where a raw socket is constructed.
+//
+// Everything that needs a `BunkerSigner` comes through this. `tests/ship_imports.mjs` enforces that
+// this module is the only one allowed to import `nostr-tools/nip46`, because a caller that reaches
+// for it directly reopens the door and nothing downstream can tell.
+export { parseBunkerInput } from 'nostr-tools/nip46'
+
+export function bunkerSignerFromUri(clientSecretKey, bunkerPointer, params = {}, { Pool = SimplePool } = {}) {
+  return BunkerSigner.fromBunker(clientSecretKey, bunkerPointer, { ...params, pool: params.pool || new Pool() })
+}
 
 function privateFile(path, label) {
   let fd

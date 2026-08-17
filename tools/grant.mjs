@@ -30,7 +30,7 @@ import { homedir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeEvent, getPublicKey, generateSecretKey } from 'nostr-tools/pure'
-import { BunkerSigner, parseBunkerInput } from 'nostr-tools/nip46'
+import { bunkerSignerFromUri, parseBunkerInput } from '../src/nostr_signer.mjs'
 import * as nip19 from 'nostr-tools/nip19'
 import { DEFAULT_PUBLIC_RELAYS } from '../src/relays.mjs'
 
@@ -65,8 +65,10 @@ async function resolveSigner() {
       console.error(`(new client key saved to ${keyPath} — approve this app in your signer once; later runs reuse it)`)
     }
     // fromBunker is the factory that populates the pointer (the constructor is private);
-    // onauth surfaces the approval URL some signers require on first connect.
-    const bunker = BunkerSigner.fromBunker(clientSk, bp, { onauth: (url) => console.error(`approve this connection in your signer: ${url}`) })
+    // onauth surfaces the approval URL some signers require on first connect. It is reached through
+    // `bunkerSignerFromUri` rather than `nostr-tools/nip46` directly because nip46 carries its own
+    // inlined pool that `ws_runtime` cannot reach — see the comment on that export (#578).
+    const bunker = bunkerSignerFromUri(clientSk, bp, { onauth: (url) => console.error(`approve this connection in your signer: ${url}`) })
     try {
       await bunker.connect()
     } catch (e) {

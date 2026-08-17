@@ -38,12 +38,11 @@ import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import WebSocket from '../src/ws_runtime.mjs'
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure'
-import { BunkerSigner, parseBunkerInput } from 'nostr-tools/nip46'
 import * as nip19 from 'nostr-tools/nip19'
 import { signDmRelayList } from './dm_relay_list_lib.mjs'
 import { recipientDmRelays } from '../src/dm_relays.mjs'
 import { DEFAULT_PUBLIC_RELAYS, relaySet } from '../src/relays.mjs'
-import { loadBunkerSignerFiles } from '../src/nostr_signer.mjs'
+import { bunkerSignerFromUri, loadBunkerSignerFiles, parseBunkerInput } from '../src/nostr_signer.mjs'
 
 const args = process.argv.slice(2)
 const flag = (name, fallback = '') => { const i = args.indexOf(name); return i < 0 ? fallback : args[i + 1] || '' }
@@ -147,7 +146,9 @@ async function resolveSigner() {
     writeFileSync(keyPath, Buffer.from(clientSk).toString('hex'), { mode: 0o600 })
     console.error(`(new client key saved to ${keyPath} — approve this app in your signer once; later runs reuse it)`)
   }
-  const bunker = BunkerSigner.fromBunker(clientSk, bp, { onauth: url => console.error(`approve this connection in your signer: ${url}`) })
+  // Through `bunkerSignerFromUri`, not `nostr-tools/nip46` directly: nip46 inlines its own pool
+  // and its own WebSocket lookup, which `ws_runtime` above cannot reach (#578).
+  const bunker = bunkerSignerFromUri(clientSk, bp, { onauth: url => console.error(`approve this connection in your signer: ${url}`) })
   try { await bunker.connect() } catch (e) { die(`bunker connect failed: ${String(e?.message || e)}`) }
   return { pubkey: await bunker.getPublicKey(), sign: tmpl => bunker.signEvent(tmpl), close: () => bunker.close?.() }
 }
