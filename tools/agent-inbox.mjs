@@ -39,6 +39,7 @@ import { spawn } from 'node:child_process'
 import { invokeHook, notifyLine } from '../src/return_lane_notify.mjs'
 import { inboxSummary, openTracker, rumorVerdict, sealAuthor, wrapAddressedTo } from '../src/return_lane_inbox.mjs'
 import { openWakeSpool } from '../src/wake_spool.mjs'
+import { DEFAULT_PUBLIC_RELAYS, parseRelaySet, thinRelaySet } from '../src/relays.mjs'
 
 const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (process.argv[i + 1] || '') }
 const has = n => process.argv.includes(n)
@@ -53,9 +54,37 @@ if (!HEX64.test(self)) die('--pubkey <64-hex> is required — this tool reads on
 const trustArg = flag('--trust') || (flag('--trust-file') ? readFileSync(flag('--trust-file'), 'utf8') : '')
 const trusted = trustArg.split(/[\s,]+/).map(s => s.trim().toLowerCase()).filter(k => HEX64.test(k))
 
-const relayArg = flag('--relays')
-const RELAYS = (relayArg ? relayArg.split(',') : ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub'])
-  .map(s => s.trim()).filter(Boolean)
+// The default set comes from `src/relays.mjs`, the same place `agent-send.mjs` takes it from. These
+// two lines used to disagree — send defaulted to two relays, listen to three, and neither list was
+// the module's four — so an onboarded agent spoke on one set and listened on another, and a reply
+// carried to a relay it does not subscribe to is lost with nothing anywhere reporting a failure
+// (#589). `WAGGLE_RELAY_RELAYS` is honoured here as well as in `agent-send.mjs`, so one variable
+// configures both halves of the lane; it was previously read by the speaking half only.
+// `allowLoopbackWs` keeps a capability this line had before it took its default from the module:
+// an explicitly-passed `ws://127.0.0.1:PORT`, which is how this tool is driven against a local relay.
+// Everything else is still wss-only, so the net effect is stricter than the hand-rolled parse — that one
+// admitted `ws://` to any host on the internet.
+//
+// `parseRelaySet`, and it DIES on an explicit set that is entirely refused, the same as the sending
+// half (#591). The reviewer's read was that a warning is arguably enough here because this tool only
+// reads — the reason it is a refusal anyway is that this tool IS the notification mechanism. A
+// watcher that falls back to relays the operator did not name is listening in the wrong place while
+// reporting itself healthy, which is the exact silent-loss shape #585 is about; a watcher that
+// refuses to start is at least visible. This only fires on a value that was never dialable, and
+// `WAGGLE_RELAY_RELAYS` was ignored here entirely until this change, so no working setup can hit it.
+const RELAY_ARG = flag('--relays') || process.env.WAGGLE_RELAY_RELAYS
+const parsedRelays = parseRelaySet(RELAY_ARG, { allowLoopbackWs: true })
+if (parsedRelays.dropped.length && !parsedRelays.kept.length) {
+  die(`--relays named ${parsedRelays.dropped.length} relay(s) and none of them are dialable: ${parsedRelays.dropped.join(' ')}\n` +
+    '  Refusing rather than falling back to the public defaults — a watcher subscribed somewhere you did\n' +
+    '  not name reports itself healthy and hears nothing.\n' +
+    '  Relays must be wss:// (or ws:// on 127.0.0.1 / localhost / [::1] for a local relay).')
+}
+if (parsedRelays.dropped.length) console.error(`agent-inbox: DROPPED ${parsedRelays.dropped.join(' ')} — not dialable; listening on the rest of what you named`)
+const RELAYS = parsedRelays.kept.length ? parsedRelays.kept : [...DEFAULT_PUBLIC_RELAYS]
+const thin = thinRelaySet(RELAYS)
+if (thin) console.error(`agent-inbox: THIN RELAY SET — ${thin}`)
+console.error(`agent-inbox: relays ${RELAYS.join(' ')}`)
 // TWO CLOCKS, AND THEY ARE NOT THE SAME ONE (#554).
 //
 // A relay filters kind 1059 on the WRAP's created_at, and NIP-59 says that value is randomised into
