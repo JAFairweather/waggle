@@ -242,15 +242,26 @@ function wsPush(url, ev, { WS = globalThis.WebSocket, timeoutMs = 12000 } = {}) 
 //     ALSO serves a future-dated -> proven=0  "NONE served it back by id … this is not published"
 //
 // Wrong in the direction that sends the operator at the relays when the fault is their own key's
-// stale list. `newest` is still derived, because `readDmRelays` genuinely wants the current list.
+// stale list.
+//
+// AND THERE IS NO `newest` HERE AT ALL — that was the line the first fix stopped short of (#584
+// review, second read). Reducing to a newest at this level picks a winner BEFORE anything has
+// checked a signature, and the only consumers, `currentDmRelays` and `newestCreatedAt`, verify. So a
+// forged future-dated event served alongside the genuine one won the reduction, was the only event
+// those functions ever saw, and was then correctly rejected — leaving an empty list and "nothing has
+// been published yet" for a key whose list is sitting on the relay. `newestCreatedAt` failed the
+// same way in the direction that matters more: the real maximum was discarded before the max was
+// taken, so `supersedes` came back too low and the replacement could not replace anything.
+//
+// A reduction that runs before verification is a filter an unsigned event can steer. This function
+// now reports what the relay served, and every choice among those events is made downstream by code
+// that checks a signature first.
 function wsReadBack(url, pubkey, { WS = globalThis.WebSocket, timeoutMs = 12000 } = {}) {
   return new Promise(resolve => {
     let ws, answered = false
     const served = []
-    const newestOf = list => list.slice().sort((a, b) =>
-      Number(b.created_at || 0) - Number(a.created_at || 0) || String(b.id || '').localeCompare(String(a.id || '')))[0] || null
-    try { ws = new WS(url) } catch { return resolve({ url, answered: false, served: [], newest: null }) }
-    const done = () => { try { ws.close() } catch { /* already closed */ } resolve({ url, answered, served, newest: newestOf(served) }) }
+    try { ws = new WS(url) } catch { return resolve({ url, answered: false, served: [] }) }
+    const done = () => { try { ws.close() } catch { /* already closed */ } resolve({ url, answered, served }) }
     const t = setTimeout(done, timeoutMs)
     ws.onopen = () => ws.send(JSON.stringify(['REQ', 'dm', { kinds: [10050], authors: [pubkey], limit: 5 }]))
     ws.onmessage = m => {
@@ -267,8 +278,14 @@ function wsReadBack(url, pubkey, { WS = globalThis.WebSocket, timeoutMs = 12000 
 /// are replacing before they replace it.
 export async function readDmRelays(pubkey, { relays = PUBLIC_RELAYS, WS, timeoutMs } = {}) {
   const seen = await Promise.all(relays.map(u => wsReadBack(u, pubkey, { WS, timeoutMs })))
+  // EVERY event every relay served, deduplicated by id, and no reduction. `currentDmRelays` and
+  // `newestCreatedAt` both take a maximum and both verify first; handing them one pre-picked event
+  // per relay let an unverified event decide what they got to look at. Deduplication is by id only,
+  // which cannot discard a distinct event — four relays serving the same list is one list.
+  const byId = new Map()
+  for (const r of seen) for (const e of r.served) if (e && e.id && !byId.has(e.id)) byId.set(e.id, e)
   return {
-    events: seen.map(r => r.newest).filter(Boolean),
+    events: [...byId.values()],
     // Kept apart on purpose: zero events from four relays that all answered is a real negative,
     // and zero events from four relays that never answered is nothing at all.
     answered: seen.filter(r => r.answered).length,

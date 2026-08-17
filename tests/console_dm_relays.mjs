@@ -323,6 +323,56 @@ check(wrongOnly.proven === 0,
   'and a relay serving ONLY a different event proves nothing — read-back is by id, not by "it answered with something"')
 
 // ------------------------------------------------------------------------------------------
+console.log('\n7b. readDmRelays does not PICK — a reduction before verification is steerable by a forgery')
+// The second read caught that fixing `proven` fixed only half of it: `readDmRelays` still collapsed
+// each relay to its newest served event, and that choice ran BEFORE any signature was checked. Both
+// consumers verify — so the forgery won the reduction, was the only event they saw, and was then
+// correctly rejected. The genuine list was discarded on the way in and never had a chance to be
+// verified at all.
+//
+// Two distinct consequences, asserted separately because they fail in opposite directions:
+//   the prefill  — empty, so the page says "nothing has been published yet" about a key whose list
+//                  is sitting on the relay, and the operator goes hunting at the relays
+//   supersedes   — too low, so the replacement carries a created_at below the stale list and a
+//                  replaceable-event relay keeps serving the old one. The wedge this page exists to
+//                  break, re-tied by the code meant to break it.
+//
+// Driven through `readDmRelays` with the fake socket, not by calling the reducers directly: the
+// defect was in the plumbing between them, so a test that hands the reducers a hand-built array
+// cannot see it. Same fixtures as 6b — a real signature and a forgery that is genuinely newer.
+const relayHonest = signedList(['wss://nos.lol', 'wss://relay.primal.net'], 1_700_000_000)
+const relayForged = JSON.parse(JSON.stringify({ ...relayHonest, created_at: 1_800_000_000, id: 'forgedid', tags: [['relay', 'wss://attacker.example.com']] }))
+check(relayForged.created_at > relayHonest.created_at && relayForged.id !== relayHonest.id,
+  'PRECONDITION: the forgery is NEWER and a distinct event — otherwise this arm passes by not being the case it describes')
+// One relay serves only the forgery; the other serves both, forgery first so nothing depends on order.
+FakeWS.serve = new Map([[RELAYS[0], [relayForged]], [RELAYS[1], [relayForged, relayHonest]]])
+const read = await dm.readDmRelays(REAL_PUB, { relays: RELAYS, WS: FakeWS, timeoutMs: 500 })
+check(read.events.some(e => e.id === relayHonest.id),
+  'the genuine event SURVIVES the read — it is not discarded by a newest-wins pick that ran before anyone checked a signature')
+check(read.events.some(e => e.id === relayForged.id),
+  '  …and so does the forgery: this function reports what the relays served, it does not judge')
+check(read.events.length === 2,
+  '  …deduplicated by id, so two relays serving the same event is one event and not an inflated count')
+check(JSON.stringify(dm.currentDmRelays(read.events, REAL_PUB)) === '["wss://nos.lol","wss://relay.primal.net"]',
+  'so the PREFILL is the genuine list — before the fix this was [] and the page said nothing had been published')
+check(dm.newestCreatedAt(read.events, REAL_PUB) === 1_700_000_000,
+  'and SUPERSEDES is the genuine timestamp — the direction that matters more, because too low means the replacement cannot replace')
+// Both directions, three ways. Without the forgery the answers must be the same, or the arm above
+// passes for a key that had nothing to lose; with ONLY the forgery they must be empty, or the
+// verification is not running; and a relay serving nothing must not read as a relay that answered.
+FakeWS.serve = new Map([[RELAYS[0], [relayHonest]], [RELAYS[1], [relayHonest]]])
+const readClean = await dm.readDmRelays(REAL_PUB, { relays: RELAYS, WS: FakeWS, timeoutMs: 500 })
+check(readClean.events.length === 1 && JSON.stringify(dm.currentDmRelays(readClean.events, REAL_PUB)) === '["wss://nos.lol","wss://relay.primal.net"]',
+  'CONTROL: with no forgery present the answer is identical — the fix did not just widen what gets through')
+FakeWS.serve = new Map([[RELAYS[0], [relayForged]], [RELAYS[1], [relayForged]]])
+const readForgedOnly = await dm.readDmRelays(REAL_PUB, { relays: RELAYS, WS: FakeWS, timeoutMs: 500 })
+check(readForgedOnly.events.length === 1 && dm.currentDmRelays(readForgedOnly.events, REAL_PUB).length === 0 &&
+  dm.newestCreatedAt(readForgedOnly.events, REAL_PUB) === null,
+  'NEGATIVE CONTROL: a forgery ALONE still prefills nothing and supersedes nothing — carrying it through the read did not disable the verification, it moved it after the pick')
+check(readForgedOnly.answered === 2 && readForgedOnly.asked === 2,
+  '  …and answered/asked still report reachability apart from content: served-nothing-verifiable is not the same fact as never-answered')
+
+// ------------------------------------------------------------------------------------------
 console.log('\n8. the verdict says what was PROVEN, separately from what was accepted')
 const vGood = dm.inboxVerdict({ pub: out })
 check(vGood.proven === true && /1 of 2/.test(vGood.text), 'a proven publish reports proven, with the count')
