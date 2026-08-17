@@ -61,6 +61,25 @@ const wrapFor = (senderSk, text) => {
   }, wsk)
 }
 
+// A real, signed kind:1059 addressed to `self`, but whose ciphertext cannot open. This reaches the
+// first decrypt catch, same as a transient bunker timeout opening the wrap after the id has been
+// verified and claimed.
+const unreadableWrap = () => finalizeEvent({
+  kind: 1059, created_at: Math.floor(Date.now() / 1000), tags: [['p', selfPk]], content: 'not-nip44-ciphertext',
+}, generateSecretKey())
+
+// A wrap that opens into a real signed seal whose content cannot open. This reaches the SECOND
+// decrypt catch after sealAuthor has verified the seal, proving both release sites.
+const unreadableSealWrap = () => {
+  const now = Math.floor(Date.now() / 1000)
+  const seal = finalizeEvent({ kind: 13, created_at: now, tags: [], content: 'not-nip44-ciphertext' }, courierSk)
+  const wsk = generateSecretKey()
+  return finalizeEvent({
+    kind: 1059, created_at: now, tags: [['p', selfPk]],
+    content: nip44.encrypt(JSON.stringify(seal), nip44.getConversationKey(wsk, selfPk)),
+  }, wsk)
+}
+
 // --- the scripted relay -----------------------------------------------------------------------------
 /**
  * Serves `backfill()` then EOSE on every subscription. `dropAfterEose` closes the socket once, so the
@@ -173,6 +192,70 @@ console.log('\na durable write that failed must not leave the message claimed in
     `spooled=${spoolIds(dir).length} code=${r.code}`)
   check(!/the in-memory claim is released/.test(r.errOut),
     '  …and says nothing about releasing a claim — the line above is a real failure path, not always-on prose')
+}
+
+console.log('\na transient wrap decrypt failure must not leave the message claimed in memory')
+
+// Same seam, one frame earlier: the tool claims the verified wrap id before the two NIP-44 decrypts.
+// If a bunker times out there and the claim is not released, every relay replay returns at
+// `seen.has(wrap.id)` above the decrypt, above the spool and above the hook. A second, different bad
+// wrap on the replay is the control that proves the replay reached the handler at all.
+{
+  const dir = freshDir()
+  writeFileSync(join(dir, 'seen.log'), ''); writeFileSync(join(dir, 'started'), 'seeded by the suite\n')
+  const stuck = unreadableWrap()
+  const different = unreadableWrap()
+  const before = relay.state.connections
+  relay.state.backfill = () => relay.state.connections <= before + 1 ? [stuck] : [stuck, different]
+  relay.state.dropAfterEose = true
+
+  const r = await runTool([...base, ...trust, '--spool', dir, '--watch'], {}, { killAfterMs: 2500 })
+  const couldNotOpen = (r.errOut.match(/could not open a wrap/g) || []).length
+  const released = (r.errOut.match(/could not open a wrap[^\n]*the in-memory claim is released/g) || []).length
+
+  check(relay.state.connections >= before + 2,
+    'the control: the relay served a second connection, so the unreadable wrap was replayed',
+    `connections=${relay.state.connections - before}`)
+  check(couldNotOpen >= 3,
+    'the SAME unreadable wrap is tried again after replay, not suppressed by the failed first claim',
+    `could-not-open=${couldNotOpen}`)
+  check(released >= 3,
+    'each wrap decrypt failure releases the in-memory claim, so a later replay can retry it',
+    `released=${released}`)
+  check(spoolIds(dir).length === 0,
+    'and no durable record is invented for a message the tool could not open',
+    `spooled=${spoolIds(dir).length}`)
+}
+
+console.log('\na transient seal decrypt failure must not leave the message claimed in memory either')
+
+// Same replay assertion for the SECOND decrypt catch. The wrap opens and the seal signature verifies;
+// only the rumor ciphertext is bad. Removing the seal-catch release used to survive the whole suite.
+{
+  const dir = freshDir()
+  writeFileSync(join(dir, 'seen.log'), ''); writeFileSync(join(dir, 'started'), 'seeded by the suite\n')
+  const stuck = unreadableSealWrap()
+  const different = unreadableSealWrap()
+  const before = relay.state.connections
+  relay.state.backfill = () => relay.state.connections <= before + 1 ? [stuck] : [stuck, different]
+  relay.state.dropAfterEose = true
+
+  const r = await runTool([...base, ...trust, '--spool', dir, '--watch'], {}, { killAfterMs: 2500 })
+  const couldNotOpen = (r.errOut.match(/could not open a seal/g) || []).length
+  const released = (r.errOut.match(/could not open a seal[^\n]*the in-memory claim is released/g) || []).length
+
+  check(relay.state.connections >= before + 2,
+    'the control: the relay served a second connection, so the unreadable seal was replayed',
+    `connections=${relay.state.connections - before}`)
+  check(couldNotOpen >= 3,
+    'the SAME unreadable seal is tried again after replay, not suppressed by the failed first claim',
+    `could-not-open=${couldNotOpen}`)
+  check(released >= 3,
+    'each seal decrypt failure releases the in-memory claim, so a later replay can retry it',
+    `released=${released}`)
+  check(spoolIds(dir).length === 0,
+    'and no durable record is invented for a seal the tool could not open',
+    `spooled=${spoolIds(dir).length}`)
 }
 
 // ============================================================ must-fix 2: the marker is written last

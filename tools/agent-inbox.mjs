@@ -166,8 +166,11 @@ async function open(wrap, live = true, bootstrap = false) {
   try { seal = JSON.parse(await signer.nip44Decrypt(wrap.pubkey, wrap.content)) }
   catch (e) {
     // Never counted as "no mail". This is the branch a bunker without nip44_decrypt lands in.
+    // The in-memory claim is released because no durable record was written; otherwise a transient
+    // NIP-46 timeout suppresses every relay replay for the life of this watcher.
+    seen.delete(wrap.id)
     failed++
-    console.error(`  could not open a wrap — ${String(e?.message || e).slice(0, 160)}`)
+    console.error(`  could not open a wrap — ${String(e?.message || e).slice(0, 160)}; the in-memory claim is released`)
     return
   }
   const author = sealAuthor(seal, verifyEvent)
@@ -189,7 +192,7 @@ async function open(wrap, live = true, bootstrap = false) {
   }
   let rumor
   try { rumor = JSON.parse(await signer.nip44Decrypt(seal.pubkey, seal.content)) }
-  catch (e) { failed++; console.error(`  could not open a seal from ${author.author.slice(0, 12)}… — ${String(e?.message || e).slice(0, 160)}`); return }
+  catch (e) { seen.delete(wrap.id); failed++; console.error(`  could not open a seal from ${author.author.slice(0, 12)}… — ${String(e?.message || e).slice(0, 160)}; the in-memory claim is released`); return }
   const verdict = rumorVerdict(rumor, { author: author.author, self, trusted })
 
   // THE MESSAGE CLOCK. `--since` is answered here, from the rumor, not on the wire — see WIRE_FLOOR.
