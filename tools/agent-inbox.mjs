@@ -96,7 +96,17 @@ const seen = new Set()
 // Two decrypts with a signature check BETWEEN them, exactly as src/nostr_egress.mjs insists: the
 // seal's signature is the authorship proof, and doing the second (expensive) decrypt before it holds
 // would run unauthenticated input through the signer.
-async function open(wrap, live = true) {
+// The two fields an adapter needs and this module is the only place that has (#559): the VERIFIED
+// wrap id, and when this process saw it. `wrap.id` is only safe to use after `verifyEvent` below —
+// until then it is a field in unauthenticated relay JSON, and a relay that could choose it could
+// choose which record a spool cursor believes it has already delivered. Every call site here is
+// downstream of that check.
+//
+// `received_at` is deliberately not `at`. `at` is rumor time, set by the sender, and `--since` is
+// answered from it; ordering a spool by it would let a sender reorder the spool.
+const stamp = wrap => ({ id: String(wrap?.id || ''), receivedAt: Math.floor(Date.now() / 1000) })
+
+async function open(wrap, live = true, bootstrap = false) {
   // VERIFY BEFORE DEDUPING. `seen` is keyed on `wrap.id`, and until this line nothing had proved
   // that id was the event's own hash — it was a field in unauthenticated relay JSON. An event
   // carrying a colliding id, delivered first, would take the slot and silently suppress the real
@@ -112,7 +122,14 @@ async function open(wrap, live = true) {
     return
   }
   if (seen.has(wrap.id)) return
+  // THE FIRST-SEEN CLAIM. Reaching past this line means this id was not in the index, which is the
+  // fact `notifyLine` serialises as `first_seen` and gates `wake` on — so it is claimed here, once,
+  // and carried rather than re-derived downstream. In this process the index is in memory and dies
+  // with it; the durable one is the daemon's half of #557.
   seen.add(wrap.id)
+  // Stamped ONCE per message, not once per emit site: three calls to Date.now() would put three
+  // different `received_at` values on records describing the same arrival.
+  const meta = { ...stamp(wrap), firstSeen: true, live, bootstrap }
   if (wrapAddressedTo(wrap, self).ok !== true) return
   let seal
   try { seal = JSON.parse(await signer.nip44Decrypt(wrap.pubkey, wrap.content)) }
@@ -129,7 +146,7 @@ async function open(wrap, live = true) {
     // nobody — and it used to return before the emit below. A lane being fed forged seals then put
     // zero lines on stdout and looked exactly like a quiet one, which is the sentence this record
     // stream exists to prevent.
-    if (jsonl) process.stdout.write(notifyLine(author) + '\n')
+    if (jsonl) process.stdout.write(notifyLine(author, meta) + '\n')
     return
   }
   let rumor
@@ -146,7 +163,7 @@ async function open(wrap, live = true) {
   if (jsonl) {
     // One record per line on stdout, refusals included. Dropping a refusal silently would leave a
     // reader unable to tell a quiet lane from one being fed forgeries.
-    process.stdout.write(notifyLine(verdict) + '\n')
+    process.stdout.write(notifyLine(verdict, meta) + '\n')
   } else if (verdict.ok === true) {
     const mark = verdict.disposition === 'trusted' ? 'TRUSTED' : verdict.disposition.toUpperCase()
     console.log(`\n[${mark}] ${verdict.author.slice(0, 16)}…${verdict.forMe ? '' : '  (this agent was copied, not addressed)'}`)
@@ -157,17 +174,24 @@ async function open(wrap, live = true) {
   } else {
     console.log(`\n[REFUSED] ${verdict.reason}`)
   }
-  // THE BACKFILL MUST NOT WAKE ANYONE (#554). In --watch, every relay replays its history before
-  // EOSE, so a hook gated only on the verdict fires once per historical message the moment the
-  // watcher starts — the Pi runtime widened its window to see fresh mail at all and got a flood of
-  // old ones instead. A restart replays it again, so this also removes the need for a persisted
-  // seen-set: the backfill simply never reaches the hook.
+  // THE BACKFILL MUST NOT WAKE ANYONE (#554), AND THE RECONNECT REPLAY MUST (#557 review). This
+  // line used to read `if (onMessage && (live || !watch))`, gating the hook on liveness. That stops
+  // the first-start flood, and it also drops mail: the replay after a reconnect holds two
+  // populations the relay does not distinguish — messages already delivered, and messages that
+  // ARRIVED DURING THE DISCONNECT, never seen by anyone. Both land pre-EOSE with `live === false`.
+  // Suppressing the second is the bug #557 was filed about, and the backoff runs to 60s.
   //
-  // A ONE-SHOT RUN IS THE OTHER CASE and it deliberately still fires. There `live` defaults to true,
+  // So liveness no longer gates. `invokeHook` applies the same `wakeVerdict` the record stream is
+  // serialised from, and its gate is the first-seen claim above: an already-delivered replay never
+  // reaches this line at all, because the dedupe returned early. What liveness still owns is
+  // `bootstrap` — the history a relay owes us on a FIRST connection, which is all-unseen and would
+  // otherwise be all-wake. That is a per-run fact, computed at the subscription, and it is the only
+  // thing standing between an arm and a flood.
+  //
+  // A ONE-SHOT RUN IS THE OTHER CASE and it deliberately still fires: `bootstrap` is false there,
   // because a read with no --watch IS an intentional drain of the mailbox into whatever the hook
-  // does with it. The two modes want opposite things from the same history and this is the line
-  // where they part.
-  if (onMessage && (live || !watch)) track(runHook(verdict))
+  // does with it.
+  if (onMessage) track(runHook(verdict, meta))
 }
 
 // The wake hook. Gated on notifyDecision, which is gated on the trust list and NOTHING else — a
@@ -181,8 +205,8 @@ async function open(wrap, live = true) {
 // A hook that cannot be spawned is counted as FAILED, not ignored. An alarm that never fires and
 // one that always fires are indistinguishable from outside, and a wake adapter that silently is not
 // there is the exact failure this tool exists to remove.
-async function runHook(verdict) {
-  const r = await invokeHook({ command: onMessage, verdict, spawn })
+async function runHook(verdict, meta) {
+  const r = await invokeHook({ command: onMessage, verdict, spawn, ...meta })
   // ITS OWN COUNTER, NEVER `failed`. `failed` is what inboxSummary renders as "could not be opened",
   // whose stated cause is a signer that signs but will not decrypt. A hook that exits non-zero AFTER
   // the message was opened and emitted would have sent the operator to debug their bunker about a
@@ -242,7 +266,23 @@ await Promise.all(RELAYS.map(url => new Promise(resolve => {
   const t = setTimeout(end, watch ? 0x7fffffff : 12000)
 
   let live = false
+  // Per RELAY, and it NEVER goes back to false — which is the whole reason it is separate from
+  // `live`, which does reset below. A relay owes us its entire history once, on the first
+  // connection. After this flips, a pre-EOSE envelope from that relay can no longer be assumed to be
+  // history: it may be mail that arrived while we were away, and nothing on the wire tells them apart.
+  //
+  // TWO FLAGS RATHER THAN ONE, so `bootstrap` stays correct whichever way `live` behaves. Until this
+  // change `live` was declared here, outside `connect()` — and `connect()` is re-invoked from
+  // `onclose`, so it was never reset and stayed true for the life of the process, while the comment
+  // below asserted the opposite. Anything deriving "is this backfill" from `live` alone was therefore
+  // inert after the first reconnect. Found by My Dude in #557 review, correcting his own first
+  // reading of it; this flag is monotonic by construction and does not depend on the answer.
+  let everSynced = false
   const connect = () => {
+    // Reset per connection, so the field means what its name and the comment below claim: arrived
+    // after THIS connection's EOSE. It is an AUDIT fact and nothing gates on it — an audit field that
+    // quietly means something other than its name is worse than no field, because a reader acts on it.
+    live = false
     try { ws = new WebSocket(url) } catch { return end() }
     ws.onopen = () => {
       backoff = 1000
@@ -252,16 +292,23 @@ await Promise.all(RELAYS.map(url => new Promise(resolve => {
       let m
       try { m = JSON.parse(e.data) } catch { return /* a relay that speaks nonsense is one relay, not a crash */ }
       if (m[0] === 'EVENT' && m[2]) {
+        // Bootstrap is the first connection's backfill and nothing else. In a one-shot read it is
+        // always false: that whole run is a deliberate drain.
+        const bootstrap = watch && !live && !everSynced
         // `live` is per-connection and flips at THIS relay's EOSE, so an envelope is live only if it
-        // arrived after the backfill that relay owed us. On a reconnect the subscription replays and
-        // `live` goes false again, which is correct: those are old messages arriving a second time.
-        track(open(m[2], live).catch(err => {
+        // arrived after the backfill that relay owed us. On a reconnect it goes false again and the
+        // subscription replays — but that replay is NOT simply "old messages arriving a second time",
+        // which is what this comment used to say and what a review took from it instead of from the
+        // code. It holds two populations the relay does not distinguish: messages already delivered,
+        // and messages that arrived DURING the disconnect and have been seen by nobody. Only the
+        // dedupe index separates them, which is why the wake gates on that and not on this.
+        track(open(m[2], live, bootstrap).catch(err => {
           failed++
           console.error(`  an opener threw — ${String(err?.message || err).slice(0, 160)}`)
         }))
         return
       }
-      if (m[0] === 'EOSE') { answered++; live = true; if (!watch) { clearTimeout(t); end() } }
+      if (m[0] === 'EOSE') { answered++; live = true; everSynced = true; if (!watch) { clearTimeout(t); end() } }
     }
     // `ws` emits 'close' after 'error', so the close handler is the single place this is decided.
     ws.onerror = () => {}

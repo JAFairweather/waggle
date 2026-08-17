@@ -22,7 +22,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { isCarriageReceipt, invokeHook, notifyDecision, notifyLine } from '../src/return_lane_notify.mjs'
+import { isCarriageReceipt, invokeHook, notifyDecision, notifyLine, wakeVerdict } from '../src/return_lane_notify.mjs'
 // The BRIDGE's own renderer, so the fixtures below are the strings the lane really sends. A suite
 // that hand-copies the prose cannot notice the renderer changing, and the failure that hides is a
 // real mention silently waking nobody.
@@ -94,6 +94,144 @@ check(rec.forMe === true && rec.mayAct === false,
   'the envelope carries forMe and mayAct as separate fields — being addressed is reported, never conflated with authority')
 check(JSON.parse(notifyLine({ ok: false, reason: 'attributed to nobody' })).ok === false,
   'a refusal is emitted as a record too — dropping it would leave a reader unable to tell a quiet lane from one being fed forgeries')
+
+// --------------------------------------------- the field an adapter filters on, and only that (#559)
+
+console.log('\nthe wake verdict travels on the record')
+
+// THE DEFECT THIS SECTION EXISTS FOR. The record stream is deliberately ungated — every record
+// reaches stdout so a lane being fed forgeries cannot look quiet — and a Claude Code adapter filtered
+// it with `grep '"receipt":false'`. A stranger's ordinary message is ok:true, mayAct:false,
+// receipt:false, so that woke on mail from anyone who can seal a wrap to this key, which under NIP-59
+// is everyone. The hook path refused precisely what the adapter woke on. Proven live on `ab65e477`
+// before this field existed; the fix is that both are now the SAME CALL, not two rules kept in step.
+const wakeOf = v => JSON.parse(notifyLine(v))
+const wakeOf2 = (v, id, receivedAt = null) => JSON.parse(notifyLine(v, { id, receivedAt }))
+
+check(wakeOf(verdict()).wake === true,
+  'a trusted sender wakes — the positive control, without which every refusal below proves nothing')
+
+// The exact record the broken filter matched. This is the assertion that would have caught it.
+const strangerRec = wakeOf(mentionedStranger)
+check(strangerRec.receipt === false && strangerRec.ok === true,
+  'a mentioning stranger still serialises as ok:true and receipt:false — the shape the old filter matched, unchanged')
+check(strangerRec.wake === false,
+  '  …and wake is false, so an adapter filtering ONE field refuses what `receipt` alone let through')
+
+check(wakeOf(verdict({ disposition: 'self', mayAct: false })).wake === false,
+  'this agent\'s own echo does not wake')
+check(wakeOf({ ok: false, reason: 'attributed to nobody' }).wake === false,
+  'a refusal does not wake, and still carries the field rather than omitting it')
+check(Object.prototype.hasOwnProperty.call(wakeOf({ ok: false, reason: 'x' }), 'wake'),
+  '  …present as a key on the refusal branch — an absent key and a false read the same to a filter that greps')
+
+// THE PROPERTY THAT MAKES THE BOUNDARY REAL. Not "wake agrees with notifyDecision" — they are the
+// same call, and this asserts that across every case rather than on one fixture.
+const cases = [
+  ['trusted', verdict()],
+  ['mentioning stranger', mentionedStranger],
+  ['copied stranger', verdict({ disposition: 'data', mayAct: false, forMe: false })],
+  ['own echo', verdict({ disposition: 'self', mayAct: false })],
+  ['refusal', { ok: false, reason: 'attributed to nobody' }],
+  // The trusted-carriage-receipt case is asserted in the #550 section below, against the BRIDGE's own
+  // renderer rather than a hand-copied string — it cannot be listed here because that fixture is
+  // built further down the file.
+]
+check(cases.every(([, v]) => wakeOf(v).wake === wakeVerdict(v).wake),
+  `the record's wake equals wakeVerdict for all ${cases.length} cases — the hook gate and the wake filter cannot disagree because they are one call`)
+// And that shared call still reduces to the trust gate when the two delivery facts say nothing. This
+// is what stops the first-seen work from having quietly widened or narrowed who may wake anybody.
+check(cases.every(([, v]) => wakeVerdict(v).wake === notifyDecision(v, { hasCommand: true }).invoke),
+  '  …and for a first-seen, non-bootstrap message it is exactly notifyDecision — the trust gate is unchanged by #557')
+
+// A wake:false whose stated cause is this daemon's own configuration would send an operator to fix a
+// flag when the truth is about the sender. The spool is not a hook and must never say otherwise.
+check(!/no --on-message command was given/.test(wakeOf(mentionedStranger).wake_reason),
+  'wake_reason never blames a missing --on-message — the record answers the gate\'s question, not "is a hook configured"')
+check(/not on the trust list/.test(wakeOf(mentionedStranger).wake_reason),
+  '  …it names the real cause, because this string is what an operator acts on')
+
+// ------------------------------- what gates the wake, and what only explains it (#557 review)
+
+console.log('\nfirst-seen gates the wake; liveness only annotates it')
+
+const wake3 = (v, o) => JSON.parse(notifyLine(v, o))
+const T = verdict()   // trusted, mayAct, not a receipt — wakes whenever the delivery facts allow it
+
+// CASE 1 — the flood. A first-ever start reads a relay full of history, every message of it unseen,
+// and must seed the index without announcing any of it. Its control is the line above: the SAME
+// verdict with bootstrap off wakes, so this is measuring the flag and not a fixture that never wakes.
+check(wake3(T, { bootstrap: false }).wake === true,
+  'the bootstrap control: this exact verdict wakes when it is not history')
+check(wake3(T, { bootstrap: true }).wake === false,
+  'a first-start backfill record does not wake — the #554 flood, which a Monitor answers by stopping itself, so the flood ends as silence')
+check(/seeding the dedupe index/.test(wake3(T, { bootstrap: true }).wake_reason),
+  '  …and says it was history, not that the sender was untrusted — those send an operator to different places')
+
+// CASE 2 — the one the strict formula fails. A relay's reconnect replay holds two populations it
+// cannot separate: already-delivered mail, and mail that ARRIVED DURING THE DISCONNECT. Both come
+// pre-EOSE, so both have live:false. Gating on liveness would suppress the second permanently, which
+// is the bug #557 was filed about, rebuilt inside the field meant to fix it.
+check(wake3(T, { live: false, firstSeen: true }).wake === true,
+  'a never-seen message replayed pre-EOSE DOES wake — mail that arrived during a disconnect is not history, and liveness cannot tell them apart')
+check(wake3(T, { live: false, firstSeen: false }).wake === false,
+  '  …while the already-delivered half of that same replay does not, because the dedupe claim is what separates them')
+check(/already delivered/.test(wake3(T, { firstSeen: false }).wake_reason),
+  '  …named as a re-delivery rather than a trust refusal')
+
+// The audit facts are on the record, distinctly. One `wake:false` cannot say whether a message was
+// history, a re-delivery, or a stranger, and an operator debugging a quiet lane needs to know which.
+const hist = wake3(T, { bootstrap: true, live: false })
+check(hist.bootstrap === true && hist.live === false && hist.first_seen === true,
+  'bootstrap, live and first_seen are three separate serialised facts — a bootstrap record is still first-seen, and a spool that said otherwise would lie about what the index now holds')
+check(wake3(T, {}).live === null,
+  'live is null when the emitter has no notion of a connection — absent and false are different claims')
+check([wake3(T, { firstSeen: false }), wake3({ ok: false, reason: 'nobody' }, { bootstrap: true })]
+  .every(r => ['wake', 'wake_reason', 'first_seen', 'bootstrap', 'live'].every(k => Object.prototype.hasOwnProperty.call(r, k))),
+  'all five keys are present on both branches — a refusal that omits them is indistinguishable from one that denies them, to an adapter that greps')
+
+// THE DEFAULTS POINT AT WAKING, and that is a decision rather than an accident. A caller who forgets
+// a flag gets a duplicate wake, which is noise somebody notices; under the opposite defaults they get
+// silence, and a first-seen claim is irreversible, so no replay ever surfaces that message again.
+check(wake3(T, {}).wake === true && wake3(T, {}).first_seen === true && wake3(T, {}).bootstrap === false,
+  'omitting both delivery facts wakes — the failure mode of a forgotten flag is a duplicate, never a permanent suppression')
+
+// Neither fact can OPEN the gate. They are only ever able to take away, the same property that makes
+// the content-shaped receipt test safe — otherwise `bootstrap:false` would be a way past the trust list.
+check([mentionedStranger, verdict({ disposition: 'self', mayAct: false }), { ok: false, reason: 'x' }]
+  .every(v => [{ firstSeen: true }, { bootstrap: false }, { live: true }, { firstSeen: true, bootstrap: false, live: true }]
+    .every(o => wake3(v, o).wake === false)),
+  'no combination of first_seen, bootstrap or live wakes an untrusted sender, an echo or a refusal — the delivery facts narrow the trust gate and can never widen it')
+
+// ------------------------------------------------------- the id an adapter is idempotent on (#559)
+
+console.log('\nthe record can be named')
+
+const ID1 = '1'.repeat(64), ID2 = '2'.repeat(64)
+
+// THE ONE THAT MATTERS MORE THAN "an id is present". Two distinct messages must not collapse: a
+// re-send is how this crew retries a message that reached nobody, so identical bodies from the same
+// author at the same second are a real case, not a contrived one.
+const same = { content: 'ping', author: A, at: 1_800_000_000 }
+check(wakeOf2(verdict(same), ID1).id !== wakeOf2(verdict(same), ID2).id,
+  'two wraps with IDENTICAL author, body and timestamp still get different ids — otherwise dedupe silently eats a deliberate re-send')
+check(wakeOf2(verdict(same), ID1).id === wakeOf2(verdict(same), ID1).id,
+  'and the same wrap seen twice gets the same id, which is what makes an adapter restart idempotent')
+
+check(wakeOf(verdict()).id === null,
+  'with no id passed the key is null, not undefined — "this daemon emits no ids" and "this record has none" are different states')
+check(Object.prototype.hasOwnProperty.call(wakeOf(verdict()), 'id'),
+  '  …and the key is present either way, so a reader can tell them apart at all')
+check(wakeOf2({ ok: false, reason: 'attributed to nobody' }, ID1).id === ID1,
+  'a refusal carries an id too — an adapter that cannot dedupe refusals re-wakes forever on a lane being fed forgeries')
+
+// `at` is the SENDER's clock and `--since` is answered from it. A spool ordered by that is a spool a
+// sender can reorder, so the daemon's own observation is a separate field.
+const stamped = JSON.parse(notifyLine(verdict({ at: 1_800_000_000 }), { id: ID1, receivedAt: 1_900_000_000 }))
+check(stamped.at === 1_800_000_000 && stamped.received_at === 1_900_000_000,
+  'rumor time and receive time are separate fields — a spool ordered by sender-controlled time is one a sender can reorder')
+check(JSON.parse(notifyLine(verdict(), { id: ID1, receivedAt: 1.5 })).received_at === null,
+  'a non-integer received_at lands as null rather than being written through — a cursor comparing it would silently misorder')
 
 // ------------------------------------------------- a trusted courier's echo is not news (#550)
 
@@ -180,6 +318,10 @@ check(isCarriageReceipt(JSON.stringify({ ok: false, channel: 'c', buzz_event_id:
 const recRec = JSON.parse(notifyLine(verdict({ content: RECEIPT })))
 check(recRec.receipt === true && recRec.content === RECEIPT,
   'the receipt is still emitted as a record, flagged — suppressing the record would break a send/ack tally')
+// The third case the wake verdict has to carry, listed with the others in the #559 section above but
+// asserted here, against the renderer's own output rather than a hand-copied string.
+check(recRec.wake === false && recRec.wake === notifyDecision(verdict({ content: RECEIPT }), { hasCommand: true }).invoke,
+  '  …and it does not wake, by the same call the hook path uses — spooled and visible, but nobody said it')
 check(JSON.parse(notifyLine(verdict({ content: CARRIED }))).receipt === false,
   'and a real message is flagged as not a receipt')
 
