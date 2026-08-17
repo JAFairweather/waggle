@@ -99,6 +99,47 @@ check(JSON.stringify(parseClaudeList(`Checking MCP server health...\n\n${CLAUDE_
 check(foreignServers(parseClaudeList('Error: unable to read config'), 'mc-claude') === null,
   'an unreadable list stays UNKNOWN all the way to foreignServers, and cannot print a clean tick')
 
+// ── A SPACE IN A SERVER NAME (#566) ──────────────────────────────────────────────────────────
+// The claude.ai-hosted connectors are named `claude.ai Gmail`, `claude.ai Google Drive` and so on.
+// The name class had no space in it, so one of those lines returned null for the WHOLE registry —
+// and five of them are present on the maintainer's Mac. The fixtures above never caught it because
+// every name in them is a single token, which is the same shape of miss as the space-in-a-name bug
+// that took the sealed lane down: the suite was green and production was not.
+const CLAUDE_HOSTED = [
+  'claude.ai Google Drive: https://drivemcp.googleapis.com/mcp/v1 - ✔ Connected',
+  'claude.ai Notion: https://mcp.notion.com/mcp - ! Needs authentication',
+  'nvoy-lukedog: /path/node /path/claude-channel.mjs --instance lukedog - ✘ Failed to connect',
+].join('\n')
+check(JSON.stringify(parseClaudeList(CLAUDE_HOSTED))
+  === JSON.stringify(['claude.ai Google Drive', 'claude.ai Notion', 'nvoy-lukedog']),
+  'claude: a name containing spaces parses, and keeps the space — this returned null for the whole list')
+
+// THE ASSERTION THAT WOULD HAVE FAILED IN PRODUCTION. The point of the row is finding a foreign
+// nvoy server; a discarded list finds none, and the operator is told the machine is clean of
+// everything the unread runtime held.
+check(JSON.stringify(foreignServers(parseClaudeList(CLAUDE_HOSTED), 'mc-claude'))
+  === JSON.stringify(['nvoy-lukedog']),
+  '  …and the foreign nvoy server beside it is DETECTED, not silently dropped with the list')
+
+// THE STATUS IS ANCHORED BY SHAPE, NOT BY GLYPH. Both spellings of a tick must work: production
+// prints U+2714 and this file's own fixtures above were written with U+2713, which is exactly how
+// a glyph allowlist would have re-created #566 on the next CLI update.
+check(JSON.stringify(parseClaudeList('a: /x - ✓ Connected\nb: /y - ✔ Connected'))
+  === JSON.stringify(['a', 'b']),
+  'claude: U+2713 and U+2714 are both accepted — the exact tick is deliberately not pinned')
+check(parseClaudeList('Error: config not found - check permissions') === null,
+  'claude: prose after the dash is still INCONCLUSIVE — widening the NAME did not widen the line')
+check(parseClaudeList('nvoy: node /x.js - OK') === null,
+  'claude: an unrecognised status reads as INCONCLUSIVE rather than as a short list')
+
+// THE GUARD IS THE STATUS, NOT THE NAME. Every #464 refusal above must still hold with the name
+// class gone, or widening it traded one silent failure for another. These are the same inputs, kept
+// here deliberately next to the widening that could have broken them.
+check(parseClaudeList('svc/worker: node /x.js - ✓ Connected') !== null,
+  'claude: a name this parser never anticipated still parses — a narrow class is just #566 waiting')
+check(parseClaudeList('zsh: command not found: claude') === null,
+  '  …and a shell failure is STILL refused, by the missing status rather than by the name')
+
 // ── The row itself. The line above is true of `foreignServers`, and was written as though it were
 // true of the REPORT — one frame below where the sentence is about. It is not: the tool asked only
 // the runtimes that ANSWERED, so `claude` answering clean while `codex` sat installed-and-unreadable
