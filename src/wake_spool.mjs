@@ -33,6 +33,7 @@
 import { existsSync, mkdirSync, openSync, writeFileSync, fsyncSync, closeSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { durableSet } from './stores.mjs'
+import { err } from './log.mjs'
 
 const SPOOL = 'spool.jsonl'
 const INDEX = 'seen.log'
@@ -121,12 +122,16 @@ export function inspectSpoolDir(dir) {
  * caught somewhere and turned into a log line, and a lane that logs and continues past this is
  * exactly the lane that seeds a backlog into silence.
  */
-export function openWakeSpool({ dir, cap = 50_000, log = () => {} } = {}) {
+export function openWakeSpool({ dir, cap = 50_000, log = err } = {}) {
   if (!dir || typeof dir !== 'string') throw new TypeError('openWakeSpool needs a directory')
   mkdirSync(dir, { recursive: true })
   const status = inspectSpoolDir(dir)
   const spoolPath = join(dir, SPOOL)
-  const seen = durableSet({ path: join(dir, INDEX), cap, label: 'wake-spool', noun: 'delivered id(s)' })
+  // THE INDEX LOGS WHERE THIS SPOOL LOGS, never to stdout. `durableSet.load` announces itself on
+  // every start, and the caller that owns this spool is `agent-inbox --jsonl`, whose stdout is a
+  // record stream. Defaulting to stderr rather than to silence keeps the diagnostic: a lane that
+  // loaded a surprising number of ids should say so somewhere.
+  const seen = durableSet({ path: join(dir, INDEX), cap, label: 'wake-spool', noun: 'delivered id(s)', log })
   if (status.state !== 'inconclusive') seen.load()
 
   // `bootstrap` is a per-RUN fact and it is latched here at open, from the marker on disk. It is

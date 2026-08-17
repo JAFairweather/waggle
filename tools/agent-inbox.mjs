@@ -176,8 +176,15 @@ async function open(wrap, live = true, bootstrap = false) {
     // EMITTED, not dropped. This is the forgery class — a seal whose signature does not hold names
     // nobody — and it used to return before the emit below. A lane being fed forged seals then put
     // zero lines on stdout and looked exactly like a quiet one, which is the sentence this record
-    // stream exists to prevent.
-    if (jsonl) process.stdout.write(notifyLine(author, meta) + '\n')
+    // stream exists to prevent. The spool gets it for the same reason: under `--spool` with no
+    // `--jsonl` this record was written nowhere at all, which is the exact silence the branch
+    // exists to break, moved from stdout to disk.
+    const forged = notifyLine(author, meta)
+    if (spool) {
+      const w = spool.deliver({ id: wrap.id, line: forged })
+      if (!w.ok) { failed++; seen.delete(wrap.id); console.error(`  the spool refused a forgery record — ${w.reason}; the in-memory claim is released`) }
+    }
+    if (jsonl) process.stdout.write(forged + '\n')
     return
   }
   let rumor
@@ -195,11 +202,27 @@ async function open(wrap, live = true, bootstrap = false) {
     // One record per line, refusals included. Dropping a refusal silently would leave a reader
     // unable to tell a quiet lane from one being fed forgeries.
     const line = notifyLine(verdict, meta)
-    // THE SPOOL FIRST, because it is the durable copy and stdout is not. A reader that took the
-    // stdout line and then lost the process would have been woken by a record nothing remembers.
+    // THE SPOOL RUNS FIRST because it is the durable copy, and its result decides whether the
+    // in-memory claim above survives. It is NOT a gate on the stdout line below: at-least-once
+    // favours firing, so a record that failed to reach disk is still emitted and still wakes.
     if (spool) {
       const w = spool.deliver({ id: wrap.id, line })
-      if (!w.ok) { failed++; console.error(`  the spool refused a record — ${w.reason}`) }
+      if (!w.ok) {
+        failed++
+        // ROLL THE MEMORY CLAIM BACK. `deliver()` is careful to claim nothing when the append
+        // fails — but `seen.add` above already claimed it, and that claim outlives the failure.
+        // Without this the next replay returns at the `seen.has` check, above the spool, above the
+        // hook, and the message is never written again for the life of the process. `Restart=always`
+        // does not save it: ENOSPC and a read-only remount do not kill the process.
+        //
+        // `src/stores.mjs` already holds this sentence — `durableSet.commit` undoes its own claim
+        // with `if (!already) mem.delete(k)`, and `durableQueue` states it outright: memory may
+        // never claim durability that failed. #121 added that rollback after a wrap posted twice,
+        // because an entry check and a durable write sat on opposite sides of an async send. The
+        // direction here is the other one, and it is worse: silent loss rather than a duplicate.
+        seen.delete(wrap.id)
+        console.error(`  the spool refused a record — ${w.reason}; the in-memory claim is released, so a replay re-offers this message`)
+      }
       else if (!w.claimed) console.error(`  ${w.reason}`)
     }
     if (jsonl) process.stdout.write(line + '\n')
@@ -277,7 +300,7 @@ const report = async () => {
   // A ONE-SHOT RUN SEALS ITS BOOTSTRAP TOO. Without this a `--spool` read with no `--watch` would
   // record its backfill, never write the marker, and refuse to start ever again — index without
   // marker is exactly the "began and did not finish seeding" state `inspectSpoolDir` stops on.
-  endBootstrap('the read finished')
+  await endBootstrap('the read finished')
   if (stillOpen) console.error(`  ${stillOpen} wrap(s) were still being opened when the read ended — counted as unread, not as absent`)
   const summary = inboxSummary({ verdicts, failed: failed + stillOpen, reachable: answered, scanned: seen.size })
   say(`\n${summary.text}`)
@@ -308,14 +331,34 @@ if (watch) process.on('SIGINT', () => { console.error('\n  interrupted — drain
 // are the same observable state, and this lane exists to remove exactly that ambiguity. Ending it
 // early risks a flood, which is noisy; not ending it is silence, which is not.
 const BOOTSTRAP_DEADLINE_MS = 30_000
-function endBootstrap(why) {
-  if (!spool || !spool.bootstrap) return
+let sealing = false
+async function endBootstrap(why) {
+  if (!spool || !spool.bootstrap || sealing) return
+  // THE MARKER IS WRITTEN LAST, AND "LAST" INCLUDES WHAT IS STILL IN FLIGHT. `wake_spool.mjs`
+  // argues marker-last so a crash can never leave a marker beside a half-filled index — that state
+  // reads as steady, and the unseeded remainder of the backlog then wakes, which is the flood.
+  //
+  // EOSE does not mean the backfill is recorded. Every `open()` for it is suspended inside two
+  // awaited `nip44Decrypt` calls, which with a bunker are round trips over a relay. Sealing on the
+  // EOSE frame wrote the marker after 1 of 8 seeded ids and reported "1 id(s)" for a backlog of 8.
+  // `report()` already had this right by awaiting `drain()` first; the drain belongs in here so
+  // every caller gets it, rather than in the one call site that remembered.
+  //
+  // Latched, because two callers can now reach this across an await — the EOSE frame and the
+  // deadline — and both would pass the `bootstrap` guard before either had sealed.
+  sealing = true
+  const stillOpen = await drain()
+  if (stillOpen > 0) console.error(`  ${stillOpen} message(s) were still opening when the bootstrap was sealed — they are recorded, but the count below undercounts them`)
   const r = spool.finishBootstrap()
+  sealing = false
   if (!r.ok) { console.error(`  the bootstrap marker could not be written — ${r.reason}`); return }
   console.error(`  bootstrap complete (${why}) — ${r.seeded} id(s) recorded without waking anybody; from here the durable index decides`)
 }
 if (spool && spool.bootstrap && watch) {
-  const deadline = setTimeout(() => endBootstrap(`${BOOTSTRAP_DEADLINE_MS / 1000}s deadline — ${answered}/${RELAYS.length} relay(s) had reached EOSE`), BOOTSTRAP_DEADLINE_MS)
+  const deadline = setTimeout(() => {
+    endBootstrap(`${BOOTSTRAP_DEADLINE_MS / 1000}s deadline — ${answered}/${RELAYS.length} relay(s) had reached EOSE`)
+      .catch(err => console.error(`  sealing the bootstrap threw — ${String(err?.message || err).slice(0, 160)}`))
+  }, BOOTSTRAP_DEADLINE_MS)
   deadline.unref?.()
 }
 
@@ -380,7 +423,12 @@ await Promise.all(RELAYS.map(url => new Promise(resolve => {
         // A relay that never answers must not hold bootstrap open forever, because nothing wakes
         // while it is open and that is a silent lane. `endBootstrap` is therefore also called from
         // the deadline below, and says which of the two ended it.
-        if (spool && spool.bootstrap && answered >= RELAYS.length) endBootstrap('every relay reached EOSE')
+        // NOT `track`ed, deliberately. `endBootstrap` awaits `drain()`, and a promise inside the
+        // tracker that waits on the tracker never settles. It is fired and caught instead.
+        if (spool && spool.bootstrap && answered >= RELAYS.length) {
+          endBootstrap('every relay reached EOSE').catch(err =>
+            console.error(`  sealing the bootstrap threw — ${String(err?.message || err).slice(0, 160)}`))
+        }
         if (!watch) { clearTimeout(t); end() }
       }
     }
