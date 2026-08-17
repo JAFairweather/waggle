@@ -103,8 +103,44 @@ export function exclusivityVerdict(foreign, unreadable = 0) {
  * Now every non-blank line must be recognised or the whole read is null. A format change surfaces
  * as INCONCLUSIVE, which is the correct direction to be wrong in and the reason the four-state
  * report exists at all.
+ *
+ * A SERVER NAME MAY CONTAIN SPACES, and until #566 one that did took the whole registry down with
+ * it. The claude.ai-hosted connectors are named `claude.ai Google Drive`, `claude.ai Gmail` and so
+ * on; five of them on the maintainer's Mac meant `null` every time, so the row never saw what was
+ * registered in Claude Code and reported only what Codex had. It failed CLOSED — `unreadable > 0`
+ * is never a pass — so it was not a false green. It was worse in the quieter way: the operator was
+ * told to remove one foreign server and not told about the two the discarded list held.
+ *
+ * THE GUARD MOVED TO THE OTHER END OF THE LINE, and that is the whole design. The name is now
+ * `[^:]+` — anything up to the first colon — which is the denylist the paragraph above blames for
+ * parsing `Error: unable to read config` as a server called `Error`. It is safe here only because
+ * the trailing status is checked instead: a line must end in ` - ` followed by a status, so that
+ * error line still reads as null, and so do `zsh: command not found: claude` and a stack trace.
+ * Every case #464 lists is still refused; the refusal just comes from the end of the line rather
+ * than the start.
+ *
+ * Trying it the other way is what proved it. The first fix kept an allowlist name and merely added
+ * spaces to it — and a mutation widening that name to `[^:]+` could not be killed, because with the
+ * status anchored the two are equivalent for every line either would ever see. What the narrow
+ * class still did was give a LEGITIMATE name one more way to make the whole registry unreadable:
+ * a server called `svc/worker` or one named in a non-Latin script would have taken it down exactly
+ * as `claude.ai Gmail` did. That is #566 again with a different character, so the class went.
+ *
+ * THE STATUS IS ANCHORED BY SHAPE, NOT BY GLYPH, and that is a deliberate second choice. The first
+ * version of this fix pinned the exact markers the CLI prints here — U+2714, U+2718, `!` — and the
+ * suite immediately caught that this file's own fixtures had been written with U+2713 instead. Two
+ * spellings of a tick, one in the fixtures and a different one in production, neither ever compared
+ * against the other. Pinning the glyph would therefore have re-created #566 on the next CLI update,
+ * silently and in the same way. So the rule is: a status is one leading character that is not a
+ * letter, a digit or a space. `✓ ✔ ✗ ✘ !` all qualify without being enumerated,
+ * and `Error: config not found - check permissions` does not, because `check` starts with a letter.
+ *
+ * A future `- OK` would fail to parse and read as INCONCLUSIVE. That is the correct direction to be
+ * wrong in, and it is the direction this whole file is built around.
  */
-const CLAUDE_ENTRY = /^([A-Za-z0-9._-]+):\s+\S.*\s-\s+\S/
+const CLAUDE_STATUS = '[^\\p{L}\\p{N}\\s]'
+const CLAUDE_NAME = '[^:]+'
+const CLAUDE_ENTRY = new RegExp(`^(${CLAUDE_NAME}):\\s+\\S.*\\s-\\s+${CLAUDE_STATUS}`, 'u')
 const CLAUDE_EMPTY = /^No MCP servers configured\b/
 // Progress chatter the CLI prints around the list. Matched exactly rather than skipped loosely:
 // "any line that is not an entry" is how the old parser got here.
