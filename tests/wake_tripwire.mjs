@@ -175,6 +175,56 @@ console.log('\nwake tripwire')
   check(r.code === 0, '  …CONTROL: a steady directory with no spool file yet BLOCKS, then wakes when the first record lands', `code ${r.code} ${r.err.slice(0, 160)}`)
 }
 
+// --- a cursor past the end of the file --------------------------------------------------------
+// FOUND BY MY DUDE IN #569 REVIEW, driven not reasoned about: cursor 999999 against three wake
+// records blocked indefinitely under the documented invocation. `readSpoolFrom` clamps the offset to
+// the file size, so a cursor past EOF returns no records, no block and missing:false — byte-identical
+// to "nothing new". The spool gets shorter three ordinary ways: rotation, a disk-full truncation, and
+// an operator deleting the corrupt line this tool's own message tells them to repair.
+{
+  const dir = makeDir('steady', [rec(true), rec(true), rec(true)])
+  const r = await run(['--spool', dir, '--cursor', cursorAt(999999), '--poll', '100', '--timeout', '2'])
+  check(r.code === 3, 'a cursor past EOF with wake records on disk is INCONCLUSIVE, not silence', `code ${r.code} ${r.err.slice(0, 200)}`)
+  check(/rotated, truncated, or repaired/.test(r.err) && /only \d+ bytes/.test(r.err),
+    '  …and says the spool shrank under the cursor, with both recovery offsets', r.err.slice(0, 240))
+
+  const control = await run(['--spool', dir, '--cursor', cursorAt(0), '--poll', '100'])
+  check(control.code === 0, '  …CONTROL: the same three records with a sane cursor DO wake', `code ${control.code}`)
+}
+{
+  // THE REPAIR PATH THIS TOOL PRINTS, end to end. Arm 1 stops the cursor at the poison line; the
+  // operator removes it, which shortens the file below the stored cursor; a fresh wake:true then
+  // lands. Before the fix that sequence answered "nothing woke" forever.
+  //
+  // TWO records before the poison line, not one, so the repaired file is genuinely SHORTER than the
+  // stored cursor. With one record the repair landed on the same byte count and the size check could
+  // not see it — see the residual recorded below, which is a limit of size-only detection.
+  const dir = makeDir('steady', [rec(true), rec(true), '{not json'])
+  const cur = unwritten()
+  const arm1 = await run(['--spool', dir, '--cursor', cur, '--poll', '100'])
+  check(arm1.code === 0, 'REPAIR PATH: arm 1 delivers the wake sitting in front of the poison line', `code ${arm1.code}`)
+  const at = Number((arm1.err.match(/advance it to (\d+)/) || [])[1])
+  check(Number.isSafeInteger(at) && at > 0, '  …and names the offset to advance to', String(at))
+
+  writeFileSync(cur, String(at))                       // the session advances, as instructed
+  const arm2 = await run(['--spool', dir, '--cursor', cur, '--poll', '100', '--timeout', '2', '--heartbeat', heartbeat()])
+  check(arm2.code === 3 && /will not parse/.test(arm2.err), '  …arm 2 reports the corruption exactly one arm later', `code ${arm2.code}`)
+
+  // The operator does what arm 2 told them to: remove the corrupt line. The file is now SHORTER than
+  // the stored cursor. Then real mail arrives.
+  writeFileSync(join(dir, 'spool.jsonl'), '')
+  append(dir, rec(true))
+  check(statSync(join(dir, 'spool.jsonl')).size < at,
+    '  …precondition: the repair really did leave the file shorter than the stored cursor',
+    `${statSync(join(dir, 'spool.jsonl')).size} vs ${at}`)
+  const arm3 = await run(['--spool', dir, '--cursor', cur, '--poll', '100', '--timeout', '2', '--heartbeat', heartbeat()])
+  check(arm3.code === 3, '  …arm 3, after the repair shortened the file under the cursor, refuses to call fresh mail "nothing"', `code ${arm3.code} ${arm3.err.slice(0, 200)}`)
+
+  writeFileSync(cur, '0')
+  const arm4 = await run(['--spool', dir, '--cursor', cur, '--poll', '100'])
+  check(arm4.code === 0, '  …and the recovery it names — reset the cursor to 0 — actually delivers the mail', `code ${arm4.code}`)
+}
+
 // --- a cursor that will not parse is not 0 ------------------------------------------------------
 {
   const dir = makeDir('steady', [rec(true)])
@@ -223,6 +273,43 @@ console.log('\nwake tripwire')
 {
   const r = await run(['--spool', makeDir('steady', [rec(true)])])
   check(r.code === 2, 'a missing --cursor is a usage error — without one every arm would wake on history', `code ${r.code}`)
+}
+
+{
+  // THE RESIDUAL, stated rather than left for somebody to discover. An offset is the only evidence
+  // the cursor file carries, so a spool truncated and refilled to the SAME byte count is invisible:
+  // the cursor is not past EOF, and the fresh records behind it read as already consumed. Not
+  // hypothetical — one record replaced by one record of equal length does it.
+  //
+  // This assertion exists so the limit fails loudly if anyone later believes the case is covered.
+  const dir = makeDir('steady', [rec(true)])
+  const at = statSync(join(dir, 'spool.jsonl')).size
+  writeFileSync(join(dir, 'spool.jsonl'), '')
+  append(dir, rec(true))
+  const same = statSync(join(dir, 'spool.jsonl')).size === at
+  const r = await run(['--spool', dir, '--cursor', cursorAt(at), '--poll', '100', '--timeout', '2', '--heartbeat', heartbeat()])
+  check(same && r.code === 4,
+    'KNOWN LIMIT (#573): a truncate-and-refill to the SAME size is undetectable from an offset alone, and reads as quiet',
+    `same-size ${same}, code ${r.code}`)
+}
+
+// --- a signal is a teardown, not a verdict ------------------------------------------------------
+// Raised by My Dude in #569 review. The contract says a caller re-arms on 3. If a signal also exited
+// 3, a supervisor following that contract could never stop this tool: every teardown would re-arm it.
+{
+  const sigRun = sig => new Promise(resolve => {
+    const dir = makeDir('steady', [rec(false)])
+    const p = spawn(process.execPath, [TOOL, '--spool', dir, '--cursor', unwritten(), '--poll', '100'], { stdio: ['ignore', 'ignore', 'pipe'] })
+    let err = ''
+    p.stderr.on('data', d => { err += d })
+    setTimeout(() => p.kill(sig), 400)
+    p.on('exit', (code, signal) => resolve({ code, signal, err }))
+  })
+  const term = await sigRun('SIGTERM')
+  check(term.code === 143, 'SIGTERM exits 143, not 3 — a supervisor can stop this tool without it re-arming', `code ${term.code} signal ${term.signal}`)
+  const int = await sigRun('SIGINT')
+  check(int.code === 130, 'SIGINT exits 130 for the same reason', `code ${int.code} signal ${int.signal}`)
+  check(/NOT a retryable 3/.test(term.err), '  …and says so, because the number alone is a thing somebody has to look up', term.err.slice(0, 160))
 }
 
 // --- it never blocks on nothing ------------------------------------------------------------------

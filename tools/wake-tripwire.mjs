@@ -13,10 +13,20 @@
 //
 //   node tools/wake-tripwire.mjs --spool <dir> --cursor <path> [--timeout <sec>]
 //
-//   0  a wake:true record sits past the cursor. THE EXIT IS THE WAKE.
-//   3  INCONCLUSIVE — could not tell. See below; this is never "nothing arrived".
-//   4  waited the full timeout, the daemon was provably alive, and nothing woke. A real quiet.
-//   2  usage.
+//   0    a wake:true record sits past the cursor. THE EXIT IS THE WAKE.
+//   3    INCONCLUSIVE — could not tell. See below; this is never "nothing arrived".
+//   4    waited the full timeout, the daemon was provably alive, and nothing woke. A real quiet.
+//   2    usage.
+//   130
+//   143  stopped by SIGINT / SIGTERM. A teardown, not a verdict. Deliberately not 3.
+//
+// WHAT THE CALLER OWES, because two of these answer instantly and "re-arm unconditionally" would
+// then spin hot (#569 review):
+//   · on 0 — read the spool, ACT, then write the cursor. Never before acting.
+//   · on 3 — BACK OFF before re-arming. An unseeded directory and a disagreeing one both answer in
+//     milliseconds and will keep doing so until an operator intervenes.
+//   · on 4 — re-arm immediately. The lane is healthy and was quiet.
+//   · on 128+n — do not re-arm. Somebody asked for this to stop.
 //
 // IT NEVER WRITES THE CURSOR. The session advances it after reading, and that ordering is not a
 // style choice — it is the same one `wake_spool.mjs` makes one layer down, for the same reason. A
@@ -112,6 +122,23 @@ function look() {
   const cursor = readCursor()
   if (typeof cursor === 'object') return { stop: inconclusive, why: cursor.bad }
 
+  // A CURSOR PAST THE END OF THE FILE IS INVISIBLE, and this tool's own repair instruction leads
+  // there. `readSpoolFrom` clamps `from = Math.min(offset, size)`, so a cursor beyond the file
+  // returns no records, no block and `missing:false` — byte-identical to "nothing new". The spool
+  // gets shorter in three ordinary ways: rotation, a disk-full truncation, and an operator deleting
+  // the corrupt line that the `blocked` message above tells them to repair. In every one of them the
+  // stored cursor is now past EOF and mail sits readable on disk while this blocks forever.
+  //
+  // Found by My Dude reviewing #569, driven rather than reasoned about: cursor 999999 against three
+  // wake records blocked indefinitely under the documented invocation, which has no --timeout.
+  //
+  // WHAT THIS DOES NOT CATCH (#573): a spool truncated and refilled to the SAME byte count. An
+  // offset is the only evidence the cursor file carries, so that case is indistinguishable from a
+  // consumed one and reads as quiet. Detecting it needs a generation marker on the spool, which is
+  // the durable half's to publish.
+  const size = existsSync(spoolPath) ? statSync(spoolPath).size : 0
+  if (cursor > size) return { stop: inconclusive, why: `the cursor at ${cursorPath} is ${cursor} but ${spoolPath} is only ${size} bytes — the spool was rotated, truncated, or repaired under it. Refusing to treat that as no mail: reset the cursor to 0 to re-read what is there, or to ${size} to resume from the end` }
+
   const read = readSpoolFrom(spoolPath, cursor)
   // A steady directory with no spool file is legitimately empty: `durableSet` writes its index on
   // the first commit, and the spool only exists once something has been delivered. Keep waiting.
@@ -182,10 +209,13 @@ const timer = setInterval(tick, pollMs)
 timer.unref?.()
 process.on('exit', () => { try { watcher?.close() } catch { /* already gone */ } })
 
-// SIGINT IS A CLEAN STOP, not a wake. A session tearing down its tripwire must not be reported as
-// having received mail; exiting 0 here would wake the next arm for nothing, forever.
+// A SIGNAL IS A CLEAN STOP, AND IT IS NOT EXIT 3. Exiting 0 would wake the next arm for nothing;
+// exiting 3 is worse, because 3 means "could not tell, re-arm" — so a supervisor following the
+// contract could never stop this tool, and every teardown would re-arm it. 128+signo is the shell
+// convention a supervisor already reads: 130 for SIGINT, 143 for SIGTERM. Raised by My Dude in #569.
+const SIGNO = { SIGINT: 2, SIGTERM: 15 }
 for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => { if (!settled) { settled = true; console.error(`wake-tripwire: stopped by ${sig} before anything woke`); process.exit(3) } })
+  process.on(sig, () => { if (!settled) { settled = true; console.error(`wake-tripwire: stopped by ${sig} before anything woke — this is a teardown, NOT a retryable 3`); process.exit(128 + SIGNO[sig]) } })
 }
 
 tick()
