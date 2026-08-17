@@ -32,6 +32,11 @@
 // in memory dies with a dropped connection. It is deleted on exit, on failure, and on signal.
 // It is never printed.
 
+// `ws` IS IMPORTED, NOT ASSUMED (#576). Same reason as agent-inbox and agent-send: both call sites
+// below are `try { ws = new WebSocket(url) } catch { return fin(...) }`, and that catch cannot tell
+// a missing global from a bad URL. On a runtime without one this reports a failed join rather than
+// an unusable runtime. Caught by the guard in tests/ship_imports.mjs, not by reading.
+import WebSocket from 'ws'
 import { randomBytes } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'

@@ -20,6 +20,16 @@
 // read back, or a signer/custody problem). There is no exit code that means "delivered", because
 // this process cannot see the channel — see sendVerdict in src/relay_send_intent.mjs.
 
+// `ws` IS IMPORTED, NOT ASSUMED (#576). Every other relay-touching tool in this directory imports
+// it; these two reached for a global `WebSocket` instead, which only exists on newer Node. That
+// would be a version note and nothing more, except for the shape it fails in:
+//
+//   try { ws = new WebSocket(url) } catch { return end() }
+//
+// The catch swallows a ReferenceError exactly as it swallows a bad URL, so on a runtime without the
+// global this reports NO CONNECTION rather than reporting that it cannot open one — and an agent
+// reading an empty inbox has no way to tell that from no mail. Found onboarding an agent on Node 20.
+import WebSocket from 'ws'
 import { finalizeEvent, generateSecretKey, getEventHash } from 'nostr-tools/pure'
 import * as nip44 from 'nostr-tools/nip44'
 import { loadNostrSigner, withPinnedCustody } from '../src/nostr_signer.mjs'

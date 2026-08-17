@@ -198,5 +198,36 @@ if (existsSync(webNip98)) {
   check(true, '  …and there is no browser copy to bind')
 }
 
+// ── A runtime global is an import you forgot to declare (#576) ───────────────────────────────────
+//
+// Same failure class as the boundary above — code that resolves here and not there — arriving
+// through a different door. `tools/agent-inbox.mjs` and `tools/agent-send.mjs` constructed
+// `new WebSocket(url)` with no import, relying on a global that only newer Node provides. Eight
+// sibling tools import `ws` explicitly, so nothing looked odd in review.
+//
+// What made it worth a check rather than a fix: both call sites are wrapped as
+// `try { ws = new WebSocket(url) } catch { return end() }`, and that catch swallows a
+// ReferenceError exactly as it swallows a bad URL. On a runtime without the global the tool reports
+// NO CONNECTION instead of reporting that it cannot open one, and an agent reading an empty inbox
+// cannot tell that from no mail. Found onboarding an agent on Node 20.
+const usesWs = f => /\bnew\s+WebSocket\s*\(/.test(readFileSync(f, 'utf8'))
+const importsWs = f => /^import\s+WebSocket\s+from\s+'ws'/m.test(readFileSync(f, 'utf8'))
+const wsUsers = files.filter(usesWs)
+// A scan that found nothing to check has told you nothing.
+check(wsUsers.length >= 8, `found runtime modules that construct a WebSocket (${wsUsers.length}) — too few means the pattern moved, not that the risk went away`)
+const undeclared = wsUsers.filter(f => !importsWs(f)).map(f => relative(REPO, f))
+check(undeclared.length === 0,
+  `every module that constructs a WebSocket imports it — a global is not a dependency (${undeclared.join(', ') || 'none undeclared'})`)
+
+// NEGATIVE CONTROL. The two assertions above both pass on a check that never looks at anything, so
+// prove the predicate can say no: a synthetic module that uses the global without importing it.
+{
+  const bad = "const x = new WebSocket('wss://x')\n"
+  const good = "import WebSocket from 'ws'\n" + bad
+  const p = /\bnew\s+WebSocket\s*\(/, i = /^import\s+WebSocket\s+from\s+'ws'/m
+  check(p.test(bad) && !i.test(bad), '  …CONTROL: the predicate flags a module that uses the global without importing it')
+  check(p.test(good) && i.test(good), '  …CONTROL: and clears the same module once the import is there')
+}
+
 console.log(pass ? '\nSHIP IMPORTS PASS — runtime code stays inside the deployed tree' : '\nSHIP IMPORTS FAIL')
 process.exit(pass ? 0 : 1)
