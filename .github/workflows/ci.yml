@@ -52,3 +52,19 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Build the zero-install agent bundle
+        # `tests/agent_bundle.mjs` already builds and drives it, so this step is not a second
+        # correctness check — it exists to produce the artifact and to fail on a Node the bundle
+        # would not run on. The runner is Node 22; the bundle targets Node 20, which is the floor
+        # package.json declares and the version the hosts this bundle exists for actually run.
+        run: npm run build:agent
+
+      - name: Attach the bundle
+        # The deliverable for a host that refuses `git clone` and `npm ci` (#586). Downloadable from
+        # the run, so an agent can be handed one file and a URL rather than an install procedure.
+        uses: actions/upload-artifact@v4
+        with:
+          name: waggle-agent-${{ github.sha }}
+          path: dist/waggle-agent.mjs
+          if-no-files-found: error
