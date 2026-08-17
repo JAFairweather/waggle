@@ -45,6 +45,9 @@ check(secretInText("connect to nostrconnect and see") === null,
 
 const PUB = 'a'.repeat(64)
 const CHAN = 'a8186b53-537d-46ad-a7e7-b6486c58970e'
+// The agent's instance directory — where its credentials and spool live. A DIFFERENT directory from
+// the checkout, and the reader's actual working directory (#583).
+const INST = '/opt/agents/oliver'
 // Everything verified — the state an agent is MOST likely to be handed after a clean install, and
 // the one where an overclaim does the most damage.
 const allGood = installState(Object.fromEntries(
@@ -223,8 +226,17 @@ check(!/Neither command works yet/.test(good),
   'NEGATIVE CONTROL — a working agent is NOT warned; the warning tracks the state, it is not decoration')
 // The bug this commit fixed: a piece with NO row read as satisfied, so a document built from no
 // install state at all handed over both commands with no warning at all.
-check(/Neither command works yet/.test(noReport),
+check(/Nothing has checked whether these commands can run/.test(noReport),
   'a document built from NO install state warns too — an unsupplied row is unknown, not satisfied')
+// …and warns in the never-checked words rather than the absent ones (#583). This used to reach
+// `Neither command works yet`, which is a flat claim about a lane nothing looked at — the same
+// overclaim the UNVERIFIED split removed one state along, in the one state left. It matters because
+// the console renders this document for a machine it has never seen, so ALL of its lane rows are
+// unknown and every prompt it emitted opened by telling the agent its lane was down.
+check(!/Neither command works yet/.test(noReport),
+  '  …and NOT in the words for a credential that is genuinely absent — nobody looked, which is a different fact')
+check(/on the agent's own machine/.test(noReport),
+  '  …and points the check at the machine that can see the files, rather than telling the reader to wait')
 // The third state matters separately: never-checked is not absent, and telling an agent its lane is
 // broken when nobody looked sends it to fix a thing that may be fine.
 const laneUnchecked = startupDoc({ agent: 'oliver', pubkey: PUB, report: { rows: [
@@ -232,6 +244,15 @@ const laneUnchecked = startupDoc({ agent: 'oliver', pubkey: PUB, report: { rows:
 ] } })
 check(/was never checked, which is not the same as absent/.test(laneUnchecked),
   'an unchecked pairing is reported as unchecked, not as missing')
+check(/Both commands may well work/.test(laneUnchecked),
+  '  …and the agent is told to try them, because one that reads "this does not work" does not')
+// NEGATIVE CONTROL for the split, and it is the one that matters: a single genuinely MISSING piece
+// beside unchecked ones must still produce the hard heading, or this has just deleted the warning.
+check(/Neither command works yet/.test(startupDoc({ agent: 'oliver', pubkey: PUB, report: { rows: [
+  { key: 'bunker-uri', title: 'Bunker pairing', state: UNKNOWN },
+  { key: 'bunker-client', title: 'Client transport key', state: MISSING },
+] } })),
+  'NEGATIVE CONTROL — one MISSING piece among unchecked ones still says neither command works')
 
 // The must-fix from the #514 review: the documented speak command could not run. `--bridge` is the
 // FIRST check in tools/agent-send.mjs — ahead of the signer, ahead of the body — and nothing in the
@@ -451,7 +472,10 @@ console.log('\n5g. every path the document names resolves from the agent, or say
 // it names the command that WROTE this file, on the machine that wrote it, which is not a path the
 // reader resolves. A filter that swept it in would demand an absolute path for a line nobody runs —
 // the same shape of mistake as the remedy filter in 5d, which caught it for the opposite reason.
-const withRepo = laneDoc('sealed', { repo: ROOT, writtenBy: 'PROVENANCE-SENTINEL tools/connect-agent.mjs' })
+// `instanceRoot` as well as `repo`: this block asserts that NO placeholder survives when the caller
+// knew the paths, and there are two of them. Supplying one and not the other would leave the other's
+// caveat standing and turn the assertion below into a test of which placeholder was checked.
+const withRepo = laneDoc('sealed', { repo: ROOT, instanceRoot: INST, writtenBy: 'PROVENANCE-SENTINEL tools/connect-agent.mjs' })
 check(withRepo.includes('PROVENANCE-SENTINEL'), 'ANCHOR — the provenance line is present, so excluding it excludes something')
 const bareRefs = withRepo.split('\n')
   .filter(l => !l.includes('PROVENANCE-SENTINEL'))
@@ -490,24 +514,43 @@ const spaceRoot = mkdtempSync(join(tmpdir(), 'wb-space-'))
 const spacedRepo = join(spaceRoot, 'My Repos', "it's waggle")
 mkdirSync(join(spacedRepo, 'tools'), { recursive: true })
 writeFileSync(join(spacedRepo, 'tools', 'agent-inbox.mjs'), 'process.exit(0)\n')
-const spacedDoc = laneDoc('sealed', { repo: spacedRepo })
+// The instance directory gets a space and an apostrophe too, and for the same reason: it is now
+// interpolated into the same command, as three paths (#583). `~/Library/Application Support/…` is
+// where a Mac agent's directory ordinarily lands, so this is not a contrived name.
+const spacedInst = join(spaceRoot, 'Application Support', "oliver's agent")
+const spacedDoc = laneDoc('sealed', { repo: spacedRepo, instanceRoot: spacedInst })
 const spacedListenLine = spacedDoc.split('\n').find(l => l.startsWith('**To listen:**'))
 const spacedListenCmd = (spacedListenLine || '').match(/`([^`]+)`/)?.[1] || ''
 check(/agent-inbox\.mjs/.test(spacedListenCmd), `ANCHOR — a listen command was extracted from the document (${spacedListenCmd.slice(0, 60)}…)`)
+check(/WAGGLE_BUNKER_URI_FILE=/.test(spacedListenCmd) && /--spool /.test(spacedListenCmd),
+  '  ANCHOR — and it carries the signer pair and the spool, so the quoting under test covers all three')
 const runsInShell = c => { try { execFileSync('/bin/sh', ['-c', c], { stdio: 'pipe' }); return 0 } catch (e) { return e.status ?? -1 } }
 check(runsInShell(spacedListenCmd) === 0,
   'the rendered command RUNS in a real shell when the checkout path holds a space and an apostrophe')
-// NEGATIVE CONTROL. Strip the quoting the fix adds and the same command must fail the same way it
-// failed before — otherwise this proves the temp tree exists, not that the quoting is what fixed it.
-const unquoted = spacedListenCmd.replace(/'/g, '')
+// NEGATIVE CONTROL, in two halves, because the command now has two kinds of quoted path in it and
+// they fail differently when the quotes come off.
+//
+// The `node …` half first, unchanged: strip the quoting and it must be `Cannot find module` at
+// exit 1 — the exact failure #525 removed. It is isolated from the leading assignments because an
+// unquoted assignment fails EARLIER and with a different shape, which would mask this one.
+const nodePart = spacedListenCmd.slice(spacedListenCmd.indexOf('node '))
+check(nodePart.startsWith('node ') && nodePart.includes('agent-inbox.mjs') && !/WAGGLE_/.test(nodePart),
+  'ANCHOR — the node half was isolated from the env prefix')
+const unquoted = nodePart.replace(/'/g, '')
 let bareErr = ''
 try { execFileSync('/bin/sh', ['-c', unquoted], { stdio: 'pipe' }) } catch (e) { bareErr = `${e.stderr || ''}` }
 check(runsInShell(unquoted) === 1 && /Cannot find module/.test(bareErr),
   '  NEGATIVE CONTROL — with the quotes removed it is `Cannot find module` at exit 1, the failure this PR exists to remove')
+// The env half. Unquoted, `WAGGLE_BUNKER_URI_FILE=/…/Application Support/…` splits at the space and
+// the shell runs the remainder as a command, so the whole line fails before node is reached. Its
+// exit code is not the point and is not asserted — what is asserted is that the quoting is
+// load-bearing here too, rather than decoration around a path that would have worked anyway.
+check(runsInShell(spacedListenCmd.replace(/'/g, '')) !== 0,
+  '  NEGATIVE CONTROL — and unquoted, the signer paths break the line before node runs at all')
 // And the quoting is not applied to everything: an ordinary path stays bare, or the document would
 // print quotes nobody needs and the reader would learn to ignore them.
-check(!/'/.test(laneDoc('sealed', { repo: ROOT }).split('\n').find(l => l.startsWith('**To listen:**')) || "'"),
-  '  BOTH DIRECTIONS — a checkout path that needs no quoting does not get any')
+check(!/'/.test(laneDoc('sealed', { repo: ROOT, instanceRoot: INST }).split('\n').find(l => l.startsWith('**To listen:**')) || "'"),
+  '  BOTH DIRECTIONS — paths that need no quoting do not get any')
 
 // ── 5i. the seating command is a command too ────────────────────────────────────────────────
 console.log('\n5i. the pairing remedy runs in a shell, and is withheld once the pairing is seated')
@@ -536,6 +579,77 @@ check(unpinnedSeat && !/--expect/.test(unpinnedSeat) && runsInShell(unpinnedSeat
 check(!seatOf(startupDoc({ agent: 'oliver', pubkey: PUB, repo: spacedRepo,
   report: { rows: [{ key: 'bunker-uri', title: 'Bunker pairing', state: PRESENT }] } })),
   '  BOTH DIRECTIONS — a SEATED pairing renders no seating command at all')
+
+// ── 5j. the commands carry the signer and the spool ─────────────────────────────────────────
+console.log('\n5j. the printed commands carry a signer and a durable index, or say they could not')
+// #583. Both commands were printed without the two environment variables that ARE the signer, and
+// the listen command without `--spool`. Neither omission looks like an omission from the reader's
+// side: `loadNostrSigner` reads only the environment, so an agent whose pairing this same document
+// reports as PRESENT runs the command, gets exit 3, and reports its lane as down. That is how one
+// onboarding run ended INCONCLUSIVE with every credential correctly seated.
+const withPaths = laneDoc('sealed', { repo: ROOT, instanceRoot: INST, bridge: BRIDGE, channel: CHAN })
+const listenOf = d => (d.split('\n').find(l => l.startsWith('**To listen:**')) || '').match(/`([^`]+)`/)?.[1] || ''
+const speakOf = d => (d.split('\n').find(l => l.startsWith('**To speak:**')) || '').match(/`([^`]+)`/)?.[1] || ''
+check(/agent-inbox\.mjs/.test(listenOf(withPaths)) && /agent-send\.mjs/.test(speakOf(withPaths)),
+  'ANCHOR — both commands were extracted, so asserting about them asserts about something')
+// The NAMES come from the reader, not from here. `loadNostrSigner` is the only thing that reads
+// them, and a document naming a variable it does not read is a document that cannot work — so this
+// asserts the two files agree rather than re-checking a literal, the same rule `connect_flags.mjs`
+// exists for. A rename in the signer that missed this renderer would fail here rather than in a
+// pasted command on somebody else's machine.
+const signerSrc = readFileSync(join(ROOT, 'src', 'nostr_signer.mjs'), 'utf8')
+const envNames = [...signerSrc.matchAll(/env\.(WAGGLE_[A-Z0-9_]+)/g)].map(m => m[1])
+check(envNames.length === 2, `ANCHOR — the signer reads two WAGGLE_ variables from the environment (${envNames.join(', ')})`)
+for (const v of envNames) {
+  check(listenOf(withPaths).includes(`${v}=`), `the listen command sets ${v}, which is what the signer actually reads`)
+  check(speakOf(withPaths).includes(`${v}=`), `  …and so does the speak command — it signs too`)
+}
+// And the PATHS come from the tool that writes them. `pair-agent` puts both files under
+// `credentials/`, and `connect-agent` creates `spool/` at 0o700; a renderer that invented its own
+// layout would point at files nothing creates, which is exactly the defect #474 was.
+const pairSrc = readFileSync(join(ROOT, 'tools', 'pair-agent.mjs'), 'utf8')
+check(/join\(here, 'credentials'\)/.test(pairSrc) && /'bunker-uri'/.test(pairSrc) && /'bunker-client'/.test(pairSrc),
+  'ANCHOR — pair-agent still writes credentials/bunker-uri and credentials/bunker-client')
+check(listenOf(withPaths).includes(`${INST}/credentials/bunker-uri`)
+  && listenOf(withPaths).includes(`${INST}/credentials/bunker-client`),
+  '  …and the command names those two paths under the agent\'s own instance directory')
+const connectSrc = readFileSync(join(ROOT, 'tools', 'connect-agent.mjs'), 'utf8')
+check(/\['spool', 0o700\]/.test(connectSrc), "ANCHOR — connect-agent still creates spool/ at 0700 under the instance directory")
+check(listenOf(withPaths).includes(`--spool ${INST}/spool`),
+  'the listen command points --spool at that directory, so the first-seen index survives a restart')
+check(/#557/.test(withPaths) && /every restart is a first-ever start/.test(flat(withPaths)),
+  '  …and says what it buys, because a flag with no reason attached is the first thing trimmed')
+// NEGATIVE CONTROL for the whole block: none of this is decoration that renders unconditionally.
+check(!/<your agent dir>/.test(withPaths),
+  'NEGATIVE CONTROL — with the directory known, no placeholder survives anywhere in the document')
+check(!/in the commands below is a placeholder/.test(withPaths.split('agent dir')[0] || ''),
+  '  …nor the caveat that explains one')
+
+// The other direction — the console renders this for a machine it has never seen. The commands must
+// STILL carry the pair, filled in with a placeholder and flagged, never silently dropped: an omitted
+// argument is what made an incomplete command look complete, which is the rule `--bridge` follows.
+const noInst = laneDoc('sealed', { repo: ROOT, bridge: BRIDGE, channel: CHAN })
+for (const v of envNames) check(listenOf(noInst).includes(`${v}=`),
+  `BOTH DIRECTIONS — ${v} is printed even when the directory is unknown, rather than dropped`)
+check(listenOf(noInst).includes('--spool'), '  …and so is --spool')
+check(/<your agent dir>/.test(listenOf(noInst)), '  …with a placeholder standing in for the path')
+check(/`<your agent dir>` in the commands below is a placeholder/.test(noInst),
+  '  …and the document says it is one, rather than leaving the reader to guess it is a substitution')
+check(/not\*\* the waggle checkout/.test(flat(noInst)),
+  '  …and says it is NOT the checkout — two placeholders in one document that resolve to different directories')
+// A trailing slash must not render `//` into a path, the same way it must not for the checkout.
+check(laneDoc('sealed', { instanceRoot: `${INST}/` }).includes(`${INST}/spool`)
+  && !laneDoc('sealed', { instanceRoot: `${INST}/` }).includes(`${INST}//`),
+  'a trailing slash on the instance directory does not render `//` into the command')
+
+// It RUNS — the whole pipeline, not just the node half. `echo … | VAR=… node …` is a shape a string
+// assertion cannot judge, and the memory of what a lost backslash costs is that it passes every
+// string assertion and dies in a real shell.
+writeFileSync(join(spacedRepo, 'tools', 'agent-send.mjs'), 'process.exit(0)\n')
+const spacedSpeak = speakOf(laneDoc('sealed', { repo: spacedRepo, instanceRoot: spacedInst, bridge: BRIDGE, channel: CHAN }))
+check(/agent-send\.mjs/.test(spacedSpeak) && /WAGGLE_/.test(spacedSpeak), 'ANCHOR — a speak pipeline with an env prefix was extracted')
+check(runsInShell(spacedSpeak) === 0,
+  'the speak command runs as a PIPELINE with the env pair in front of node, under spaced paths')
 rmSync(spaceRoot, { recursive: true, force: true })
 
 // The usage line is the message an agent acts on when it gets the call wrong, and it had drifted to
@@ -704,6 +818,102 @@ const remedy = (again.stdout.split('\n').find(l => l.includes('compare it agains
 check(remedy.includes(`--root ${probeRoot}`),
   `the remedy command carries --root — ${remedy.trim().slice(0, 90)}`)
 check(remedy.includes(`--channel ${CHAN}`), 'and carries --channel, so the fresh file is comparable to the one on disk')
+
+// ── 8. Whose machine the document is about ──────────────────────────────────────────────────
+console.log('\n8. the tool names the agent\'s own directory, or says it is not this machine')
+// The instance directory is `--root/--name`, and the tool has always known it — it creates `spool/`
+// there and `pair-agent` writes both credential files there. It just never printed any of it, so
+// the commands the tool wrote named neither (#583).
+const localDoc = runStartup('seated')
+check(localDoc !== null && localDoc.includes(`${join(probeRoot, 'seated')}/credentials/bunker-uri`),
+  'the written document names the credential files under THIS agent\'s instance directory')
+check(localDoc !== null && localDoc.includes(`--spool ${join(probeRoot, 'seated')}/spool`),
+  '  …and points --spool at the directory the tool itself creates at 0700')
+check(localDoc !== null && !/<your agent dir>/.test(localDoc),
+  '  NEGATIVE CONTROL — and prints no placeholder, because the tool knows the path')
+
+// `--remote`. The tool's paths and its install rows are both about THIS machine, and neither is a
+// fact about an agent somewhere else. Without this the operator writing a handoff for a third
+// machine got a document naming a checkout that does not exist there, over install rows read off
+// the wrong disk — which is how three onboarding runs got hand-written essays instead.
+const remoteDoc = runStartup('seated', ['--remote'])
+check(remoteDoc !== null && /<your agent dir>/.test(remoteDoc) && /<your waggle checkout>/.test(remoteDoc),
+  '--remote renders BOTH paths as placeholders, because neither of this machine\'s is the reader\'s')
+// Scoped to the DOCUMENT, which `--print` emits behind a `| ` gutter, not to the whole run. The
+// tool also prints its own local install report above it, and that report is entitled to name this
+// machine's paths — the operator is standing on it. What must not carry them is the file that gets
+// handed to somebody else.
+const gutter = out => (out || '').split('\n').filter(l => l.startsWith('  | ')).join('\n')
+check(gutter(remoteDoc).length > 500, 'ANCHOR — a document was extracted from behind the print gutter')
+check(!gutter(remoteDoc).includes(join(probeRoot, 'seated', 'credentials')),
+  '  …and no path off this machine leaks into the commands')
+// The load-bearing half. A row read off this disk is not an observation of that agent, and reporting
+// one as MISSING sends a reader to re-create a credential they already hold.
+check(remoteDoc !== null && /Nothing has checked whether these commands can run/.test(remoteDoc),
+  '  …and the lane reads never-checked rather than broken — nobody looked at that machine')
+check(remoteDoc !== null && !/Neither command works yet/.test(remoteDoc),
+  '  …never the words for a credential that is genuinely absent, which is what this disk would have said')
+check(remoteDoc !== null && /on the agent's own machine/.test(remoteDoc),
+  '  …and the check it names is to be run there, not here')
+// NEGATIVE CONTROL for the whole flag: the local document still reports the local state. A tool that
+// blanked every row unconditionally would pass every assertion above.
+check(localDoc !== null && localDoc.includes(TOOL_PUB) && !/<your waggle checkout>/.test(localDoc),
+  'NEGATIVE CONTROL — without --remote the document still names this machine\'s checkout and this manifest\'s key')
+
+// `--repo-root` on its own: the operator knows the checkout on the agent's machine and says so.
+const rooted = runStartup('seated', ['--remote', '--repo-root', '/srv/waggle'])
+check(rooted !== null && rooted.includes('/srv/waggle/tools/agent-inbox.mjs'),
+  '--repo-root names the checkout on the agent\'s machine, in the commands')
+check(rooted !== null && !/<your waggle checkout>/.test(rooted) && /<your agent dir>/.test(rooted),
+  '  …and resolves only that placeholder — the instance directory is still unknown and still says so')
+
+// Both flags refuse outside --startup, because that is the only thing either changes and a flag that
+// silently does nothing is one the operator believes worked.
+const strayRun = (extra) => {
+  const args = [join(ROOT, 'tools', 'connect-agent.mjs'), '--name', 'seated', '--root', probeRoot, '--check', ...extra]
+  try { execFileSync(process.execPath, args, { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'] }); return { code: 0, stderr: '' } }
+  catch (e) { return { code: typeof e?.status === 'number' ? e.status : -1, stderr: String(e?.stderr ?? '') } }
+}
+for (const [f, extra] of [['--remote', ['--remote']], ['--repo-root', ['--repo-root', '/srv/waggle']]]) {
+  const r = strayRun(extra)
+  // The REASON, not only the refusal: `!ok` cannot tell a correct refusal from one whose message
+  // sends the operator somewhere else, and `--check` exits non-zero on its own by design.
+  check(r.code === 1 && new RegExp(`${f} only changes the startup document`).test(r.stderr),
+    `${f} outside --startup is refused, and says why — ${r.stderr.trim().slice(0, 60)}`)
+}
+check(strayRun([]).stderr === '' || !/only changes the startup document/.test(strayRun([]).stderr),
+  'NEGATIVE CONTROL — an ordinary --check with neither flag is not refused for either of them')
+
+// ── 8b. A manifest key that is not the key on the command line ──────────────────────────────
+console.log('\n8b. two accounts of the agent\'s identity, disagreeing')
+// The row asked only whether the field was 64 hex, so a stub — `1111…` shipped — rendered `ok` while
+// `--pubkey` on the same line said otherwise. Both halves are believable alone; this line is the
+// only place they meet.
+const STUB = '1'.repeat(64)
+mkdirSync(join(probeRoot, 'stubkey', 'instances'), { recursive: true })
+writeFileSync(join(probeRoot, 'stubkey', 'instances', 'stubkey.json'), JSON.stringify({
+  version: 1, id: 'stubkey', pubkey: STUB, grantors: [], task_carriers: [],
+  relays: ['wss://nos.lol'], broker_mode: 'local', delivery_mode: 'notify_only',
+}) + '\n')
+const mismatch = runRaw(['--print', '--pubkey', TOOL_PUB], 'stubkey')
+check(/Runtime manifest/.test(mismatch.stdout), 'ANCHOR — the manifest row rendered at all')
+const manifestRow = mismatch.stdout.split('\n').find(l => /Runtime manifest/.test(l)) || ''
+check(/missing/i.test(manifestRow) || /✗|x /.test(manifestRow),
+  `a manifest naming a different key than --pubkey is MISSING, not ok — ${manifestRow.trim().slice(0, 90)}`)
+check(manifestRow.includes(STUB.slice(0, 12)) && manifestRow.includes(TOOL_PUB.slice(0, 12)),
+  '  …and the row names BOTH keys, because "does not match" without them is a refusal nobody can act on')
+check(!mismatch.stdout.includes(STUB),
+  '  …and the document does not fall back to the key the row just refused')
+// BOTH DIRECTIONS, and this is the one that matters: a check that fires on every manifest cannot
+// tell a stub from a real one, and would refuse every correctly-seated agent.
+const agreeing = runRaw(['--print', '--pubkey', TOOL_PUB], 'seated')
+const agreeRow = agreeing.stdout.split('\n').find(l => /Runtime manifest/.test(l)) || ''
+check(!/missing/i.test(agreeRow) && agreeing.stdout.includes(TOOL_PUB),
+  `NEGATIVE CONTROL — a manifest that AGREES with --pubkey is not refused — ${agreeRow.trim().slice(0, 80)}`)
+// And with no --pubkey there is nothing to compare against, so the manifest still supplies the key.
+const noCompare = runRaw(['--print'], 'stubkey')
+check(noCompare.stdout.includes(STUB),
+  '  …and with no --pubkey the manifest key is still used: the check is a comparison, not a stub detector')
 
 rmSync(probeRoot, { recursive: true, force: true })
 

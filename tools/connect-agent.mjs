@@ -121,6 +121,29 @@ if (has('--runtime') && !runtime(runtimeId)) {
 }
 const HAS_MCP = runtimeId ? runtime(runtimeId).kind !== 'none' : null
 
+// ── Whose machine is the startup document about? ────────────────────────────────────────────
+// It has always been about this one, because every path in it is derived from this one: `REPO` from
+// `import.meta.url`, `HERE` from `--root`/`--name`, and the install rows from this filesystem. That
+// is right when the agent runs here and wrong in every other case — and the operator writing a
+// document for a third machine had no way to say so, so the file handed over named a checkout that
+// does not exist there and reported an install state that was never observed (#583).
+//
+// `--remote` says the reader is elsewhere. Under it the paths render as placeholders, and — this is
+// the load-bearing half — every locally-observed row is dropped to never-checked, because a row
+// derived from this disk is not a fact about that agent. Reporting one as MISSING would send a
+// reader to re-create a credential they already hold, which is the exact failure the fourth state
+// exists to stop.
+//
+// `--repo-root` is orthogonal and usable on its own: it names the checkout on the agent's machine
+// when the operator knows it. Both refuse outside `--startup`, because that is the only thing either
+// changes, and a flag that silently does nothing is one the operator believes worked.
+const REMOTE = has('--remote')
+const REPO_ROOT = flag('--repo-root')
+if (has('--repo-root') && !REPO_ROOT) die('--repo-root needs a path')
+if ((REMOTE || has('--repo-root')) && !has('--startup')) {
+  die(`${REMOTE ? '--remote' : '--repo-root'} only changes the startup document; pass --startup, or drop it`)
+}
+
 // Shape-check the two operator-pasted values HERE, at the boundary, before anything renders them
 // (#466 review §3). Both have a known shape, so an allowlist is available and an allowlist is
 // bounded: it makes `bunker://…` in `--channel` unreachable by construction rather than caught by
@@ -276,19 +299,43 @@ let manifestOk = false, manifestNote = `absent: ${manifestPath}`
 // key is a file that cannot be checked against anything. Read it from the artifact rather than
 // demanding the operator retype it.
 let manifestPubkey = null
+// A manifest whose key is not the key on the command line. `manifestOk` asked only whether the field
+// was 64 hex, so a stub — `1111…` is the one that shipped — passed, the row rendered `ok`, and the
+// startup document then took `pubkey || manifestPubkey` and printed commands for an identity nobody
+// on that box holds. Both halves are believable on their own: the operator typed the real key, the
+// file holds a placeholder, and the only place they meet is this line. A mismatch is MISSING rather
+// than unverified — the manifest for THIS agent is not there, whatever else is — and the note names
+// both keys, because "does not match" without the two values is a refusal the reader cannot act on.
+let manifestMismatch = false
 if (existsSync(manifestPath)) {
   try {
     const m = JSON.parse(readFileSync(manifestPath, 'utf8'))
     manifestOk = m.id === name && HEX64.test(String(m.pubkey || ''))
-    if (HEX64.test(String(m.pubkey || ''))) manifestPubkey = String(m.pubkey)
-    manifestNote = manifestOk
-      ? `${m.pubkey.slice(0, 12)}… · ${m.delivery_mode} · relays ${(m.relays || []).length}`
-      : 'present but its id or pubkey does not match this agent'
+    if (HEX64.test(String(m.pubkey || ''))) manifestPubkey = String(m.pubkey).toLowerCase()
+    manifestMismatch = Boolean(pubkey && manifestPubkey && manifestPubkey !== pubkey)
+    // `manifestOk` is deliberately NOT forced false here. `see()` below is handed `found: false` on a
+    // mismatch, and installState maps a false `found` to MISSING whatever `verified` says, so the
+    // extra line could not change the row. Mutation testing is what said so — it survived being
+    // turned into `if (false)`. A guard that cannot fire reads as protection and provides none.
+    manifestNote = manifestMismatch
+      ? `holds ${manifestPubkey.slice(0, 12)}…, but --pubkey says ${pubkey.slice(0, 12)}… — one of the two is wrong and this tool cannot tell which`
+      : manifestOk
+        ? `${m.pubkey.slice(0, 12)}… · ${m.delivery_mode} · relays ${(m.relays || []).length}`
+        : 'present but its id or pubkey does not match this agent'
   } catch (e) { manifestNote = `present but not valid JSON: ${e.message}` }
 }
 // Validated against the runtime's OWN validator when it can be reached — a copy of its rules here
 // would drift from it, and a manifest this tool blesses and the runtime rejects is worse than none.
-see('manifest', existsSync(manifestPath), manifestOk, manifestNote)
+see('manifest', existsSync(manifestPath) && !manifestMismatch, manifestOk, manifestNote)
+// The startup document must not fall back to a key this row has just refused — and it structurally
+// cannot: a mismatch requires `--pubkey` to be set (see the Boolean above), and the render below
+// takes `pubkey || manifestPubkey`, which never reaches the manifest key while `--pubkey` holds one.
+// Nulling `manifestPubkey` here was written as belt-and-braces and mutation testing proved it
+// unreachable, so it is gone. The property itself is asserted at the level that can observe it —
+// tests/agent_startup.mjs §8b checks the rendered document for the refused key.
+if (manifestMismatch) {
+  warn.push(`${manifestPath} names a different key than --pubkey; nothing here can say which is the agent's`)
+}
 
 // ── Runtime directories. Five, two with non-default modes. ──────────────────────────────────
 const DIRS = [
@@ -591,7 +638,18 @@ if (has('--startup')) {
   if (!rt) die(`--runtime ${target} is not one of: ${RUNTIMES.map(r => r.id).join(', ')}`)
   const dest = join(HERE, rt.startupFile)
   const exists = existsSync(dest)
-  console.log(`\nstartup file — ${rt.label}`)
+  console.log(`\nstartup file — ${rt.label}${REMOTE ? ' (for an agent on another machine)' : ''}`)
+  // Never-checked, row by row, and NOT by handing `startupDoc` an empty report: the rows still
+  // exist and still say which artifacts matter, they just no longer claim this disk answered for
+  // them. `found: null` is the same shape `see()` already uses for the two relay-side rows nothing
+  // local can observe, so this reuses the tool's own vocabulary for "did not look" rather than
+  // inventing a second one. `lane` is kept because it is the operator's declaration, not an
+  // observation — it was never read off this filesystem and is as true there as here.
+  const remoteObs = Object.fromEntries(Object.entries(obs).map(([k, v]) => (k === 'lane' ? [k, v] : [k, {
+    found: null, verified: false, note: 'not observed — this document is for an agent on another machine',
+  }])))
+  const docReport = REMOTE ? installState(remoteObs, { lane, mcp: HAS_MCP }) : report
+  if (REMOTE) console.log(`  --remote: every install row reads never-checked, because this machine is not the agent's.`)
   const render = () => {
     try {
       return startupDoc({
@@ -600,7 +658,16 @@ if (has('--startup')) {
         // Passed through when the operator supplies it, and left undefined otherwise so the
         // document prints the caveat rather than a command that exits 3 (#514 review).
         bridge: flag('--bridge') || process.env.WAGGLE_BRIDGE_PUBKEY || undefined,
-        runtimeLabel: rt.label, runtimeId: rt.id, repo: REPO, report,
+        runtimeLabel: rt.label, runtimeId: rt.id, report: docReport,
+        // `--repo-root` wins wherever it is given, including locally: an operator who names a
+        // checkout has named the one they mean. Absent it, this machine's checkout is right only
+        // when the agent runs here — under `--remote` there is nothing to give, and the document
+        // prints the placeholder it already prints for the console, which has never seen a machine.
+        repo: REPO_ROOT || (REMOTE ? undefined : REPO),
+        // The instance directory is where the credentials and the spool are, so the commands can
+        // name them (#583). There is no `--instance-root`: `HERE` is derived from `--root` and
+        // `--name`, which already exist, and under `--remote` it is not this path.
+        instanceRoot: REMOTE ? undefined : HERE,
       })
     } catch (e) { die(e.message) }
   }

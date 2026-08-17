@@ -30,6 +30,8 @@ export const FLAGS = Object.freeze([
   { flag: '--print', value: null, what: 'print to stdout rather than writing a file' },
   { flag: '--startup', value: null, what: "render the runtime's startup document" },
   { flag: '--runtime', value: 'id', what: 'which runtime the startup file and stanza are for' },
+  { flag: '--remote', value: null, what: 'the startup document describes an agent on ANOTHER machine — render placeholders, claim nothing observed here' },
+  { flag: '--repo-root', value: 'path', what: 'the waggle checkout on the agent’s machine, when it is not this one' },
   { flag: '--stanza', value: null, what: 'print the channel registration for each runtime' },
   { flag: '--bridge', value: '64-hex', what: "waggle's own key, for the speak command in the startup document" },
   { flag: '--channel', value: 'uuid', what: 'the destination channel, for the same' },

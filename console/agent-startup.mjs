@@ -98,7 +98,8 @@ const SAYS = {
  * works. `facts` carries the public identifiers. Everything else here is invariant role text, and
  * every line of it is a rule an agent has broken confidently at least once.
  */
-export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, runtimeId, repo, briefPath = 'docs/AGENT_BRIEF.md', report,
+export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, runtimeId, repo, instanceRoot,
+  briefPath = 'docs/AGENT_BRIEF.md', report,
   writtenBy = '`tools/connect-agent.mjs --startup`' }) {
   if (!agent) throw new Error('startupDoc needs the agent name')
   const rows = report?.rows || []
@@ -156,6 +157,27 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, runti
   // paths are not: a quoted `docs/…` reference reads as a defect, and nobody pastes it to a shell.
   const shq = s => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'\\''`)}'`)
   const cmd = p => shq(at(p))
+  // The agent's INSTANCE directory, which is a different directory from the checkout and is where
+  // the reader is actually standing. `tools/connect-agent.mjs` knows it as `HERE` — `<root>/<name>`;
+  // `tools/pair-agent.mjs` writes the two credential files under it, and `connect-agent` creates
+  // `spool/` at 0o700 inside it. Every one of those paths already exists on disk and nothing printed
+  // them, so the commands below named neither the credentials they need nor the spool they should
+  // keep. Placeholder when the caller has not seen the machine, same contract as `base` above.
+  const home = instanceRoot ? String(instanceRoot).replace(/\/+$/, '') : '<your agent dir>'
+  const inHome = p => shq(`${home}/${p}`)
+  // THE SIGNER IS AN ENVIRONMENT PAIR, and leaving it off the printed commands is why a correctly
+  // paired agent reported its lane as down. `loadNostrSigner` reads only the environment
+  // (`src/nostr_signer.mjs:204`) — it does no path discovery — so with the pair unset
+  // `agent-inbox.mjs:90` exits **3** with "no signer configured" and `agent-send.mjs:40` exits 1.
+  // Neither failure names the instance directory the files are already sitting in, and an agent that
+  // has just been told its pairing is PRESENT reads that refusal as the bunker being unreachable.
+  // That is exactly how one onboarding run ended INCONCLUSIVE with every credential seated.
+  //
+  // Printed always, filled in when the directory is known and flagged when it is not — the same rule
+  // `--bridge` follows below, and for the same reason: an omitted argument is what makes an
+  // incomplete command look complete. These are PATHS, not values; nothing secret renders here.
+  const signerEnv = `WAGGLE_BUNKER_URI_FILE=${inHome('credentials/bunker-uri')}` +
+    ` WAGGLE_NIP46_CLIENT_NSEC_FILE=${inHome('credentials/bunker-client')}`
   // `--runtime` for the same reason as `--lane`, and it is not cosmetic either: the MCP rows are
   // scoped by whether the runtime HAS an MCP client, and absent means they apply (#526). So a Pi
   // whose document omits the flag runs a check that blocks it on a hazard its runtime cannot have.
@@ -307,7 +329,28 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, runti
     out.push(`machine at all, you cannot run these — report THAT, not an unseated credential.`)
     out.push('')
   }
-  out.push(`**To listen:** \`node ${cmd('tools/agent-inbox.mjs')} --pubkey ${arg(pubkey, '<your 64-hex>')} --watch\``)
+  if (!instanceRoot) {
+    // Its own caveat, not folded into the checkout one, because they are two different directories
+    // and an agent that substitutes one for the other gets a signer that reads nothing from a path
+    // that exists. The checkout holds `tools/`; the instance directory holds this file, your
+    // credentials and your spool, and it is your working directory.
+    out.push(`⚠ **\`<your agent dir>\` in the commands below is a placeholder** — substitute the directory`)
+    out.push(`holding this file, which is where your credentials and spool live. It is **not** the waggle`)
+    out.push(`checkout; the two are different directories and substituting one for the other gives a`)
+    out.push(`signer that reads nothing from a path that exists.`)
+    out.push('')
+  }
+  out.push(`**To listen:** \`${signerEnv} node ${cmd('tools/agent-inbox.mjs')} --pubkey ${arg(pubkey, '<your 64-hex>')}` +
+    ` --watch --spool ${inHome('spool')}\``)
+  // The env pair and the spool are both parts of the command, so both are explained where they are
+  // printed rather than left as noise the reader trims out to make the line shorter.
+  out.push(`The two \`WAGGLE_…\` variables are the signer: they are **paths to files**, not the`)
+  out.push(`credentials themselves, and nothing here needs a key in the environment. Without them the`)
+  out.push(`tool exits **3** saying no signer is configured — which is a command handed over`)
+  out.push(`incomplete, not a lane that is down. \`--spool\` makes the first-seen index durable: in`)
+  out.push(`memory it dies with the process, so every restart is a first-ever start, the whole relay`)
+  out.push(`backfill reads as unseen, and it is seeded without waking anyone (#557). The directory is`)
+  out.push(`created if it is not there.`)
   out.push(`Opens the return lane and holds it. A \`kind:14\` rumor is unsigned by construction, so its`)
   out.push(`\`pubkey\` field is a **claim** — the tool attributes a message only to the key whose seal`)
   out.push(`carried it, and refuses one where the two disagree. A sender not on your trust list is`)
@@ -322,8 +365,8 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, runti
   // does not write it. So it is printed as a flag always, filled in when the caller knew the value,
   // and flagged as an open piece when it did not — never silently omitted.
   const bridgeKey = HEX64.test(String(bridge || '').toLowerCase()) ? String(bridge).toLowerCase() : null
-  out.push(`**To speak:** \`echo "@Name — your message" | node ${cmd('tools/agent-send.mjs')} --channel ${arg(channel, '<uuid>')}` +
-    ` --bridge ${bridgeKey || "<waggle's 64-hex>"}\``)
+  out.push(`**To speak:** \`echo "@Name — your message" | ${signerEnv} node ${cmd('tools/agent-send.mjs')}` +
+    ` --channel ${arg(channel, '<uuid>')} --bridge ${bridgeKey || "<waggle's 64-hex>"}\``)
   if (!bridgeKey) {
     // Stated on its own line rather than folded into the paragraph, because it is the one argument
     // above that this document could not resolve and an agent reading past it gets exit 3.
@@ -364,17 +407,37 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, runti
     // Nothing absent, only unproven: the commands are expected to work, and running them is what
     // settles the rest. A blocked heading here would be the same false statement in the other
     // direction — and an agent that reads "this does not work" does not try.
-    const blocked = laneOpen.some(k => laneState(k) === MISSING || laneState(k) === UNKNOWN)
+    // THREE HEADINGS, NOT TWO, and the third one is the change (#583). `Neither command works yet`
+    // was reached by UNKNOWN as well as MISSING, so a document written by something that could not
+    // observe the credentials — the console has never seen the machine, and `--remote` says so out
+    // loud — opened by telling a correctly-seated agent that its lane was down. That is the same
+    // overclaim the UNVERIFIED split fixed one state along (#541), in the one state left: the
+    // per-piece text says "was never checked, which is not the same as absent" directly under a
+    // heading asserting it is absent. An agent that reads "this does not work" does not try.
+    const absent = laneOpen.some(k => laneState(k) === MISSING)
+    const unlooked = !absent && laneOpen.some(k => laneState(k) === UNKNOWN)
     out.push('')
-    out.push(blocked
+    out.push(absent
       ? `⚠ **Neither command works yet.** ${laneOpen.map(laneSays).join('; ')}.`
-      : `⚠ **Not everything here was proven from this machine.** ${laneOpen.map(laneSays).join('; ')}.`)
-    if (blocked && checkCmd) {
+      : unlooked
+        ? `⚠ **Nothing has checked whether these commands can run.** ${laneOpen.map(laneSays).join('; ')}.`
+        : `⚠ **Not everything here was proven from this machine.** ${laneOpen.map(laneSays).join('; ')}.`)
+    if (absent && checkCmd) {
       out.push(`Settle that first with \`${checkCmd}\`; running either tool before then fails in a`)
       out.push(`way that looks like the lane being down.`)
-    } else if (blocked) {
+    } else if (absent) {
       out.push(`Running either tool before that is settled fails in a way that looks like the lane`)
       out.push(`being down. ${nameRule}`)
+    } else if (unlooked) {
+      // Not "settle it first" — nothing here says it is broken, so waiting is the wrong advice as
+      // surely as confidence would be. Run the check on the machine that can see the files, and
+      // read a failure as what it is rather than as the lane.
+      out.push(checkCmd
+        ? `Run \`${checkCmd}\` **on the agent's own machine** to settle it — whatever wrote this could`
+        : `Settle it on the agent's own machine — whatever wrote this could`)
+      out.push(`not look. Both commands may well work; if one fails, read the message before concluding`)
+      out.push(`the lane is down, because an unset signer and an unreachable relay do not fail alike.`)
+      if (!checkCmd) out.push(nameRule)
     } else {
       // The instruments are the ones the document already names, so this points at them rather than
       // inventing a ceremony: a signature pinned with --expect, and mail that actually opens.
