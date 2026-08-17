@@ -449,7 +449,7 @@ import { proveAdoptedIdentity } from './adopt-identity.mjs'
 import { loadRelayUrl, probeRelay, rememberRelayUrl } from './relay-reach.mjs'
 import { checkMintBounds } from './relay-admission.mjs'
 import { adoptFrom, nameVerdict, profileTemplate, publishCommunity, publishPublic, readBackCommunity, readPublic } from './profile-publish.mjs'
-import { PUBLIC_RELAYS, currentDmRelays, dmRelayListTemplate, inboxVerdict, planDmRelays, publishDmRelays, readDmRelays } from './dm-relay-publish.mjs'
+import { PUBLIC_RELAYS, currentDmRelays, dmRelayListTemplate, inboxVerdict, newestCreatedAt, planDmRelays, publishDmRelays, readDmRelays } from './dm-relay-publish.mjs'
 import * as webNip98 from './nip98.mjs'
 // This page signs kind 440 and 441 without going through consoleSigner, so it does not inherit that
 // chokepoint's guard and needs its own (#418). It calls the guard through signFresh() rather than
@@ -1243,6 +1243,12 @@ $('name-go').addEventListener('click', async () => {
 // The inbox (#581). A name makes the key addressable; this makes it reachable, and nothing in the
 // console owned it before. `src/bridge.mjs:3230` has no public-relay fallback by design, so with no
 // kind:10050 the return lane drops the message and the agent's symptom is an empty inbox.
+// The newest created_at seen for this key on the pre-read, carried to the publish. kind:10050 is
+// replaceable and NIP-01 breaks a created_at tie by lowest id, so a same-second retry — the exact
+// thing an operator does after reading "not proven" — is not guaranteed to replace without it.
+// Null when the pre-read saw nothing or failed, which is the same as not passing it.
+let inboxSupersedes = null
+
 async function openInbox() {
   $('inbox').style.display = ''
   const st = $('inboxst')
@@ -1253,6 +1259,7 @@ async function openInbox() {
   if (!field.value.trim()) field.value = PUBLIC_RELAYS.join(', ')
   try {
     const before = await readDmRelays(activeIdentity().pubkeyHex)
+    inboxSupersedes = newestCreatedAt(before.events, activeIdentity().pubkeyHex)
     const existing = currentDmRelays(before.events, activeIdentity().pubkeyHex)
     if (existing.length) {
       field.value = existing.join(', ')
@@ -1274,12 +1281,16 @@ $('inbox-go').addEventListener('click', async () => {
   // Named, with the reason for each. A page that publishes the survivors and says nothing about the
   // rest shows a shorter inbox than the operator typed and no explanation for the difference.
   if (plan.refused.length) {
+    // The "nothing has been published yet" half is UNCONDITIONAL, because the `return` below is.
+    // Gating it on `plan.relays.length` meant the cap refusal — the one case where survivors exist —
+    // rendered "only the first 8 would be published" with no statement that this run published none
+    // of them (#584 review).
     say('err', `${plan.refused.length} relay${plan.refused.length === 1 ? ' was' : 's were'} not published: ${plan.refused.map(r => r.why).join('; ')}.` +
-      (plan.relays.length ? ` Fix or remove ${plan.refused.length === 1 ? 'it' : 'them'} and publish again — nothing has been published yet.` : ''))
+      ` Fix or remove ${plan.refused.length === 1 ? 'it' : 'them'} and publish again — nothing has been published yet.`)
     return
   }
   try {
-    const template = dmRelayListTemplate({ relays: plan.relays })
+    const template = dmRelayListTemplate({ relays: plan.relays, supersedes: inboxSupersedes })
     say('', 'Signing — the agent\'s bunker will prompt once.')
     const signed = await signFresh(template, agentSigner)
     say('', 'Publishing, then reading it back cold BY ID from a fresh connection — a relay\'s OK is not a publish.')

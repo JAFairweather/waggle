@@ -8,6 +8,40 @@ import { verifyEvent } from 'nostr-tools/pure'
 
 const MAX_DM_RELAYS = 8
 
+/// Loopback, private or link-local — the addresses that make a published inbox unreachable from
+/// anywhere but this network. Kept identical, function for function, to `refuseReason`'s copy in
+/// `console/dm-relay-publish.mjs`, and `tests/console_dm_relays.mjs` drives the same table through
+/// both.
+///
+/// IPv6 is a separate branch, and both reasons for that were live defects (#584 review):
+///
+///   * **WHATWG `URL.hostname` returns an IPv6 host BRACKETED** — `[::1]`, never `::1`. So the three
+///     comparisons this replaces matched nothing and every IPv6 loopback, ULA and link-local address
+///     was ACCEPTED. Driven: `wss://[::1]`, `wss://[fc00::1]`, `wss://[fe80::1]` and
+///     `wss://[::ffff:127.0.0.1]` all passed the guard on both sides.
+///   * **The brackets are also the only thing that tells an address from a name.** `fc` and `fd` are
+///     a ULA prefix in an address and two ordinary opening letters in a hostname, so testing
+///     `startsWith('fc')` against an unbracketed host refuses `wss://fd-relay.example` — a public
+///     relay with a perfectly ordinary name. Stripping the brackets in place would have fixed the
+///     first defect and kept the second.
+function privateHost(hostname) {
+  const bracketed = /^\[(.*)\]$/.exec(hostname)
+  if (!bracketed) return /^(127\.|0\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(hostname)
+  const addr = bracketed[1]
+  // `::ffff:127.0.0.1` normalises to `::ffff:7f00:1`, which the IPv4 rule above cannot see. Rebuild
+  // the dotted form and ask that rule the same question, rather than writing a second copy of it
+  // that would then be differently wrong.
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(addr)
+  if (mapped) {
+    const hi = parseInt(mapped[1], 16), lo = parseInt(mapped[2], 16)
+    return privateHost(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`)
+  }
+  if (addr === '::1' || addr === '::') return true      // loopback, and the unspecified address
+  if (/^fe[89ab][0-9a-f]?:/.test(addr)) return true     // fe80::/10 link-local
+  if (/^f[cd][0-9a-f]{0,2}:/.test(addr)) return true    // fc00::/7 unique-local
+  return false
+}
+
 function safeRelayUrl(value) {
   try {
     const u = new URL(String(value || '').trim())
@@ -17,8 +51,7 @@ function safeRelayUrl(value) {
     // obvious private network address. Public wss relays (including a recipient's
     // own relay) remain valid.
     if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return null
-    if (/^(127\.|0\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host)) return null
-    if (host === '::1' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) return null
+    if (privateHost(host)) return null
     return u.href.replace(/\/$/, '')
   } catch { return null }
 }

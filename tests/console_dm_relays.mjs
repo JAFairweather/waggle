@@ -23,6 +23,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DEFAULT_PUBLIC_RELAYS } from '../src/relays.mjs'
 import { MAX_DM_RELAYS as SRC_MAX, normalizeDmRelayList as srcNormalize, safeRelayUrl } from '../src/dm_relays.mjs'
+import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
 import * as dm from '../console/dm-relay-publish.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -66,6 +67,21 @@ const TABLE = [
   ['wss://user:pw@nos.lol', false, 'credentials in the URL'],
   ['wss://nos.lol#frag', false, 'a fragment a relay never sees'],
   ['not a url', false, 'not a URL at all'],
+  // IPv6 (#584 review). Every row below ACCEPTED before the fix, on both sides: WHATWG
+  // `URL.hostname` returns an IPv6 host bracketed, so `host === '::1'` compared against `[::1]`
+  // and matched nothing. The old table was 14 rows of IPv4 and hostnames, so deleting the whole
+  // IPv6 clause left the suite green — that mutation is what found this.
+  ['wss://[::1]', false, 'IPv6 loopback'],
+  ['wss://[::1]:7777', false, 'IPv6 loopback with a port'],
+  ['wss://[fc00::1]', false, 'IPv6 unique-local, fc00::/7'],
+  ['wss://[fd12:3456::1]', false, 'IPv6 unique-local, fd prefix'],
+  ['wss://[fe80::1]', false, 'IPv6 link-local, fe80::/10'],
+  ['wss://[::ffff:127.0.0.1]', false, 'IPv4-mapped loopback, which normalises to ::ffff:7f00:1'],
+  // And the other direction, which the fix could very easily have broken: an arm that refuses
+  // everything bracketed, or every name starting with fc/fd, is not a guard — it is an outage.
+  ['wss://[2606:4700::1111]', true, 'a public IPv6 relay'],
+  ['wss://fd-relay.example.com', true, 'a hostname that merely BEGINS with fd — the old `startsWith` refused this'],
+  ['wss://fcrelay.example.com', true, 'a hostname that merely begins with fc'],
 ]
 let agreed = 0, accepted = 0, refused = 0
 for (const [value, want, why] of TABLE) {
@@ -114,6 +130,16 @@ const capped = dm.planDmRelays(nine)
 check(capped.relays.length === MAXED(), `nine valid relays publish ${MAXED()} — the NIP-17 cap`)
 check(capped.refused.length === 1 && /cap/i.test(capped.refused[0].why),
   '  …and the ninth is named with the cap as its reason, instead of vanishing')
+// `/cap/i` passes on a sentence that contradicts itself, which is what shipped: the reason said
+// "only the first 8 are published" while the handler returns before publishing anything, and it
+// dropped the one actionable fact — WHICH url fell off the end (#584 review).
+check(capped.refused[0].why.includes('wss://r8.example.com'),
+  '  …and the reason names the URL, like every other reason here — it is the only actionable part')
+check(!/ are published/.test(capped.refused[0].why) && / would be published/.test(capped.refused[0].why),
+  '  …in the conditional, because a refusal publishes nothing: the old wording contradicted the sentence it was rendered inside')
+const capPage = readFileSync(join(ROOT, 'console/index.html'), 'utf8')
+check(!/plan\.relays\.length \? ` Fix or remove/.test(capPage) && /nothing has been published yet/.test(capPage),
+  '  …and the page states "nothing has been published yet" unconditionally, because the `return` under it is unconditional')
 function MAXED() { return dm.MAX_DM_RELAYS }
 // Duplicates: same relay twice is not a casualty the operator needs told about, but it must not
 // consume a cap slot either.
@@ -146,18 +172,77 @@ console.log('\n6. what is already published is read before it is replaced')
 const ev = (tags, created_at, id, pubkey = PUB) => JSON.parse(JSON.stringify({
   kind: 10050, pubkey, created_at, id, content: '', tags: tags.map(u => ['relay', u]),
 }))
-check(dm.currentDmRelays([], PUB).length === 0, 'no events means no inbox — not a fallback')
-check(JSON.stringify(dm.currentDmRelays([ev(['wss://nos.lol'], 100, '1')], PUB)) === '["wss://nos.lol"]',
+// These fixtures carry no real signature, so verification is stubbed OPEN for this section — the
+// rules under test here are author, kind and recency. Section 6b drives the verification itself
+// with genuinely signed events, and asserts it is ON by default.
+const OPEN = { verify: () => true }
+check(dm.currentDmRelays([], PUB, OPEN).length === 0, 'no events means no inbox — not a fallback')
+check(JSON.stringify(dm.currentDmRelays([ev(['wss://nos.lol'], 100, '1')], PUB, OPEN)) === '["wss://nos.lol"]',
   'one event yields its relays')
-check(JSON.stringify(dm.currentDmRelays([ev(['wss://nos.lol'], 100, '1'), ev(['wss://relay.ditto.pub'], 200, '2')], PUB)) === '["wss://relay.ditto.pub"]',
+check(JSON.stringify(dm.currentDmRelays([ev(['wss://nos.lol'], 100, '1'), ev(['wss://relay.ditto.pub'], 200, '2')], PUB, OPEN)) === '["wss://relay.ditto.pub"]',
   'the NEWEST wins, so the console shows what the bridge would use')
-check(dm.currentDmRelays([ev(['wss://nos.lol'], 100, '1', OTHER)], PUB).length === 0,
+check(dm.currentDmRelays([ev(['wss://nos.lol'], 100, '1', OTHER)], PUB, OPEN).length === 0,
   'and another key\'s list is not this key\'s inbox — the negative control on the author filter')
 // Same timestamp, different lists: "whichever arrived first" would make the console and the bridge
 // disagree about the same key, on the same data.
 const tie = [ev(['wss://nos.lol'], 100, 'aa'), ev(['wss://relay.ditto.pub'], 100, 'bb')]
-check(JSON.stringify(dm.currentDmRelays(tie, PUB)) === JSON.stringify(dm.currentDmRelays([...tie].reverse(), PUB)),
+check(JSON.stringify(dm.currentDmRelays(tie, PUB, OPEN)) === JSON.stringify(dm.currentDmRelays([...tie].reverse(), PUB, OPEN)),
   'a timestamp tie resolves the same way whatever order the relays answered in')
+
+// ------------------------------------------------------------------------------------------
+console.log('\n6b. the prefill is SIGNATURE-VERIFIED, and the default action re-signs it')
+// `currentDmRelays` prefills the publish field, and the default action signs that value under the
+// agent's real key through the bunker. Filtering on kind/pubkey/tags alone let a relay serving a
+// FORGED kind:10050 — anyone can put any pubkey in an event — choose what the operator would sign.
+// `refuseReason` still applies to every entry, so it cannot be pointed at loopback; it can be
+// pointed at a relay the attacker chose, which is silent delivery denial. That is the
+// empty-inbox-indistinguishable-from-no-mail failure this page exists to end, reintroduced through
+// the fix (#584 review). `src/dm_relays.mjs:42` has always verified.
+//
+// Fixtures are built through JSON on purpose: `verifyEvent` memoises its result on a symbol
+// property, so a spread-copied forgery inherits the original's TRUE and the test proves nothing.
+const SK = generateSecretKey()
+const REAL_PUB = getPublicKey(SK)
+const signedList = (urls, created_at) => JSON.parse(JSON.stringify(
+  finalizeEvent({ kind: 10050, created_at, content: '', tags: urls.map(u => ['relay', u]) }, SK)))
+const honest = signedList(['wss://nos.lol'], 1_700_000_000)
+// Same author field, later timestamp, different relays — and a signature that does not verify.
+const forged = JSON.parse(JSON.stringify({ ...honest, created_at: 1_800_000_000, tags: [['relay', 'wss://attacker.example.com']] }))
+check(dm.currentDmRelays([forged], REAL_PUB).length === 0,
+  'a forged kind:10050 carrying this key\'s pubkey prefills NOTHING')
+check(JSON.stringify(dm.currentDmRelays([honest], REAL_PUB)) === '["wss://nos.lol"]',
+  'BOTH DIRECTIONS: a genuinely signed list still gets through — a verification that refuses everything is an outage, not a guard')
+check(JSON.stringify(dm.currentDmRelays([honest, forged], REAL_PUB)) === '["wss://nos.lol"]',
+  '  …and the forgery does not win on recency, which is the whole attack: it is NEWER and still ignored')
+check(dm.currentDmRelays([honest], REAL_PUB, { verify: () => false }).length === 0,
+  'CONTROL on the injection point: a verify that always fails empties the result, so `verify` is genuinely consulted')
+// NEGATIVE CONTROL on the fixture itself. If `forged` verified TRUE the assertions above would pass
+// for the wrong reason, and the memoisation trap above is exactly how that happens.
+check(honest.sig !== forged.sig || JSON.stringify(honest.tags) !== JSON.stringify(forged.tags),
+  '  …and the forgery really is a different event from the honest one')
+check(dm.newestCreatedAt([honest, forged], REAL_PUB) === 1_700_000_000,
+  'newestCreatedAt ignores the forgery too — an unverified maximum would push our own created_at years forward and wedge the key permanently')
+check(dm.newestCreatedAt([], REAL_PUB) === null, '  …and no events means no floor, not zero')
+
+// ------------------------------------------------------------------------------------------
+console.log('\n6c. created_at is bumped past the list being replaced')
+// kind:10050 is REPLACEABLE and NIP-01 breaks a `created_at` tie by lowest id. So a same-second
+// retry — exactly what an operator does after reading "not proven" — was not guaranteed to replace,
+// and a clock-skewed future-dated stale list was a permanent wedge whose symptom this page blamed
+// on the relays (#584 review).
+const same = dm.dmRelayListTemplate({ relays: ['wss://nos.lol'], now: 1_700_000_000, supersedes: 1_700_000_000 })
+check(same.created_at === 1_700_000_001, 'a same-second retry lands one second LATER, so it actually replaces')
+const future = dm.dmRelayListTemplate({ relays: ['wss://nos.lol'], now: 1_700_000_000, supersedes: 1_900_000_000 })
+check(future.created_at === 1_900_000_001, 'and a future-dated stale list is superseded rather than being a permanent wedge')
+const past = dm.dmRelayListTemplate({ relays: ['wss://nos.lol'], now: 1_700_000_000, supersedes: 1_600_000_000 })
+check(past.created_at === 1_700_000_000, 'an older list does not drag the new one backwards — max(now, seen + 1), not seen + 1')
+check(dm.dmRelayListTemplate({ relays: ['wss://nos.lol'], now: 1_700_000_000 }).created_at === 1_700_000_000,
+  'NEGATIVE CONTROL: with no supersedes the timestamp is the bare clock — which is the defect, and is why the parameter has to be wired at the call site')
+const wired = readFileSync(join(ROOT, 'console/index.html'), 'utf8')
+check(/dmRelayListTemplate\(\{ relays: plan\.relays, supersedes: inboxSupersedes \}\)/.test(wired),
+  '  …and the page passes it — a parameter nothing supplies is a fix nobody gets')
+check(/inboxSupersedes = newestCreatedAt\(/.test(wired),
+  '  …from the pre-read it already performs, so no extra round trip')
 
 // ------------------------------------------------------------------------------------------
 console.log('\n7. the read-back is BY ID — and a content comparison would pass on the stale list')
@@ -178,8 +263,10 @@ class FakeWS {
     const emit = m => setTimeout(() => this.onmessage?.({ data: JSON.stringify(m) }), 0)
     if (msg[0] === 'EVENT') emit(['OK', msg[1].id, FakeWS.accept.has(this.url), FakeWS.accept.has(this.url) ? '' : 'no'])
     if (msg[0] === 'REQ') {
+      // A LIST, not one event. `limit: 5` is in the real REQ because a relay may hold more than one
+      // kind:10050 for a key, and a fake that can only ever serve one cannot exercise that (#584).
       const served = FakeWS.serve.get(this.url)
-      if (served) emit(['EVENT', msg[1], served])
+      for (const e of (Array.isArray(served) ? served : (served ? [served] : []))) emit(['EVENT', msg[1], e])
       emit(['EOSE', msg[1]])
     }
   }
@@ -213,6 +300,27 @@ class DeadWS { constructor() { /* never opens, never answers */ } close() {} }
 const silent = await dm.publishDmRelays(signed, { relays: RELAYS, WS: DeadWS, timeoutMs: 60 })
 check(silent.proven === 0 && silent.answered === 0,
   'NEGATIVE CONTROL: relays that never answer prove nothing AND are not counted as having answered')
+
+// THE SELECTION INSIDE THE PROBE, which the design above does not settle (#584 review). `proven`
+// compared against the relay's NEWEST served event, inherited from `profile-publish.mjs` where a
+// content comparison made newest-only harmless. Here it means a relay that DID serve our event
+// reports 0 whenever it also holds anything newer — and something newer is precisely the
+// future-dated stale list this page exists to replace. Wrong in the direction that sends the
+// operator at the relays when the fault is their own key's list.
+const futureStale = ev(['wss://old.example.com'], Number(signed.created_at) + 10_000, 'futureid')
+check(futureStale.created_at > signed.created_at,
+  'PRECONDITION: the extra event really is newer than ours, or this arm passes by not being the case it describes')
+FakeWS.serve = new Map([[RELAYS[0], [signed]], [RELAYS[1], [signed, futureStale]]])
+const both = await dm.publishDmRelays(signed, { relays: RELAYS, WS: FakeWS, timeoutMs: 500 })
+check(both.proven === 2,
+  'a relay that serves our event ALONGSIDE a newer one still proves it — the id is in the response either way')
+check(both.servedBy.length === 2, '  …and both are named')
+// Both directions. If `some` had been written as "anything served counts", this passes for the
+// wrong reason and the module's whole thesis is gone.
+FakeWS.serve = new Map([[RELAYS[0], [futureStale]], [RELAYS[1], [futureStale]]])
+const wrongOnly = await dm.publishDmRelays(signed, { relays: RELAYS, WS: FakeWS, timeoutMs: 500 })
+check(wrongOnly.proven === 0,
+  'and a relay serving ONLY a different event proves nothing — read-back is by id, not by "it answered with something"')
 
 // ------------------------------------------------------------------------------------------
 console.log('\n8. the verdict says what was PROVEN, separately from what was accepted')

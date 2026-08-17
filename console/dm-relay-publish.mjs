@@ -28,6 +28,7 @@
 // pushed from the list we are trying to fix. There is no community leg, so unlike the profile there
 // is no second copy with a different id to accommodate.
 
+import { verifyEvent } from 'nostr-tools'
 import { PUBLIC_RELAYS } from './profile-publish.mjs'
 
 export { PUBLIC_RELAYS }
@@ -36,6 +37,40 @@ export { PUBLIC_RELAYS }
 /// lifted: the page cannot import `../src/`. The suite drives both copies over one fixture table
 /// rather than asserting the sources look alike.
 export const MAX_DM_RELAYS = 8
+
+/// Loopback, private or link-local — the addresses that make a published inbox unreachable from
+/// anywhere but this network. Kept identical, function for function, to the copy in
+/// `src/dm_relays.mjs`; `tests/console_dm_relays.mjs` drives the same table through both and fails
+/// when they disagree, which is what forces a fix here to be a fix there too.
+///
+/// IPv6 is a separate branch, and both reasons for that were live defects (#584 review):
+///
+///   * **WHATWG `URL.hostname` returns an IPv6 host BRACKETED** — `[::1]`, never `::1`. So the three
+///     comparisons this replaces matched nothing and every IPv6 loopback, ULA and link-local address
+///     was ACCEPTED. Driven: `wss://[::1]`, `wss://[fc00::1]`, `wss://[fe80::1]` and
+///     `wss://[::ffff:127.0.0.1]` all passed the guard on both sides.
+///   * **The brackets are also the only thing that tells an address from a name.** `fc` and `fd` are
+///     a ULA prefix in an address and two ordinary opening letters in a hostname, so testing
+///     `startsWith('fc')` against an unbracketed host refuses `wss://fd-relay.example` — a public
+///     relay with a perfectly ordinary name. Stripping the brackets in place would have fixed the
+///     first defect and kept the second.
+function privateHost(hostname) {
+  const bracketed = /^\[(.*)\]$/.exec(hostname)
+  if (!bracketed) return /^(127\.|0\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(hostname)
+  const addr = bracketed[1]
+  // `::ffff:127.0.0.1` normalises to `::ffff:7f00:1`, which the IPv4 rule above cannot see. Rebuild
+  // the dotted form and ask that rule the same question, rather than writing a second copy of it
+  // that would then be differently wrong.
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(addr)
+  if (mapped) {
+    const hi = parseInt(mapped[1], 16), lo = parseInt(mapped[2], 16)
+    return privateHost(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`)
+  }
+  if (addr === '::1' || addr === '::') return true      // loopback, and the unspecified address
+  if (/^fe[89ab][0-9a-f]?:/.test(addr)) return true     // fe80::/10 link-local
+  if (/^f[cd][0-9a-f]{0,2}:/.test(addr)) return true    // fc00::/7 unique-local
+  return false
+}
 
 /// Why a relay was refused, in words the operator can act on — or null when it is fine.
 ///
@@ -55,8 +90,7 @@ export function refuseReason(value) {
   if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) {
     return `${raw} names a local host. This list tells OTHER machines where to deliver, so a name only this machine resolves is an inbox nobody can reach`
   }
-  if (/^(127\.|0\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host) ||
-      host === '::1' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) {
+  if (privateHost(host)) {
     return `${raw} is a private-network address. This list tells OTHER machines where to deliver, so nothing outside that network can reach it`
   }
   return null
@@ -93,7 +127,12 @@ export function planDmRelays(values) {
     const url = new URL(String(value).trim()).href.replace(/\/$/, '')
     // Past the cap, or a duplicate — both are silent drops in `normalizeDmRelayList`, and a silent
     // drop is the failure this whole module is about.
-    if (!seen.has(url)) refused.push({ value: String(value).trim(), why: `over the ${MAX_DM_RELAYS}-relay cap NIP-17 sets — only the first ${MAX_DM_RELAYS} are published` })
+    // Names the URL, like every other reason here, and says "would be" rather than "are": the
+    // handler returns on any refusal, so nothing is published on this road. The previous wording
+    // contradicted the sentence it was rendered inside — "only the first 8 are published … nothing
+    // has been published yet" — and dropped the one actionable fact, which URL fell off the end
+    // (#584 review). The suite asserted `/cap/i` on the reason, which passes on either wording.
+    if (!seen.has(url)) refused.push({ value: String(value).trim(), why: `${String(value).trim()} is over the ${MAX_DM_RELAYS}-relay cap NIP-17 sets — only the first ${MAX_DM_RELAYS} would be published` })
   }
   return { relays, refused }
 }
@@ -104,14 +143,22 @@ export function planDmRelays(values) {
 /// Refuses an empty list rather than publishing a list of nothing. A kind:10050 with no relay tags
 /// is worse than no kind:10050 at all: it is a signed, replaceable statement that supersedes any
 /// working list already published, and it reads to the bridge as "not ready to receive".
-export function dmRelayListTemplate({ relays, now } = {}) {
+///
+/// `supersedes` is the newest `created_at` already published for this key. kind:10050 is REPLACEABLE
+/// and NIP-01 resolves a tie on `created_at` by lowest id, so a bare `Date.now()` does not guarantee
+/// replacement — and the two cases where it fails are the two that actually happen (#584 review):
+/// a same-second retry, which is exactly what an operator does after reading "not proven", and a
+/// clock-skewed future-dated stale list, which is a permanent wedge whose symptom this page would
+/// have blamed on the relays. `max(now, supersedes + 1)` costs nothing and removes both.
+export function dmRelayListTemplate({ relays, now, supersedes } = {}) {
   const urls = normalizeDmRelayList(relays)
   if (!urls.length) {
     throw new Error('an inbox needs at least one reachable wss:// relay — publishing an empty kind:10050 REPLACES any working list this key already has, and tells the bridge the agent is not ready to receive')
   }
+  const base = Number.isFinite(now) ? now : Math.floor(Date.now() / 1000)
   return {
     kind: 10050,
-    created_at: Number.isFinite(now) ? now : Math.floor(Date.now() / 1000),
+    created_at: Number.isFinite(supersedes) ? Math.max(base, supersedes + 1) : base,
     tags: urls.map(url => ['relay', url]),
     content: '',
   }
@@ -123,13 +170,44 @@ export function dmRelayListTemplate({ relays, now } = {}) {
 /// Newest wins by `created_at`, with the id as the tiebreak, matching `recipientDmRelays` in
 /// `src/dm_relays.mjs`. Two events with the same timestamp and different lists is exactly the case
 /// where "whichever arrived first" would make the console and the bridge disagree.
-export function currentDmRelays(events, pubkey) {
+///
+/// THE SIGNATURE IS VERIFIED, and it was not (#584 review). This filters on kind, pubkey and tags,
+/// and the value it returns PREFILLS the publish field — so a relay serving a forged kind:10050
+/// carrying the agent's pubkey with a high `created_at` chose what the operator's default action
+/// would sign, under the agent's real key, through the bunker. `refuseReason` still applies to every
+/// entry, so this can never be pointed at loopback; it can be pointed at a relay the attacker chose,
+/// which is silent delivery denial — the empty-inbox-indistinguishable-from-no-mail failure this
+/// page exists to end, reintroduced through the fix. `recipientDmRelays` in `src/dm_relays.mjs:42`
+/// has always verified here; this is the console catching up with it.
+///
+/// `verify` is injectable so the suite can drive a forgery without minting a valid signature for it,
+/// but it DEFAULTS to the real `verifyEvent` — a verification that is off unless a caller remembers
+/// to switch it on is not a verification.
+export function currentDmRelays(events, pubkey, { verify = verifyEvent } = {}) {
   const target = String(pubkey || '').toLowerCase()
+  const ok = e => { try { return !!verify(e) } catch { return false } }
   const newest = (events || [])
     .filter(e => e && e.kind === 10050 && String(e.pubkey || '').toLowerCase() === target && Array.isArray(e.tags))
+    .filter(ok)
     .sort((a, b) => Number(b.created_at || 0) - Number(a.created_at || 0) || String(b.id || '').localeCompare(String(a.id || '')))[0]
   if (!newest) return []
   return normalizeDmRelayList(newest.tags.filter(t => Array.isArray(t) && t[0] === 'relay').map(t => t[1]))
+}
+
+/// The newest `created_at` this key already has published, or null. What `dmRelayListTemplate`'s
+/// `supersedes` wants.
+///
+/// Verified, and by the same rule as `currentDmRelays` — deliberately. An unverified maximum is
+/// worse than none: a forgery carrying a far-future timestamp would push our own `created_at` years
+/// forward, and every list this key publishes after that would be unreplaceable by an honest clock.
+export function newestCreatedAt(events, pubkey, { verify = verifyEvent } = {}) {
+  const target = String(pubkey || '').toLowerCase()
+  const stamps = (events || [])
+    .filter(e => e && e.kind === 10050 && String(e.pubkey || '').toLowerCase() === target)
+    .filter(e => { try { return !!verify(e) } catch { return false } })
+    .map(e => Number(e.created_at))
+    .filter(Number.isFinite)
+  return stamps.length ? Math.max(...stamps) : null
 }
 
 // One relay, one push, one answer. `ok` is what the relay SAID, and it is never the verdict.
@@ -149,19 +227,36 @@ function wsPush(url, ev, { WS = globalThis.WebSocket, timeoutMs = 12000 } = {}) 
   })
 }
 
-// A fresh connection every time — that is what makes it COLD. `answered` is tracked apart from
-// `newest`: a relay that never sent EOSE has told us nothing, and nothing is not "not there".
+// A fresh connection every time — that is what makes it COLD. `answered` is tracked apart from the
+// events: a relay that never sent EOSE has told us nothing, and nothing is not "not there".
+//
+// EVERY served event is kept, not only the newest one (#584 review). Keeping a single `newest` was
+// inherited from `profile-publish.mjs`, where it is harmless because that page compares CONTENT and
+// every copy of a profile has the same content. Here the comparison is by ID, and `limit: 5` exists
+// precisely because a relay may hold more than one kind:10050 for a key. So a relay that served our
+// event alongside anything with a higher `created_at` — a stale future-dated list, which is exactly
+// the thing this page exists to replace — reported `proven: 0`. Driven, same signed event both
+// times, the only difference being an extra future-dated event on the relay:
+//
+//     serves ONLY our event      -> proven=1  "published and proven on 1 of 1 relays"
+//     ALSO serves a future-dated -> proven=0  "NONE served it back by id … this is not published"
+//
+// Wrong in the direction that sends the operator at the relays when the fault is their own key's
+// stale list. `newest` is still derived, because `readDmRelays` genuinely wants the current list.
 function wsReadBack(url, pubkey, { WS = globalThis.WebSocket, timeoutMs = 12000 } = {}) {
   return new Promise(resolve => {
-    let ws, newest = null, answered = false
-    try { ws = new WS(url) } catch { return resolve({ url, answered: false, newest: null }) }
-    const done = () => { try { ws.close() } catch { /* already closed */ } resolve({ url, answered, newest }) }
+    let ws, answered = false
+    const served = []
+    const newestOf = list => list.slice().sort((a, b) =>
+      Number(b.created_at || 0) - Number(a.created_at || 0) || String(b.id || '').localeCompare(String(a.id || '')))[0] || null
+    try { ws = new WS(url) } catch { return resolve({ url, answered: false, served: [], newest: null }) }
+    const done = () => { try { ws.close() } catch { /* already closed */ } resolve({ url, answered, served, newest: newestOf(served) }) }
     const t = setTimeout(done, timeoutMs)
     ws.onopen = () => ws.send(JSON.stringify(['REQ', 'dm', { kinds: [10050], authors: [pubkey], limit: 5 }]))
     ws.onmessage = m => {
       let msg
       try { msg = JSON.parse(typeof m.data === 'string' ? m.data : '') } catch { return }
-      if (msg[0] === 'EVENT' && msg[2]?.pubkey === pubkey && (!newest || msg[2].created_at > newest.created_at)) newest = msg[2]
+      if (msg[0] === 'EVENT' && msg[2]?.pubkey === pubkey) served.push(msg[2])
       if (msg[0] === 'EOSE' || msg[0] === 'CLOSED') { answered = msg[0] === 'EOSE'; clearTimeout(t); done() }
     }
     ws.onerror = () => { clearTimeout(t); done() }
@@ -187,7 +282,8 @@ export async function readDmRelays(pubkey, { relays = PUBLIC_RELAYS, WS, timeout
 export async function publishDmRelays(signedEvent, { relays = PUBLIC_RELAYS, WS, timeoutMs } = {}) {
   const pushes = await Promise.all(relays.map(u => wsPush(u, signedEvent, { WS, timeoutMs })))
   const backs = await Promise.all(relays.map(u => wsReadBack(u, signedEvent.pubkey, { WS, timeoutMs })))
-  const confirmed = backs.filter(b => b.newest && b.newest.id === signedEvent.id)
+  // `some`, over everything the relay served — not `newest.id`. See wsReadBack.
+  const confirmed = backs.filter(b => b.served.some(e => e && e.id === signedEvent.id))
   return {
     pushed: pushes.filter(p => p.ok).length,
     said: pushes,
