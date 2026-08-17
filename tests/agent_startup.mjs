@@ -518,7 +518,11 @@ writeFileSync(join(spacedRepo, 'tools', 'agent-inbox.mjs'), 'process.exit(0)\n')
 // interpolated into the same command, as three paths (#583). `~/Library/Application Support/…` is
 // where a Mac agent's directory ordinarily lands, so this is not a contrived name.
 const spacedInst = join(spaceRoot, 'Application Support', "oliver's agent")
-const spacedDoc = laneDoc('sealed', { repo: spacedRepo, instanceRoot: spacedInst })
+// The bridge key is supplied so the command under test carries only PATH quoting. Without it
+// `--trust` renders a quoted placeholder, and this block's negative controls work by stripping every
+// quote in the line — which would then be measuring the placeholder rather than the paths. The
+// placeholder has its own run-it-in-a-shell check, with its own control, in 5k.
+const spacedDoc = laneDoc('sealed', { repo: spacedRepo, instanceRoot: spacedInst, bridge: BRIDGE })
 const spacedListenLine = spacedDoc.split('\n').find(l => l.startsWith('**To listen:**'))
 const spacedListenCmd = (spacedListenLine || '').match(/`([^`]+)`/)?.[1] || ''
 check(/agent-inbox\.mjs/.test(spacedListenCmd), `ANCHOR — a listen command was extracted from the document (${spacedListenCmd.slice(0, 60)}…)`)
@@ -549,7 +553,7 @@ check(runsInShell(spacedListenCmd.replace(/'/g, '')) !== 0,
   '  NEGATIVE CONTROL — and unquoted, the signer paths break the line before node runs at all')
 // And the quoting is not applied to everything: an ordinary path stays bare, or the document would
 // print quotes nobody needs and the reader would learn to ignore them.
-check(!/'/.test(laneDoc('sealed', { repo: ROOT, instanceRoot: INST }).split('\n').find(l => l.startsWith('**To listen:**')) || "'"),
+check(!/'/.test(laneDoc('sealed', { repo: ROOT, instanceRoot: INST, bridge: BRIDGE }).split('\n').find(l => l.startsWith('**To listen:**')) || "'"),
   '  BOTH DIRECTIONS — paths that need no quoting do not get any')
 
 // ── 5i. the seating command is a command too ────────────────────────────────────────────────
@@ -641,6 +645,79 @@ check(/not\*\* the waggle checkout/.test(flat(noInst)),
 check(laneDoc('sealed', { instanceRoot: `${INST}/` }).includes(`${INST}/spool`)
   && !laneDoc('sealed', { instanceRoot: `${INST}/` }).includes(`${INST}//`),
   'a trailing slash on the instance directory does not render `//` into the command')
+
+// ── 5k. the lane is ARMED, not merely open ──────────────────────────────────────────────────
+console.log('\n5k. the listen half arms the lane, stops the old watcher, and wires a hook')
+// The command this document printed until 2026-08-17 opened the lane and could wake nobody.
+// `tools/agent-inbox.mjs` gates the wake hook on the trust list and NOTHING else, and refuses
+// `--on-message` outright with an empty one. DJ Codex ran the printed command: five messages, every
+// one `forMe: true` and `wake: false`, each naming the bridge key as not trusted. Nothing was
+// broken — the document handed over a listener with the notification half left out, and a spool
+// that fills while nobody is woken is indistinguishable from a quiet channel.
+const inboxSrc = readFileSync(join(ROOT, 'tools', 'agent-inbox.mjs'), 'utf8')
+check(/--on-message with an empty trust list can never fire/.test(inboxSrc),
+  'ANCHOR — agent-inbox still refuses --on-message with an empty trust list, which is why --trust is not optional')
+check(listenOf(withPaths).includes(`--trust ${BRIDGE}`),
+  'the listen command passes --trust <bridge>, without which every message is recorded as data and nothing wakes')
+check(/mayAct/.test(flat(withPaths)) && /indistinguishable from a quiet channel/.test(flat(withPaths)),
+  '  …and says what its absence looks like, since the failure mode is silence rather than an error')
+// BOTH DIRECTIONS on the warning specifically. A caveat that renders unconditionally is one the
+// reader learns to skip, and it would then be skipped in the one document where it is the whole
+// point — the one where the key really is missing.
+const noBridge = laneDoc('sealed', { repo: ROOT, instanceRoot: INST, channel: CHAN })
+check(/--trust '<waggle 64-hex>'/.test(listenOf(noBridge)),
+  'BOTH DIRECTIONS — with no bridge key the flag is printed with a placeholder, never silently dropped')
+// AND THE PLACEHOLDER SURVIVES A SHELL. `<waggle's 64-hex>` unquoted is a redirection followed by an
+// unbalanced quote: the pasted line dies with `sh: parse error`, which names nothing the reader can
+// act on, and is a worse outcome than the missing value it stands for. Caught here by running the
+// command rather than matching it — every string assertion in this file passed on the broken form.
+const stubListen = listenOf(laneDoc('sealed', { repo: spacedRepo, instanceRoot: spacedInst }))
+check(/agent-inbox\.mjs/.test(stubListen) && /'<waggle 64-hex>'/.test(stubListen),
+  'ANCHOR — a placeholder-bearing listen command was extracted against the stub checkout')
+check(runsInShell(stubListen) === 0,
+  '  …and it PARSES and runs in a real shell, so an unfilled --trust reaches the tool to be refused by name')
+check(runsInShell(stubListen.replace(/'<waggle 64-hex>'/, '<waggle 64-hex>')) !== 0,
+  '  NEGATIVE CONTROL — unquoted, the same placeholder breaks the line, which is what the quoting is for')
+check(/`--trust` is not filled in above/.test(noBridge),
+  '  …and the document flags it, because a watcher without it reports itself healthy')
+check(!/`--trust` is not filled in above/.test(withPaths),
+  '  …and that warning does NOT render once the key is known — a caveat on every document is a caveat nobody reads')
+
+// STOP THE OLD ONE FIRST. Two watchers on one key both open the lane; which one a message reaches
+// is a coin toss, and neither one's output names the other. On 2026-08-17 DJ Codex reported his
+// return lane INCONCLUSIVE because "the watcher died before any reply arrived", while a second
+// watcher on the same key was alive and had recorded the wake. Both statements were true of a
+// different process, and nothing available to him from inside could tell them apart.
+const stopLine = withPaths.split('\n').find(l => l.startsWith('`pkill')) || ''
+check(/agent-inbox\.mjs --pubkey/.test(stopLine) && stopLine.includes(PUB),
+  'the document prints a stop command that names THIS key, not every watcher on the machine')
+// `indexOf(…) < indexOf(…)` ALONE CANNOT SAY THIS, and the first version of this line was written
+// that way. A missing heading returns -1, which is less than everything, so deleting the block
+// outright read as correct ordering — caught by mutating the heading and watching nothing fail. The
+// presence of both is asserted first, then their order.
+const stopAt = withPaths.indexOf('**First, stop any watcher'), listenAt = withPaths.indexOf('**To listen:**')
+check(stopAt >= 0 && listenAt >= 0, 'ANCHOR — both headings are present, so comparing their positions compares something')
+check(stopAt < listenAt,
+  '  …and the stop command prints BEFORE the start command, which is the only order in which it helps')
+check(/coin toss/.test(flat(withPaths)) && /neither one's output mentions the other/.test(flat(withPaths)),
+  '  …and says why, because "tidy up first" reads as optional and this is not')
+const noPub = laneDoc('sealed', { repo: ROOT, instanceRoot: INST, bridge: BRIDGE, channel: CHAN, pubkey: undefined })
+check((noPub.split('\n').find(l => l.startsWith('`pkill')) || '').includes('<your 64-hex>'),
+  'BOTH DIRECTIONS — with no pubkey the stop command carries a placeholder rather than matching every watcher')
+
+// THE HOOK. A watcher records; it does not interrupt. The omission cost an evening on 2026-08-17: a
+// hook was written that appended each record to a JSONL file nothing read. The lane delivered, the
+// trust gate passed, the hook ran, and the message landed where no one opens.
+check(/--on-message/.test(flat(withPaths)) && /on \*\*stdin\*\*/.test(flat(withPaths)),
+  'the document wires the hook and says the envelope arrives on stdin')
+check(/a path to an executable, not a command line/.test(flat(withPaths)),
+  '  …and that it is an executable, not a command line — there is no argument splitting to rescue a quoted string')
+check(/no argument splitting/.test(flat(inboxSrc)) && /shell: false/.test(inboxSrc),
+  'ANCHOR — the tool really does refuse a shell string, so the document is describing the tool and not a wish')
+check(/wakes nobody unless something reads that file/.test(flat(withPaths)),
+  '  …and names the trap: a hook that only appends to a file looks like it works from every angle the agent can see')
+check(/report the hook as unwired rather than picking a file and hoping/.test(flat(withPaths)),
+  '  …and says what to do when the runtime\'s wake path is unknown, which is to say so rather than guess')
 
 // It RUNS — the whole pipeline, not just the node half. `echo … | VAR=… node …` is a shape a string
 // assertion cannot judge, and the memory of what a lost backslash costs is that it passes every
