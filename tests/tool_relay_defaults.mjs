@@ -109,7 +109,7 @@ ok('no tool carries a relay URL without importing src/relays.mjs', offenders.len
 // The two that were missed, named explicitly. The scan above would pass if someone deleted them.
 for (const f of ['agent-send.mjs', 'agent-inbox.mjs']) {
   const src = readFileSync(join(ROOT, 'tools', f), 'utf8')
-  ok(`${f} imports relaySet from src/relays.mjs`, /relaySet[^\n]*from '\.\.\/src\/relays\.mjs'/.test(src))
+  ok(`${f} takes its relay parsing from src/relays.mjs`, /(parseR|r)elaySet[^\n]*from '\.\.\/src\/relays\.mjs'/.test(src))
   ok(`${f} holds no relay URL of its own`, !FULL_RELAY_URL.test(codeOnly(src)))
 }
 
@@ -164,6 +164,49 @@ const envSet = spawnSync(process.execPath, [join(ROOT, 'tools', 'agent-inbox.mjs
   { env: { ...noSigner, WAGGLE_RELAY_RELAYS: 'wss://a.example.org,wss://b.example.org,wss://c.example.org' }, encoding: 'utf8' })
 ok('WAGGLE_RELAY_RELAYS now configures the LISTEN half too — it used to be read by the speaking half only',
   line(envSet.stderr, 'agent-inbox') === 'wss://a.example.org wss://b.example.org wss://c.example.org', line(envSet.stderr, 'agent-inbox'))
+
+// --- 4. an explicit set that is entirely refused REFUSES — it does not become the defaults (#591) --
+// The blocker My Dude drove: `relaySet` falls back when the parse yields nothing, and it cannot tell
+// "unset" from "nothing survived". Taking the module's default therefore introduced a redirection —
+// name one private relay, get four public ones, exit 0, and THIN silent because four is above the
+// floor. For a tool that signs and fans out, the substituted set carries the wrap's `p` tag and its
+// timing to parties the operator explicitly did not name.
+//
+// Asserted in BOTH directions and on BOTH tools, because a refusal on its own cannot be told from a
+// tool that refuses every --relays: each arm below is paired with the surviving-value control above.
+// And the reason is asserted, not only the refusal — the operator acts on the message, and "relays
+// must be wss://" is what tells them their `ws://relay.internal` was a scheme problem and not a
+// typo in the host.
+const REFUSED = 'ws://relay.internal.example:7777'
+const sendRefused = spawnSync(process.execPath, [join(ROOT, 'tools', 'agent-send.mjs'), '--channel', CHANNEL, '--bridge', BRIDGE, '--dry-run', '--relays', REFUSED],
+  { input: '@My Dude — probe\n', env: { ...process.env, BUZZ_PRIVATE_KEY: NSEC }, encoding: 'utf8' })
+ok('agent-send REFUSES an explicit --relays that is entirely undialable', sendRefused.status !== 0, `exit ${sendRefused.status}`)
+ok('…and does NOT publish to the public defaults instead — the redirection is the whole defect',
+  !DEFAULT_PUBLIC_RELAYS.some(r => (line(sendRefused.stderr, 'agent-send') || '').includes(r)),
+  line(sendRefused.stderr, 'agent-send') || '(no relay line — correct)')
+ok('…and the reason names the refused value AND the rule, so the operator can act on it',
+  sendRefused.stderr.includes(REFUSED) && /wss:\/\//.test(sendRefused.stderr) && /127\.0\.0\.1/.test(sendRefused.stderr),
+  String(sendRefused.stderr).slice(0, 240))
+
+const inboxRefused = spawnSync(process.execPath, [join(ROOT, 'tools', 'agent-inbox.mjs'), '--pubkey', SELF],
+  { env: { ...noSigner, WAGGLE_RELAY_RELAYS: REFUSED }, encoding: 'utf8' })
+ok('agent-inbox refuses it too — a watcher listening where you did not point it reports itself healthy and hears nothing',
+  inboxRefused.status !== 0 && inboxRefused.stderr.includes(REFUSED), `exit ${inboxRefused.status}: ${String(inboxRefused.stderr).slice(0, 160)}`)
+ok('…and it refuses at the relay set, BEFORE the signer check it would otherwise die on — so the message is about the right thing',
+  !/no signer configured/.test(inboxRefused.stderr), String(inboxRefused.stderr).slice(0, 200))
+
+// A PARTIAL drop is named and the run continues. Both halves: the survivor is still used, and the
+// refused entry is still reported — a tool that silently kept going would look identical on the
+// first assertion alone.
+const partial = spawnSync(process.execPath, [join(ROOT, 'tools', 'agent-send.mjs'), '--channel', CHANNEL, '--bridge', BRIDGE, '--dry-run', '--relays', `${REFUSED},wss://relay.example.org`],
+  { input: '@My Dude — probe\n', env: { ...process.env, BUZZ_PRIVATE_KEY: NSEC }, encoding: 'utf8' })
+ok('a PARTIAL drop still runs, on exactly the entries that survived',
+  partial.status === 0 && line(partial.stderr, 'agent-send') === 'wss://relay.example.org', `exit ${partial.status}: ${line(partial.stderr, 'agent-send')}`)
+ok('…and says which entry it dropped — a silent partial drop is the same defect one size smaller',
+  /DROPPED/.test(partial.stderr) && partial.stderr.includes(REFUSED), String(partial.stderr).slice(0, 200))
+// The control that keeps every refusal above honest: an UNSET value still falls back, at exit 0.
+ok('NEGATIVE CONTROL — an unset relay value still falls back to the defaults and runs; only a REFUSED one dies',
+  send.status === 0 && line(send.stderr, 'agent-send') === DEFAULT_PUBLIC_RELAYS.join(' '))
 
 console.log(fails ? `\ntool_relay_defaults: ${fails} check(s) failed` : '\nall checks passed')
 process.exit(fails ? 1 : 0)

@@ -34,7 +34,7 @@ import { finalizeEvent, generateSecretKey, getEventHash } from 'nostr-tools/pure
 import * as nip44 from 'nostr-tools/nip44'
 import { loadNostrSigner, withPinnedCustody } from '../src/nostr_signer.mjs'
 import { buildIntent, envelopeTemplates, sendVerdict } from '../src/relay_send_intent.mjs'
-import { relaySet, thinRelaySet } from '../src/relays.mjs'
+import { DEFAULT_PUBLIC_RELAYS, parseRelaySet, thinRelaySet } from '../src/relays.mjs'
 
 const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (process.argv[i + 1] || '') }
 const has = n => process.argv.includes(n)
@@ -56,7 +56,27 @@ if (!HEX64.test(bridge)) die('--bridge <64-hex> (or WAGGLE_BRIDGE_PUBKEY) is req
 // an explicitly-passed `ws://127.0.0.1:PORT`, which is how this tool is driven against a local relay.
 // Everything else is still wss-only, so the net effect is stricter than the hand-rolled parse — that one
 // admitted `ws://` to any host on the internet.
-const RELAYS = relaySet(flag('--relays') || process.env.WAGGLE_RELAY_RELAYS, undefined, { allowLoopbackWs: true })
+//
+// `parseRelaySet`, not `relaySet`, because THIS TOOL PUBLISHES. `relaySet` falls back when the parse
+// yields nothing, and it cannot tell "the operator set nothing" from "the operator set something and
+// none of it survived" (#591). On the second, an operator who names one private relay gets the four
+// public defaults at exit 0 — the wrap is sealed, but its `p` tag and its timing are not, so an
+// explicit instruction to stay off the public relays becomes a public broadcast of exactly the
+// routing metadata that instruction was about. And `thinRelaySet` is silent on it, because four is
+// above the floor: the one case the operator is getting something they did not ask for is the one
+// case the loudest signal here says nothing about. Stricter has to mean REFUSE, not SUBSTITUTE.
+const RELAY_ARG = flag('--relays') || process.env.WAGGLE_RELAY_RELAYS
+const parsed = parseRelaySet(RELAY_ARG, { allowLoopbackWs: true })
+if (parsed.dropped.length && !parsed.kept.length) {
+  die(`--relays named ${parsed.dropped.length} relay(s) and none of them are dialable: ${parsed.dropped.join(' ')}\n` +
+    '  Refusing rather than falling back to the public defaults — you asked for those relays, and sending\n' +
+    '  somewhere else would put this wrap\'s recipient and timing in front of parties you did not name.\n' +
+    '  Relays must be wss:// (or ws:// on 127.0.0.1 / localhost / [::1] for a local relay).', 2)
+}
+// A PARTIAL drop is the same class, one size smaller, so it is named too — the run continues,
+// because the operator did get relays they asked for, but not silently.
+if (parsed.dropped.length) console.error(`agent-send: DROPPED ${parsed.dropped.join(' ')} — not dialable; sending to the rest of what you named`)
+const RELAYS = parsed.kept.length ? parsed.kept : [...DEFAULT_PUBLIC_RELAYS]
 // Printed before anything is signed, because a thin set is not a failure this run can report any
 // other way: a fan-out to one relay that then accepts reports a cheerful `1/1`.
 const thin = thinRelaySet(RELAYS)

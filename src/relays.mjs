@@ -65,9 +65,30 @@ export const REDUNDANCY_FLOOR = 3
 /// accident. It exists for `agent-inbox`/`agent-send`, which accepted `ws://` to ANY host before
 /// they took their defaults from here (#589); routing them through this function without it would
 /// have removed a live capability, and with it they end up stricter than they were.
-export function relaySet(value, fallback = DEFAULT_PUBLIC_RELAYS, { allowLoopbackWs = false } = {}) {
+///
+/// ⚠ `relaySet` CANNOT TELL "unset" FROM "nothing survived", and a caller that publishes must
+/// (#591). Both arrive here as an empty parse and both return `fallback`, so an operator who names
+/// one private relay and has it refused gets the four PUBLIC defaults, at exit 0, with `thinRelaySet`
+/// silent because four is above the floor. The wrap is sealed but its `p` tag and its timing are
+/// not, so "stay off the public relays" becomes a public broadcast of exactly the routing metadata
+/// the instruction was about. Falling back is right for an unset variable and wrong for a refused
+/// one; `parseRelaySet` below separates them, and the two tools that publish use it.
+export function relaySet(value, fallback = DEFAULT_PUBLIC_RELAYS, opts = {}) {
+  const { kept } = parseRelaySet(value, opts)
+  return kept.length ? kept : [...fallback]
+}
+
+/// The parser underneath `relaySet`, with no fallback and no discarding: `{ kept, dropped }`, where
+/// `dropped` holds the raw entries this module refused, in the order given.
+///
+/// This exists because "the operator set nothing" and "the operator set something and none of it was
+/// dialable" are different statements that `relaySet` collapses into one empty array. A caller that
+/// only reads may fall back on either; a caller that SIGNS AND FANS OUT must not, because the
+/// substituted set goes somewhere the operator did not name. See the warning on `relaySet`.
+export function parseRelaySet(value, { allowLoopbackWs = false } = {}) {
   const seen = new Set()
-  const out = []
+  const kept = []
+  const dropped = []
   for (const raw of String(value ?? '').split(/[,\s]+/)) {
     const url = raw.trim()
     if (!url) continue
@@ -79,15 +100,16 @@ export function relaySet(value, fallback = DEFAULT_PUBLIC_RELAYS, { allowLoopbac
     // whole octet — a `[^\s/]*` here would admit `ws://127.0.0.1.evil.example`, which is a remote
     // host whose name starts with a loopback address.
     const loopback = allowLoopbackWs && /^ws:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/|$)/i.test(url)
-    if (!loopback && !/^wss:\/\/[^\s/]+/i.test(url)) continue
+    if (!loopback && !/^wss:\/\/[^\s/]+/i.test(url)) { dropped.push(url); continue }
     // Two spellings of one host are one relay, and counting them twice is redundancy that is not
-    // there. Compared without the trailing slash and case-insensitively on the host.
+    // there. Compared without the trailing slash and case-insensitively on the host. A duplicate is
+    // NOT `dropped` — the operator did get the relay they named, once.
     const key = url.replace(/\/+$/, '').toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
-    out.push(url.replace(/\/+$/, ''))
+    kept.push(url.replace(/\/+$/, ''))
   }
-  return out.length ? out : [...fallback]
+  return { kept, dropped }
 }
 
 /// Why this set is thin, or null if it is not. A string, because the caller logs it and the number
