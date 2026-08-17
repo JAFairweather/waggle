@@ -307,6 +307,26 @@
         <div class="status" id="namest"></div>
       </div>
 
+      <!-- The inbox (#581). Opens once the name is proven, because the two are separate facts and
+           the order matters: a name makes the key addressable, a kind:10050 makes it REACHABLE.
+           Without this the bridge finds no delivery list, logs `RETURN not sent`, and drops the
+           message — and the agent's symptom is an empty inbox, which looks exactly like no mail.
+           This step did not exist until #581; the console rendered the gap as "not observable". -->
+      <div id="inbox" style="display:none;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+        <label>Open its inbox <span class="hint">a name makes it addressable — this is what makes it reachable</span></label>
+        <div class="hint" style="margin-top:6px">
+          Sealed mail goes only to the relays this key has signed for. There is no fallback: with no
+          list the bridge drops the message and the agent sees an empty inbox, which is
+          indistinguishable from having no mail. Same relays as the name, because the bridge looks
+          for both in the same place.
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
+          <input id="inbox-relays" autocomplete="off" spellcheck="false" style="flex:1 1 380px" placeholder="wss://… , wss://…">
+          <button class="btn" id="inbox-go" style="flex:0 0 auto">Publish the inbox</button>
+        </div>
+        <div class="status" id="inboxst"></div>
+      </div>
+
       <button class="btn ghost" id="mint-use" style="margin-top:12px">Use this key below</button>
     </div>
 
@@ -429,6 +449,7 @@ import { proveAdoptedIdentity } from './adopt-identity.mjs'
 import { loadRelayUrl, probeRelay, rememberRelayUrl } from './relay-reach.mjs'
 import { checkMintBounds } from './relay-admission.mjs'
 import { adoptFrom, nameVerdict, profileTemplate, publishCommunity, publishPublic, readBackCommunity, readPublic } from './profile-publish.mjs'
+import { PUBLIC_RELAYS, currentDmRelays, dmRelayListTemplate, inboxVerdict, newestCreatedAt, planDmRelays, publishDmRelays, readDmRelays } from './dm-relay-publish.mjs'
 import * as webNip98 from './nip98.mjs'
 // This page signs kind 440 and 441 without going through consoleSigner, so it does not inherit that
 // chokepoint's guard and needs its own (#418). It calls the guard through signFresh() rather than
@@ -904,6 +925,11 @@ function forgetMintedKey() {
   $('name').style.display = 'none'
   $('name-display').value = ''; $('name-about').value = ''
   $('namest').className = 'status'; $('namest').textContent = ''
+  // Reset with the rest of the flow. A relay list left over from the previous identity would be
+  // published as the NEXT one's inbox — the operator's own typed value, under a different key.
+  $('inbox').style.display = 'none'
+  $('inbox-relays').value = ''
+  $('inboxst').className = 'status'; $('inboxst').textContent = ''
   $('admitst').className = 'status'; $('admitst').textContent = ''
   invite = null; policyVerdict = null; inviteRelay = null
   $('mintst').className = 'status'; $('mintst').textContent = ''
@@ -1205,6 +1231,72 @@ $('name-go').addEventListener('click', async () => {
       : null
     const v = nameVerdict({ pub, community, communityRead })
     say(v.proven && v.communityAccepted ? 'ok' : 'err', v.text)
+    // The inbox opens on a PROVEN name, not on an accepted one. Every step in this flow can report
+    // success and leave the agent unreachable — that is what happened, and it is why the gate is the
+    // cold read-back rather than the relay's answer.
+    if (v.proven) await openInbox()
+  } catch (e) {
+    say('err', `${e.message}`)
+  }
+})
+
+// The inbox (#581). A name makes the key addressable; this makes it reachable, and nothing in the
+// console owned it before. `src/bridge.mjs:3230` has no public-relay fallback by design, so with no
+// kind:10050 the return lane drops the message and the agent's symptom is an empty inbox.
+// The newest created_at seen for this key on the pre-read, carried to the publish. kind:10050 is
+// replaceable and NIP-01 breaks a created_at tie by lowest id, so a same-second retry — the exact
+// thing an operator does after reading "not proven" — is not guaranteed to replace without it.
+// Null when the pre-read saw nothing or failed, which is the same as not passing it.
+let inboxSupersedes = null
+
+async function openInbox() {
+  $('inbox').style.display = ''
+  const st = $('inboxst')
+  const field = $('inbox-relays')
+  // Prefill with what is ALREADY published, when there is anything, so the operator extends a
+  // working inbox instead of silently replacing it. A kind:10050 is replaceable: publishing two
+  // relays over a key that had four is a narrowing nobody is told about.
+  if (!field.value.trim()) field.value = PUBLIC_RELAYS.join(', ')
+  try {
+    const before = await readDmRelays(activeIdentity().pubkeyHex)
+    inboxSupersedes = newestCreatedAt(before.events, activeIdentity().pubkeyHex)
+    const existing = currentDmRelays(before.events, activeIdentity().pubkeyHex)
+    if (existing.length) {
+      field.value = existing.join(', ')
+      st.className = 'status'
+      st.textContent = `This key already publishes an inbox on ${existing.length} relay${existing.length === 1 ? '' : 's'}. Publishing again REPLACES that list, so add to it rather than retyping a shorter one.`
+    } else if (before.answered === 0) {
+      st.className = 'status'
+      st.textContent = `None of the ${before.asked} relays answered, so this page cannot tell whether an inbox is already published. Publishing will replace one if there is.`
+    }
+  } catch { /* a failed pre-read is not a reason to withhold the step that fixes it */ }
+}
+
+$('inbox-go').addEventListener('click', async () => {
+  const st = $('inboxst')
+  const say = (cls, text) => { st.className = `status${cls ? ` ${cls}` : ''}`; st.textContent = text }
+  if (!activeIdentity()) { say('err', 'Make a key first, or prove custody of one you already have.'); return }
+  if (!agentSigner) { say('err', 'The agent\'s bunker pairing is gone — prove custody again. This list must be signed by the AGENT\'s key: it is that key\'s own statement about where its mail goes.'); return }
+  const plan = planDmRelays($('inbox-relays').value.split(','))
+  // Named, with the reason for each. A page that publishes the survivors and says nothing about the
+  // rest shows a shorter inbox than the operator typed and no explanation for the difference.
+  if (plan.refused.length) {
+    // The "nothing has been published yet" half is UNCONDITIONAL, because the `return` below is.
+    // Gating it on `plan.relays.length` meant the cap refusal — the one case where survivors exist —
+    // rendered "only the first 8 would be published" with no statement that this run published none
+    // of them (#584 review).
+    say('err', `${plan.refused.length} relay${plan.refused.length === 1 ? ' was' : 's were'} not published: ${plan.refused.map(r => r.why).join('; ')}.` +
+      ` Fix or remove ${plan.refused.length === 1 ? 'it' : 'them'} and publish again — nothing has been published yet.`)
+    return
+  }
+  try {
+    const template = dmRelayListTemplate({ relays: plan.relays, supersedes: inboxSupersedes })
+    say('', 'Signing — the agent\'s bunker will prompt once.')
+    const signed = await signFresh(template, agentSigner)
+    say('', 'Publishing, then reading it back cold BY ID from a fresh connection — a relay\'s OK is not a publish.')
+    const pub = await publishDmRelays(signed)
+    const v = inboxVerdict({ pub })
+    say(v.proven ? 'ok' : 'err', v.text)
   } catch (e) {
     say('err', `${e.message}`)
   }
