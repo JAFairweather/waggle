@@ -8,6 +8,8 @@
 //      spaces in them, and the positive control is the point of the test.
 //   3. A send cannot claim delivery. The agent cannot read the community channel back, so "the
 //      relay stored it" is the most it may ever say.
+import { spawnSync } from 'node:child_process'
+import { generateSecretKey, getPublicKey } from 'nostr-tools/pure'
 import { buildIntent, envelopeTemplates, FUZZ_SECS, mentionVerdict, sendVerdict } from '../src/relay_send_intent.mjs'
 
 let pass = 0, fail = 0
@@ -179,6 +181,96 @@ section('4. the envelope — backdated, because the send time is the thing being
   let threw = ''
   try { envelopeTemplates({ rumorCreatedAt: AT, bridge: 'nope' }) } catch (e) { threw = String(e.message) }
   ok(/p tag/.test(threw), 'a bad bridge key is refused, and the reason names what would have been lost')
+}
+
+section('5. a run that publishes nothing has no delivery to be wrong about (#587)')
+{
+  // The guard above is about DELIVERY. A dry run has none, so refusing one left a newly seated agent
+  // with no way to ask "does my signer answer, and as whom?" without sending a real message to a real
+  // person. Both onboarding runs this came out of tried exactly that.
+  const probe = mentionVerdict('probe', { allowUnaddressed: true })
+  ok(probe.ok === true, 'an unaddressed body passes when the caller publishes nothing')
+  ok(probe.unaddressed === true, '…and comes back flagged, so the caller cannot report it as ordinary')
+  ok(probe.broadcast === false, '…and is NOT relabelled a broadcast — it is not one, and the report would lie')
+
+  // The load-bearing half. Exempting the check and reporting nothing turns a refusal that explained
+  // itself into a silence, and a reader takes silence for approval.
+  const refused = mentionVerdict('probe')
+  ok(probe.reason === refused.reason,
+    '…and carries the SAME sentence it would have been refused with, verbatim, not a softened copy')
+  ok(/route.*nobody/i.test(probe.reason), '…which says it would be routed to nobody')
+
+  // NEGATIVE CONTROL for the flag itself. If `allowUnaddressed` set the flag unconditionally it would
+  // pass every check above while marking real, addressed sends as reaching nobody.
+  const named = mentionVerdict('@My Dude — probe', { allowUnaddressed: true })
+  ok(named.ok === true && !named.unaddressed,
+    'POSITIVE CONTROL — a body that DOES name someone is not flagged unaddressed just because the flag was passed')
+  ok(named.mentions.includes('My Dude'), '…and its recipient still comes back for the report')
+
+  // SCOPED TO EXACTLY ONE REFUSAL. An empty body or a bad channel makes the report itself wrong, and
+  // the report is the entire product of a dry run.
+  ok(mentionVerdict('   ', { allowUnaddressed: true }).ok === false,
+    'an empty body is still refused — there is nothing to build a report about')
+  ok(buildIntent({ body: 'probe', channel: 'not-a-uuid', self: SELF, allowUnaddressed: true }).ok === false,
+    'a malformed channel is still refused on a dry run — the report would name a destination that cannot exist')
+  ok(buildIntent({ body: 'probe', channel: CHANNEL, self: 'nope', allowUnaddressed: true }).ok === false,
+    'no sending identity is still refused — the probe exists to answer WHO signs')
+
+  const intent = buildIntent({ body: 'probe', channel: CHANNEL, self: SELF, allowUnaddressed: true })
+  ok(intent.ok === true && intent.unaddressed === true, 'the flag reaches buildIntent and travels on the intent')
+  ok(buildIntent({ body: '@My Dude — hi', channel: CHANNEL, self: SELF }).unaddressed === false,
+    '…and an ordinary intent carries it as false rather than absent, so a caller cannot miss the field')
+
+  // THE DEFAULT IS UNCHANGED. This is the regression that matters: a live send with no @name must
+  // still refuse, for the same stated reason, or #118 is back.
+  const live = buildIntent({ body: 'no name here', channel: CHANNEL, self: SELF })
+  ok(live.ok === false, 'DEFAULT UNCHANGED — a live send with no @name is still refused')
+  ok(/--broadcast/.test(live.reason), '…with the same reason, naming the flag that overrides it')
+}
+
+section('6. the tool, run — not matched (#587)')
+{
+  // A string assertion cannot tell a flag that is wired from one that is spelled correctly and read
+  // nowhere. So the tool is executed, with a throwaway local key, and --dry-run means nothing leaves
+  // this process. The key is generated here and never printed.
+  const TOOL = new URL('../tools/agent-send.mjs', import.meta.url).pathname
+  const sk = Buffer.from(generateSecretKey()).toString('hex')
+  const run = (args, input) => {
+    const r = spawnSync(process.execPath, [TOOL, ...args], {
+      input, encoding: 'utf8',
+      env: { ...process.env, BUZZ_PRIVATE_KEY: sk, WAGGLE_BRIDGE_PUBKEY: '', WAGGLE_RELAY_CHANNEL: '' },
+    })
+    return { code: r.status, err: String(r.stderr || '') }
+  }
+  // A real curve point, not `bbbb…`. The seal is nip44-encrypted TO the bridge key, so a filler
+  // 64-hex string dies at "bad point: is not on curve" — a run that fails for a reason that has
+  // nothing to do with what is being tested, and looks from the outside like the flag not working.
+  const BRIDGE = getPublicKey(generateSecretKey())
+  const base = ['--channel', CHANNEL, '--bridge', BRIDGE]
+
+  const dry = run([...base, '--dry-run'], 'probe with no name in it')
+  ok(dry.code === 0, 'a --dry-run with no @name exits 0 — the probe this exists for reads $?')
+  ok(/WOULD REACH NOBODY/.test(dry.err), '…and says so unmissably, so a previewed message is not read as fine')
+  ok(/nothing published/.test(dry.err), '…and still says nothing was published')
+  ok(dry.err.indexOf('WOULD REACH NOBODY') < dry.err.indexOf('nothing published'),
+    '…with the warning BEFORE it, so the last line on screen is not the reassuring half')
+  ok(/sealed by/.test(dry.err), '…and reports the identity that signed, which is the question being asked')
+
+  // NEGATIVE CONTROL, driven on purpose: the live path must still refuse. Without this the change is
+  // indistinguishable from deleting the guard.
+  const livewire = run(base, 'probe with no name in it')
+  ok(livewire.code === 1, 'NEGATIVE CONTROL — the same body without --dry-run still exits 1')
+  ok(/route it to nobody/.test(livewire.err), '…for the stated reason, not a generic failure')
+  ok(!/WOULD REACH NOBODY/.test(livewire.err), '…and does not print the dry-run warning on a path that refused')
+
+  // And the warning is not simply always printed — that alarm would fire identically to a broken one.
+  const addressed = run([...base, '--dry-run'], '@My Dude — probe')
+  ok(addressed.code === 0 && !/WOULD REACH NOBODY/.test(addressed.err),
+    'POSITIVE CONTROL — an addressed dry run prints no such warning')
+
+  // Scope, at the tool: a dry run of an empty body is still a refusal, not a report about nothing.
+  const empty = run([...base, '--dry-run'], '   ')
+  ok(empty.code === 1 && /empty body/.test(empty.err), 'an empty body is refused even with --dry-run')
 }
 
 console.log(`\nrelay_send_intent: ${pass} checks passed${fail ? `, ${fail} FAILED` : ''}`)

@@ -8,6 +8,7 @@
 //   echo "@My Dude — the build is green" | node tools/agent-send.mjs --channel <uuid>
 //   node tools/agent-send.mjs --channel <uuid> --broadcast < note.txt
 //   node tools/agent-send.mjs --channel <uuid> --dry-run < note.txt      # build and report, publish nothing
+//   echo probe | node tools/agent-send.mjs --channel <uuid> --dry-run    # …and no @name is needed (#587)
 //
 // Body on stdin so multi-line text and @mentions survive intact.
 //
@@ -52,7 +53,13 @@ let self
 try { self = await signer.userPubkey() } catch (e) { die(`the signer never answered — ${String(e?.message || e).slice(0, 140)}`) }
 
 // Every refusal happens here, before anything is signed or published.
-const intent = buildIntent({ body, channel, self, broadcast: has('--broadcast') })
+//
+// `allowUnaddressed: dry` exempts ONE refusal on a run that publishes nothing — the missing @name.
+// The guard is about delivery and a dry run has none, so refusing one left a newly seated agent with
+// no way to check that its signer answers and which key it signs as, short of sending a real message
+// to a real person (#587). Every other refusal still stands, including on a dry run: an empty body
+// or a malformed channel makes the report itself wrong, and the report is the entire product here.
+const intent = buildIntent({ body, channel, self, broadcast: has('--broadcast'), allowUnaddressed: dry })
 if (intent.ok !== true) die(intent.reason, 1)
 
 const rumor = { ...intent.rumor, tags: intent.rumor.tags.map(t => [...t]) }
@@ -82,7 +89,15 @@ const wrap = finalizeEvent({ ...env.wrap, tags: env.wrap.tags.map(t => [...t]),
 
 console.error(`agent-send: ${wrap.id.slice(0, 12)}… sealed by ${self.slice(0, 8)}… -> waggle ${bridge.slice(0, 8)}…` +
   ` for channel ${channel.slice(0, 8)}…  [${body.length}B]`)
-if (dry) { console.error('agent-send: --dry-run — nothing published'); process.exit(0) }
+if (dry) {
+  // Printed BEFORE the "nothing published" line, so the last thing on screen is not the reassuring
+  // half. Exit stays 0: the build succeeded, and the probe this exists for is a script that reads
+  // `$?`. The warning is what carries the news, which is why it is unconditional and verbatim from
+  // the guard rather than a paraphrase written here.
+  if (intent.unaddressed) console.error(`agent-send: WOULD REACH NOBODY — ${intent.reason}`)
+  console.error('agent-send: --dry-run — nothing published')
+  process.exit(0)
+}
 
 const publish = url => new Promise(resolve => {
   let ws, done = false
