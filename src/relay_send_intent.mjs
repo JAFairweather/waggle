@@ -43,8 +43,18 @@ const refuse = reason => Object.freeze({ ok: false, reason })
  * `broadcast` is the deliberate override for a message meant for the humans in the channel. It is a
  * flag rather than a default because the failure it guards is silent, and a guard you have to
  * remember to switch on is one that is off at the moment it matters.
+ *
+ * `allowUnaddressed` is for a caller that PUBLISHES NOTHING (#587). The guard above is about
+ * delivery, and a dry run has none, so refusing one left a newly seated agent with no way to ask
+ * "does my signer answer, and as whom?" without either sending a real message to a real person or
+ * passing `--broadcast`, which changes the semantics of the very thing being tested. It differs from
+ * `broadcast` in both directions: the verdict is NOT marked as a broadcast, because it is not one,
+ * and it comes back flagged `unaddressed` carrying the same sentence it would have refused with.
+ * That sentence travelling with the verdict is the load-bearing half — exempting the check and then
+ * reporting nothing turns a refusal that explained itself into a silence the reader takes for
+ * approval.
  */
-export function mentionVerdict(body, { broadcast = false } = {}) {
+export function mentionVerdict(body, { broadcast = false, allowUnaddressed = false } = {}) {
   const text = typeof body === 'string' ? body : ''
   if (!text.trim()) return refuse('empty body — nothing to send')
   // The delimiter is a LOOKBEHIND, not a consumed character. Consuming it swallows the space in
@@ -74,9 +84,18 @@ export function mentionVerdict(body, { broadcast = false } = {}) {
     return Object.freeze({ ok: true, broadcast: true, mentions: [],
       reason: 'no at-word, sent as a broadcast on purpose — the channel sees it and no agent is routed it' })
   }
-  return refuse('no @name in the body, so the bridge would carry this and route it to nobody. ' +
+  // One sentence, one place. The exemption below hands back the same text rather than a softened
+  // copy, so the dry run cannot drift into describing the problem differently from the refusal.
+  const unaddressed = 'no @name in the body, so the bridge would carry this and route it to nobody. ' +
     'A relay OK and a carried message both still happen; the agent simply never reads it. ' +
-    'Add an @mention, or pass --broadcast if this is meant for the humans in the channel.')
+    'Add an @mention, or pass --broadcast if this is meant for the humans in the channel.'
+  // Scoped to exactly this refusal. An empty body and a malformed channel still stop the run even for
+  // a caller that publishes nothing, because those make the REPORT wrong — and a report nobody can
+  // trust is worse than a refusal, which at least says something true.
+  if (allowUnaddressed) {
+    return Object.freeze({ ok: true, broadcast: false, mentions: [], unaddressed: true, reason: unaddressed })
+  }
+  return refuse(unaddressed)
 }
 
 /**
@@ -87,8 +106,8 @@ export function mentionVerdict(body, { broadcast = false } = {}) {
  * and attributes the post to that key. Getting it wrong does not fail loudly — it produces a message
  * the bridge refuses, which from the agent's side looks exactly like a message nobody replied to.
  */
-export function buildIntent({ body, channel, self, at = null, broadcast = false } = {}) {
-  const mention = mentionVerdict(body, { broadcast })
+export function buildIntent({ body, channel, self, at = null, broadcast = false, allowUnaddressed = false } = {}) {
+  const mention = mentionVerdict(body, { broadcast, allowUnaddressed })
   if (mention.ok !== true) return mention
   const me = String(self || '').toLowerCase()
   if (!HEX64.test(me)) return refuse('no sending identity — a rumor with the wrong pubkey is refused by the bridge, not by this tool')
@@ -99,6 +118,10 @@ export function buildIntent({ body, channel, self, at = null, broadcast = false 
     ok: true,
     mentions: mention.mentions,
     broadcast: !!mention.broadcast,
+    // Travels with the intent so the caller has to decide what to say about it. Undefined-ish here
+    // would let a caller print an ordinary report for a message that reaches nobody.
+    unaddressed: !!mention.unaddressed,
+    reason: mention.reason,
     rumor: Object.freeze({ kind: 14, pubkey: me, created_at: created, tags: [['relay', dest]], content: String(body) }),
   })
 }
