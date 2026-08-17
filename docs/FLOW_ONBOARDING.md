@@ -138,12 +138,34 @@ What that adds up to, per agent:
 
 | Agent | Admitted | `kind:0` | Route mention | `@<display name>` carries? |
 |---|---|---|---|---|
-| MC Claude | no (config-only) | yes | `MC Claude` | **yes** — the route string happens to equal the display name |
-| DJ Codex | yes | `DJ Codex` | `codex` | **no**, and nothing is logged |
-| GrokDoggyDog | yes | `GrokDoggyDog` | none | **no** — `dynamic` entries are excluded from matching |
+| MC Claude | no (config-only) | `MC Claude` | `MC Claude` + `claude` in `return_lane` | **yes** — two doors, and the route string happens to equal the display name |
+| DJ Codex | yes | `DJ Codex` | `codex`, **`DJ Codex` added 20:38** | **yes, since 20:38** — see below |
+| GrokDoggyDog | yes | `GrokDoggyDog` | **`GrokDoggyDog` added 20:39** | carries, but **no watcher exists** on his host |
 | Pi Dog | yes | — | none | **no** — reached by p-tag and direct reply only |
 
-MC Claude is the only one that works, and it works by coincidence.
+Before 20:38 MC Claude was the only one that worked, and it worked by coincidence — nobody had
+chosen to make the route string equal the display name; it happened to be typed that way.
+
+### The first end-to-end proof, 2026-08-17 20:42
+
+Two fixes were both required, which is why neither alone would have shown a change: the route
+mention had to equal the published name, **and** the watcher had to carry `--trust`. With only the
+first, the record reads `wake: false` and the hook never runs; with only the second, nothing is
+carried to wake on.
+
+Body typed in the channel: `@DJ Codex do you get this message`
+
+```
+bridge   RETURN 4/4 -> 231952cb5eb0…: sealed 612B (wrap 62a4a6e0cfa9…)
+watcher  id 62a4a6e0cfa94f8d…            <- same wrap, both ends
+         type waggle-channel-task-carry · reason "mention"
+         source 4010ac438206, kind 9, channel a8186b53…
+         wake true · mayAct true · forMe true · live true · first_seen true
+         wake_reason "sealed by 84753207f2c6…, which is on the trust list"
+```
+
+Mention match, sender lock, channel lock, seal, courier trust and hook execution all fired for the
+stated reason, one second after the source note.
 
 ---
 
