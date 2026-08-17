@@ -52,7 +52,7 @@
 //       (it ran and could not tell you — including a community relay that will not serve the
 //       read-back) · 4 a relay answered and its answer is a refusal. That IS the result.
 
-import WebSocket from 'ws'
+import WebSocket from '../src/ws_runtime.mjs'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { verifyEvent } from 'nostr-tools/pure'

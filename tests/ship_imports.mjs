@@ -198,5 +198,112 @@ if (existsSync(webNip98)) {
   check(true, '  …and there is no browser copy to bind')
 }
 
+// ── A runtime global is an import you forgot to declare (#576) ───────────────────────────────────
+//
+// Same failure class as the boundary above — code that resolves here and not there — arriving
+// through a different door. `tools/agent-inbox.mjs` and `tools/agent-send.mjs` constructed
+// `new WebSocket(url)` with no import, relying on a global that only newer Node provides. Eight
+// sibling tools import `ws` explicitly, so nothing looked odd in review.
+//
+// What made it worth a check rather than a fix: both call sites are wrapped as
+// `try { ws = new WebSocket(url) } catch { return end() }`, and that catch swallows a
+// ReferenceError exactly as it swallows a bad URL. On a runtime without the global the tool reports
+// NO CONNECTION instead of reporting that it cannot open one, and an agent reading an empty inbox
+// cannot tell that from no mail. Found onboarding an agent on Node 20.
+// FIXING THE DIRECT CONSTRUCTORS WAS HALF OF IT. `nostr-tools/pool` resolves its socket as
+// `opts.websocketImplementation || WebSocket` — the same bare global, reached through a dependency
+// rather than a call site, so the version of this check that only looked for `new WebSocket(` gave
+// the branch a clean bill while half the defect stood. That path is every bunker signature and
+// every pairing (`src/nostr_signer.mjs`, `src/nostrconnect.mjs`), and it fails by calling `oneose`
+// with `reason: "WebSocket is not defined"` — a healthy quiet relay and a runtime with no sockets
+// at all, reported in the same vocabulary. Both doors now go through `src/ws_runtime.mjs`.
+// The predicates are written against SOURCE, and the file-taking wrappers are the only thing that
+// touches disk — so the controls below exercise the same regexes the scan does, rather than second
+// copies of them that can drift into agreeing with a bug.
+const usesWsSrc = s => /\bnew\s+WebSocket\s*\(/.test(s)
+const usesPoolSrc = s => /\bnew\s+SimplePool\s*\(|Pool\s*=\s*SimplePool/.test(s)
+const importsRuntimeSrc = s => /^import\s+(WebSocket\s+from\s+)?'\.\.?\/(src\/)?ws_runtime\.mjs'/m.test(s)
+const usesWs = f => usesWsSrc(readFileSync(f, 'utf8'))
+const usesPool = f => usesPoolSrc(readFileSync(f, 'utf8'))
+const importsRuntime = f => importsRuntimeSrc(readFileSync(f, 'utf8'))
+const isRuntime = f => relative(REPO, f) === 'src/ws_runtime.mjs'
+
+const wsUsers = files.filter(f => !isRuntime(f) && (usesWs(f) || usesPool(f)))
+// A scan that found nothing to check has told you nothing.
+check(wsUsers.length >= 10, `found runtime modules that open a socket, directly or through a pool (${wsUsers.length}) — too few means the pattern moved, not that the risk went away`)
+// …and one that cannot tell the two doors apart would stay green while either half regressed.
+const poolUsers = files.filter(f => !isRuntime(f) && usesPool(f))
+check(poolUsers.length >= 3, `and specifically, modules reaching a socket through nostr-tools' pool (${poolUsers.length}) — the half that was missed`)
+
+const undeclared = wsUsers.filter(f => !importsRuntime(f)).map(f => relative(REPO, f))
+check(undeclared.length === 0,
+  `every module that opens a socket imports src/ws_runtime.mjs — a global is not a dependency (${undeclared.join(', ') || 'none undeclared'})`)
+check(/useWebSocketImplementation\s*\(\s*WebSocket\s*\)/.test(readFileSync(join(REPO, 'src/ws_runtime.mjs'), 'utf8')),
+  'src/ws_runtime.mjs installs the implementation into nostr-tools — importing it for a side effect it no longer has is the silent way this regresses')
+
+// ── The third door: nip46 carries its own pool (#578) ────────────────────────────────────────────
+//
+// `nostr-tools/nip46` does not import `pool.js`. It inlines a copy — its own `_WebSocket`, its own
+// `try { _WebSocket = WebSocket }`, its own `SimplePool` — and `BunkerSigner` builds THAT class when
+// no pool is passed. So `useWebSocketImplementation` sets a variable in a module nip46 never reads,
+// and nip46 exports no installer of its own.
+//
+// Both callers passed every check above while the door stood open, because each also constructs a
+// raw `WebSocket` and so already imported `ws_runtime` — an import that does nothing for their
+// bunker path. `usesPoolSrc` does not match `BunkerSigner.fromBunker(…)` and never will; the shape
+// has no pool in it. The enforceable rule is therefore about the IMPORT, not the construction:
+// `src/nostr_signer.mjs` owns nip46, injects a pool built from the installed implementation, and
+// nothing else may reach past it.
+const NIP46_OWNER = 'src/nostr_signer.mjs'
+const importsNip46Src = s => /from\s+['"]nostr-tools\/nip46['"]/.test(s)
+const buildsBunkerSrc = s => /\bBunkerSigner\s*\.\s*fromBunker\s*\(/.test(s)
+const injectsPoolSrc = s => /BunkerSigner\s*\.\s*fromBunker\s*\([^)]*pool\s*:/s.test(s)
+
+const nip46Importers = files.filter(f => importsNip46Src(readFileSync(f, 'utf8'))).map(f => relative(REPO, f))
+check(nip46Importers.includes(NIP46_OWNER),
+  `${NIP46_OWNER} imports nostr-tools/nip46 — if it stopped, every check below would pass vacuously`)
+check(nip46Importers.filter(f => f !== NIP46_OWNER).length === 0,
+  `and it is the ONLY module that does (${nip46Importers.filter(f => f !== NIP46_OWNER).join(', ') || 'no others'}) — nip46's inlined pool cannot be reached from ws_runtime, so a direct importer reopens the door silently`)
+
+const builders = files.filter(f => buildsBunkerSrc(readFileSync(f, 'utf8'))).map(f => relative(REPO, f))
+check(builders.length === 1 && builders[0] === NIP46_OWNER,
+  `and BunkerSigner.fromBunker is called in exactly one place (${builders.join(', ') || 'nowhere — the pattern moved'})`)
+check(injectsPoolSrc(readFileSync(join(REPO, NIP46_OWNER), 'utf8')),
+  `${NIP46_OWNER} passes an explicit pool into fromBunker — params.pool is the only lever nip46 offers, and omitting it is the whole of #578`)
+
+// NEGATIVE CONTROL. Every assertion above passes on a check that never looks at anything, so prove
+// each predicate can say no — and, for the pool door, that it says no to the exact code that shipped.
+{
+  const bad = "const x = new WebSocket('wss://x')\n"
+  const good = "import WebSocket from '../src/ws_runtime.mjs'\n" + bad
+  check(usesWsSrc(bad) && !importsRuntimeSrc(bad), '  …CONTROL: the predicate flags a module that uses the global without importing the runtime')
+  check(usesWsSrc(good) && importsRuntimeSrc(good), '  …CONTROL: and clears the same module once the import is there')
+
+  const poolBad = "import { SimplePool } from 'nostr-tools/pool'\nconst pool = new SimplePool()\n"
+  const poolGood = "import './ws_runtime.mjs'\n" + poolBad
+  check(usesPoolSrc(poolBad) && !importsRuntimeSrc(poolBad), '  …CONTROL: it flags a pool user that installs no implementation — the shape that shipped')
+  check(usesPoolSrc(poolGood) && importsRuntimeSrc(poolGood), '  …CONTROL: and clears it once the runtime is imported')
+  // The default-argument spelling in src/nostr_signer.mjs, which reads nothing like `new SimplePool()`.
+  check(usesPoolSrc('  Pool = SimplePool,\n'), '  …CONTROL: and recognises the injectable-Pool spelling, not just the constructor call')
+
+  // The third door. Its first control is the one that matters: state, in the suite, that the pool
+  // predicate CANNOT see this shape — that is why the rule above is about imports and not about
+  // sockets, and a reader who does not know it will "simplify" the two checks into one.
+  const nip46Bad = "import { BunkerSigner, parseBunkerInput } from 'nostr-tools/nip46'\n" +
+    "import WebSocket from '../src/ws_runtime.mjs'\n" +
+    'const b = BunkerSigner.fromBunker(sk, bp, { onauth: u => log(u) })\n'
+  check(!usesPoolSrc(nip46Bad) && importsRuntimeSrc(nip46Bad),
+    '  …CONTROL: the pool predicate is BLIND to the code that shipped #578, and ws_runtime is imported — this is why both tools passed')
+  check(importsNip46Src(nip46Bad) && buildsBunkerSrc(nip46Bad) && !injectsPoolSrc(nip46Bad),
+    '  …CONTROL: the nip46 predicates flag that same source — importing nip46, building a signer, injecting no pool')
+
+  const nip46Good = "import { bunkerSignerFromUri } from '../src/nostr_signer.mjs'\n" +
+    'const b = bunkerSignerFromUri(sk, bp, { onauth: u => log(u) })\n'
+  check(!importsNip46Src(nip46Good) && !buildsBunkerSrc(nip46Good),
+    '  …CONTROL: and clear the fixed spelling — both directions, so this is not a check that refuses everything')
+  check(injectsPoolSrc('BunkerSigner.fromBunker(sk, bp, { ...params, pool: params.pool || new Pool() })'),
+    '  …CONTROL: and the pool-injection predicate says yes to an injected pool, not merely no to a missing one')
+}
+
 console.log(pass ? '\nSHIP IMPORTS PASS — runtime code stays inside the deployed tree' : '\nSHIP IMPORTS FAIL')
 process.exit(pass ? 0 : 1)

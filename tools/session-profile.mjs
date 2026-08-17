@@ -25,7 +25,7 @@
 // shell history. Nothing here prints it, and a profile is public by construction: everything this
 // publishes is meant to be read by anyone.
 
-import WebSocket from 'ws'
+import WebSocket from '../src/ws_runtime.mjs'
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import { relaySet } from '../src/relays.mjs'

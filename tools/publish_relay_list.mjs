@@ -24,7 +24,7 @@
 // only proof of federation. Publishing a 10002 is pure discoverability — it opens ZERO
 // inbound flow (that gate is the read lane's per-recipient #p watch, a separate switch).
 
-import WebSocket from 'ws'
+import WebSocket from '../src/ws_runtime.mjs'
 import { finalizeEvent, getPublicKey, nip19 } from 'nostr-tools'
 import { createHash } from 'node:crypto'
 import { DEFAULT_PUBLIC_RELAYS } from '../src/relays.mjs'

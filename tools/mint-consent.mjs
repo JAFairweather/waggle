@@ -27,7 +27,7 @@ import { scopeHashSync } from '../src/scope_hash.mjs'
 import { writeFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
-import WebSocket from 'ws'
+import WebSocket from '../src/ws_runtime.mjs'
 import { consentTosBlock } from '../src/nostr_egress.mjs'
 import { relaySet } from '../src/relays.mjs'
 

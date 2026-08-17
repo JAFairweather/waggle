@@ -23,7 +23,7 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import WebSocket from 'ws'
+import WebSocket from '../src/ws_runtime.mjs'
 import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
 import * as nip19 from 'nostr-tools/nip19'
 import { normalizeDmRelayList, recipientDmRelays } from '../src/dm_relays.mjs'
