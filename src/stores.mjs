@@ -24,7 +24,11 @@ import { log, err } from './log.mjs'
 //   commit    claim + durable append — survives a restart
 //
 // `mem` is the Set itself, exposed because the lanes (and the suites) check it directly.
-function durableSet({ path, cap, label, noun }) {
+// `log` is injectable because not every caller's stdout is prose. `agent-inbox --jsonl` promises one
+// JSON object per line on stdout, and the load line below — written on every start — landed there as
+// line 1, so a reader doing JSON.parse per line threw on the first line of every restart. Defaults to
+// the shared logger, so no existing caller changes.
+function durableSet({ path, cap, label, noun, log: logLine = log }) {
   const mem = new Set()
   const append = (text, durable = false) => {
     let fileFd = null, dirFd = null
@@ -65,7 +69,7 @@ function durableSet({ path, cap, label, noun }) {
       const lines = readFileSync(path, 'utf8').split('\n').filter(Boolean)
       const kept = lines.slice(-cap)
       for (const k of kept) mem.add(k)
-      log(`${label}: loaded ${mem.size} ${noun} from ${path}${lines.length > kept.length ? ` (pruned ${lines.length - kept.length})` : ''}`)
+      logLine(`${label}: loaded ${mem.size} ${noun} from ${path}${lines.length > kept.length ? ` (pruned ${lines.length - kept.length})` : ''}`)
     },
   }
 }
