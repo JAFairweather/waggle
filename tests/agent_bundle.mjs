@@ -20,7 +20,7 @@
 // Run: node tests/agent_bundle.mjs   (exit 0 = pass, 1 = fail)
 
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, existsSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, existsSync, statSync, writeFileSync } from 'node:fs'
 import { builtinModules } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, resolve, dirname } from 'node:path'
@@ -29,6 +29,14 @@ import { fileURLToPath } from 'node:url'
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const TMP = mkdtempSync(join(tmpdir(), 'waggle-bundle-'))
 const OUT = join(TMP, 'waggle-agent.mjs')
+// Every child gets PATH and HOME and nothing else. An ALLOWLIST, not a denylist of known-bad
+// names: one forgotten prefix and a child inherits a signing key again. Without this the suite
+// reds on any machine with BUZZ_PRIVATE_KEY set — and reds for the right-looking reason, because
+// with a key in scope `inbox` does not stop at its signer check, it proceeds into a live read.
+// CI passes today only because CI has no key. HOME points inside TMP so nothing resolves back out.
+const SANDBOX_HOME = join(TMP, 'home')
+mkdirSync(SANDBOX_HOME, { recursive: true })
+const CLEAN_ENV = { PATH: process.env.PATH || '/usr/bin:/bin', HOME: SANDBOX_HOME }
 
 let pass = true
 const check = (cond, label, detail = '') => {
@@ -40,12 +48,40 @@ const check = (cond, label, detail = '') => {
 // than a crash. Most of what this suite asserts IS a non-zero exit.
 const run = (args, opts = {}) => {
   try {
-    const out = execFileSync(process.execPath, args, { encoding: 'utf8', timeout: 120000, stdio: ['ignore', 'pipe', 'pipe'], ...opts })
+    const out = execFileSync(process.execPath, args, { encoding: 'utf8', timeout: 120000, stdio: ['ignore', 'pipe', 'pipe'], env: CLEAN_ENV, ...opts })
     return { code: 0, out, err: '' }
   } catch (e) {
     return { code: e.status ?? -1, out: String(e.stdout || ''), err: String(e.stderr || e.message || '') }
   }
 }
+
+// ── 0. Children inherit nothing ────────────────────────────────────────────────────────────────
+//
+// The suite spawns the artifact and asserts on how it refuses. If a signing key reaches the child,
+// `inbox` does not stop at its signer check — it proceeds into a live authenticated read, and the
+// assertion below it fails for a reason that has nothing to do with the bundle. That is not
+// hypothetical: it is what this suite did on any machine with BUZZ_PRIVATE_KEY exported, and it
+// stayed green in CI only because CI has no key.
+//
+// The assertion is a property, not an exact set: macOS injects __CF_USER_TEXT_ENCODING into every
+// child no matter what env is passed, so `keys === ['HOME','PATH']` would pass on Linux and fail on
+// a Mac — a check that disagrees with itself by platform is worse than none.
+console.log('\n-- 0. the child environment is sealed --')
+const ENV_PROBE = ['-e', 'console.log(Object.keys(process.env).sort().join(" "))']
+const SIGNER_SHAPED = /KEY|NSEC|BUNKER|SECRET|TOKEN|RELAY|WAGGLE|NVOY|BUZZ/i
+const sealedNames = run(ENV_PROBE).out.trim().split(/\s+/).filter(Boolean)
+check(sealedNames.includes('PATH') && sealedNames.includes('HOME'),
+  'a child spawned by run() still gets PATH and HOME, so it can execute at all', sealedNames.join(' '))
+check(!sealedNames.some(n => SIGNER_SHAPED.test(n)),
+  'and nothing signer-shaped survives into it, so every command refuses for the same reason on every machine',
+  sealedNames.filter(n => SIGNER_SHAPED.test(n)).join(' '))
+
+// NEGATIVE CONTROL: without this, the check above is satisfied by a probe that reports nothing at
+// all. The injected value is a marker string, not a key.
+const leaked = run(ENV_PROBE, { env: { ...CLEAN_ENV, BUZZ_PRIVATE_KEY: 'sentinel-not-a-key' } }).out
+check(/BUZZ_PRIVATE_KEY/.test(leaked),
+  'NEGATIVE CONTROL: with one injected the same probe DOES report it, so the check above can fail',
+  leaked.trim().split(/\s+/).filter(n => SIGNER_SHAPED.test(n)).join(' '))
 
 // ── 1. The build runs and produces exactly one file ────────────────────────────────────────────
 console.log('\n-- 1. build --')
@@ -141,6 +177,11 @@ console.log('\n-- 3. socket resolution (#576/#578) --')
 check(src.includes('useWebSocketImplementation'), 'the bundle installs a WebSocket into nostr-tools\' pool')
 check(/createRequire/.test(src), 'the bundle provides a real `require` for the CommonJS deps it inlines')
 
+// Parsed here rather than in section 6 because section 4b drives every command in this list. The
+// switch was already the authoritative list of what ships; it just was not feeding what runs.
+const cliSrc = readFileSync(join(REPO, 'src/agent_cli.mjs'), 'utf8')
+const dispatched = [...cliSrc.matchAll(/case '([a-z][a-z-]*)':\s*return import\('([^']+)'\)/g)].map(m => [m[1], m[2]])
+
 // ── 4. It loads its dependencies, not just its entry ───────────────────────────────────────────
 console.log('\n-- 4. the socket stack actually loads --')
 
@@ -176,6 +217,42 @@ if (!src.includes(REQUIRE_LINE)) {
     'and the broken bundle never reaches the signer check — the two outcomes are distinguishable')
 }
 
+// ── 4b. EVERY dispatched command loads, not just `inbox` ───────────────────────────────────────
+//
+// Section 4 drove one command out of five. `pair`, `publish-dm-relays` and `check` were never
+// executed, so a dependency reachable only from one of them could break while this suite stayed
+// green — the same shape as the defect section 4 exists for, and the reason it was found by hand
+// rather than here. Each is invoked with no arguments: all five refuse on a missing required flag,
+// and they do it AFTER the dynamic import has pulled in the whole module graph, so a loader error
+// surfaces and none of them reaches the network.
+console.log('\n-- 4b. every command loads --')
+for (const [name, path] of dispatched) {
+  const tool = path.replace(/^.*\//, '').replace(/\.mjs$/, '')
+  const r = run([OUT, name], { cwd: TMP })
+  const text = r.err + r.out
+  check(!/Dynamic require|Cannot find (module|package)/.test(text),
+    `\`${name}\` loads its whole dependency graph`,
+    (text.split('\n').find(l => /Dynamic require|Cannot find/.test(l)) || '').trim().slice(0, 90))
+  // Assert the REASON, not only that it refused. Both a loader death and a tool's own usage line
+  // are non-zero exits with output; only one of them means the command actually arrived. Every
+  // tool prefixes its refusal with its own basename, which is the dispatch target's filename.
+  check(text.includes(`${tool}:`), `\`${name}\` refuses as ${tool} itself, so dispatch reached the tool`,
+    text.split('\n')[0].trim().slice(0, 90))
+}
+
+// NEGATIVE CONTROL for 4b: the shim-stripped bundle from section 4 must fail both assertions on a
+// command section 4 never drove. Without this, 4b is a loop that has only ever passed.
+if (existsSync(brokenPath)) {
+  const bp = run([brokenPath, 'pair'], { cwd: TMP })
+  const bpText = bp.err + bp.out
+  check(/Dynamic require|Cannot find (module|package)/.test(bpText),
+    'NEGATIVE CONTROL: with the require shim stripped, `pair` DOES die on a loader error',
+    (bpText.split('\n').find(l => /Dynamic require|Cannot find/.test(l)) || '').trim().slice(0, 80))
+  check(!bpText.includes('pair-agent:'), '  …and never reaches pair-agent, so the two outcomes are distinguishable')
+} else {
+  check(false, 'ANCHOR MISS: the shim-stripped bundle was not built, so 4b has no negative control')
+}
+
 // ── 5. Entry behaviour: help, version, unknown command ─────────────────────────────────────────
 console.log('\n-- 5. entry behaviour --')
 
@@ -204,9 +281,7 @@ console.log('\n-- 6. command parity --')
 // be collapsed into the table), and two hand-maintained lists drift. A command advertised in help
 // that throws on dispatch is a documented command that cannot run — this repo has shipped one
 // before (#514).
-const cliSrc = readFileSync(join(REPO, 'src/agent_cli.mjs'), 'utf8')
 const advertised = [...cliSrc.matchAll(/^\s{2}'?([a-z][a-z-]*)'?:\s*'/gm)].map(m => m[1])
-const dispatched = [...cliSrc.matchAll(/case '([a-z][a-z-]*)':\s*return import\('([^']+)'\)/g)].map(m => [m[1], m[2]])
 
 check(advertised.length >= 5, 'the help table advertises at least the five onboarding commands', advertised.join(' '))
 check(advertised.length === dispatched.length, 'the help table and the dispatch switch are the same length',
