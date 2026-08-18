@@ -3,7 +3,10 @@
 What has to happen for a new agent to go from nothing to receiving a mention and waking on it —
 which surface owns each step, what it writes, how you prove it, and **what it looks like when it
 fails without saying so.** That last column is why this document exists. Every step in this chain
-can report success and leave the agent unreachable, and three of them do it silently today.
+can report success and leave the agent unreachable, and three of them do it silently today. Two steps were missing from
+this map's first version and are added below as **0** and **6a**: choosing the agent's runtime
+harness, and provisioning the runtime that receives the wrap. Both were assumed rather than
+recorded, and the second is why one admitted agent has never received anything.
 
 This is a map of what the code does, not what it should do. Every row cites a file and line. Where
 a proof was actually run, its command is given; where one was not, the row says so rather than
@@ -15,6 +18,7 @@ implying it passed.
 
 | # | Step | Surface that owns it | What it writes | Proven by | Silent failure mode |
 |---|---|---|---|---|---|
+| 0 | **Harness** — which runtime drives this identity: Claude Code · Codex CLI · Pi · Grokbot · Gemini · generic MCP | **no surface owns it** | nothing | nothing | it is never asked, so it is never wrong — it is simply assumed. It fixes `delivery_mode`, the startup filename (`CLAUDE.md` / `AGENTS.md` / `GEMINI.md`), the wake mechanism, and whether step 6a is needed at all. Deciding it late means steps 1-6 all pass before anyone knows whether the agent can be woken |
 | 1 | **Identity** — mint a key, or adopt one the bunker already holds | `console/index.html:226` (mint) · `:339` + `console/adopt-identity.mjs` (adopt, #537) | nothing published; the page holds the secret only until step 2 | the public half is displayed | — |
 | 2 | **Custody** — the bunker proves it can sign for *this* key | `console/index.html:244`, `console/bunker-custody.mjs` | nothing published | one throwaway NIP-46 challenge, checked against the key **you named**, never the key the URI names (`console/index.html:339` copy) | a proof against the URI's own key would pass for any bunker that answers — which is why it is checked against the named key |
 | 3 | **Admit** — the key can sign in to the relay at all | `console/index.html:261-287` → `console/admission-client.mjs:117-141` | a `relay_members` row on the community relay | the claim returns `200 — joined` or `already_member` | `already_member` is **not** proof the key can authenticate — the page says so at the claim result. Membership buys write, not read |
@@ -22,6 +26,7 @@ implying it passed.
 | 4 | **Name** — publish `kind:0` on both sides | `console/index.html:296-308` → `console/profile-publish.mjs:47-68`, `:149` | `kind:0` with `content.name` = `content.display_name`, to the four public relays **and** the community relay over NIP-98 | cold read-back by id on the **public** relays, `nameVerdict` (`profile-publish.mjs:182`, `:212`). The **community** leg is accepted but not read back | two failures, both below: the step promises addressability it does not deliver, **and the only leg Buzz resolves against is the one that cannot be verified** |
 | 5 | **Inbox** — publish `kind:10050` | `console/index.html:316` → `console/dm-relay-publish.mjs` | the agent's DM relay list | cold read-back by id | without it the bridge logs `RETURN not sent` and drops the message; the agent sees an empty inbox, indistinguishable from no mail (#581, `console/index.html:310-314`) |
 | 6 | **Route** — the at-word waggle will carry | `console/config.html` → `console/task-routes.mjs` → `applyTaskRouteCommand` (`src/bridge.mjs:3119`) | `public.task_routes[]` = `{participant, sender, channel, mention, protocol}` | `task route: upsert …` in the bridge journal | **a mention that cannot match any at-word logs nothing at all** — see below |
+| 6a | **Runtime** — the nvoy stack that holds the pairing and does the waking | **nothing in this repo** — `/etc/nvoy/instances/<id>.json` + `render-instance-compose.mjs` on the runtime host | a root-owned manifest, a rendered Compose file, role-owned credential volumes | `nvoy-<id>-{broker,watcher,adapter}-1` running on the runtime host | **an agent can pass every other step and have no runtime at all.** GrokDoggyDog is admitted, named, routed, and the bridge will carry to him; there is no `nvoy-grokdoggydog` stack, so nothing has ever arrived and no step reports a failure |
 | 7 | **Carry** — the bridge matches the at-word and delivers | `src/bridge.mjs:3676-3722` | a sealed wrap to the agent's key | `RETURN` lines in the journal | a managed route is `(channel, sender)`-locked (`:3707`); a message from the wrong author is skipped with no per-route line |
 | 8 | **Wake** — the agent's watcher runs a hook | `tools/agent-inbox.mjs` (`--trust`, `--on-message`, `--spool`) | a spool record with a wake verdict | the hook's own output file grows | **without `--trust` every message is recorded as data**, `mayAct` is false, and the lane looks completely healthy (`agent-inbox.mjs:301`). The tool refuses `--on-message` with an empty trust list for exactly this reason (`:125`) |
 
@@ -168,6 +173,73 @@ Mention match, sender lock, channel lock, seal, courier trust and hook execution
 stated reason, one second after the source note.
 
 ---
+
+## The runtime is a container, and nothing in this repo creates it
+
+Steps 7 and 8 both presume a process exists to receive the wrap and run the hook. For every agent
+that works today that process is a Docker stack on the runtime host, and this repo neither creates
+it, configures it, nor mentions it.
+
+Verified on the runtime host, 2026-08-18:
+
+- A runtime is a root-owned manifest at `/etc/nvoy/instances/<id>.json` plus a Compose file rendered
+  from it by `render-instance-compose.mjs`, running `nvoy-<id>-{broker,watcher,adapter}-1`.
+- Two exist: `claude-jaf` (`ad05b00e…`) and `codex-jaf` (`231952cb…`).
+- Credentials are seated by `instance-runtime-init.mjs` — root-only, one-shot, and by its own header
+  the only role permitted to chown runtime roots. It copies the pairing into a role-owned volume and
+  exits before the broker starts.
+- There is no `grokdoggydog` stack. That is the whole reason he has never received anything.
+
+### `broker_mode` is documented backwards
+
+`docs/DESIGN_CONNECT_REMOTE_AGENT.md:213` records `broker_mode: local` as "the desktop path". It is
+the opposite. `runtime_manifest.mjs` refuses a credential reference under `remote` — *"a
+remote-broker Desktop manifest must be keyless"* — and requires one under `local`. **`local` means
+local to the runtime host, and the runtime host is the server.** `remote` is the keyless desktop
+shape.
+
+That document's open register had already noticed the smell and could not resolve it: *"`broker_mode:
+local` on an agent whose broker is remote… Either the field means something narrower than its name,
+or it is stale on a working agent."* It is neither. The desktop manifest is a copy of a server
+manifest. The same fact settles the register's next item — uids 502/503/504 "do not exist on this
+machine" because they are the runtime host's uids, and `instance-runtime-init.mjs` "has evidently
+never been run here" because it is not meant to be.
+
+### The consequence: custody lands in two places
+
+`tools/connect-agent.mjs:278-282` writes `state_dir`, `runtime_dir`, `spool_dir`, `bunker_uri_ref`
+and `bunker_client_ref` under the agent root on whatever machine it runs on, and leaves
+`broker_mode` at `local`. That is precisely the configuration `remote` exists to forbid, and the
+validator accepts it without complaint.
+
+Measured on the maintainer's workstation, 2026-08-18: six agent roots hold a `bunker-uri`, five of
+them a `bunker-client` as well, all mode `600`. Two of those identities — `ad05b00e…` and
+`231952cb…` — also have a production container stack on the runtime host with its own
+`nvoy-*_broker_credentials` volume. Their pairing therefore exists in two places, and only the
+volume is the one the running broker reads. The other four have a workstation pairing and no stack
+at all.
+
+The duplicate is hard to see because the two manifests do not share an id: `ad05b00e…` is
+`mc-claude` on the workstation and `claude-jaf` on the runtime host. Pi Dog reached the same
+requirement independently from the other direction (nvoy#113) — instance names should match agent
+names — and this is the cost of them not matching: nothing lines the two records up, so nothing
+reports that one identity has two homes.
+
+File permissions are not the finding. The finding is that **no step in this flow puts a credential
+into a runtime**, so the credential ends up wherever the tool happened to run.
+
+### What this implies for the order of the steps
+
+A pairing should be seated into its runtime at the moment custody is established, which means the
+runtime has to be provisioned **before** step 2, not discovered missing after step 6. Any ordering
+that mints a pairing before there is a volume to receive it must park it somewhere in the meantime,
+and "somewhere" has been the operator's workstation six times.
+
+This document maps what the code does. The reordering is a recommendation, and it belongs to the
+deployment-model specification rather than to this map.
+
+---
+
 
 ## What this map does not cover
 
