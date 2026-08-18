@@ -210,7 +210,7 @@ the source. Recorded here so the wizard's authors know which values are *decisio
 |---|---|---|
 | `grantors` | the maintainer's key | The bridge's `config.public.grantors`; correct and understood. |
 | `task_carriers` | the bridge key + one channel | The carrier that relays signed instructions. Understood. |
-| `broker_mode` | `local` | The desktop path; `remote` requires a keyless manifest. |
+| `broker_mode` | `local` | **This row was backwards; corrected 2026-08-18.** `local` means local to the *runtime host* and **requires** a credential reference. `remote` is the keyless desktop shape — `runtime_manifest.mjs` refuses a credential under it (*"a remote-broker Desktop manifest must be keyless"*). See `docs/FLOW_ONBOARDING.md`. |
 | `delivery_mode` | `notify_only` | Required by `claude-channel.mjs`, which refuses anything else. Established against the **local** server; not re-verified against the broker. |
 | `worker_enabled` | `false` | `true` demands a digest-pinned worker image; out of scope. |
 
@@ -225,18 +225,20 @@ the source. Recorded here so the wizard's authors know which values are *decisio
 - **`watcher_uid: 502`, `broker_uid: 503`, `adapter_uid: 504`.** These declare a four-account
   privilege separation between the watcher, broker, adapter and worker. **On this machine, uids
   502, 503 and 504 do not exist.** Only `worker_uid: 501` resolves, to the human operator, and the
-  running channel process is owned by that account. The manifest describes a security model that is
-  not in force on the desktop path; `instance-runtime-init.mjs` (which would provision it) demands
-  root and has evidently never been run here. *We do not know whether the desktop path is intended
-  to be single-account, or whether this is unfinished provisioning.* A wizard must not copy these
-  numbers forward as though they mean something.
+  running channel process is owned by that account. **Resolved 2026-08-18: neither.** 502/503/504
+  are the *runtime host's* uids, carried over with the rest of the copied server manifest, and
+  `instance-runtime-init.mjs` has never been run here because it is not meant to be — it is
+  root-only and provisions the container's volumes on the runtime host. The privilege separation is
+  real; it is simply in force somewhere else. The conclusion stands unchanged: a wizard must not
+  copy these numbers forward.
 - **`broker_adapter_gid: 20` (`staff`), `worker_handoff_gid: 12` (`everyone`).** Two stock macOS
   groups standing in for a handoff boundary. `everyone` is not a boundary.
-- **`broker_mode: local` on an agent whose broker is remote.** `mc-claude`'s manifest still says
-  `local` while its registration ssh's to the broker host and answers handshakes there. Either the
-  field means something narrower than its name, or it is stale on a working agent. We do not know
-  which, and a wizard must not copy it forward on the assumption that a working agent's manifest is
-  self-consistent.
+- ~~**`broker_mode: local` on an agent whose broker is remote.**~~ **Resolved 2026-08-18.**
+  Neither reading was right. The desktop manifest is a *copy of a server manifest*: `ad05b00e…` has
+  one manifest here and another at `/etc/nvoy/instances/claude-jaf.json` on the runtime host, where
+  a `nvoy-claude-jaf` container stack actually runs. `local` is correct **there** and meaningless
+  here. The instinct in this bullet — that a wizard must not copy a working agent's manifest
+  forward — was right for a reason this register could not see.
 - **Two checkouts of the same toolchain.** Registrations in the retired local form point at
   `…/nvoy-macos-desktop-binder/mcp/tools/`, not the other tree, and the two are not obviously in
   sync. Pointing a new agent at the wrong one is silent. The ssh form retires the question rather
@@ -426,9 +428,14 @@ about who instructs whom can be read backwards. An arrow cannot.
 
 ### Where it runs
 
-The flow spans a laptop, the bridge host, the Bunker and the public relays. It should run **where
-the credentials already are** — the operator's machine — and reach the bridge over the interfaces
-that exist, rather than becoming a second thing that must be deployed and kept current.
+The flow spans a workstation, the bridge host, the Bunker, the public relays and — added
+2026-08-18 — the **runtime host**, where each agent's broker/watcher/adapter containers run.
+
+The wizard should run where the operator already is, and reach the other hosts over the interfaces
+that exist. **It must not follow the credentials, because it is what decides where they go.** An
+earlier version of this section reasoned that the flow belongs "where the credentials already are —
+the operator's machine"; that is how six agent pairings came to sit on a workstation whose only role
+is to drive the wizard. A pairing belongs in its runtime's role-owned volume, and nowhere else.
 
 ---
 
