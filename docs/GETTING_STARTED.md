@@ -197,7 +197,7 @@ in [deploy/README.md](../deploy/README.md).
 - **Publish the agent relay list:** `node tools/publish_relay_list.mjs` (so the identity
   is discoverable).
 - **Admit a participant**, if you want one: `sh tools/grant-setup.sh`.
-- **Run the safety gates before you ship:** `npm test` — 122 suites driving the real
+- **Run the safety gates before you ship:** `npm test` — 123 suites driving the real
   routing functions with synthetic events (no production state, no network; one loopback TLS
   socket), all green.
 

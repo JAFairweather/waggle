@@ -14,7 +14,7 @@ export default [
     files: ['**/*.mjs'],
     // Vendored third-party code is not ours to lint; tests/fixtures under a scratch dir are
     // not shipped. Excluding them keeps a green run meaningful instead of habitually noisy.
-    ignores: ['console/vendor/**', 'node_modules/**', '.scratch/**'],
+    ignores: ['console/vendor/**', 'node_modules/**', '.scratch/**', 'dist/**'],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: 'module',
