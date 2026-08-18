@@ -195,6 +195,34 @@ ok('agent-inbox refuses it too — a watcher listening where you did not point i
 ok('…and it refuses at the relay set, BEFORE the signer check it would otherwise die on — so the message is about the right thing',
   !/no signer configured/.test(inboxRefused.stderr), String(inboxRefused.stderr).slice(0, 200))
 
+// THE TRUST LIST HAS THE SAME SHAPE AND THE SAME FAILURE (#597), so it is tested in the same place.
+// `--trust` was filtered through a HEX64 test that dropped whatever failed without a word, so the
+// generated startup file's unfilled `--trust '<waggle 64-hex>'` started a watcher that recorded
+// every message as data, woke nobody, and reported itself healthy. DJ Codex's lane ran that way for
+// a day. The guard that fixes it shipped with the behaviour verified by hand and by nothing else —
+// the whole `die` block could be deleted and all 122 suites stayed green, which is how the original
+// defect got in. These four assertions are that gap.
+const TRUST_PLACEHOLDER = '<waggle 64-hex>'
+const inboxAt = (...extra) => spawnSync(process.execPath, [join(ROOT, 'tools', 'agent-inbox.mjs'), '--pubkey', SELF, ...extra],
+  { env: { ...noSigner }, encoding: 'utf8' })
+const trustRefused = inboxAt('--trust', TRUST_PLACEHOLDER)
+ok('agent-inbox REFUSES a --trust that named nothing usable, instead of dropping it in silence',
+  trustRefused.status !== 0 && /named no usable key/.test(trustRefused.stderr),
+  `exit ${trustRefused.status}: ${String(trustRefused.stderr).slice(0, 160)}`)
+ok('…and names the token back, because "refused by name" is what the generated startup file promises',
+  trustRefused.stderr.includes(TRUST_PLACEHOLDER), String(trustRefused.stderr).slice(0, 200))
+// BOTH DIRECTIONS. Without these two the assertion above cannot tell "refuses a broken trust list"
+// from "refuses every trust list", and the second would break every working watcher on the network.
+ok('…while NO --trust at all still passes the guard — a recorder is a real mode, not a misconfiguration',
+  !/named no usable key/.test(inboxAt().stderr), String(inboxAt().stderr).slice(0, 160))
+ok('…and a real 64-hex trust list passes it too, dying later on something else entirely',
+  !/named no usable key/.test(inboxAt('--trust', BRIDGE).stderr), String(inboxAt('--trust', BRIDGE).stderr).slice(0, 160))
+// A partial trust drop warns and continues, exactly as --relays does below.
+const trustPartial = inboxAt('--trust', `not-a-key,${BRIDGE}`)
+ok('a PARTIAL trust drop is named and the run continues, the same as a partial relay drop',
+  /DROPPED not-a-key/.test(trustPartial.stderr) && !/named no usable key/.test(trustPartial.stderr),
+  String(trustPartial.stderr).slice(0, 200))
+
 // A PARTIAL drop is named and the run continues. Both halves: the survivor is still used, and the
 // refused entry is still reported — a tool that silently kept going would look identical on the
 // first assertion alone.

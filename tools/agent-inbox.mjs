@@ -52,7 +52,26 @@ if (!HEX64.test(self)) die('--pubkey <64-hex> is required — this tool reads on
 // Trust is a list this agent is GIVEN, never one it derives from the mail. A sender that could add
 // itself to the allowlist by sending is not an allowlist.
 const trustArg = flag('--trust') || (flag('--trust-file') ? readFileSync(flag('--trust-file'), 'utf8') : '')
-const trusted = trustArg.split(/[\s,]+/).map(s => s.trim().toLowerCase()).filter(k => HEX64.test(k))
+const trustTokens = trustArg.split(/[\s,]+/).map(s => s.trim()).filter(Boolean)
+const trusted = trustTokens.map(s => s.toLowerCase()).filter(k => HEX64.test(k))
+const droppedTrust = trustTokens.filter(s => !HEX64.test(s.toLowerCase()))
+// KEYED ON *PROVIDED*, NOT ON *EMPTY* (#597). No `--trust` at all is a legitimate mode — the tool
+// becomes a recorder, says so, and refuses `--on-message` outright at :125. But a `--trust` that was
+// given and kept nothing is the silent-loss shape: every token was dropped by the HEX64 filter above
+// without a word, the watcher started, the spool filled, and every message came through
+// `mayAct: false` while the operator believed they had named a truster. That is how DJ Codex's lane
+// ran for a day. The generated startup file prints `--trust '<waggle 64-hex>'` when it does not know
+// the key, and tells the reader it will be refused by name — this is the line that makes that true.
+// Same shape as `--relays` below: die when an explicit value survived nothing, warn when it survived
+// some.
+if ((has('--trust') || has('--trust-file')) && !trusted.length) {
+  die(`--trust was given and named no usable key${droppedTrust.length ? `: ${droppedTrust.join(' ')}` : ' (it was empty)'}\n` +
+    '  A trust list must be 64-hex pubkeys, separated by spaces or commas.\n' +
+    '  Refusing rather than starting untrusted — a watcher with an empty trust list records every\n' +
+    '  message as data, wakes nobody, and reports itself healthy. Omit --trust entirely if that is\n' +
+    '  what you want; the tool will say it is running as a recorder.')
+}
+if (droppedTrust.length) console.error(`agent-inbox: DROPPED ${droppedTrust.join(' ')} — not 64-hex; trusting the rest of what you named`)
 
 // The default set comes from `src/relays.mjs`, the same place `agent-send.mjs` takes it from. These
 // two lines used to disagree — send defaulted to two relays, listen to three, and neither list was
