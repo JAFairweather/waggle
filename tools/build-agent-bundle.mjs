@@ -25,8 +25,9 @@
 // Exit: 0 built and checked · 1 a check failed · 3 could not build (esbuild missing, etc.)
 
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, statSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 import { builtinModules } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
@@ -129,9 +130,37 @@ if (bare.length) failures.push(`bundle still imports ${[...new Set(bare)].join('
 
 // A `require()` of a bare name is the same defect wearing different clothes, and esbuild emits
 // `__require` shims that would slip past the import matcher above.
-const BARE_REQUIRE = /\brequire\s*\(\s*["']([^./"'][^"']*)["']\s*\)/g
-const req = [...src.matchAll(BARE_REQUIRE)].map(m => m[1]).filter(m => !isBuiltin(m) && !['bufferutil', 'utf-8-validate'].includes(m))
-if (req.length) failures.push(`bundle still require()s ${[...new Set(req)].join(', ')}`)
+//
+// The previous matcher here was `\brequire\s*\(...`, and it had never matched anything in this
+// bundle — not once, across every build. `\b` asserts a word boundary, and there is none between
+// `_` and `r`, so `__require("ws")` — the exact shape the comment above says this check exists for,
+// and the shape of ALL 19 require calls esbuild emits here — was invisible to it. A guard that
+// cannot match the thing it was written for is indistinguishable from no guard, and it reported
+// green either way.
+//
+// Three shapes have to be caught:
+//   require("ws")     a plain literal
+//   __require("ws")   esbuild's CommonJS shim, the one that actually appears in the output
+//   __require(name)   a computed specifier — the `Dynamic require of "events" is not supported`
+//                     death that check 5 exists for. Check 5 only ever sees the code paths it
+//                     happens to execute, so a static detector is not redundant with it.
+// The shim's own definition uses `require` as a value (`typeof require !== "undefined" ? require`)
+// and calls `require.apply(`, neither of which is `require(`, so it does not trip this.
+const REQUIRE_CALL = /(?<![\w$.])_{0,2}require\s*\(\s*(["'])?([^"')]*)/g
+const dynamicReq = []
+const bareReq = []
+for (const m of src.matchAll(REQUIRE_CALL)) {
+  if (!m[1]) { dynamicReq.push(m[2].trim().slice(0, 40) || '<empty>'); continue }
+  const spec = m[2]
+  // A relative or absolute specifier is a path, not a dependency: it resolves without node_modules,
+  // which is the only property this check is about. Dropping this clause made the guard flag
+  // `require("./local.mjs")` — caught by its own negative control, and exactly the "refuses
+  // everything" failure that a refusal-only assertion cannot tell from "refuses the right thing".
+  if (/^[./]/.test(spec)) continue
+  if (!isBuiltin(spec) && !['bufferutil', 'utf-8-validate'].includes(spec)) bareReq.push(spec)
+}
+if (bareReq.length) failures.push(`bundle still require()s ${[...new Set(bareReq)].join(', ')} — it will die on a host with no node_modules`)
+if (dynamicReq.length) failures.push(`bundle contains ${dynamicReq.length} computed require(): ${[...new Set(dynamicReq)].join(', ')} — a specifier this script cannot read is one it cannot clear, and it fails on the agent's machine as \`Dynamic require ... is not supported\``)
 
 // 2. One file.
 if (outputs.length !== 1) failures.push(`esbuild emitted ${outputs.length} files (${outputs.join(', ')}) — the transfer is the hard part, so the artifact must be one file`)
@@ -143,10 +172,38 @@ if (!src.includes('useWebSocketImplementation')) {
   failures.push('useWebSocketImplementation is absent from the bundle — nostr-tools\' pool will fall through to a global Node 20 does not have, and report it as EOSE')
 }
 
-// 3. It runs. Executed, not parsed.
+// 3 and 5 run the artifact, and WHERE and AS WHOM they run it is the whole point.
+//
+// Both checks used to execute `OUT` in place. The default `OUT` is inside this repo, so
+// `createRequire` walked up from `dist/` and found `<repo>/node_modules` — the very directory the
+// agent's host does not have. The checks therefore passed in the one environment that could not
+// fail them, and `npm run build:agent` could not see the hazard class it exists to catch. The
+// manual run from an outside directory that "proved" the bundle works was not this script.
+//
+// So: copy the artifact to a temp directory with no node_modules above it, and run it there with
+// HOME pointed inside that directory too, so nothing resolves back out.
+//
+// The environment is an ALLOWLIST, not a scrub of known-bad names. These children used to inherit
+// the operator's real environment — signing keys and the live relay set included — which made a
+// verification step a thing that could sign and could reach production relays. A denylist of
+// `WAGGLE_*`/`BUZZ_*` would be one forgotten prefix away from that again. Two variables go in.
+// It also makes check 5 deterministic: with no signer in the environment, "no signer configured"
+// is the only answer the tool can give, rather than the answer it happens to give on this laptop.
+const SANDBOX = mkdtempSync(join(tmpdir(), 'waggle-agent-verify-'))
+const SANDBOX_HOME = join(SANDBOX, 'home')
+mkdirSync(SANDBOX_HOME, { recursive: true })
+const PROBE = join(SANDBOX, 'waggle-agent.mjs')
+copyFileSync(OUT, PROBE)
+const SANDBOX_RUN = {
+  encoding: 'utf8',
+  cwd: SANDBOX,
+  env: { PATH: process.env.PATH || '/usr/bin:/bin', HOME: SANDBOX_HOME },
+}
+
+// 3. It runs. Executed, not parsed, and executed where the agent will execute it.
 let ran = ''
 try {
-  ran = execFileSync(process.execPath, [OUT, '--version'], { encoding: 'utf8', timeout: 30000 }).trim()
+  ran = execFileSync(process.execPath, [PROBE, '--version'], { ...SANDBOX_RUN, timeout: 30000 }).trim()
 } catch (e) {
   failures.push(`the built bundle could not run \`--version\`: ${String(e.stderr || e.message).split('\n')[0]}`)
 }
@@ -164,7 +221,7 @@ if (ran && ran !== buildId) failures.push(`bundle reports build id ${JSON.string
 //    way in": both are non-zero, and only one of them means the bundle works.
 let loaded = ''
 try {
-  execFileSync(process.execPath, [OUT, 'inbox', '--pubkey', 'f'.repeat(64)], { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'] })
+  execFileSync(process.execPath, [PROBE, 'inbox', '--pubkey', 'f'.repeat(64)], { ...SANDBOX_RUN, timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'] })
 } catch (e) {
   loaded = String(e.stderr || e.stdout || e.message)
 }
@@ -177,7 +234,24 @@ if (loadErr) {
   failures.push(`could not confirm the bundle reaches agent-inbox's own signer check — it said: ${loaded.split('\n').filter(Boolean).slice(-2).join(' / ').slice(0, 200)}`)
 }
 
+// Assert the sandbox was actually isolated before trusting anything it reported. A verification
+// directory that turned out to have a node_modules above it would invalidate checks 3 and 5
+// silently, and report a pass for a case it never ran.
+let sandboxProof = ''
+try {
+  const walk = []
+  for (let d = SANDBOX; d !== dirname(d); d = dirname(d)) walk.push(join(d, 'node_modules'))
+  const leaked = walk.filter(d => { try { statSync(d); return true } catch { return false } })
+  sandboxProof = leaked.length
+    ? `node_modules reachable from the sandbox at ${leaked[0]}`
+    : `no node_modules on any parent of ${SANDBOX}`
+  if (leaked.length) failures.push(`checks 3 and 5 did not run in isolation — ${sandboxProof}; their results prove nothing about a host without node_modules`)
+} finally {
+  rmSync(SANDBOX, { recursive: true, force: true })
+}
+
 console.log(`build-agent-bundle: ${OUT.replace(ROOT + '/', '')}  ${(bytes / 1024).toFixed(0)} KiB  build ${buildId}`)
+console.log(`build-agent-bundle: verified in a sandbox with PATH+HOME only — ${sandboxProof}`)
 if (ran) console.log(`build-agent-bundle: ran \`--version\` from the built file -> ${ran}`)
 if (!loadErr && /no signer configured/.test(loaded)) console.log('build-agent-bundle: `inbox` reached its own signer check — the socket stack loads')
 

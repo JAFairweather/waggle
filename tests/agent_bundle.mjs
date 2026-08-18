@@ -82,6 +82,55 @@ check(bareIn("import WebSocket from 'ws'\n").length === 1, 'NEGATIVE CONTROL: th
 check(bareIn("import { x } from './local.mjs'\n").length === 0, 'and does NOT flag a relative import — it refuses the dangerous thing, not everything')
 check(bareIn("import { createRequire } from 'node:module'\n").length === 0, 'and does NOT flag a Node builtin, which resolves with no node_modules at all')
 
+// ── 2b. No bare or computed require() survives, and the matcher can see BOTH ────────────────────
+console.log('\n-- 2b. require() detection (with a differential control) --')
+
+// This section exists because the previous matcher was `/\brequire\s*\(.../` and it had never
+// matched anything, in any build. `\b` needs a word boundary and there is none between `_` and `r`,
+// so `__require("ws")` — which is the shape of EVERY require esbuild emits into this bundle — was
+// invisible to it. It reported green identically whether the bundle was clean or full of bare
+// CommonJS deps, which is the same as having no check at all.
+const REQUIRE_CALL = /(?<![\w$.])_{0,2}require\s*\(\s*(["'])?([^"')]*)/g
+const reqIn = text => {
+  const bare = [], dyn = []
+  for (const m of text.matchAll(REQUIRE_CALL)) {
+    if (!m[1]) { dyn.push(m[2].trim()); continue }
+    if (/^[./]/.test(m[2])) continue
+    if (!isBuiltin(m[2]) && !['bufferutil', 'utf-8-validate'].includes(m[2])) bare.push(m[2])
+  }
+  return { bare, dyn }
+}
+
+const liveReq = reqIn(src)
+check(liveReq.bare.length === 0, 'the bundle require()s nothing that needs node_modules', liveReq.bare.join(' '))
+check(liveReq.dyn.length === 0, 'the bundle contains no computed require()', liveReq.dyn.join(' '))
+
+// POSITIVE CONTROL, and the one that matters most here. The bundle really does contain 19
+// `__require("<builtin>")` calls. If this assertion ever reads 0, the matcher has gone blind again
+// and every "no bare require" pass above became vacuous.
+const builtinHits = [...src.matchAll(REQUIRE_CALL)].filter(m => m[1] && isBuiltin(m[2]))
+check(builtinHits.length > 0,
+  'POSITIVE CONTROL: the matcher DOES see the __require() calls that are legitimately present',
+  `${builtinHits.length} builtin __require() calls matched`)
+
+// DIFFERENTIAL CONTROL: the regex this replaced, run over the same live bundle. It must find
+// nothing — that is the defect, pinned so a future edit cannot quietly restore it.
+const OLD_REQUIRE = /\brequire\s*\(\s*["']([^./"'][^"']*)["']\s*\)/g
+check([...src.matchAll(OLD_REQUIRE)].length === 0 && builtinHits.length > 0,
+  'DIFFERENTIAL CONTROL: the OLD matcher sees none of them — it was structurally blind to `__require`',
+  `old=0 new=${builtinHits.length}`)
+
+// NEGATIVE CONTROLS: each shape that must fail.
+check(reqIn('const ws = require("ws")').bare.length === 1, 'NEGATIVE CONTROL: flags a plain bare require', 'ws')
+check(reqIn('var x = __require("ws")').bare.length === 1, 'NEGATIVE CONTROL: flags esbuild\'s shim form — the case the old regex missed', 'ws')
+check(reqIn('var x = __require(name)').dyn.length === 1, 'NEGATIVE CONTROL: flags a computed specifier', 'name')
+
+// And it refuses the dangerous thing, not everything.
+check(reqIn('var x = __require("events")').bare.length === 0, 'and does NOT flag a builtin require — a legitimate value still gets through')
+check(reqIn('const y = require("./local.mjs")').bare.length === 0, 'and does NOT flag a relative require')
+check(reqIn('if (typeof require !== "undefined") return require.apply(this, arguments)').dyn.length === 0,
+  'and does NOT flag the shim definition\'s own `require` value or `require.apply(` — no false positive on esbuild boilerplate')
+
 // ── 3. The WebSocket door stays shut ───────────────────────────────────────────────────────────
 console.log('\n-- 3. socket resolution (#576/#578) --')
 
