@@ -8,6 +8,11 @@
 //   node tools/agent-inbox.mjs --pubkey <64-hex> --trust <64-hex>[,<64-hex>…]
 //   node tools/agent-inbox.mjs --pubkey <64-hex> --since 3600 --watch
 //   node tools/agent-inbox.mjs --pubkey <64-hex> --trust <64-hex> --watch --jsonl --on-message ./wake
+//   node tools/agent-inbox.mjs --pubkey <64-hex> --notify-only --watch [--coalesce-ms 30000]
+//
+// --notify-only is the KEYLESS watcher: it says mail arrived and never opens it, so it holds no
+// signer and can run on a host we do not control. It refuses --trust, because the sender is inside
+// the seal. --coalesce-ms bounds the wake rate; arrivals are never coalesced, only wakes.
 //
 // --watch holds the subscription open instead of exiting at EOSE. That is the difference between
 // this and polling, and it is the whole point: an event arrives when it arrives, and the agent is
@@ -65,6 +70,13 @@ const droppedTrust = trustTokens.filter(s => !HEX64.test(s.toLowerCase()))
 // the key, and tells the reader it will be refused by name — this is the line that makes that true.
 // Same shape as `--relays` below: die when an explicit value survived nothing, warn when it survived
 // some.
+// ⚠ BEFORE THE HEX VALIDATION BELOW, not after. `--notify-only --trust <garbage>` used to die on the
+// hex, sending the operator to fix a value this mode cannot accept in any form; they learned that
+// only on the second run. The refusal that is always true comes first.
+const notifyOnlyEarly = has('--notify-only')
+if (notifyOnlyEarly && (has('--trust') || has('--trust-file'))) {
+  die('--notify-only cannot apply a trust list: the sender is inside the seal and this mode never opens one. Drop --trust here and apply the trust list where the mail is pulled, or drop --notify-only and give this watcher a signer')
+}
 if ((has('--trust') || has('--trust-file')) && !trusted.length) {
   die(`--trust was given and named no usable key${droppedTrust.length ? `: ${droppedTrust.join(' ')}` : ' (it was empty)'}\n` +
     '  A trust list must be 64-hex pubkeys, separated by spaces or commas.\n' +
@@ -151,10 +163,10 @@ if (has('--on-message') && !onMessage) die('--on-message needs a path to an exec
 // this mode never decrypts a seal, so a --trust here could only be accepted and dropped. That is the
 // exact shape of every defect in this file's history: a configuration that looks like a gate, reads
 // as healthy, and gates nothing. Refusing is the only answer that cannot be misread.
-const notifyOnly = has('--notify-only')
-if (notifyOnly && (has('--trust') || has('--trust-file'))) {
+if (notifyOnlyEarly && (has('--trust') || has('--trust-file'))) {
   die('--notify-only cannot apply a trust list: the sender is inside the seal and this mode never opens one. Drop --trust here and apply the trust list where the mail is pulled, or drop --notify-only and give this watcher a signer')
 }
+const notifyOnly = notifyOnlyEarly
 // The keyed path's guard, and the reason it does not apply above: there, an empty trust list means
 // the hook can never fire. Here the hook fires on arrival and the trust list is somebody else's job.
 if (!notifyOnly && onMessage && trusted.length === 0) die('--on-message with an empty trust list can never fire — pass --trust/--trust-file, or drop the hook. A hook that cannot fire is indistinguishable from one that is not working')
@@ -164,7 +176,9 @@ const say = jsonl ? (...a) => console.error(...a) : (...a) => console.log(...a)
 
 // NOT LOADED AT ALL under --notify-only, rather than loaded and unused. "Keyless" is the property
 // this mode exists to have, and a process that read a bunker pairing into memory and then chose not
-// to use it does not have it. The suite asserts the signer loader is never reached.
+// to use it does not have it. `tests/notify_only.mjs` drives this tool with deliberately unreadable
+// signer credential paths and asserts it still completes, while the keyed path with the same
+// environment dies in `loadNostrSigner` — the pair, rather than a claim about one of them.
 const signer = notifyOnly ? null : loadNostrSigner()
 if (!notifyOnly && !signer) die('no signer configured — set WAGGLE_BUNKER_URI_FILE (and WAGGLE_NIP46_CLIENT_NSEC_FILE) or BUZZ_PRIVATE_KEY. Without one, sealed mail cannot be opened and this is INCONCLUSIVE, not empty')
 
@@ -340,9 +354,14 @@ async function open(wrap, live = true, bootstrap = false) {
 
 // ── The keyless arrival path (--notify-only) ───────────────────────────────────────────────────
 //
-// Everything `open()` does that needs no key, and nothing that does. The order matters and is the
-// same order for the same reasons: verify the event so the id is a hash the relay cannot choose,
-// confirm the p-tag actually names us, and only then make the dedupe claim.
+// Everything `open()` does that needs no key, and nothing that does. The order is `open()`'s order,
+// for `open()`'s reasons: verify the event first, so the id being deduped is a hash the relay cannot
+// choose. The dedupe claim is then made BEFORE the p-tag is checked — which is worth stating plainly
+// rather than describing the tidier order this comment used to claim, because a reader who trusts
+// the comment will not look. A wrap that is not addressed to us consumes an id in the index and is
+// written nowhere. That is harmless here (its id can only be claimed once, and nothing else wanted
+// it) and it is identical on the keyed path, so this introduces no new hazard — but it is not what
+// the words said, and a wrong comment about ordering is how the next person builds on a false one.
 const coalescer = makeCoalescer({ windowMs: COALESCE_MS })
 let arrived = 0
 let suppressed = 0
@@ -352,13 +371,19 @@ let suppressed = 0
 // alarm. Only the WAKE is coalesced, and a suppressed one says so in its own words.
 async function writeNotify(meta, { arrivals = 1, coalesced = false } = {}) {
   const record = notifyOnlyRecord({ ...meta, arrivals, coalesced })
+  // THROUGH `notifyLine`, NOT `JSON.stringify`. Two serialisers for one stream is how the two sides
+  // drift, and the measurable difference was real: the keyed branch escapes U+2028/U+2029 so a
+  // record can never break its own line framing, and a bare stringify here skipped it. It also makes
+  // the notify-only branch of `notifyLine` load-bearing — deleting it now changes what this daemon
+  // writes, where before it changed nothing any test or any caller could see.
+  const line = notifyLine(record, meta)
   if (spool && meta.id) {
-    const w = spool.deliver({ id: meta.id, line: JSON.stringify(record) })
+    const w = spool.deliver({ id: meta.id, line })
     // Same rollback as the keyed path, for the same reason: a memory claim must never outlive the
     // durable write it stood in for, or a replay returns early and the wake is lost for good.
     if (!w.ok) { failed++; seen.delete(meta.id); console.error(`  the spool refused a notify record — ${w.reason}; the in-memory claim is released`) }
   }
-  if (jsonl) process.stdout.write(JSON.stringify(record) + '\n')
+  if (jsonl) process.stdout.write(line + '\n')
   else if (record.wake) console.log(`\n[MAIL] ${record.wake_reason}`)
   return record
 }

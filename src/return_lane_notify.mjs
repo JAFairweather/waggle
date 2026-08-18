@@ -167,10 +167,43 @@ export function notifyLine(verdict, { id = null, receivedAt = null, firstSeen = 
   //
   // ONE SERIALISER, SAME AS ONE GATE. The alternative was for the caller to spawn the hook itself
   // with its own JSON, which is two serialisers for one stream and how the two sides drift.
-  if (v.mode === 'notify-only') {
-    return JSON.stringify({ ...v, id: wrapId, received_at: seenAt, first_seen: firstSeen === true, live: live === null || live === undefined ? null : live === true, bootstrap: bootstrap === true, wake, wake_reason: wake ? v.wake_reason : wakeReason })
-  }
-  const record = v.ok === true
+  //
+  // ⚠ THE KEY SET IS PINNED AND THE RECORD IS NOT SPREAD. A `...v` here would put whatever the caller
+  // happened to attach onto a stream other processes parse, and would let a forged extra field ride
+  // out under this daemon's name. The keyed branch below normalises every field it emits; this one
+  // does the same, and for the same reason.
+  //
+  // ⚠ `wake` IS A CONJUNCTION, because `wakeVerdict` has never heard of `coalesced`. It answers the
+  // three keyed gates (refused · already-delivered · first-start backfill) and a coalesced arrival is
+  // none of them — so the verdict says "wake" for a record that has already decided not to. Taking
+  // the verdict alone would put `wake:true` on every suppressed arrival and hand an adapter filtering
+  // on `wake` exactly the flood the coalescer exists to bound: 195 wakes for 195 arrivals. Found in
+  // review, and it was NOT live only because this function was not yet on the notify-only path.
+  // `wake_reason` needs no such repair — the `wake ? …` arm below already selects the record's own
+  // coalesced reason in that case, because the VERDICT is what is true there.
+  const notifyOnlyRecordOut = v.mode === 'notify-only' ? {
+    ok: true,
+    // The mode and the trust fact travel together and are never omitted. An adapter that cannot see
+    // this is one that has mistaken an unauthenticated trigger for an authenticated record.
+    mode: 'notify-only',
+    id: wrapId,
+    received_at: seenAt,
+    first_seen: isFirstSeen,
+    bootstrap: isBootstrap,
+    live: live === null || live === undefined ? null : live === true,
+    coalesced: v.coalesced === true,
+    arrivals: Number.isSafeInteger(v.arrivals) && v.arrivals > 0 ? v.arrivals : 1,
+    wake: wake && v.wake !== false,
+    wake_reason: wake ? String(v.wake_reason || '') : wakeReason,
+    trust_evaluated: false,
+    mayAct: false,
+    disposition: 'unopened',
+    forMe: v.forMe === true,
+    author: null,
+    content: '',
+    reason: String(v.reason || ''),
+  } : null
+  const record = notifyOnlyRecordOut || (v.ok === true
     ? {
         ok: true,
         id: wrapId,
@@ -213,7 +246,7 @@ export function notifyLine(verdict, { id = null, receivedAt = null, firstSeen = 
         first_seen: isFirstSeen, bootstrap: isBootstrap,
         live: live === null || live === undefined ? null : live === true,
         reason: String(v.reason || 'refused'), disposition: 'refused', mayAct: false, forMe: false,
-      }
+      })
   return JSON.stringify(record).split(U2028).join(String.raw`\u2028`).split(U2029).join(String.raw`\u2029`)
 }
 
