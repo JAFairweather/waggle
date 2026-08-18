@@ -159,6 +159,17 @@ export function notifyLine(verdict, { id = null, receivedAt = null, firstSeen = 
   const isFirstSeen = firstSeen === true
   const isBootstrap = bootstrap === true
   const { wake, why: wakeReason } = wakeVerdict(v, { firstSeen, bootstrap })
+  // A KEYLESS RECORD IS SERIALISED WHOLE, not squeezed into the keyed shape (src/notify_only.mjs).
+  // The keyed shape has no `mode` and no `trust_evaluated`, so a notify-only wake rendered through
+  // it reaches an adapter looking exactly like an ordinary one — an unauthenticated trigger wearing
+  // the shape of an authenticated record. That is the same failure as #559 and worse, because here
+  // the fields that would have given it away are the ones being dropped.
+  //
+  // ONE SERIALISER, SAME AS ONE GATE. The alternative was for the caller to spawn the hook itself
+  // with its own JSON, which is two serialisers for one stream and how the two sides drift.
+  if (v.mode === 'notify-only') {
+    return JSON.stringify({ ...v, id: wrapId, received_at: seenAt, first_seen: firstSeen === true, live: live === null || live === undefined ? null : live === true, bootstrap: bootstrap === true, wake, wake_reason: wake ? v.wake_reason : wakeReason })
+  }
   const record = v.ok === true
     ? {
         ok: true,
@@ -217,6 +228,22 @@ export function notifyDecision(verdict, { hasCommand = true } = {}) {
   const v = verdict && typeof verdict === 'object' ? verdict : {}
   if (!hasCommand) return Object.freeze({ invoke: false, why: 'no --on-message command was given' })
   if (v.ok !== true) return Object.freeze({ invoke: false, why: 'the message was refused and was attributed to nobody' })
+  // THE KEYLESS RECORD IS DECIDED HERE, NOT AROUND HERE (src/notify_only.mjs). A notify-only wake
+  // could not be expressed in the fields below — it has no author to trust and `mayAct` is false on
+  // every one of them — so the first version of this passed `invokeHook` an override that said
+  // "fire anyway". That is a second gate, and two gates is precisely the shape that let an adapter
+  // wake on mail the hook refused (#559). One function decides; this branch is that decision.
+  //
+  // It CANNOT widen the keyed path: it is reachable only on a record this repo builds with
+  // `mode: 'notify-only'`, and such a record carries no content, no author and `mayAct:false`, so
+  // nothing downstream can mistake it for an authenticated one. What it buys is a wake that means
+  // "go and pull", which is the only thing a keyless watcher is able to say.
+  if (v.mode === 'notify-only') {
+    if (v.trust_evaluated !== false) {
+      return Object.freeze({ invoke: false, why: 'a notify-only record must declare trust_evaluated:false; this one does not, so it is not the record this branch is for' })
+    }
+    return Object.freeze({ invoke: true, why: 'notify-only: a wrap addressed to this key arrived. Nobody was authenticated — pull it with a signer and apply the trust list there' })
+  }
   if (v.mayAct !== true) {
     // Spelled out at the point of refusal, because this is the line the whole issue turns on.
     const who = String(v.author || '').slice(0, 12)
