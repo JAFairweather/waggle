@@ -57,6 +57,16 @@ if (!HEX64.test(self)) die('--pubkey <64-hex> is required — this tool reads on
 
 // Trust is a list this agent is GIVEN, never one it derives from the mail. A sender that could add
 // itself to the allowlist by sending is not an allowlist.
+// ⚠ BEFORE THE TRUST LIST IS EVEN READ, not merely before the hex validation. Two refusals used to
+// beat this one to the exit. `--notify-only --trust <garbage>` died on the hex, sending the operator
+// to fix a value this mode cannot accept in any form; `--notify-only --trust-file <missing>` died
+// one line earlier still, on a raw ENOENT stack from the readFileSync below, exit 1 and no mention
+// of the mode at all. Both sent the reader to fix the argument instead of dropping it. The refusal
+// that is always true, whatever the value is and whether or not the file exists, comes first.
+const notifyOnlyEarly = has('--notify-only')
+if (notifyOnlyEarly && (has('--trust') || has('--trust-file'))) {
+  die('--notify-only cannot apply a trust list: the sender is inside the seal and this mode never opens one. Drop --trust here and apply the trust list where the mail is pulled, or drop --notify-only and give this watcher a signer')
+}
 const trustArg = flag('--trust') || (flag('--trust-file') ? readFileSync(flag('--trust-file'), 'utf8') : '')
 const trustTokens = trustArg.split(/[\s,]+/).map(s => s.trim()).filter(Boolean)
 const trusted = trustTokens.map(s => s.toLowerCase()).filter(k => HEX64.test(k))
@@ -70,13 +80,6 @@ const droppedTrust = trustTokens.filter(s => !HEX64.test(s.toLowerCase()))
 // the key, and tells the reader it will be refused by name — this is the line that makes that true.
 // Same shape as `--relays` below: die when an explicit value survived nothing, warn when it survived
 // some.
-// ⚠ BEFORE THE HEX VALIDATION BELOW, not after. `--notify-only --trust <garbage>` used to die on the
-// hex, sending the operator to fix a value this mode cannot accept in any form; they learned that
-// only on the second run. The refusal that is always true comes first.
-const notifyOnlyEarly = has('--notify-only')
-if (notifyOnlyEarly && (has('--trust') || has('--trust-file'))) {
-  die('--notify-only cannot apply a trust list: the sender is inside the seal and this mode never opens one. Drop --trust here and apply the trust list where the mail is pulled, or drop --notify-only and give this watcher a signer')
-}
 if ((has('--trust') || has('--trust-file')) && !trusted.length) {
   die(`--trust was given and named no usable key${droppedTrust.length ? `: ${droppedTrust.join(' ')}` : ' (it was empty)'}\n` +
     '  A trust list must be 64-hex pubkeys, separated by spaces or commas.\n' +
@@ -163,9 +166,6 @@ if (has('--on-message') && !onMessage) die('--on-message needs a path to an exec
 // this mode never decrypts a seal, so a --trust here could only be accepted and dropped. That is the
 // exact shape of every defect in this file's history: a configuration that looks like a gate, reads
 // as healthy, and gates nothing. Refusing is the only answer that cannot be misread.
-if (notifyOnlyEarly && (has('--trust') || has('--trust-file'))) {
-  die('--notify-only cannot apply a trust list: the sender is inside the seal and this mode never opens one. Drop --trust here and apply the trust list where the mail is pulled, or drop --notify-only and give this watcher a signer')
-}
 const notifyOnly = notifyOnlyEarly
 // The keyed path's guard, and the reason it does not apply above: there, an empty trust list means
 // the hook can never fire. Here the hook fires on arrival and the trust list is somebody else's job.

@@ -12,14 +12,14 @@
 //    drives the keyed refusals again THROUGH THE NEW CODE and asserts each still refuses, and for
 //    its own original reason rather than merely `!invoke`.
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
 import { makeCoalescer, notifyOnlyRecord } from '../src/notify_only.mjs'
-import { notifyDecision, wakeVerdict } from '../src/return_lane_notify.mjs'
+import { notifyDecision, notifyLine, wakeVerdict } from '../src/return_lane_notify.mjs'
 
 let pass = true
 const check = (cond, label, detail = '') => {
@@ -255,8 +255,9 @@ console.log('\n-- 5. the tool itself, against a loopback relay --')
     child.on('error', reject)
     child.on('close', status => {
       clearTimeout(timer)
-      const records = out.split('\n').filter(Boolean).map(l => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
-      resolve({ status, records, stderr: err })
+      const lines = out.split('\n').filter(Boolean)
+      const records = lines.map(l => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
+      resolve({ status, records, lines, stderr: err })
     })
   })
   const BASE = ['--pubkey', ME, '--notify-only', '--relays', RELAY, '--jsonl', '--spool', spoolDir, '--coalesce-ms', '600000']
@@ -298,6 +299,81 @@ console.log('\n-- 5. the tool itself, against a loopback relay --')
     'serving the same population again writes NOTHING — the tool returns before it records, so the durable claim holds across processes',
     `records=${third.records.length} status=${third.status}`)
 
+  // ── THE ALARM ITSELF ────────────────────────────────────────────────────────────────────────────
+  // EVERY ASSERTION ABOVE READS A FIELD ON A RECORD. `wake: true` is the tool's CLAIM about what it
+  // did, not the alarm going off. Change `if (d.fire) await fireWake(...)` to `if (false)` and all of
+  // the above still passes: 40 perfect records, rc=0, nobody woken. That is this file's own rule
+  // turned on itself — an alarm that never fires and one that always fires are indistinguishable
+  // from outside — and it survived a full suite because `BASE` passes no `--on-message`, so the hook
+  // was never wired at tool level. The wake has to leave a mark on disk, and the mark has to be
+  // counted.
+  const hookSpool = mkdtempSync(join(tmpdir(), 'notify-only-wake-'))
+  const hookLog = join(hookSpool, 'woke.log')
+  const hookPath = join(hookSpool, 'hook.sh')
+  writeFileSync(hookPath, `#!/bin/sh\nprintf x >> ${JSON.stringify(hookLog)}\n`, { mode: 0o755 })
+  const marks = () => { try { return readFileSync(hookLog, 'utf8').length } catch { return 0 } }
+  const WAKE = ['--pubkey', ME, '--notify-only', '--relays', RELAY, '--jsonl', '--spool', hookSpool, '--coalesce-ms', '600000', '--on-message', hookPath]
+
+  serve = batch(N)
+  const wakeBoot = await run(WAKE)
+  check(wakeBoot.status === 0 && wakeBoot.records.length === N,
+    `the hook run seeds its own index — ${wakeBoot.records.length} records, status ${wakeBoot.status}`)
+  // NEGATIVE CONTROL, and the reason the next assertion is not vacuous: this proves `marks()` can
+  // report zero. A counter that has only ever returned 1 cannot tell a wake from a stuck hook.
+  check(marks() === 0, '  …and the hook does NOT run on a first start — seeding an index is not mail arriving',
+    `the hook ran ${marks()} time(s)`)
+
+  serve = batch(N)
+  const wakeLive = await run(WAKE)
+  check(wakeLive.records.length === N, `the live run records all ${N} arrivals — ${wakeLive.records.length}`)
+  const rangBig = marks()
+  check(rangBig >= 1,
+    `THE ALARM RANG for ${N} arrivals — the hook ran ${rangBig} time(s)`,
+    'if this is 0 the wake is never driven, and every wake:true asserted above is a field nobody acts on')
+
+  // THE COALESCER'S ACTUAL CLAIM IS A CONSTANT, NOT A ONE. This assertion started life as
+  // `marks() === 1` and failed on its first run at 2 — correctly. A one-shot burst fires twice by
+  // design: the leading edge takes arrival 1, and `report()`'s closing flush speaks for arrivals
+  // 2..N, which conservation requires — drop it and 39 arrivals are recorded and woken for by
+  // nobody. So `=== 1` was asserting a number this tool has never promised. What the module claims
+  // is that a flood costs a CONSTANT number of wakes, and the only way to see a constant is to vary
+  // the input: run a fifth of the burst through a fresh spool and require the same count.
+  const smallSpool = mkdtempSync(join(tmpdir(), 'notify-only-wake-small-'))
+  const smallLog = join(smallSpool, 'woke.log')
+  const smallHook = join(smallSpool, 'hook.sh')
+  writeFileSync(smallHook, `#!/bin/sh\nprintf x >> ${JSON.stringify(smallLog)}\n`, { mode: 0o755 })
+  const smallMarks = () => { try { return readFileSync(smallLog, 'utf8').length } catch { return 0 } }
+  const SMALL_N = N / 5
+  const SMALL = ['--pubkey', ME, '--notify-only', '--relays', RELAY, '--jsonl', '--spool', smallSpool, '--coalesce-ms', '600000', '--on-message', smallHook]
+  serve = batch(SMALL_N)
+  await run(SMALL)
+  serve = batch(SMALL_N)
+  const smallLive = await run(SMALL)
+  check(smallLive.records.length === SMALL_N, `a ${SMALL_N}-arrival burst records all ${SMALL_N} — ${smallLive.records.length}`)
+  check(smallMarks() === rangBig,
+    `THE FLOOD COSTS A CONSTANT: ${N} arrivals rang ${rangBig} time(s), ${SMALL_N} arrivals rang ${smallMarks()} — same`,
+    'if these differ the wake count scales with the burst, which is the flood the coalescer exists to bound')
+  rmSync(smallSpool, { recursive: true, force: true })
+
+  // THE SERIALISER, PINNED BY THE ONLY THING THAT DISTINGUISHES IT. Reverting `writeNotify` to a bare
+  // `JSON.stringify(record)` changes no VALUE — measured over plain, coalesced, bootstrap and
+  // already-delivered, every field is identical, so no parsing assertion can see the difference. Key
+  // ORDER is the difference, because `notifyLine` pins its own key set rather than spreading the
+  // record. This asserts the mechanism on purpose and says so: the value being protected is that ONE
+  // function frames every line, so the U+2028/U+2029 escaping stays reachable if any field on this
+  // record ever stops being a literal. Today none of them can carry one; that is what makes this a
+  // pin rather than a behavioural test.
+  const keysOf = line => [...line.matchAll(/"([A-Za-z_]+)":/g)].map(m => m[1]).join(',')
+  const sample = wakeLive.lines.find(l => l.includes('"mode":"notify-only"'))
+  const viaNotifyLine = keysOf(notifyLine(notifyOnlyRecord({ id: 'a'.repeat(64), receivedAt: 1, firstSeen: true, live: true, bootstrap: false }), { id: 'a'.repeat(64), receivedAt: 1, firstSeen: true, live: true, bootstrap: false }))
+  const viaStringify = keysOf(JSON.stringify(notifyOnlyRecord({ id: 'a'.repeat(64), receivedAt: 1, firstSeen: true, live: true, bootstrap: false })))
+  check(viaNotifyLine !== viaStringify,
+    'the two serialisers are actually distinguishable — otherwise the next assertion proves nothing',
+    `notifyLine=${viaNotifyLine}\n  stringify=${viaStringify}`)
+  check(sample !== undefined && keysOf(sample) === viaNotifyLine,
+    '  …and the tool\'s lines come from notifyLine, not from a bare JSON.stringify of the record',
+    sample === undefined ? 'no notify-only line on stdout at all' : `tool=${keysOf(sample)}`)
+
   // THE REFUSALS, DRIVEN. Both of these survived a full suite run as source-only guards.
   const withTrust = await run([...BASE, '--trust', ME])
   check(withTrust.status === 3 && /never opens one/.test(withTrust.stderr),
@@ -320,6 +396,7 @@ console.log('\n-- 5. the tool itself, against a loopback relay --')
 
   for (const w of servers) w.close()
   rmSync(spoolDir, { recursive: true, force: true })
+  rmSync(hookSpool, { recursive: true, force: true })
 }
 
 console.log(`\n${pass ? 'PASS' : 'FAIL'} — tests/notify_only.mjs`)
