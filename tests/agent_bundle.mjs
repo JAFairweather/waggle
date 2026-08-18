@@ -48,7 +48,7 @@ const check = (cond, label, detail = '') => {
 // than a crash. Most of what this suite asserts IS a non-zero exit.
 const run = (args, opts = {}) => {
   try {
-    const out = execFileSync(process.execPath, args, { encoding: 'utf8', timeout: 120000, stdio: ['ignore', 'pipe', 'pipe'], env: CLEAN_ENV, ...opts })
+    const out = execFileSync(process.execPath, args, { encoding: 'utf8', timeout: 120000, stdio: ['ignore', 'pipe', 'pipe'], ...opts, env: { ...CLEAN_ENV, ...(opts.env || {}) } })
     return { code: 0, out, err: '' }
   } catch (e) {
     return { code: e.status ?? -1, out: String(e.stdout || ''), err: String(e.stderr || e.message || '') }
@@ -77,11 +77,15 @@ check(!sealedNames.some(n => SIGNER_SHAPED.test(n)),
   sealedNames.filter(n => SIGNER_SHAPED.test(n)).join(' '))
 
 // NEGATIVE CONTROL: without this, the check above is satisfied by a probe that reports nothing at
-// all. The injected value is a marker string, not a key.
-const leaked = run(ENV_PROBE, { env: { ...CLEAN_ENV, BUZZ_PRIVATE_KEY: 'sentinel-not-a-key' } }).out
-check(/BUZZ_PRIVATE_KEY/.test(leaked),
+// all. It runs the injected name through SIGNER_SHAPED rather than matching the literal, so
+// blinding that regex reds this line too — a literal here would leave the regex itself uncovered,
+// and section 0 would stay green while blind to the exact defect it is written for. The injected
+// value is a marker string, not a key.
+const leakedNames = run(ENV_PROBE, { env: { BUZZ_PRIVATE_KEY: 'sentinel-not-a-key' } })
+  .out.trim().split(/\s+/).filter(Boolean)
+check(leakedNames.some(n => SIGNER_SHAPED.test(n)),
   'NEGATIVE CONTROL: with one injected the same probe DOES report it, so the check above can fail',
-  leaked.trim().split(/\s+/).filter(n => SIGNER_SHAPED.test(n)).join(' '))
+  leakedNames.filter(n => SIGNER_SHAPED.test(n)).join(' '))
 
 // ── 1. The build runs and produces exactly one file ────────────────────────────────────────────
 console.log('\n-- 1. build --')
