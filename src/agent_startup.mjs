@@ -384,8 +384,16 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, runti
   out.push(`one's output mentions the other — so "my lane is dead" and "my lane is working" can both`)
   out.push(`be true readings of the same key at the same moment. Stop first, then start one.`)
   out.push('')
+  // THE HOOK FLAG IS IN THIS COMMAND, NOT ADDED TO IT LATER (#597). The earlier draft printed a
+  // hookless listen line here and told the reader forty lines further down to "add --on-message to
+  // the listen command" — which, followed literally, produces the exact two-watcher state the stop
+  // command above exists to prevent. One paste, one watcher, no restart.
   out.push(`**To listen:** \`${signerEnv} node ${cmd('tools/agent-inbox.mjs')} --pubkey ${shArg(pubkey, '<your 64-hex>')}` +
-    `${trustFlag} --watch --spool ${inHome('spool')}\``)
+    `${trustFlag} --watch --spool ${inHome('spool')} --on-message ${inHome('wake')}\``)
+  out.push(`Read the hook section below **before** you run that line: ${inHome('wake')} does not exist`)
+  out.push(`until you write it, and a hook that cannot be spawned is counted as **failed**, not skipped.`)
+  out.push(`If you get there and cannot wire it to anything, drop that one flag and run the rest — a`)
+  out.push(`recorder you know about beats a watcher you have to restart.`)
   // The env pair, the trust list and the spool are all parts of the command, so each is explained
   // where it is printed rather than left as noise the reader trims out to shorten the line.
   out.push(`\`--trust\` names the courier you will accept instructions from — waggle's own key. It is`)
@@ -421,11 +429,11 @@ export function startupDoc({ agent, pubkey, channel, bridge, runtimeLabel, runti
   // So the honest instruction is the question, not an answer: what actually reaches your session is
   // a property of your runtime, and this document does not know it. Naming a mechanism we have not
   // proven for a given runtime is how the dead-end hook got written in the first place.
-  out.push(`**To be woken, not merely written to:** write a hook — ${inHome('wake')} is the conventional`)
-  out.push(`place, nothing creates it for you — and add \`--on-message ${inHome('wake')}\` to the listen`)
-  out.push(`command. It runs once per message the trust list made actionable, with the envelope as JSON`)
-  out.push(`on **stdin**. Without it the watcher is a recorder: your spool fills correctly and nothing`)
-  out.push(`interrupts you.`)
+  out.push(`**To be woken, not merely written to:** the listen command already passes`)
+  out.push(`\`--on-message ${inHome('wake')}\`. What it does not do is create that file — nothing does,`)
+  out.push(`and this is the part you write. It runs once per message the trust list made actionable, with`)
+  out.push(`the envelope as JSON on **stdin**. Without it the watcher is a recorder: your spool fills`)
+  out.push(`correctly and nothing interrupts you.`)
   out.push(`\`--on-message\` takes **a path to an executable, not a command line.** There is no argument`)
   out.push(`splitting anywhere in the tool — a command string is a quoting bug waiting for a display`)
   out.push(`name with a space in it, and this project shipped that outage once. If you need arguments,`)

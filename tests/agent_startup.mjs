@@ -710,6 +710,36 @@ check((noPub.split('\n').find(l => l.startsWith('`pkill')) || '').includes('<you
 // trust gate passed, the hook ran, and the message landed where no one opens.
 check(/--on-message/.test(flat(withPaths)) && /on \*\*stdin\*\*/.test(flat(withPaths)),
   'the document wires the hook and says the envelope arrives on stdin')
+// ANYWHERE IN THE DOCUMENT IS NOT ENOUGH, AND THE ASSERTION ABOVE WAS SATISFIED BY THE BROKEN
+// VERSION (#597). The first draft printed a hookless listen command and, forty lines later, told the
+// reader to "add --on-message to the listen command" — so `--on-message` appeared in the document and
+// the test stayed green, while a reader who followed the document in order started a watcher, then
+// started a second one to add the flag. That is the two-watcher state the stop command five checks
+// above exists to prevent, manufactured by the document itself. The flag has to be on the line the
+// reader pastes.
+// NOT `listenLine()` from :270 — that finds the first line containing `agent-inbox.mjs`, and since
+// this change the `pkill` stop command contains it too, so the helper returns the stop line and every
+// check below would measure the wrong command. The ANCHOR caught it; without one this block would
+// have failed for a reason that looks like the feature is missing.
+const armedListen = withPaths.split('\n').find(l => l.startsWith('**To listen:**')) || ''
+check(armedListen.includes('agent-inbox.mjs'), 'ANCHOR — the listen command line is findable, so the next check reads something')
+check(armedListen.includes('--on-message'),
+  '  …and --on-message is ON that line, so one paste arms the hook and no second watcher is ever started')
+// THE PROPERTY IS "NEVER TOLD TO EDIT A COMMAND ALREADY RUN", NOT ONE SENTENCE THAT SAID SO. The
+// first version of this check matched the exact phrasing `add \`--on-message …\` to the listen`, and
+// the mutation drill reported it UNDETECTED: reworded to "add it to the listen command", the same
+// instruction walked straight past. The regex now matches the instruction in any wording, and the
+// positive control below proves it can still fire — a negative assertion that cannot fire is
+// indistinguishable from one that is passing.
+const TELLS_READER_TO_EDIT = /\badd\b[^.\n]{0,80}listen command/i
+check(TELLS_READER_TO_EDIT.test('and add `--on-message /x/wake` to the listen command'),
+  'POSITIVE CONTROL — the pattern fires on an instruction to edit the listen command')
+check(!TELLS_READER_TO_EDIT.test(flat(withPaths)),
+  '  …and the document contains no such instruction, in any wording')
+// BOTH DIRECTIONS. The listen line must still carry the flags that were there before, or "contains
+// --on-message" could be satisfied by a line that lost everything else.
+check(armedListen.includes('--watch') && armedListen.includes('--spool') && armedListen.includes('--trust'),
+  '  …while still carrying --watch, --spool and --trust, so the line was extended and not rewritten')
 check(/a path to an executable, not a command line/.test(flat(withPaths)),
   '  …and that it is an executable, not a command line — there is no argument splitting to rescue a quoted string')
 check(/no argument splitting/.test(flat(inboxSrc)) && /shell: false/.test(inboxSrc),
