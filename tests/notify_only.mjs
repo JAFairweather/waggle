@@ -327,9 +327,18 @@ console.log('\n-- 5. the tool itself, against a loopback relay --')
   const wakeLive = await run(WAKE)
   check(wakeLive.records.length === N, `the live run records all ${N} arrivals — ${wakeLive.records.length}`)
   const rangBig = marks()
-  check(rangBig >= 1,
-    `THE ALARM RANG for ${N} arrivals — the hook ran ${rangBig} time(s)`,
-    'if this is 0 the wake is never driven, and every wake:true asserted above is a field nobody acts on')
+  // EXACTLY TWO, AND EACH ONE IS A DIFFERENT ARM. `>= 1` was here first and it is satisfied when
+  // either arm is dead, so it could not see the arm that mattered: with the leading edge deleted the
+  // run still rings once from the closing flush, and with the flush deleted it still rings once from
+  // the leading edge. Both mutations left this suite at 57 ok. 2 is not a count of call sites, it is
+  // what conservation costs for a one-shot burst inside one window — arrival 1 fires the leading
+  // edge because `lastFire === null` always fires, arrivals 2..N are suppressed inside the window and
+  // the closing flush speaks for all of them at once. So it is 2 for every N >= 2, which is both
+  // burst sizes here, and pinning it costs no robustness.
+  check(rangBig === 2,
+    `THE ALARM RANG TWICE for ${N} arrivals — leading edge, then the closing flush for the tail`,
+    `the hook ran ${rangBig} time(s); 0 means the wake is never driven, and 1 means one of the two ` +
+    'arms is dead — either arrival 1 rings nobody, or arrivals 2..N are recorded and woken for by nobody')
 
   // THE COALESCER'S ACTUAL CLAIM IS A CONSTANT, NOT A ONE. This assertion started life as
   // `marks() === 1` and failed on its first run at 2 — correctly. A one-shot burst fires twice by
@@ -354,6 +363,50 @@ console.log('\n-- 5. the tool itself, against a loopback relay --')
     `THE FLOOD COSTS A CONSTANT: ${N} arrivals rang ${rangBig} time(s), ${SMALL_N} arrivals rang ${smallMarks()} — same`,
     'if these differ the wake count scales with the burst, which is the flood the coalescer exists to bound')
   rmSync(smallSpool, { recursive: true, force: true })
+
+  // ── THE WINDOW EDGE, UNDER --watch ─────────────────────────────────────────────────────────────
+  // THE THIRD WAKE ARM, AND THE ONLY ONE A ONE-SHOT RUN CANNOT REACH. Everything above runs to
+  // completion, so `report()`'s closing flush always speaks for the tail. A `--watch` process never
+  // reaches `report()`: the tail sits in `pending()` until the next arrival, which on a quiet lane is
+  // never, and the `setInterval` is the only thing that ever lets it out. Deleting that block left
+  // the whole suite at rc=0 with 0 failures, because nothing here had ever passed `--watch` at all.
+  // A delivered message turned permanently silent, invisible to 57 green assertions.
+  const edgeSpool = mkdtempSync(join(tmpdir(), 'notify-only-edge-'))
+  const edgeLog = join(edgeSpool, 'woke.log')
+  const edgeHook = join(edgeSpool, 'hook.sh')
+  writeFileSync(edgeHook, `#!/bin/sh\nprintf x >> ${JSON.stringify(edgeLog)}\n`, { mode: 0o755 })
+  const edgeMarks = () => { try { return readFileSync(edgeLog, 'utf8').length } catch { return 0 } }
+  // ONE SECOND, WHICH IS THE FLOOR. The timer runs at `Math.max(1000, COALESCE_MS)`, so a smaller
+  // value here would not make this test faster — it would only stop the window and the timer from
+  // being the same duration, and the point is to cross one window edge.
+  const EDGE = ['--pubkey', ME, '--notify-only', '--relays', RELAY, '--jsonl', '--spool', edgeSpool, '--coalesce-ms', '1000', '--on-message', edgeHook]
+  serve = batch(N)
+  await run(EDGE)                                   // seed the index; a first start wakes nobody
+  check(edgeMarks() === 0, 'the --watch spool seeds silently too', `${edgeMarks()} mark(s) after seeding`)
+
+  serve = batch(N)
+  const watcher = spawn(process.execPath, [TOOL, ...EDGE, '--watch'], { stdio: ['ignore', 'pipe', 'pipe'], env: CLEAN })
+  let watchErr = ''
+  watcher.stderr.on('data', d => { watchErr += d })
+  const until = async (fn, ms) => {
+    const stop = Date.now() + ms
+    while (Date.now() < stop) { if (fn()) return true; await new Promise(r => setTimeout(r, 50)) }
+    return fn()
+  }
+  // THE BURST ARRIVED. Without this the assertion below cannot tell a dead timer from a watcher that
+  // was never served anything — the same failure the `relay(s) answered` line pins for the one-shot
+  // runs. The leading edge fires on arrival 1, so one mark IS the delivery receipt.
+  const arrived = await until(() => edgeMarks() >= 1, 15_000)
+  check(arrived, 'the watcher was actually served the burst — the leading edge rang', `${edgeMarks()} mark(s), stderr: ${watchErr.slice(0, 120)}`)
+  // Then cross the window edge. The tail is `pending()` and only the interval can release it.
+  const released = await until(() => edgeMarks() >= 2, 15_000)
+  watcher.kill('SIGKILL')
+  await new Promise(r => watcher.once('close', r))
+  check(released && edgeMarks() === 2,
+    `THE WINDOW EDGE FIRED under --watch — ${N} arrivals rang ${edgeMarks()} time(s) with no run to finish`,
+    `1 means the tail of the burst is still in pending() and the ${N - 1} arrivals behind it will wake nobody ` +
+    'until another message happens to arrive; more than 2 means the timer is re-firing on an empty coalescer')
+  rmSync(edgeSpool, { recursive: true, force: true })
 
   // THE SERIALISER, PINNED BY THE ONLY THING THAT DISTINGUISHES IT. Reverting `writeNotify` to a bare
   // `JSON.stringify(record)` changes no VALUE — measured over plain, coalesced, bootstrap and
