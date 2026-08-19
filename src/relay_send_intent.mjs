@@ -98,6 +98,17 @@ export function mentionVerdict(body, { broadcast = false, allowUnaddressed = fal
   return refuse(unaddressed)
 }
 
+// A REPLY MARKER CANNOT REACH THE POSTED KIND-9 (#604). The rumor below freezes its tags to
+// `[['relay', dest]]`, and even if that changed, `buzz_policy_projection.buildBuzzEvent` hardcodes
+// the posted event's tags a second time. Two independent enforcement points, so a parent reference
+// handed to this function is dropped twice and reported nowhere.
+//
+// Refusing is the point. An `--in-reply-to` added to `tools/agent-send.mjs` without the rest of the
+// chain is a flag that does nothing and says nothing — the exact shape `buildIntent`'s own doc
+// comment already names elsewhere: a message the bridge refuses looks, from the agent's side,
+// exactly like a message nobody answered. A real implementation removes this guard deliberately.
+const REPLY_KEYS = Object.freeze(['inReplyTo', 'in_reply_to', 'replyTo', 'reply_to', 'parent', 'parentId'])
+
 /**
  * The rumor waggle expects, or a refusal. No crypto here — the caller seals it.
  *
@@ -106,7 +117,10 @@ export function mentionVerdict(body, { broadcast = false, allowUnaddressed = fal
  * and attributes the post to that key. Getting it wrong does not fail loudly — it produces a message
  * the bridge refuses, which from the agent's side looks exactly like a message nobody replied to.
  */
-export function buildIntent({ body, channel, self, at = null, broadcast = false, allowUnaddressed = false } = {}) {
+export function buildIntent(opts = {}) {
+  const { body, channel, self, at = null, broadcast = false, allowUnaddressed = false } = opts
+  const replyKey = REPLY_KEYS.find(k => opts[k] != null && opts[k] !== '')
+  if (replyKey) return refuse(`\`${replyKey}\` cannot be expressed — the rumor's tags are frozen here and the posted event's tags are hardcoded again in buzz_policy_projection.buildBuzzEvent, so a parent reference is dropped at two sites and reaches no reader (#604). Nothing was sent.`)
   const mention = mentionVerdict(body, { broadcast, allowUnaddressed })
   if (mention.ok !== true) return mention
   const me = String(self || '').toLowerCase()
