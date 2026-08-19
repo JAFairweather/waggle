@@ -159,7 +159,51 @@ export function notifyLine(verdict, { id = null, receivedAt = null, firstSeen = 
   const isFirstSeen = firstSeen === true
   const isBootstrap = bootstrap === true
   const { wake, why: wakeReason } = wakeVerdict(v, { firstSeen, bootstrap })
-  const record = v.ok === true
+  // A KEYLESS RECORD IS SERIALISED WHOLE, not squeezed into the keyed shape (src/notify_only.mjs).
+  // The keyed shape has no `mode` and no `trust_evaluated`, so a notify-only wake rendered through
+  // it reaches an adapter looking exactly like an ordinary one — an unauthenticated trigger wearing
+  // the shape of an authenticated record. That is the same failure as #559 and worse, because here
+  // the fields that would have given it away are the ones being dropped.
+  //
+  // ONE SERIALISER, SAME AS ONE GATE. The alternative was for the caller to spawn the hook itself
+  // with its own JSON, which is two serialisers for one stream and how the two sides drift.
+  //
+  // ⚠ THE KEY SET IS PINNED AND THE RECORD IS NOT SPREAD. A `...v` here would put whatever the caller
+  // happened to attach onto a stream other processes parse, and would let a forged extra field ride
+  // out under this daemon's name. The keyed branch below normalises every field it emits; this one
+  // does the same, and for the same reason.
+  //
+  // ⚠ `wake` IS A CONJUNCTION, because `wakeVerdict` has never heard of `coalesced`. It answers the
+  // three keyed gates (refused · already-delivered · first-start backfill) and a coalesced arrival is
+  // none of them — so the verdict says "wake" for a record that has already decided not to. Taking
+  // the verdict alone would put `wake:true` on every suppressed arrival and hand an adapter filtering
+  // on `wake` exactly the flood the coalescer exists to bound: 195 wakes for 195 arrivals. Found in
+  // review, and it was NOT live only because this function was not yet on the notify-only path.
+  // `wake_reason` needs no such repair — the `wake ? …` arm below already selects the record's own
+  // coalesced reason in that case, because the VERDICT is what is true there.
+  const notifyOnlyRecordOut = v.mode === 'notify-only' ? {
+    ok: true,
+    // The mode and the trust fact travel together and are never omitted. An adapter that cannot see
+    // this is one that has mistaken an unauthenticated trigger for an authenticated record.
+    mode: 'notify-only',
+    id: wrapId,
+    received_at: seenAt,
+    first_seen: isFirstSeen,
+    bootstrap: isBootstrap,
+    live: live === null || live === undefined ? null : live === true,
+    coalesced: v.coalesced === true,
+    arrivals: Number.isSafeInteger(v.arrivals) && v.arrivals > 0 ? v.arrivals : 1,
+    wake: wake && v.wake !== false,
+    wake_reason: wake ? String(v.wake_reason || '') : wakeReason,
+    trust_evaluated: false,
+    mayAct: false,
+    disposition: 'unopened',
+    forMe: v.forMe === true,
+    author: null,
+    content: '',
+    reason: String(v.reason || ''),
+  } : null
+  const record = notifyOnlyRecordOut || (v.ok === true
     ? {
         ok: true,
         id: wrapId,
@@ -202,7 +246,7 @@ export function notifyLine(verdict, { id = null, receivedAt = null, firstSeen = 
         first_seen: isFirstSeen, bootstrap: isBootstrap,
         live: live === null || live === undefined ? null : live === true,
         reason: String(v.reason || 'refused'), disposition: 'refused', mayAct: false, forMe: false,
-      }
+      })
   return JSON.stringify(record).split(U2028).join(String.raw`\u2028`).split(U2029).join(String.raw`\u2029`)
 }
 
@@ -217,6 +261,22 @@ export function notifyDecision(verdict, { hasCommand = true } = {}) {
   const v = verdict && typeof verdict === 'object' ? verdict : {}
   if (!hasCommand) return Object.freeze({ invoke: false, why: 'no --on-message command was given' })
   if (v.ok !== true) return Object.freeze({ invoke: false, why: 'the message was refused and was attributed to nobody' })
+  // THE KEYLESS RECORD IS DECIDED HERE, NOT AROUND HERE (src/notify_only.mjs). A notify-only wake
+  // could not be expressed in the fields below — it has no author to trust and `mayAct` is false on
+  // every one of them — so the first version of this passed `invokeHook` an override that said
+  // "fire anyway". That is a second gate, and two gates is precisely the shape that let an adapter
+  // wake on mail the hook refused (#559). One function decides; this branch is that decision.
+  //
+  // It CANNOT widen the keyed path: it is reachable only on a record this repo builds with
+  // `mode: 'notify-only'`, and such a record carries no content, no author and `mayAct:false`, so
+  // nothing downstream can mistake it for an authenticated one. What it buys is a wake that means
+  // "go and pull", which is the only thing a keyless watcher is able to say.
+  if (v.mode === 'notify-only') {
+    if (v.trust_evaluated !== false) {
+      return Object.freeze({ invoke: false, why: 'a notify-only record must declare trust_evaluated:false; this one does not, so it is not the record this branch is for' })
+    }
+    return Object.freeze({ invoke: true, why: 'notify-only: a wrap addressed to this key arrived. Nobody was authenticated — pull it with a signer and apply the trust list there' })
+  }
   if (v.mayAct !== true) {
     // Spelled out at the point of refusal, because this is the line the whole issue turns on.
     const who = String(v.author || '').slice(0, 12)

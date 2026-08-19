@@ -1,0 +1,456 @@
+// notify_only.mjs — the keyless wake.
+//
+// Two things are being asserted, and only one of them is about the happy path.
+//
+// 1. CONSERVATION. A coalescer exists to drop WAKES, never ARRIVALS. Too many wakes cost turns; one
+//    lost arrival costs a message and looks exactly like a quiet lane, which is the failure mode
+//    every other guard in this repo was written after. So the suite drives bursts and asserts that
+//    the arrivals spoken for by all fires equal the arrivals offered — not that the rate looks right.
+//
+// 2. THE GATE DID NOT WIDEN. `notifyDecision` grew a branch for these records. A branch added to a
+//    security gate is only safe if it is unreachable from the path it must not affect, so this
+//    drives the keyed refusals again THROUGH THE NEW CODE and asserts each still refuses, and for
+//    its own original reason rather than merely `!invoke`.
+import { spawn } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { WebSocketServer } from 'ws'
+import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure'
+import { makeCoalescer, notifyOnlyRecord } from '../src/notify_only.mjs'
+import { notifyDecision, notifyLine, wakeVerdict } from '../src/return_lane_notify.mjs'
+
+let pass = true
+const check = (cond, label, detail = '') => {
+  console.log(`${cond ? 'ok  ' : 'FAIL'} — ${label}${detail ? `  [${detail}]` : ''}`)
+  if (!cond) pass = false
+}
+
+// ── 1. Conservation ────────────────────────────────────────────────────────────────────────────
+console.log('\n-- 1. the coalescer drops wakes, never arrivals --')
+{
+  const c = makeCoalescer({ windowMs: 1000 })
+  let fires = 0, spokenFor = 0
+  // A burst of 40 inside one window, then the window edge.
+  for (let i = 0; i < 40; i++) { const d = c.offer(1_000_000 + i); if (d.fire) { fires++; spokenFor += d.count } }
+  const tail = c.flush(1_002_000)
+  if (tail.fire) { fires++; spokenFor += tail.count }
+  check(spokenFor === 40, 'a 40-arrival burst is spoken for in full', `arrivals=40 spokenFor=${spokenFor} fires=${fires}`)
+  check(fires === 2, 'and costs 2 wakes, not 40 — the first arrival plus the window edge', `fires=${fires}`)
+  check(c.pending() === 0, 'nothing is left outstanding', `pending=${c.pending()}`)
+}
+{
+  // The property over a long, irregular run — the case a hand-picked burst can miss.
+  const c = makeCoalescer({ windowMs: 500 })
+  let offered = 0, spokenFor = 0, fires = 0
+  let t = 0
+  for (let i = 0; i < 500; i++) {
+    t += (i * 37) % 300            // deterministic, uneven spacing; no Math.random in a suite
+    offered++
+    const d = c.offer(t)
+    if (d.fire) { fires++; spokenFor += d.count }
+  }
+  const tail = c.flush(t + 10_000)
+  if (tail.fire) { fires++; spokenFor += tail.count }
+  check(spokenFor === offered, 'over 500 irregularly spaced arrivals, every one is spoken for', `offered=${offered} spokenFor=${spokenFor} fires=${fires}`)
+  check(fires < offered, 'and strictly fewer wakes than arrivals were emitted, so it coalesced at all', `fires=${fires} offered=${offered}`)
+}
+{
+  const c = makeCoalescer({ windowMs: 1000 })
+  check(c.offer(0).fire === true, 'the very first arrival always fires — a watcher silent through its own first message is indistinguishable from a dead one')
+  check(c.flush(10).fire === false, 'and a flush on a quiet lane manufactures nothing', 'fire=false expected')
+}
+{
+  // NEGATIVE CONTROL for the conservation assertion itself. A coalescer that dropped the suppressed
+  // arrivals would still look healthy to "did it fire?" — so prove the assertion above can fail.
+  const lossy = (() => {
+    let last = null
+    return { offer(now) { if (last === null || now - last >= 1000) { last = now; return { fire: true, count: 1 } } return { fire: false, count: 0 } }, flush: () => ({ fire: false, count: 0 }) }
+  })()
+  let spokenFor = 0
+  for (let i = 0; i < 40; i++) { const d = lossy.offer(1_000_000 + i); if (d.fire) spokenFor += d.count }
+  const t = lossy.flush(1_002_000); if (t.fire) spokenFor += t.count
+  check(spokenFor !== 40, 'NEGATIVE CONTROL: a coalescer that drops suppressed arrivals fails the same assertion', `a dropping implementation spoke for ${spokenFor} of 40`)
+}
+{
+  check.threw = false
+  try { makeCoalescer({ windowMs: -1 }); check(false, 'a negative window is refused') }
+  catch { check(true, 'a negative window is refused rather than silently accepted') }
+}
+
+// ── 2. The record is honest about what it does not know ────────────────────────────────────────
+console.log('\n-- 2. the record states what was never checked --')
+{
+  const r = notifyOnlyRecord({ id: 'a'.repeat(64), receivedAt: 1787000000, live: true })
+  check(r.trust_evaluated === false, 'trust_evaluated is false — a separate key from mayAct, because "we checked and no" and "we could not check" are different states')
+  check(r.mayAct === false, 'mayAct is false')
+  check(r.author === null && r.content === '', 'no author and no content are carried, because neither was read', `author=${r.author} content=${JSON.stringify(r.content)}`)
+  check(r.wake === true, 'a first-seen live arrival wakes')
+  check(r.mode === 'notify-only', 'the record names its own mode, so an adapter can tell the two streams apart')
+}
+{
+  // THE TWO GATES MUST AGREE WITH THE KEYED PATH, and this asserts agreement rather than trusting
+  // that the rules were copied correctly — the two live in different files.
+  const keyedFirstSeen = wakeVerdict({ ok: true, mayAct: true, author: 'b'.repeat(64) }, { firstSeen: false })
+  const mineFirstSeen = notifyOnlyRecord({ id: 'a'.repeat(64), firstSeen: false })
+  check(keyedFirstSeen.wake === false && mineFirstSeen.wake === false,
+    'a replay wakes nobody on either path', `keyed=${keyedFirstSeen.wake} notifyOnly=${mineFirstSeen.wake}`)
+  check(mineFirstSeen.wake_reason === keyedFirstSeen.why,
+    'and gives the SAME reason, not merely the same answer', mineFirstSeen.wake_reason)
+
+  const keyedBoot = wakeVerdict({ ok: true, mayAct: true, author: 'b'.repeat(64) }, { bootstrap: true })
+  const mineBoot = notifyOnlyRecord({ id: 'a'.repeat(64), bootstrap: true })
+  check(keyedBoot.wake === false && mineBoot.wake === false, 'a first-start backfill wakes nobody on either path')
+  check(mineBoot.wake_reason === keyedBoot.why, 'and gives the same reason', mineBoot.wake_reason)
+}
+{
+  const one = notifyOnlyRecord({ id: 'a'.repeat(64) })
+  const many = notifyOnlyRecord({ id: 'a'.repeat(64), arrivals: 12 })
+  check(/a wrap/.test(one.wake_reason) && /12 wraps/.test(many.wake_reason),
+    'the reason says how many arrivals the wake stands for', many.wake_reason)
+}
+
+// ── 3. The gate grew a branch and did not widen ────────────────────────────────────────────────
+console.log('\n-- 3. the keyed refusals still refuse, through the new code --')
+{
+  const d = notifyDecision(notifyOnlyRecord({ id: 'a'.repeat(64) }), { hasCommand: true })
+  check(d.invoke === true, 'a notify-only record fires the hook')
+  check(/pull it with a signer/i.test(d.why), 'and the reason tells the operator what to do next, not just that it fired', d.why)
+}
+{
+  // Each of these is a keyed record. None of them may take the new branch.
+  const stranger = { ok: true, mayAct: false, forMe: true, author: 'c'.repeat(64), content: 'hello' }
+  const d = notifyDecision(stranger, { hasCommand: true })
+  check(d.invoke === false, 'a stranger is still refused')
+  check(/not on the trust list/.test(d.why), 'and still for the trust reason, not a new one', d.why)
+}
+{
+  // `mode` IS ON THIS FIXTURE DELIBERATELY. Without it, hoisting the notify-only branch above the
+  // `v.ok !== true` check passes every assertion in this file — nothing pins the order. With it, a
+  // hoisted branch would wave a REFUSED record through as a keyless arrival.
+  const refused = { ok: false, mayAct: true, author: 'c'.repeat(64), mode: 'notify-only', trust_evaluated: false }
+  check(notifyDecision(refused, { hasCommand: true }).invoke === false, 'a refused message is still refused')
+  const noCmd = notifyDecision(notifyOnlyRecord({ id: 'a'.repeat(64) }), { hasCommand: false })
+  check(noCmd.invoke === false && /no --on-message/.test(noCmd.why),
+    'and with no hook configured, a notify-only record fires nothing — hasCommand is still checked first', noCmd.why)
+}
+{
+  // THE BRANCH IS NOT REACHABLE BY DECLARATION ALONE. A record that claims the mode but has had its
+  // trust evaluated is not this branch's record, and must not be waved through.
+  const forged = { ...notifyOnlyRecord({ id: 'a'.repeat(64) }), trust_evaluated: true, mayAct: false }
+  const d = notifyDecision(forged, { hasCommand: true })
+  check(d.invoke === false, 'a record claiming mode notify-only but trust_evaluated:true is refused')
+  check(/must declare trust_evaluated:false/.test(d.why), 'and says exactly why', d.why)
+}
+{
+  // POSITIVE CONTROL for the block above: the keyed happy path still fires, so these assertions
+  // distinguish "refuses the dangerous thing" from "refuses everything".
+  const trusted = { ok: true, mayAct: true, forMe: true, author: 'd'.repeat(64), content: 'a real message' }
+  const d = notifyDecision(trusted, { hasCommand: true })
+  check(d.invoke === true, 'POSITIVE CONTROL: a trusted keyed message still fires the hook', d.why)
+}
+
+// ── 4. The caller's loop, which is where the real defect was ───────────────────────────────────
+//
+// The coalescer conserved perfectly and the tool still lost 194 of 195 arrivals, because the CALLER
+// emitted a record only when the coalescer fired. Every arrival had already made an irreversible
+// durable dedupe claim, so those 194 ids were claimed forever with nothing on disk — they would
+// never be delivered again by anything. Sections 1-3 were all green while that was true.
+//
+// This drives the loop's shape: one record per arrival, one wake per window.
+console.log('\n-- 4. one record per arrival, one wake per window --')
+{
+  const c = makeCoalescer({ windowMs: 1000 })
+  const records = [], wakes = []
+  const arrivals = 195
+  for (let i = 0; i < arrivals; i++) {
+    const now = 1_000_000 + i            // all inside one window, as a relay backfill is
+    const d = c.offer(now)
+    records.push(notifyOnlyRecord({ id: String(i).padStart(64, '0'), arrivals: d.fire ? d.count : 1, coalesced: !d.fire }))
+    if (d.fire) wakes.push(d.count)
+  }
+  const tail = c.flush(1_100_000)
+  if (tail.fire) wakes.push(tail.count)
+
+  check(records.length === arrivals, 'every arrival produced a record, so no id is claimed with nothing on disk', `arrivals=${arrivals} records=${records.length}`)
+  check(wakes.reduce((a, n) => a + n, 0) === arrivals, 'and the wakes between them speak for every one', `wakes=[${wakes}] sum=${wakes.reduce((a, n) => a + n, 0)}`)
+  check(wakes.length === 2, 'at a cost of 2 wakes, not 195', `wakes=${wakes.length}`)
+  check(records.filter(r => r.wake).length === 1 && records.filter(r => r.coalesced).length === arrivals - 1,
+    'exactly one record carries the wake; the rest say they were coalesced, not that they were already delivered',
+    `wake=${records.filter(r => r.wake).length} coalesced=${records.filter(r => r.coalesced).length}`)
+  check(records.every(r => r.first_seen === true),
+    'and none of them claims first_seen:false — a coalesced arrival is new mail, and saying otherwise would be a false claim about the index')
+}
+{
+  // NEGATIVE CONTROL: the loop as it was originally written — a record only when the wake fires.
+  // If this assertion ever stops failing, section 4 has stopped testing anything.
+  const c = makeCoalescer({ windowMs: 1000 })
+  const records = []
+  for (let i = 0; i < 195; i++) { const d = c.offer(1_000_000 + i); if (d.fire) records.push(1) }
+  check(records.length !== 195, 'NEGATIVE CONTROL: emitting a record only when the wake fires loses arrivals, and fails the assertion above', `that loop wrote ${records.length} records for 195 arrivals`)
+}
+
+// ── 5. THE TOOL'S OWN LOOP, DRIVEN ─────────────────────────────────────────────────────────────
+//
+// Sections 1-4 test the PRIMITIVES, and a review proved that is not the same thing: the caller's
+// defective shape was restored in `tools/agent-inbox.mjs` — a record written only when the wake
+// fires, the 194-of-195 silent loss — and the full 124-suite run stayed rc=0 with a byte-identical
+// count of `ok` lines. Two more mutations of the keyless arm survived the same run: deleting the
+// `--trust` refusal outright, and loading the signer unconditionally.
+//
+// The reason is structural. `tests/tool_relay_defaults.mjs` is the only suite that executes this
+// tool at all and it never passes `--notify-only`, so the single guard on the whole arm was a source
+// grep. A source grep does not see a body change.
+//
+// So this drives the built tool against a LOOPBACK RELAY and reads what it actually wrote. `ws://`
+// on 127.0.0.1 is accepted by the tool by design, for exactly this.
+console.log('\n-- 5. the tool itself, against a loopback relay --')
+{
+  const TOOL = fileURLToPath(new URL('../tools/agent-inbox.mjs', import.meta.url))
+  const ME = getPublicKey(generateSecretKey())
+  const N = 40
+  const nowSec = () => Math.floor(Date.now() / 1000)
+  // Real 1059 wraps, each signed by its own throwaway key, because the tool runs `verifyEvent`
+  // before it counts anything. Nothing is ever decrypted, so the content can be junk — which is
+  // itself the point of the mode.
+  const batch = n => Array.from({ length: n }, () =>
+    finalizeEvent({ kind: 1059, created_at: nowSec(), tags: [['p', ME]], content: 'not-openable' }, generateSecretKey()))
+
+  let serve = []
+  // THREE of them, because the tool refuses a relay set below a floor of 3 — a real guard, and the
+  // first thing this section discovered. All three serve the SAME population, so this also proves the
+  // dedupe holds across relays: 40 arrivals delivered three times must still be 40 records.
+  const servers = Array.from({ length: 3 }, () => new WebSocketServer({ host: '127.0.0.1', port: 0 }))
+  for (const wss of servers) {
+    wss.on('connection', ws => {
+      ws.on('message', raw => {
+        let m
+        try { m = JSON.parse(raw.toString()) } catch { return }
+        if (m[0] !== 'REQ') return
+        for (const w of serve) ws.send(JSON.stringify(['EVENT', m[1], w]))
+        ws.send(JSON.stringify(['EOSE', m[1]]))
+      })
+    })
+  }
+  await Promise.all(servers.map(w => new Promise(r => w.once('listening', r))))
+  const RELAY = servers.map(w => `ws://127.0.0.1:${w.address().port}`).join(',')
+  const spoolDir = mkdtempSync(join(tmpdir(), 'notify-only-driven-'))
+
+  // A CLEAN ENVIRONMENT, so "it never loads a signer" is being observed rather than assumed: no
+  // credential variable is in scope for the tool to find even if it looked.
+  const CLEAN = { PATH: process.env.PATH, HOME: spoolDir }
+  // ⚠ ASYNC `spawn`, NEVER `spawnSync`. The relay servers live in THIS process, and `spawnSync`
+  // blocks this event loop until the child exits — so the servers cannot accept the connection the
+  // child is making, and the child reports "0 relay(s) answered". That is not a failing tool, it is
+  // a test that never delivered its own input, and it read as a real defect for three runs. The same
+  // class as the heredoc that silently dropped a non-breaking space: confirm the input arrived
+  // before believing the output. The `answered` assertion below is what pins it.
+  const run = (args, env = {}) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [TOOL, ...args], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...CLEAN, ...env } })
+    let out = '', err = ''
+    child.stdout.on('data', d => { out += d })
+    child.stderr.on('data', d => { err += d })
+    const timer = setTimeout(() => child.kill('SIGKILL'), 60_000)
+    child.on('error', reject)
+    child.on('close', status => {
+      clearTimeout(timer)
+      const lines = out.split('\n').filter(Boolean)
+      const records = lines.map(l => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
+      resolve({ status, records, lines, stderr: err })
+    })
+  })
+  const BASE = ['--pubkey', ME, '--notify-only', '--relays', RELAY, '--jsonl', '--spool', spoolDir, '--coalesce-ms', '600000']
+
+  // Run 1 — a first-ever start. The index is empty, so this whole population is history: recorded,
+  // and announced to nobody.
+  serve = batch(N)
+  const first = await run(BASE)
+  check(first.status === 0, 'the tool runs keyless against a relay and exits 0', `status=${first.status} ${first.stderr.slice(0, 120)}`)
+  // THE PROBE DELIVERED ITS OWN INPUT. Without this line every assertion below is satisfied by a
+  // relay that answered nothing, which is how this section reported a tool defect that was mine.
+  check(/3 relay\(s\) answered/.test(first.stderr), '  …and all three loopback relays actually answered it',
+    (first.stderr.match(/\d+ relay\(s\) answered/) || ['no "relay(s) answered" line at all'])[0])
+  check(first.records.length === N, `a first start writes one record per arrival — ${N} arrivals, ${first.records.length} records`)
+  const all = (rows, fn) => rows.length > 0 && rows.every(fn)
+  check(all(first.records, r => r.wake === false), '  …and wakes nobody, because seeding an index is not mail arriving', `over ${first.records.length} records`)
+
+  // Run 2 — the same spool, a NEW population. This is the live case, and the one the defect hid in.
+  serve = batch(N)
+  const second = await run(BASE)
+  check(second.status === 0, 'a second start against the same durable spool exits 0', `status=${second.status}`)
+  // THE ASSERTION THE MUTATION SURVIVED. Records are per arrival; only the wake is coalesced.
+  check(second.records.length === N,
+    `ONE RECORD PER ARRIVAL, from the tool's own loop — ${N} arrivals, ${second.records.length} records`,
+    'a caller that writes only when the wake fires produces 1 here')
+  const woke = second.records.filter(r => r.wake === true)
+  check(woke.length === 1, `  …and exactly one of them woke anybody — ${woke.length}`, 'the window is 10 minutes, so the whole batch shares one wake')
+  check(second.records.filter(r => r.coalesced === true).length === N - 1,
+    `  …with the other ${N - 1} saying they were coalesced, not that they were already delivered`)
+  // THE SERIALISER, OBSERVED ON THE WIRE. Deleting the notify-only branch of `notifyLine` used to
+  // change nothing any test could see; it changes these two fields.
+  check(all(second.records, r => r.mode === 'notify-only'),
+    'every record the tool writes names its mode — an adapter can tell the two streams apart')
+  check(all(second.records, r => r.trust_evaluated === false && r.mayAct === false && r.author === null),
+    '  …and states that nothing was authenticated, with no author on any of them')
+  // Replay: the same population a third time. Every id is claimed, so nothing may wake again.
+  const third = await run(BASE)
+  check(third.records.length === 0 && third.status === 0,
+    'serving the same population again writes NOTHING — the tool returns before it records, so the durable claim holds across processes',
+    `records=${third.records.length} status=${third.status}`)
+
+  // ── THE ALARM ITSELF ────────────────────────────────────────────────────────────────────────────
+  // EVERY ASSERTION ABOVE READS A FIELD ON A RECORD. `wake: true` is the tool's CLAIM about what it
+  // did, not the alarm going off. Change `if (d.fire) await fireWake(...)` to `if (false)` and all of
+  // the above still passes: 40 perfect records, rc=0, nobody woken. That is this file's own rule
+  // turned on itself — an alarm that never fires and one that always fires are indistinguishable
+  // from outside — and it survived a full suite because `BASE` passes no `--on-message`, so the hook
+  // was never wired at tool level. The wake has to leave a mark on disk, and the mark has to be
+  // counted.
+  const hookSpool = mkdtempSync(join(tmpdir(), 'notify-only-wake-'))
+  const hookLog = join(hookSpool, 'woke.log')
+  const hookPath = join(hookSpool, 'hook.sh')
+  writeFileSync(hookPath, `#!/bin/sh\nprintf x >> ${JSON.stringify(hookLog)}\n`, { mode: 0o755 })
+  const marks = () => { try { return readFileSync(hookLog, 'utf8').length } catch { return 0 } }
+  const WAKE = ['--pubkey', ME, '--notify-only', '--relays', RELAY, '--jsonl', '--spool', hookSpool, '--coalesce-ms', '600000', '--on-message', hookPath]
+
+  serve = batch(N)
+  const wakeBoot = await run(WAKE)
+  check(wakeBoot.status === 0 && wakeBoot.records.length === N,
+    `the hook run seeds its own index — ${wakeBoot.records.length} records, status ${wakeBoot.status}`)
+  // NEGATIVE CONTROL, and the reason the next assertion is not vacuous: this proves `marks()` can
+  // report zero. A counter that has only ever returned 1 cannot tell a wake from a stuck hook.
+  check(marks() === 0, '  …and the hook does NOT run on a first start — seeding an index is not mail arriving',
+    `the hook ran ${marks()} time(s)`)
+
+  serve = batch(N)
+  const wakeLive = await run(WAKE)
+  check(wakeLive.records.length === N, `the live run records all ${N} arrivals — ${wakeLive.records.length}`)
+  const rangBig = marks()
+  // EXACTLY TWO, AND EACH ONE IS A DIFFERENT ARM. `>= 1` was here first and it is satisfied when
+  // either arm is dead, so it could not see the arm that mattered: with the leading edge deleted the
+  // run still rings once from the closing flush, and with the flush deleted it still rings once from
+  // the leading edge. Both mutations left this suite at 57 ok. 2 is not a count of call sites, it is
+  // what conservation costs for a one-shot burst inside one window — arrival 1 fires the leading
+  // edge because `lastFire === null` always fires, arrivals 2..N are suppressed inside the window and
+  // the closing flush speaks for all of them at once. So it is 2 for every N >= 2, which is both
+  // burst sizes here, and pinning it costs no robustness.
+  check(rangBig === 2,
+    `THE ALARM RANG TWICE for ${N} arrivals — leading edge, then the closing flush for the tail`,
+    `the hook ran ${rangBig} time(s); 0 means the wake is never driven, and 1 means one of the two ` +
+    'arms is dead — either arrival 1 rings nobody, or arrivals 2..N are recorded and woken for by nobody')
+
+  // THE COALESCER'S ACTUAL CLAIM IS A CONSTANT, NOT A ONE. This assertion started life as
+  // `marks() === 1` and failed on its first run at 2 — correctly. A one-shot burst fires twice by
+  // design: the leading edge takes arrival 1, and `report()`'s closing flush speaks for arrivals
+  // 2..N, which conservation requires — drop it and 39 arrivals are recorded and woken for by
+  // nobody. So `=== 1` was asserting a number this tool has never promised. What the module claims
+  // is that a flood costs a CONSTANT number of wakes, and the only way to see a constant is to vary
+  // the input: run a fifth of the burst through a fresh spool and require the same count.
+  const smallSpool = mkdtempSync(join(tmpdir(), 'notify-only-wake-small-'))
+  const smallLog = join(smallSpool, 'woke.log')
+  const smallHook = join(smallSpool, 'hook.sh')
+  writeFileSync(smallHook, `#!/bin/sh\nprintf x >> ${JSON.stringify(smallLog)}\n`, { mode: 0o755 })
+  const smallMarks = () => { try { return readFileSync(smallLog, 'utf8').length } catch { return 0 } }
+  const SMALL_N = N / 5
+  const SMALL = ['--pubkey', ME, '--notify-only', '--relays', RELAY, '--jsonl', '--spool', smallSpool, '--coalesce-ms', '600000', '--on-message', smallHook]
+  serve = batch(SMALL_N)
+  await run(SMALL)
+  serve = batch(SMALL_N)
+  const smallLive = await run(SMALL)
+  check(smallLive.records.length === SMALL_N, `a ${SMALL_N}-arrival burst records all ${SMALL_N} — ${smallLive.records.length}`)
+  check(smallMarks() === rangBig,
+    `THE FLOOD COSTS A CONSTANT: ${N} arrivals rang ${rangBig} time(s), ${SMALL_N} arrivals rang ${smallMarks()} — same`,
+    'if these differ the wake count scales with the burst, which is the flood the coalescer exists to bound')
+  rmSync(smallSpool, { recursive: true, force: true })
+
+  // ── THE WINDOW EDGE, UNDER --watch ─────────────────────────────────────────────────────────────
+  // THE THIRD WAKE ARM, AND THE ONLY ONE A ONE-SHOT RUN CANNOT REACH. Everything above runs to
+  // completion, so `report()`'s closing flush always speaks for the tail. A `--watch` process never
+  // reaches `report()`: the tail sits in `pending()` until the next arrival, which on a quiet lane is
+  // never, and the `setInterval` is the only thing that ever lets it out. Deleting that block left
+  // the whole suite at rc=0 with 0 failures, because nothing here had ever passed `--watch` at all.
+  // A delivered message turned permanently silent, invisible to 57 green assertions.
+  const edgeSpool = mkdtempSync(join(tmpdir(), 'notify-only-edge-'))
+  const edgeLog = join(edgeSpool, 'woke.log')
+  const edgeHook = join(edgeSpool, 'hook.sh')
+  writeFileSync(edgeHook, `#!/bin/sh\nprintf x >> ${JSON.stringify(edgeLog)}\n`, { mode: 0o755 })
+  const edgeMarks = () => { try { return readFileSync(edgeLog, 'utf8').length } catch { return 0 } }
+  // ONE SECOND, WHICH IS THE FLOOR. The timer runs at `Math.max(1000, COALESCE_MS)`, so a smaller
+  // value here would not make this test faster — it would only stop the window and the timer from
+  // being the same duration, and the point is to cross one window edge.
+  const EDGE = ['--pubkey', ME, '--notify-only', '--relays', RELAY, '--jsonl', '--spool', edgeSpool, '--coalesce-ms', '1000', '--on-message', edgeHook]
+  serve = batch(N)
+  await run(EDGE)                                   // seed the index; a first start wakes nobody
+  check(edgeMarks() === 0, 'the --watch spool seeds silently too', `${edgeMarks()} mark(s) after seeding`)
+
+  serve = batch(N)
+  const watcher = spawn(process.execPath, [TOOL, ...EDGE, '--watch'], { stdio: ['ignore', 'pipe', 'pipe'], env: CLEAN })
+  let watchErr = ''
+  watcher.stderr.on('data', d => { watchErr += d })
+  const until = async (fn, ms) => {
+    const stop = Date.now() + ms
+    while (Date.now() < stop) { if (fn()) return true; await new Promise(r => setTimeout(r, 50)) }
+    return fn()
+  }
+  // THE BURST ARRIVED. Without this the assertion below cannot tell a dead timer from a watcher that
+  // was never served anything — the same failure the `relay(s) answered` line pins for the one-shot
+  // runs. The leading edge fires on arrival 1, so one mark IS the delivery receipt.
+  const arrived = await until(() => edgeMarks() >= 1, 15_000)
+  check(arrived, 'the watcher was actually served the burst — the leading edge rang', `${edgeMarks()} mark(s), stderr: ${watchErr.slice(0, 120)}`)
+  // Then cross the window edge. The tail is `pending()` and only the interval can release it.
+  const released = await until(() => edgeMarks() >= 2, 15_000)
+  watcher.kill('SIGKILL')
+  await new Promise(r => watcher.once('close', r))
+  check(released && edgeMarks() === 2,
+    `THE WINDOW EDGE FIRED under --watch — ${N} arrivals rang ${edgeMarks()} time(s) with no run to finish`,
+    `1 means the tail of the burst is still in pending() and the ${N - 1} arrivals behind it will wake nobody ` +
+    'until another message happens to arrive; more than 2 means the timer is re-firing on an empty coalescer')
+  rmSync(edgeSpool, { recursive: true, force: true })
+
+  // THE SERIALISER, PINNED BY THE ONLY THING THAT DISTINGUISHES IT. Reverting `writeNotify` to a bare
+  // `JSON.stringify(record)` changes no VALUE — measured over plain, coalesced, bootstrap and
+  // already-delivered, every field is identical, so no parsing assertion can see the difference. Key
+  // ORDER is the difference, because `notifyLine` pins its own key set rather than spreading the
+  // record. This asserts the mechanism on purpose and says so: the value being protected is that ONE
+  // function frames every line, so the U+2028/U+2029 escaping stays reachable if any field on this
+  // record ever stops being a literal. Today none of them can carry one; that is what makes this a
+  // pin rather than a behavioural test.
+  const keysOf = line => [...line.matchAll(/"([A-Za-z_]+)":/g)].map(m => m[1]).join(',')
+  const sample = wakeLive.lines.find(l => l.includes('"mode":"notify-only"'))
+  const viaNotifyLine = keysOf(notifyLine(notifyOnlyRecord({ id: 'a'.repeat(64), receivedAt: 1, firstSeen: true, live: true, bootstrap: false }), { id: 'a'.repeat(64), receivedAt: 1, firstSeen: true, live: true, bootstrap: false }))
+  const viaStringify = keysOf(JSON.stringify(notifyOnlyRecord({ id: 'a'.repeat(64), receivedAt: 1, firstSeen: true, live: true, bootstrap: false })))
+  check(viaNotifyLine !== viaStringify,
+    'the two serialisers are actually distinguishable — otherwise the next assertion proves nothing',
+    `notifyLine=${viaNotifyLine}\n  stringify=${viaStringify}`)
+  check(sample !== undefined && keysOf(sample) === viaNotifyLine,
+    '  …and the tool\'s lines come from notifyLine, not from a bare JSON.stringify of the record',
+    sample === undefined ? 'no notify-only line on stdout at all' : `tool=${keysOf(sample)}`)
+
+  // THE REFUSALS, DRIVEN. Both of these survived a full suite run as source-only guards.
+  const withTrust = await run([...BASE, '--trust', ME])
+  check(withTrust.status === 3 && /never opens one/.test(withTrust.stderr),
+    'the tool refuses --notify-only with --trust, exit 3, and says why', `status=${withTrust.status}`)
+  const withGarbageTrust = await run([...BASE, '--trust', 'not-a-key'])
+  check(withGarbageTrust.status === 3 && /never opens one/.test(withGarbageTrust.stderr),
+    '  …and refuses it for the MODE before complaining about the hex, so the operator is not sent to fix a value this mode cannot take',
+    withGarbageTrust.stderr.split('\n')[0].slice(0, 90))
+
+  // THE SIGNER, AS A PAIR. Unreadable credential paths: notify-only must not care, and the keyed
+  // path with the same environment must die — which is what makes the first half mean anything.
+  serve = batch(N)
+  const badSigner = { WAGGLE_BUNKER_URI_FILE: join(spoolDir, 'nope'), WAGGLE_NIP46_CLIENT_NSEC_FILE: join(spoolDir, 'nope2') }
+  const keyless = await run(BASE, badSigner)
+  check(keyless.status === 0, 'with unreadable signer credentials, --notify-only completes — the loader is never reached', `status=${keyless.status} ${keyless.stderr.slice(0, 120)}`)
+  const keyed = await run(['--pubkey', ME, '--relays', RELAY, '--jsonl', '--trust', ME, '--spool', join(spoolDir, 'keyed')], badSigner)
+  check(keyed.status !== 0,
+    'POSITIVE CONTROL: the KEYED path with the same environment does not — so the line above is an observation, not a tautology',
+    `keyed status=${keyed.status}`)
+
+  for (const w of servers) w.close()
+  rmSync(spoolDir, { recursive: true, force: true })
+  rmSync(hookSpool, { recursive: true, force: true })
+}
+
+console.log(`\n${pass ? 'PASS' : 'FAIL'} — tests/notify_only.mjs`)
+process.exit(pass ? 0 : 1)

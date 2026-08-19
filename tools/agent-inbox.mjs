@@ -8,6 +8,11 @@
 //   node tools/agent-inbox.mjs --pubkey <64-hex> --trust <64-hex>[,<64-hex>…]
 //   node tools/agent-inbox.mjs --pubkey <64-hex> --since 3600 --watch
 //   node tools/agent-inbox.mjs --pubkey <64-hex> --trust <64-hex> --watch --jsonl --on-message ./wake
+//   node tools/agent-inbox.mjs --pubkey <64-hex> --notify-only --watch [--coalesce-ms 30000]
+//
+// --notify-only is the KEYLESS watcher: it says mail arrived and never opens it, so it holds no
+// signer and can run on a host we do not control. It refuses --trust, because the sender is inside
+// the seal. --coalesce-ms bounds the wake rate; arrivals are never coalesced, only wakes.
 //
 // --watch holds the subscription open instead of exiting at EOSE. That is the difference between
 // this and polling, and it is the whole point: an event arrives when it arrives, and the agent is
@@ -39,6 +44,7 @@ import { spawn } from 'node:child_process'
 import { invokeHook, notifyLine } from '../src/return_lane_notify.mjs'
 import { inboxSummary, openTracker, rumorVerdict, sealAuthor, wrapAddressedTo } from '../src/return_lane_inbox.mjs'
 import { openWakeSpool } from '../src/wake_spool.mjs'
+import { makeCoalescer, notifyOnlyRecord } from '../src/notify_only.mjs'
 import { DEFAULT_PUBLIC_RELAYS, parseRelaySet, thinRelaySet } from '../src/relays.mjs'
 
 const flag = n => { const i = process.argv.indexOf(n); return i < 0 ? '' : (process.argv[i + 1] || '') }
@@ -51,6 +57,16 @@ if (!HEX64.test(self)) die('--pubkey <64-hex> is required — this tool reads on
 
 // Trust is a list this agent is GIVEN, never one it derives from the mail. A sender that could add
 // itself to the allowlist by sending is not an allowlist.
+// ⚠ BEFORE THE TRUST LIST IS EVEN READ, not merely before the hex validation. Two refusals used to
+// beat this one to the exit. `--notify-only --trust <garbage>` died on the hex, sending the operator
+// to fix a value this mode cannot accept in any form; `--notify-only --trust-file <missing>` died
+// one line earlier still, on a raw ENOENT stack from the readFileSync below, exit 1 and no mention
+// of the mode at all. Both sent the reader to fix the argument instead of dropping it. The refusal
+// that is always true, whatever the value is and whether or not the file exists, comes first.
+const notifyOnlyEarly = has('--notify-only')
+if (notifyOnlyEarly && (has('--trust') || has('--trust-file'))) {
+  die('--notify-only cannot apply a trust list: the sender is inside the seal and this mode never opens one. Drop --trust here and apply the trust list where the mail is pulled, or drop --notify-only and give this watcher a signer')
+}
 const trustArg = flag('--trust') || (flag('--trust-file') ? readFileSync(flag('--trust-file'), 'utf8') : '')
 const trustTokens = trustArg.split(/[\s,]+/).map(s => s.trim()).filter(Boolean)
 const trusted = trustTokens.map(s => s.toLowerCase()).filter(k => HEX64.test(k))
@@ -141,11 +157,30 @@ let stale = 0
 const jsonl = has('--jsonl')
 const onMessage = flag('--on-message')
 if (has('--on-message') && !onMessage) die('--on-message needs a path to an executable')
-if (onMessage && trusted.length === 0) die('--on-message with an empty trust list can never fire — pass --trust/--trust-file, or drop the hook. A hook that cannot fire is indistinguishable from one that is not working')
+
+// --notify-only IS THE KEYLESS WATCHER (see src/notify_only.mjs). It subscribes to the same filter,
+// opens nothing, and emits a content-free wake. That lets a watcher run on a host we do not control,
+// because there is no signer on it to lose.
+//
+// IT REFUSES A TRUST LIST RATHER THAN IGNORING ONE. Trust is evaluated on the seal's author, and
+// this mode never decrypts a seal, so a --trust here could only be accepted and dropped. That is the
+// exact shape of every defect in this file's history: a configuration that looks like a gate, reads
+// as healthy, and gates nothing. Refusing is the only answer that cannot be misread.
+const notifyOnly = notifyOnlyEarly
+// The keyed path's guard, and the reason it does not apply above: there, an empty trust list means
+// the hook can never fire. Here the hook fires on arrival and the trust list is somebody else's job.
+if (!notifyOnly && onMessage && trusted.length === 0) die('--on-message with an empty trust list can never fire — pass --trust/--trust-file, or drop the hook. A hook that cannot fire is indistinguishable from one that is not working')
+
+const COALESCE_MS = Number(flag('--coalesce-ms')) > 0 ? Number(flag('--coalesce-ms')) : 30_000
 const say = jsonl ? (...a) => console.error(...a) : (...a) => console.log(...a)
 
-const signer = loadNostrSigner()
-if (!signer) die('no signer configured — set WAGGLE_BUNKER_URI_FILE (and WAGGLE_NIP46_CLIENT_NSEC_FILE) or BUZZ_PRIVATE_KEY. Without one, sealed mail cannot be opened and this is INCONCLUSIVE, not empty')
+// NOT LOADED AT ALL under --notify-only, rather than loaded and unused. "Keyless" is the property
+// this mode exists to have, and a process that read a bunker pairing into memory and then chose not
+// to use it does not have it. `tests/notify_only.mjs` drives this tool with deliberately unreadable
+// signer credential paths and asserts it still completes, while the keyed path with the same
+// environment dies in `loadNostrSigner` — the pair, rather than a claim about one of them.
+const signer = notifyOnly ? null : loadNostrSigner()
+if (!notifyOnly && !signer) die('no signer configured — set WAGGLE_BUNKER_URI_FILE (and WAGGLE_NIP46_CLIENT_NSEC_FILE) or BUZZ_PRIVATE_KEY. Without one, sealed mail cannot be opened and this is INCONCLUSIVE, not empty')
 
 // --spool TURNS THE DEDUPE INDEX DURABLE (#557). Without it this tool keeps an in-memory `seen`
 // set, which dies with the process — so every restart is a first-ever start, the whole relay
@@ -317,6 +352,83 @@ async function open(wrap, live = true, bootstrap = false) {
   if (onMessage) track(runHook(verdict, meta))
 }
 
+// ── The keyless arrival path (--notify-only) ───────────────────────────────────────────────────
+//
+// Everything `open()` does that needs no key, and nothing that does. The order is `open()`'s order,
+// for `open()`'s reasons: verify the event first, so the id being deduped is a hash the relay cannot
+// choose. The dedupe claim is then made BEFORE the p-tag is checked — which is worth stating plainly
+// rather than describing the tidier order this comment used to claim, because a reader who trusts
+// the comment will not look. A wrap that is not addressed to us consumes an id in the index and is
+// written nowhere. That is harmless here (its id can only be claimed once, and nothing else wanted
+// it) and it is identical on the keyed path, so this introduces no new hazard — but it is not what
+// the words said, and a wrong comment about ordering is how the next person builds on a false one.
+const coalescer = makeCoalescer({ windowMs: COALESCE_MS })
+let arrived = 0
+let suppressed = 0
+
+// ONE RECORD PER ARRIVAL, ALWAYS. The dedupe claim above is per arrival and irreversible, so an
+// arrival written nowhere is an id claimed forever with nothing on disk — silent loss, not a missed
+// alarm. Only the WAKE is coalesced, and a suppressed one says so in its own words.
+async function writeNotify(meta, { arrivals = 1, coalesced = false } = {}) {
+  const record = notifyOnlyRecord({ ...meta, arrivals, coalesced })
+  // THROUGH `notifyLine`, NOT `JSON.stringify`. Two serialisers for one stream is how the two sides
+  // drift, and the measurable difference was real: the keyed branch escapes U+2028/U+2029 so a
+  // record can never break its own line framing, and a bare stringify here skipped it. It also makes
+  // the notify-only branch of `notifyLine` load-bearing — deleting it now changes what this daemon
+  // writes, where before it changed nothing any test or any caller could see.
+  const line = notifyLine(record, meta)
+  if (spool && meta.id) {
+    const w = spool.deliver({ id: meta.id, line })
+    // Same rollback as the keyed path, for the same reason: a memory claim must never outlive the
+    // durable write it stood in for, or a replay returns early and the wake is lost for good.
+    if (!w.ok) { failed++; seen.delete(meta.id); console.error(`  the spool refused a notify record — ${w.reason}; the in-memory claim is released`) }
+  }
+  if (jsonl) process.stdout.write(line + '\n')
+  else if (record.wake) console.log(`\n[MAIL] ${record.wake_reason}`)
+  return record
+}
+
+async function fireWake(meta, arrivals) {
+  const record = notifyOnlyRecord({ ...meta, arrivals })
+  if (!onMessage || !record.wake) return
+  const r = await invokeHook({ command: onMessage, verdict: record, spawn, ...meta, hasCommand: true })
+  if (!r.ok) { hookFailed++; console.error(`  ${r.why}`) }
+}
+
+async function notify(wrap, live = true, bootstrap = false) {
+  if (!verifyEvent(wrap)) {
+    failed++
+    console.error('  a wrap did not verify — its id or signature is not the event it claims to be; not counted as read')
+    return
+  }
+  if (seen.has(wrap.id)) return
+  if (spool && !spool.firstSeen(wrap.id)) return
+  seen.add(wrap.id)
+  const meta = { ...stamp(wrap), firstSeen: true, live, bootstrap: spool ? spool.bootstrap : bootstrap }
+  if (wrapAddressedTo(wrap, self).ok !== true) return
+  arrived++
+  // The two gates short-circuit the coalescer entirely: a replay and a first-start backfill are
+  // recorded and wake nobody, so they must not consume a window slot either.
+  if (!meta.firstSeen || meta.bootstrap) { await writeNotify(meta); return }
+  const d = coalescer.offer(Date.now())
+  await writeNotify(meta, { arrivals: d.fire ? d.count : 1, coalesced: !d.fire })
+  if (d.fire) await fireWake(meta, d.count)
+  else suppressed++
+}
+
+// The window edge. Without this a burst's tail would sit in `pending()` until the next arrival,
+// which on a quiet lane is never — the coalescer would have turned a delivered message into a
+// silent one, which is the failure this whole tool exists to remove.
+if (notifyOnly && watch) {
+  const timer = setInterval(async () => {
+    const d = coalescer.flush(Date.now())
+    // A WAKE ONLY. The arrivals it speaks for are already on disk, each with its own record; writing
+    // another here would double-count them in any reader that sums the stream.
+    if (d.fire) await fireWake({ id: null, receivedAt: Math.floor(Date.now() / 1000), firstSeen: true, live: true, bootstrap: false }, d.count)
+  }, Math.max(1000, COALESCE_MS))
+  timer.unref?.()
+}
+
 // The wake hook. Gated on notifyDecision, which is gated on the trust list and NOTHING else — a
 // mention must never fire this, because anyone may seal mail to this key and a mention that runs a
 // command hands every stranger a trigger on this session.
@@ -358,11 +470,28 @@ const { track, drain } = openTracker()
 
 const report = async () => {
   const stillOpen = await drain()
+  // THE TAIL OF A ONE-SHOT DRAIN. Without this, every arrival after the first sits in `pending()`
+  // and the run exits having recorded them and woken nobody — which for a `--notify-only` read with
+  // a hook is the whole point of the run, silently not done.
+  if (notifyOnly) {
+    const d = coalescer.flush(Date.now())
+    if (d.fire) await fireWake({ id: null, receivedAt: Math.floor(Date.now() / 1000), firstSeen: true, live: true, bootstrap: false }, d.count)
+  }
   // A ONE-SHOT RUN SEALS ITS BOOTSTRAP TOO. Without this a `--spool` read with no `--watch` would
   // record its backfill, never write the marker, and refuse to start ever again — index without
   // marker is exactly the "began and did not finish seeding" state `inspectSpoolDir` stops on.
   await endBootstrap('the read finished')
   if (stillOpen) console.error(`  ${stillOpen} wrap(s) were still being opened when the read ended — counted as unread, not as absent`)
+  if (notifyOnly) {
+    // Its own sentence. `inboxSummary` counts OPENED messages and would report "nothing new" for a
+    // run that recorded forty arrivals — the false all-clear this tool exists to remove, reached
+    // from a new direction. Wakes and arrivals are both named because "1 wake" alone is unreadable
+    // next to 40 arrivals, and an operator cannot derive one from the other.
+    console.error(`\n${answered} relay(s) answered; ${arrived} wrap(s) addressed to this key, ${suppressed} coalesced into an earlier wake. Nothing was opened: this is a KEYLESS watcher and no sender was authenticated. Pull with a signer to learn who wrote them.`)
+    if (hookFailed > 0) console.error(`${hookFailed} wake(s) failed to run the --on-message hook. The ARRIVALS are recorded; the WAKE-UP is what did not happen.`)
+    if (failed > 0) console.error(`${failed} wrap(s) could not be recorded.`)
+    process.exit(answered === 0 || failed > 0 || hookFailed > 0 ? 3 : 0)
+  }
   const summary = inboxSummary({ verdicts, failed: failed + stillOpen, reachable: answered, scanned: seen.size })
   say(`\n${summary.text}`)
   // Said out loud. "Nothing new" next to 40 messages held back for age is the same false all-clear
@@ -482,10 +611,16 @@ await Promise.all(RELAYS.map(url => new Promise(resolve => {
         // code. It holds two populations the relay does not distinguish: messages already delivered,
         // and messages that arrived DURING the disconnect and have been seen by nobody. Only the
         // dedupe index separates them, which is why the wake gates on that and not on this.
-        track(open(m[2], live, bootstrap).catch(err => {
+        // BOTH ARMS ARE TRACKED, and they are written as two statements rather than one ternary
+        // because `tests/return_lane_inbox.mjs` counts the literal `track(open(` to prove the opener
+        // is never started untracked (#505). A ternary inside `track(...)` is still correct and still
+        // invisible to that check, which would have retired the guard silently.
+        const onThrow = err => {
           failed++
           console.error(`  an opener threw — ${String(err?.message || err).slice(0, 160)}`)
-        }))
+        }
+        if (notifyOnly) track(notify(m[2], live, bootstrap).catch(onThrow))
+        else track(open(m[2], live, bootstrap).catch(onThrow))
         return
       }
       if (m[0] === 'EOSE') {

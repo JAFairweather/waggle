@@ -264,6 +264,11 @@ check(/anyone may seal mail to this key, and being addressed is not authority/.t
   // a live one; the count is what distinguishes "the opener is tracked" from "the word appears".
   check((code.match(/track\(open\(/g) || []).length === 1,
     '  …and the opener is TRACKED where it is started, exactly once — an untracked open is the original defect')
+  // THE SAME GUARANTEE FOR THE KEYLESS ARM. `--notify-only` dispatches a second async function down
+  // the same path; an untracked one drops its records on shutdown exactly as an untracked open would,
+  // and the check above cannot see it.
+  check((code.match(/track\(notify\(/g) || []).length === 1,
+    '  …and so is the keyless notifier, exactly once')
   check(/await drain\(\)/.test(code), '  …and the read drains before it summarises')
   check(/ws\.onclose\s*=/.test(code), 'the subscription handles onclose — a cleanly closed relay used to leave --watch deaf and silent')
   // Presence FIRST. The earlier form of this check compared two indexOf results, and indexOf
