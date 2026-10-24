@@ -65,11 +65,13 @@ ok('the console re-validates the chosen cap against the subject shape before sig
 
 // ── the two signing surfaces agree ────────────────────────────────────────────
 // One operator, two ways to sign the same grant. If they disagree, one of them is wrong
-// and nothing tells you which.
+// and nothing tells you which. The one deliberate exception is `shadow`: its subject is the
+// signer's own key, not an agent, so it is pen-only and checked on its own below.
 const consoleAgent = issuable('agent').filter(o => o.ok).map(o => o.cap).sort()
 const consoleChannel = issuable('channel').filter(o => o.ok).map(o => o.cap).sort()
-const cliAgent = (grantSrc.match(/agentRaw \? \[([^\]]+)\]/) || [, ''])[1]
+const cliAgentAll = (grantSrc.match(/agentRaw \? \[([^\]]+)\]/) || [, ''])[1]
   .split(',').map(s => s.trim().replace(/'/g, '')).filter(Boolean).sort()
+const cliAgent = cliAgentAll.filter(c => c !== 'shadow')
 const cliChannel = (grantSrc.match(/agentRaw \? \[[^\]]+\] : \[([^\]]+)\]/) || [, ''])[1]
   .split(',').map(s => s.trim().replace(/'/g, '')).filter(Boolean).sort()
 
@@ -81,6 +83,10 @@ ok('task-relay is issuable over an agent — the docs require it and the runtime
   consoleAgent.includes('task-relay') && cliAgent.includes('task-relay'))
 ok('task+act is issuable, so its label is no longer a promise nothing can keep',
   consoleAgent.includes('task+act'))
+ok('shadow is pen-only: the CLI signs it, the console never offers it',
+  cliAgentAll.includes('shadow') && !issuable('agent').some(o => o.cap === 'shadow') && !issuable('channel').some(o => o.cap === 'shadow'))
+ok('…and the CLI scopes a shadow to the signer\'s own key',
+  /cap === 'shadow' && subject !== pk\) die\(/.test(grantSrc))
 
 // ── the deliberate exclusions, with their reasons on screen ───────────────────
 const readOpt = issuable('channel').find(o => o.cap === 'admit+read')
