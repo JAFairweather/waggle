@@ -135,7 +135,6 @@ if (cmd === 'whoami') {
   console.log(`         npub:  ${nip19.npubEncode(pk)}`)
   console.log(`\nSet this in the bridge's config.public.grantors to authorize it, e.g.:`)
   console.log(`  "grantors": ["${pk}"]`)
-  await signer.close()
 } else if (cmd === 'issue') {
   // --to accepts a comma-separated list so a batch signs over ONE signer connection. Each
   // invocation is a fresh process and therefore a fresh NIP-46 session; issuing five grants as
@@ -183,7 +182,6 @@ if (cmd === 'whoami') {
     console.log(`440 ${ev.id}\n  grantee ${g}\n  scope   ${hash.slice(0, 16)}… (salted; subject never public)\n  cap     ${cap}\n  grantor ${pk}`)
     for (const line of await publish(ev)) console.log('  ' + line)
   }
-  await signer.close()
 } else if (cmd === 'revoke') {
   const target = flag('--grant') || die('revoke needs --grant <440 event id>')
   if (!HEX64.test(target)) die('--grant must be a 64-hex event id')
@@ -239,3 +237,6 @@ if (cmd === 'whoami') {
 } else {
   die('usage: grant.mjs issue --to <npub> (--channel <uuid> | --agent <npub>) | revoke --grant <id> | list')
 }
+// Once, after every command. The bunker's relay connection keeps node alive, so a command that
+// skipped this never exited: `revoke` hung after its first 441 and a shell loop never reached the next.
+await signer.close()
