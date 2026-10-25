@@ -3,6 +3,7 @@
 //
 //   grant.mjs issue  --to <npub|hex> --channel <uuid> [--cap admit]    admit to a channel (440)
 //   grant.mjs issue  --to <npub|hex> --agent <npub|hex> [--cap task]   may TASK that agent (440)
+//   grant.mjs issue  --to <npub|hex> --cap shadow                       your voice (440)
 //   grant.mjs revoke --grant <440 event id>                                sign + publish a 441
 //   grant.mjs list                                                          own 440/441s off the relays
 //
@@ -150,7 +151,8 @@ if (cmd === 'whoami') {
   // The second exists because an agent's own allowlist is an honour system: whatever list it
   // reads, it must choose to obey. Issued as a grant instead, the policy is authenticated,
   // revocable, and enforced by the delivery code before the agent ever sees the message.
-  const agentRaw = flag('--agent')
+  // A shadow is scoped to the signer's own key, so it needs no --agent.
+  const agentRaw = flag('--agent') || (flag('--cap') === 'shadow' && !flag('--channel') ? pk : null)
   const chanRaw = flag('--channel')
   if (!agentRaw && !chanRaw) die('issue needs --channel <uuid> (admit) or --agent <npub|hex> (task)')
   if (agentRaw && chanRaw) die('--channel and --agent are different scopes; pass one')
@@ -161,9 +163,12 @@ if (cmd === 'whoami') {
   // The console offers the same sets (console/index.html ISSUABLE), so the two signing
   // surfaces cannot disagree about what is grantable. `task-relay` is a carrier grant
   // over an agent, enforced by the agent's runtime rather than by this bridge; `admit+read`
-  // stays out of both because conveying it means handling channel key material.
-  const allowed = agentRaw ? ['task', 'task+act', 'task-relay'] : ['admit']
+  // stays out of both because conveying it means handling channel key material. `shadow` is
+  // pen-only: its subject is the signer's own key, not an agent, and nvoy brokers give the grantee
+  // the signer's own live task grants under this one revocable grant (nvoy grant_fold.mjs).
+  const allowed = agentRaw ? ['task', 'task+act', 'task-relay', 'shadow'] : ['admit']
   if (!allowed.includes(cap)) die(`--cap ${cap} is not valid for this scope; expected one of: ${allowed.join(', ')}`)
+  if (cap === 'shadow' && subject !== pk) die('--cap shadow is scoped to your own key: drop --agent, or pass your own')
   // One fresh salt PER grant, never one for the batch: a shared salt would make two grants into
   // the same subject linkable, which is the exact property the salt exists to prevent.
   for (const g of grantees) {
