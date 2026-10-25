@@ -441,6 +441,7 @@ import { verifyEvent, nip19, generateSecretKey, getPublicKey } from 'nostr-tools
 import { verifyNvoyVisibility } from './nvoy-visibility.mjs'
 import { groupByGrantee, byLiveThenNewest, scopePhrase, givenOn } from './access-list.mjs'
 import { CAP_LABEL, capLabel, CAP_ENFORCER, capEnforcer, ISSUABLE, describeGrant } from './capability-vocabulary.mjs'
+import { parseIntent, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { scopeHash } from './scope-hash.mjs'
 import { mintAgentKey } from './mint-agent-key.mjs'
 import { proveCustody, custodyNonce } from './bunker-custody.mjs'
@@ -712,6 +713,34 @@ const saveSession = (str) => { try { str ? localStorage.setItem(SESSION_KEY, str
 const readSession = () => { try { return localStorage.getItem(SESSION_KEY) } catch { return null } }
 
 const setAuth = (msg, cls = '') => { const s = $('authst'); s.className = 'status ' + cls; s.textContent = msg }
+
+// A link from the beeswarm page, naming a grant to issue or revoke by prefix. It is applied once,
+// after this key's own grants have been read and verified, because those are the only keys and ids
+// it may resolve against; and it only ever fills a form. See console/deep-link.mjs.
+let linkIntent = parseIntent(location.hash)
+if (linkIntent) setAuth(linkIntent.action === 'revoke' ? 'Sign in to revoke the grant this link names.' : 'Sign in to fill in the grant this link names.')
+function applyIntent() {
+  if (!linkIntent || !signer || lastGrants === null || lastGrantor !== signerPk) return
+  const intent = linkIntent
+  linkIntent = null
+  history.replaceState(null, '', location.pathname + location.search)
+  const st = $('issuest')
+  const refuse = why => { st.className = 'status err'; st.textContent = `The link was not filled in — ${why}.`; $('issue-panel').scrollIntoView({ behavior: 'smooth', block: 'center' }) }
+  if (intent.action === 'invalid') return refuse(intent.why)
+  if (intent.action === 'revoke') {
+    const r = resolveRevoke(intent, lastGrants)
+    return r.grant ? window.__revoke(r.grant.id, short(r.grant.grantee)) : refuse(r.why)
+  }
+  const r = resolveGrant(intent, { known: [signerPk, ...lastGrants.map(g => g.grantee)], issuable: ISSUABLE.agent })
+  if (r.why) return refuse(r.why)
+  $('g-to').value = nip19.npubEncode(r.to)
+  $('g-subject').value = nip19.npubEncode(r.on)
+  refreshCaps()
+  if (r.cap) { $('g-cap').value = r.cap; refreshCaps() }
+  st.className = 'status'
+  st.textContent = `Filled in from the link: ${short(r.to)} over ${short(r.on)}. Nothing is signed until you preview and confirm.`
+  $('issue-panel').scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
 // `remember` is the already-serialized session string, or null to persist nothing (the local path).
 async function adopt(s, label, remember = null) {
   // The operator's identity is changing, so nothing belonging to the previous one may survive it —
@@ -1603,6 +1632,7 @@ $('go').addEventListener('click', async () => {
     lastGrantor = grantor
     lastSubjectNote = subject ? ' bound to that subject' : ''
     renderRows()
+    applyIntent()
     // Do not make a profile relay stall hold the verified grant results hostage. Render first,
     // then enrich each key with its latest signed kind:0 identity when the profile reads return.
     void loadProfiles(out.map(g => g.grantee))
