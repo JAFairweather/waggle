@@ -87,6 +87,8 @@ ok('shadow is pen-only: the CLI signs it, the console never offers it',
   cliAgentAll.includes('shadow') && !issuable('agent').some(o => o.cap === 'shadow') && !issuable('channel').some(o => o.cap === 'shadow'))
 ok('…and the CLI scopes a shadow to the signer\'s own key',
   /cap === 'shadow' && subject !== pk\) die\(/.test(grantSrc))
+ok('the CLI closes its signer once, after every command, so a revoke in a loop exits',
+  (grantSrc.match(/signer\.close\(\)/g) || []).length === 1 && /\n\}\n(\/\/[^\n]*\n)*await signer\.close\(\)\n$/.test(grantSrc))
 
 // ── the deliberate exclusions, with their reasons on screen ───────────────────
 const readOpt = issuable('channel').find(o => o.cap === 'admit+read')
