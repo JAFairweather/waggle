@@ -1,13 +1,15 @@
 # Hive manager — spec
 
-Issue: #613. Status: **draft for the owner to read. No code is written against this until he has.**
+Issue: #613. Status: **read by the owner on 2026-10-26. Decisions D1–D6 are accepted, and the
+one-list rule is added.**
 
 ## The outcome
 
 The owner manages the hive from one page and never from a shell. #613 lists eight criteria, and the
 work is done only when each one has been checked against the live system:
 
-1. He signs into the waggle console with his Bunker and sees every agent, grouped by channel.
+1. He signs into the waggle console with his Bunker and sees **one list** of every identity in the
+   hive, grouped by channel. Every identity is an agent, or could become one.
 2. Each agent shows four answers: who can give it work, what it may do without asking, where it can
    post, and what it holds.
 3. Adding an agent, changing who can give it work, and revoking are signed by his Bunker in the
@@ -57,10 +59,34 @@ Measured on 2026-10-25/26 against origin/main of waggle, nvoy and nact:
   Grants have already been evicted from public relays twice (memory: grants-live-only-on-ditto), and
   #457 reports a partial read as a complete one.
 
-## The model: one agent, four answers, one source each
+## The model: one list, four answers, one source each
 
-An **agent** is a pubkey that has a fleet manifest. It is not an Access row and not a roster row.
-Each answer has exactly one source of truth, and the page never invents one.
+**One list. Every identity in the hive is an agent, or could become one.** The owner ruled this on
+2026-10-26. The list is keyed by pubkey, and it replaces all three registries. A row exists for every
+key the hive knows about:
+- the owner himself;
+- every key that holds or grants a live grant;
+- every member of a hive channel (the Buzz roster);
+- every key that has published an agent card (C1);
+- every row in the bridge's 30078 roster, nvoy's 10440 index and nact's identities.
+
+The owner, Dead Rabbit, the waggle bridge, LukeDog, GrokDoggyDog and an identity with no tools yet
+are all rows of the same kind. Each row is named from its kind:0. What differs is only what each row
+**has**:
+
+| Has | Shown as |
+|---|---|
+| A fleet manifest (an agent card) | **Tools on nave**, plus the box its harness runs on |
+| Grants, given or held | Its role chips |
+| Nothing but a key | **No tools yet**, with an **Onboard** button |
+| No key at all (a name on yoga with no identity) | **No identity yet**, with an **Onboard** button that starts at step 2 |
+
+Onboarding is therefore not a separate place. It is the same row gaining a key, then tools, then a
+role. "Is this an agent?" stops being a question: every row is one, and the row says how far along it
+is.
+
+Each answer has exactly one source of truth, and the page never invents one. For a row with no tools,
+the answers come from grants alone, and the page says so.
 
 | Answer | Source of truth | How the page reads it |
 |---|---|---|
@@ -137,8 +163,10 @@ tabs.
 
 - **Sign in.** The Bunker (NIP-46) is the default, through the existing `nave-connect.mjs`. NIP-07
   stays as a fallback.
-- **Grouped by channel.** Each section is a channel, named from the agent cards. A **Just me** section
-  holds DM-only facts. An agent in two channels appears in both, with the same card.
+- **One list, grouped by channel.** Each section is a channel, named from the agent cards. Any
+  identity in no channel goes under **Not in a channel yet**, so no key ever drops off the list. A
+  **Just me** section holds DM-only facts. An identity in two channels appears in both, with the same
+  card.
 - **Agent row.** It shows the name, the box it runs on, and its role chips. Expanding the row shows
   the four answers as sentences ("You and DJ Codex can give it work"), never as hex.
 - **Change.** Each answer that a grant controls has a Change button:
@@ -159,7 +187,8 @@ tabs.
 ## Onboarding (criterion 8)
 
 **Tools on nave, agent on its own box.** That is the owner's ruling of 2026-10-26, and it matches
-`nvoy docs/HARNESS_PLACEMENT.md`. A new agent goes through six steps:
+`nvoy docs/HARNESS_PLACEMENT.md`. Onboarding starts from a row on the one list. A row that already
+has a key skips step 2. A new agent goes through six steps:
 
 1. **Name and box.** The owner names the agent, picks its box (yoga, the Mac, …) and its harness type
    (Claude Code, Codex, pi).
@@ -188,7 +217,10 @@ run there by James or rabidrabbit. Nobody else touches yoga.
 
 ## Decisions for the owner
 
-| # | Decision | Recommendation |
+**All six were decided on 2026-10-26: the owner accepted every recommendation, and added the one-list
+rule above.**
+
+| # | Decision | Recommendation (accepted) |
 |---|---|---|
 | **D1** | Where the console is served. `serve-console.mjs:6-10` says loopback only, because a hosted page could show one event and hand the signer another. But "no command line" needs a hosted page, and one is already live at `waggle.nave.pub/console/`. | **Hosted.** The page shows its build hash, and the agent cards' build hash is the cross-check. Unverified: whether the Bunker's approval screen shows the kind of event being signed. If it does, a substituted page cannot disguise a 440 or 441 as something else. If it doesn't, this risk stands and is yours to accept. I check it before M2. |
 | **D2** | How the browser learns manifests. | **C1 agent cards**, signed by each agent. Rejected alternative: an HTTP endpoint on the fleet, which would be a new server to trust and to keep alive. |
@@ -217,7 +249,8 @@ Each step is one PR, reviewed by mydude, with its deploy verified.
    fixes expiry and #457.
 3. **nvoy C1:** the agent card is published on start and on manifest change. Check that all five
    cards are visible on the relays.
-4. **waggle M1:** the read-only board, covering criteria 1, 2 and 4.
+4. **waggle M1:** the one list, read-only, covering criteria 1, 2 and 4. Every key from every source
+   lands on it, and a test asserts that no source can contribute a key the list drops.
 5. **waggle M2:** Change and revoke with a cold read-back (criterion 3).
 6. **waggle M3:** What happens if (criterion 5).
 7. **Retire:** beeswarm links, the tabs, the nact redirects and the docs (criterion 6). Then the
