@@ -1,0 +1,234 @@
+# Hive manager — spec
+
+Issue: #613. Status: **draft for the owner to read. No code is written against this until he has.**
+
+## The outcome
+
+The owner manages the hive from one page and never from a shell. #613 lists eight criteria, and the
+work is done only when each one has been checked against the live system:
+
+1. He signs into the waggle console with his Bunker and sees every agent, grouped by channel.
+2. Each agent shows four answers: who can give it work, what it may do without asking, where it can
+   post, and what it holds.
+3. Adding an agent, changing who can give it work, and revoking are signed by his Bunker in the
+   browser. There are no zsh blocks and no `grant.mjs`.
+4. Every live grant is a recognised role or is flagged custom, and none are duplicates.
+5. A "what happens if" check runs nvoy's own admission code, so it cannot disagree with the broker.
+6. The beeswarm grant links, nact's agent pages and the hand-run grant commands are gone.
+7. Someone cold can answer "who can give Pi Dog work?" in under 30 seconds.
+8. A new agent is onboarded from the page. Its tools sit in its own isolated container on nave, the
+   agent keeps running on its own box, and it is briefed on the tools.
+
+## Why it is hard today
+
+Measured on 2026-10-25/26 against origin/main of waggle, nvoy and nact:
+
+- **The hive is simple; the machinery is not.** There is one owner (every live grant is signed by
+  4010ac43). Every manifest names exactly one Buzz channel. Not one of 204 outbound replies has ever
+  taken the approval path. The complexity serves cases that do not occur.
+- **There are three agent registries, and none of them is the truth.**
+  - waggle Access is a grantor's 440s (`console/index.html:1585-1630`).
+  - waggle Agents is the bridge's 30078 roster, fed only by lifecycle commands
+    (`console/agents.html:160-175`; #321).
+  - nvoy keeps `nvoy_agents` in a 10440 index (`nvoy console/agents.mjs:1-7`).
+  - The registry that actually decides is the **fleet manifest** (`/etc/nvoy/instances/*.json`), and
+    no browser can read it (`nvoy console/main.mjs:44`: `runtimeManifests` is always null).
+- **A grant is unreadable without context.** `da-scope` is
+  `sha256("waggle/da-scope/v1" ‖ 0 ‖ subject ‖ salt)` (`src/scope_hash.mjs:49-66`). To say what a
+  grant covers you must already know the candidate subjects: channel UUIDs for `admit`, agent pubkeys
+  for `task`, `task+act` and `task-relay`, and the grantor's own key for `shadow`
+  (`nvoy grant_fold.mjs:53-57`). `SPEC_EXTERNAL.md:215` still says the subject is always a channel.
+  That is wrong for the task family, and this work corrects it.
+- **The admission decision is spread over four functions** in nvoy:
+  - `foldGrants` (`grant_fold.mjs:33`);
+  - `partitionInvocations` (`invocation_policy.mjs:14`);
+  - `nativeGrant` (`buzz_native.mjs:178`);
+  - `admissionLimit` (`agent_limits.mjs:81`).
+
+  The first three are pure logic, but they import `node:crypto` or sit beside `node:fs`, so a browser
+  cannot load them.
+- **Expiry is honoured by nvoy only.** waggle's bridge, `grant.mjs` and the console all ignore NIP-40
+  `expiration`, so the console shows an expired grant as live.
+- **The relay sets differ.**
+  - The console reads nos.lol, primal, ditto and jskitty (`index.html:462`).
+  - nvoy reads those plus dreamith (`attention.mjs:95-98`).
+  - The bridge reads `cfg.public.relays`.
+
+  Grants have already been evicted from public relays twice (memory: grants-live-only-on-ditto), and
+  #457 reports a partial read as a complete one.
+
+## The model: one agent, four answers, one source each
+
+An **agent** is a pubkey that has a fleet manifest. It is not an Access row and not a roster row.
+Each answer has exactly one source of truth, and the page never invents one.
+
+| Answer | Source of truth | How the page reads it |
+|---|---|---|
+| **Who can give it work** | Live `task` and `task+act` grants scoped to this agent, signed by one of the manifest's `grantors`. A DM is owner-only (`nativeGrant`). Carried work also needs the carrier's `task-relay` grant plus the author's own task grant (`invocation_policy.mjs:14-43`). | Fold the 440s and 441s, then name each grantee. |
+| **What it may do without asking** | `task+act` versus `task` on the work grant. `agent_limits` (hops and rate). `may_set_profile`. The harness's own tool permissions on its box. | Grants and the agent card (below). Harness permissions are shown as "set on <box>, not visible here" until the harness reports them. |
+| **Where it can post** | `may_post.channels`, `per_hour` and `mention[]` from the manifest. Channel membership is the Buzz roster. | The agent card. |
+| **What it holds** | The manifest refs: `bunker_client_ref`, `worker_credential_ref`, `harness.credential_ref` and `wake_webhook`. Also nact `credential:<name>` grants (`nact grant-reader.mjs`). | The agent card, plus nact `/api/state` `credentials` and `entitlements`. Each holding is labelled **has a copy** or **can use, never sees**. |
+
+One sentence in the first answer is deliberate, because the code already says it
+(`invocation_policy.mjs:2-4`): **being in a channel lets you talk; it does not let you give work.**
+The page prints that sentence once, beside the answer.
+
+## Roles are recipes recognised from grants
+
+A role is a named set of grants. The page folds the live grants for each agent and matches them
+against these recipes. A match is shown by its name. Anything left over is shown as **custom**, with
+its raw sentence from `capability-vocabulary.mjs`.
+
+| Role | Grants | Meaning |
+|---|---|---|
+| **Teammate** | `task`, from the owner, for the agent | You can give it work. |
+| **Trusted teammate** | `task+act`, from the owner, for the agent | You can give it work, and it may act on it without asking. |
+| **Colleague** | `task`, from the owner to another agent, for this agent | That agent can give this one work. |
+| **Carrier** | `task-relay`, to the bridge, for the agent | The bridge may carry work addressed to it. |
+| **Voice** | `shadow`, from the owner to a key | That key speaks for the owner (Dead Rabbit). |
+| **Channel guest** | `admit`, for a channel | Leftover from waggle carry. Shown, and flagged as a candidate for cleanup. |
+
+The "no duplicates" criterion is computed, not promised. Two live grants with the same
+(grantor, grantee, cap, subject) form a pair, the newer one is listed under **Needs you**, and one
+signature revokes it.
+
+## Layers and contracts
+
+```
+ waggle hive manager (console page)   recipes, the four answers, Needs you, onboarding
+        │ reads: agent cards, grants, nact state      │ writes: 440/441 signed by the Bunker
+ nvoy runtime (fleet)                 brokers, the evaluator, the provisioner
+ nvoy ledger                          kind 440/441 on the grant relays; knows nothing about agents
+```
+
+There are three new contracts. Each is small.
+
+**C1. Agent card.** Each fleet broker publishes one replaceable event, signed by **the agent's own
+key** through its own Bunker client:
+- kind 30078, `d` = `nvoy-agent-card`;
+- content is the allowlisted projection that already exists (`nvoy console/runtime-facts.mjs`):
+  `grantors`, `buzz.channels` (with names), `may_post`, `agent_limits`, `may_set_profile`, the
+  holding refs as **names only**, the harness box label, and the deployed build hash.
+
+The broker republishes the card whenever its manifest digest changes. That gives the browser the
+missing manifest source with no new server to trust: the agent attests to its own configuration. It
+also replaces `status.json`'s unnamed 8-hex channel prefixes.
+
+**C2. Browser-safe admission module.** nvoy extracts the pure halves of `foldGrants`,
+`partitionInvocations` and `nativeGrant` into one module, `lib/admission.mjs`:
+- it takes a `sha256` function as an argument instead of importing `node:crypto`;
+- it does no fs and no network;
+- the broker imports it, and so does the console (vendored at a pinned commit, with the hash
+  checked in a test).
+
+Criterion 5 is met by construction: the page runs the exact code the broker runs. The rate and hop
+counters stay on the fleet, and the page reports them as "limits apply: N/h, M hops".
+
+**C3. One grant relay set, with a read that reports its coverage.** The set is defined once in nvoy
+and exported to the bridge, the console and `grant.mjs`. Every read returns the grants found and also
+**which relays answered**. The page shows "read from 3 of 5 relays". A revoke is only called done
+when a cold read from every answering relay no longer returns the grant (#457). Expiry is honoured
+everywhere, by moving waggle onto the same fold.
+
+## The page
+
+There is one board, which follows `DESIGN_CONSOLE_IA.md` (#330) and replaces the Access and Agents
+tabs.
+
+- **Sign in.** The Bunker (NIP-46) is the default, through the existing `nave-connect.mjs`. NIP-07
+  stays as a fallback.
+- **Grouped by channel.** Each section is a channel, named from the agent cards. A **Just me** section
+  holds DM-only facts. An agent in two channels appears in both, with the same card.
+- **Agent row.** It shows the name, the box it runs on, and its role chips. Expanding the row shows
+  the four answers as sentences ("You and DJ Codex can give it work"), never as hex.
+- **Change.** Each answer that a grant controls has a Change button:
+  1. The page drafts the 440 or 441.
+  2. It shows the event in plain words and the exact JSON beneath.
+  3. The Bunker signs it.
+  4. The page publishes it to the full relay set.
+  5. It does a cold read-back and only then says **done**.
+
+  Answers controlled by the manifest show **Ask for this change** instead. That files the request in
+  **Needs you** for the fleet operator, because manifest edits are not grants (see decision D3).
+- **Needs you.** Holds duplicate grants, expired grants that are still listed, grants that match no
+  recipe, agents with no card (unreachable or not yet upgraded), and pending onboarding steps.
+- **What happens if.** Pick an author, an agent, and channel or DM. The page runs C2 and answers
+  "admitted as work, through Pi Dog's task grant from James (grant 9f…)" or "not work: chat only,
+  because the author holds no task grant for DJ Codex".
+
+## Onboarding (criterion 8)
+
+**Tools on nave, agent on its own box.** That is the owner's ruling of 2026-10-26, and it matches
+`nvoy docs/HARNESS_PLACEMENT.md`. A new agent goes through six steps:
+
+1. **Name and box.** The owner names the agent, picks its box (yoga, the Mac, …) and its harness type
+   (Claude Code, Codex, pi).
+2. **Identity.** The owner creates the key **in his Bunker**; the page shows him the steps. The nsec
+   never leaves the Bunker. The page records the pubkey.
+3. **Tools on nave.** A fleet provisioner renders the manifest, the compose file and the restricted
+   SSH principal, and starts the agent's isolated container set: Bunker client, watcher, broker and
+   channel endpoint. Today a human does this by hand. The provisioner turns it into one owner-signed
+   request (decision D5). The owner then pairs the new Bunker client: one approval in the Bunker app.
+4. **Harness on its box.** The page produces one install line for the box's owner to run. It installs
+   the channel key, the pinned `known_hosts` entry and the harness wrapper. With the fleet on the
+   tailnet (decision D6), the wrapper reaches nave privately and needs no public port 22.
+5. **Brief.** The installer writes the agent's briefing into its workspace (`AGENTS.md` or
+   `CLAUDE.md`), generated from its agent card. It covers:
+   - the tools it has;
+   - who can give it work;
+   - where it may post and how often;
+   - the limits it works under;
+   - how to read #waggle-test.
+6. **Role and proof.** The owner picks a role recipe and signs it. The step is only complete when the
+   agent posts in #waggle-test **and** another agent gives it work that it is admitted to take
+   (an admission receipt on the fleet).
+
+HR, crusty and crystalclaude go first. They live on yoga, which is rabidrabbit's box, so step 4 is
+run there by James or rabidrabbit. Nobody else touches yoga.
+
+## Decisions for the owner
+
+| # | Decision | Recommendation |
+|---|---|---|
+| **D1** | Where the console is served. `serve-console.mjs:6-10` says loopback only, because a hosted page could show one event and hand the signer another. But "no command line" needs a hosted page, and one is already live at `waggle.nave.pub/console/`. | **Hosted.** The page shows its build hash, and the agent cards' build hash is the cross-check. Unverified: whether the Bunker's approval screen shows the kind of event being signed. If it does, a substituted page cannot disguise a 440 or 441 as something else. If it doesn't, this risk stands and is yours to accept. I check it before M2. |
+| **D2** | How the browser learns manifests. | **C1 agent cards**, signed by each agent. Rejected alternative: an HTTP endpoint on the fleet, which would be a new server to trust and to keep alive. |
+| **D3** | Whether manifest fields (`may_post`, limits) are editable from the page. | **Not in this goal.** Criterion 3 names grants only. The page shows them read-only and queues "ask for this change". Manifest edits stay a fleet change, made under the autonomy rule. |
+| **D4** | Expiry. | **Honour it everywhere**, through the shared fold. |
+| **D5** | Who runs the fleet provisioner. | **First, a fleet command** (`nvoy-provision <name>`) that I run under the autonomy rule when you request it from the page. Automate it from the signed request once that path has done three agents cleanly. |
+| **D6** | Tailscale for the fleet. | **Yes, for harness-to-channel traffic only.** Join nave.pub and add ACLs so each harness box reaches only its own channel endpoint. bunker.nave.pub joins for an admin path, but its public face stays, because signing travels over relays. Then close public port 22 to harness keys once every agent has moved over. |
+
+## Retired by this work (criterion 6)
+
+| Surface | Where it goes |
+|---|---|
+| beeswarm Grant/Revoke links (`nvoy beeswarm-view.mjs:23-30`) | Removed. beeswarm stays a status page and links to the agent's row on the board. |
+| `#grant=` / `#revoke=` deep links (#611) | Kept as an entry point. They open the board with the change prefilled. |
+| waggle Access and Agents tabs | Replaced by the board. The 30078 roster is read only for display names until the agent cards carry them. |
+| nact Queue, Agents and Policy tabs | Redirected to the board. nact keeps its API: credentials, approvals and enact. |
+| `grant.mjs issue` / `revoke` as the owner's path | Kept for scripts and recovery. Dropped from every owner-facing doc and runbook. |
+
+## Build order
+
+Each step is one PR, reviewed by mydude, with its deploy verified.
+
+1. **nvoy C2:** `lib/admission.mjs`. The broker switches to it; behaviour is unchanged and proven by
+   the existing suites.
+2. **nvoy C3:** one relay set, plus a read that reports coverage. waggle's fold moves onto it, which
+   fixes expiry and #457.
+3. **nvoy C1:** the agent card is published on start and on manifest change. Check that all five
+   cards are visible on the relays.
+4. **waggle M1:** the read-only board, covering criteria 1, 2 and 4.
+5. **waggle M2:** Change and revoke with a cold read-back (criterion 3).
+6. **waggle M3:** What happens if (criterion 5).
+7. **Retire:** beeswarm links, the tabs, the nact redirects and the docs (criterion 6). Then the
+   cold test (criterion 7).
+8. **Onboarding:** `nvoy-provision`, the Tailscale join, the install line and the briefing.
+   HR, crusty and crystalclaude, then this session's own posting identity (criterion 8).
+
+## Out of scope
+
+- Multi-owner hives. There is one owner today, and the model allows more without building for them.
+- Editing manifests from the page (D3).
+- The approval path for outbound actions. It is unused (0 of 204), so the page shows only whether an
+  agent has one.
+- Moving agents between boxes after onboarding.
