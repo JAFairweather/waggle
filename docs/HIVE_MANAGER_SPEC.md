@@ -140,12 +140,14 @@ The broker republishes the card whenever its manifest digest changes. That gives
 missing manifest source with no new server to trust: the agent attests to its own configuration. It
 also replaces `status.json`'s unnamed 8-hex channel prefixes.
 
-**C2. Browser-safe admission module.** nvoy extracts the pure halves of `foldGrants`,
-`partitionInvocations` and `nativeGrant` into one module, `lib/admission.mjs`:
-- it takes a `sha256` function as an argument instead of importing `node:crypto`;
-- it does no fs and no network;
-- the broker imports it, and so does the console (vendored at a pinned commit, with the hash
-  checked in a test).
+**C2. Browser-safe admission module.** nvoy moves the pure rules into one module,
+`mcp/tools/admission.mjs`:
+- the grant fold (`foldGrantsWith`), `nativeGrant`, the hop tag and NIP-40 expiry;
+- `foldGrantsWith` takes the scope-hash function as an argument instead of importing `node:crypto`;
+- it does no fs and no network. `invocation_policy.mjs` and `channel_task_carry.mjs` build only on it
+  and on `nostr-tools/pure`, and a test walks that import graph to keep it that way;
+- the broker imports it through the old module names, unchanged. The console vendors it at a pinned
+  commit, with the hash checked in a test.
 
 Criterion 5 is met by construction: the page runs the exact code the broker runs. The rate and hop
 counters stay on the fleet, and the page reports them as "limits apply: N/h, M hops".
@@ -243,7 +245,7 @@ rule above.**
 
 Each step is one PR, reviewed by mydude, with its deploy verified.
 
-1. **nvoy C2:** `lib/admission.mjs`. The broker switches to it; behaviour is unchanged and proven by
+1. **nvoy C2:** `mcp/tools/admission.mjs`. The broker switches to it; behaviour is unchanged and proven by
    the existing suites.
 2. **nvoy C3:** one relay set, plus a read that reports coverage. waggle's fold moves onto it, which
    fixes expiry and #457.
