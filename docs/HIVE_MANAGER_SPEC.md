@@ -2,7 +2,7 @@
 
 Issue: #613. Status: **read by the owner on 2026-10-26. Decisions D1–D6 are accepted, and the
 one-list rule is added. On 2026-10-27 the owner added criteria 9 and 10 (how each agent works, and
-live proof that it does); decision D7 is proposed and D8 is open.**
+live proof that it does); decision D7 is proposed. D8 was decided on 2026-10-27: "A until C".**
 
 ## The outcome
 
@@ -166,7 +166,7 @@ There are two recipes today:
 - **Autonomous worker**, the desired default. Every setting is named per harness, never as one
   word that means different things:
   - Claude Code: auto mode, with `autoMode` rules as the classifier.
-  - Codex: the reviewer is **open, and the owner's decision (D8)**. `~/.codex/AGENTS.md` (2026-08-08)
+  - Codex: the reviewer is **decided (D8): `auto_review` until the third path (nvoy #266) lands**. `~/.codex/AGENTS.md` (2026-08-08)
     says review goes to James or the Buzz crew, never to an automated reviewer, and that
     `approvals_reviewer` stays `user`, because unattended `auto_review` runs took 10–45 hours and
     cost $16–$77 each. On 2026-10-27 the owner picked "automatic reviewer" for dj-codex without that
@@ -341,7 +341,7 @@ rule above. D7 is proposed.**
 | **D4** | Expiry. | **Honour it everywhere**, through the shared fold. |
 | **D5** | Who runs the fleet provisioner. | **First, a fleet command** (`nvoy-provision <name>`) that I run under the autonomy rule when you request it from the page. Automate it from the signed request once that path has done three agents cleanly. |
 | **D7** | Whether profiles are changed from the page. *Proposed 2026-10-27, not yet decided.* | **Like D3.** The page shows the profile and queues "ask for this change". The operator applies it under the autonomy rule, backs up first, restarts the harness and verifies it against the live-proof signal before saying done. Profiles live on boxes the page cannot reach, and a harness cannot safely rewrite its own permissions. |
-| **D8** | The Codex reviewer: `user` (the 2026-08-08 policy) or `auto_review` (the 2026-10-27 pick). *Open.* | Each has a cost. **`user`**: the request waits for a person at the attached terminal. Unattended, every escalation stalls the turn, so dj-codex cannot commit, push, use `gh` or write outside its sandbox. **`auto_review`**: an unattended reviewer for every request in the turn, with no enforced time or cost limit. Reviews on 2026-10-27 took seconds each. That does not cap a future one. **A third path** is deterministic, owner-approved rules for named repos and actions, with an attended route for the rest. It needs code and a live test, and is not a settings change. The page shows each guardian review's duration whichever is chosen. The spec makes no recommendation. A "fall back after an hour" rule would be a proposed control, not a safeguard: no watchdog enforces it today, and a review stuck in a tool call would not switch itself off. No harness setting changes because of this spec. |
+| **D8** | The Codex reviewer: `user` (the 2026-08-08 policy) or `auto_review` (the 2026-10-27 pick). **Decided 2026-10-27: "A until C".** dj-codex keeps `auto_review` until the third path below (nvoy #266) is built and passes its live gates. Then it moves to that path, with `user` for whatever is left. | Each has a cost. **`user`**: the request waits for a person at the attached terminal. Unattended, every escalation stalls the turn, so dj-codex cannot commit, push, use `gh` or write outside its sandbox. **`auto_review`**: an unattended reviewer for every request in the turn, with no enforced time or cost limit. Reviews on 2026-10-27 took seconds each. That does not cap a future one. **A third path** is deterministic, owner-approved rules for named repos and actions, with an attended route for the rest. It needs code and a live test, and is not a settings change. The page shows each guardian review's duration whichever is chosen. The spec makes no recommendation. A "fall back after an hour" rule would be a proposed control, not a safeguard: no watchdog enforces it today, and a review stuck in a tool call would not switch itself off. No harness setting changes because of this spec. |
 | **D6** | Tailscale for the fleet. | **Yes, for harness-to-channel traffic only.** Join nave.pub and add ACLs so each harness box reaches only its own channel endpoint. bunker.nave.pub joins for an admin path, but its public face stays, because signing travels over relays. Then close public port 22 to harness keys once every agent has moved over. |
 
 ## Retired by this work (criterion 6)
