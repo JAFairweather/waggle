@@ -22,7 +22,7 @@
 // `display_name`, which since #404 may hold any letter. A label therefore cannot always carry the
 // name that has to match, so the picker must never lock that field.
 
-import { nip19 } from 'nostr-tools'
+import { nip19, verifyEvent } from 'nostr-tools'
 
 // Wire values, as the bridge publishes them.
 export const STATUSES = Object.freeze(['admitted', 'paused', 'revoked'])
@@ -83,4 +83,26 @@ export function agentOptionText(agent) {
   const name = agent.label || 'unnamed agent'
   const suffix = agent.status === 'admitted' ? '' : ` — ${statusLabel(agent.status)}`
   return `${name} — ${shortNpub(agent.pubkey)}${suffix}`
+}
+
+// Validate the whole signed artifact before believing any part of it. An unrecognised status is a
+// reason to reject the state, not to render a row whose meaning nobody defined.
+// Shared by the Agents and Hive pages, so both believe the same states.
+export function validControlState(ev, bridge) {
+  try {
+    if (!verifyEvent(ev) || ev.kind !== 30078 || ev.pubkey !== bridge ||
+        !ev.tags.some(t => t[0] === 'd' && t[1] === 'waggle-control-state')) return null
+    const s = JSON.parse(ev.content)
+    if (s.v !== 1 || s.bridge !== bridge || !Number.isFinite(s.observed_at)) return null
+    // A bridge that predates #309 publishes no agents field at all. That is an empty list, not a
+    // broken state — refusing it would make this page useless against every older bridge.
+    if (s.agents === undefined) { s.agents = []; return s }
+    if (!Array.isArray(s.agents)) return null
+    for (const a of s.agents) {
+      if (!/^[0-9a-f]{64}$/.test(String(a?.pubkey || '')) || !STATUSES.includes(a?.status)) return null
+      if (a.label != null && (typeof a.label !== 'string' || !/^[\x20-\x7e]{1,64}$/.test(a.label))) return null
+      if (typeof a.return_lane !== 'boolean') return null
+    }
+    return s
+  } catch { return null }
 }
