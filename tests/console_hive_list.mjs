@@ -8,7 +8,8 @@
 //  2. Roles are recognised from grants by the spec's recipes, and anything else is custom, never
 //     silently dropped.
 //  3. Revocation, NIP-40 expiry and duplicates are computed, not promised: a revoked or expired
-//     grant gives no role, and a second live copy is listed under Needs you.
+//     grant gives no role, and of two live copies the older, the one nvoy no longer counts, is
+//     listed under Needs you. Withdrawing the newer would end the approval.
 //  4. "Who can give it work" is nvoy's own fold, vendored byte-exact at a pinned commit. If the file
 //     changes, this fails until the pin is moved on purpose.
 //  5. A card counts only as the agent's own signature naming the owner as a grantor, and answers
@@ -148,8 +149,9 @@ check(roleOf({ grantor: stranger.pk, grantee: owner.pk, cap: 'task' }, { owner: 
 
 // 3. Duplicates and expiry under Needs you.
 const dup = duplicates(grants, table.subjectOf)
-check(dup.length === 1 && dup[0].keep.id === teammate.id && dup[0].extra[0].id === copy.id, 'two live copies of one grant: the older is kept, the newer is listed')
-check(needs.some(n => n.kind === 'duplicate' && n.grant.id === copy.id), 'the duplicate is under Needs you')
+check(dup.length === 1 && dup[0].keep.id === copy.id && dup[0].extra[0].id === teammate.id, 'two live copies of one grant: the newer is kept, the older is listed')
+check(needs.filter(n => n.kind === 'duplicate').map(n => n.grant.id).join() === teammate.id, 'the older copy is under Needs you, once')
+check(row(pidog.pk).roles.find(r => r.grant.id === teammate.id)?.inEffect === false && row(pidog.pk).roles.find(r => r.grant.id === copy.id)?.inEffect === true, 'the older copy is marked as having no effect')
 check(needs.some(n => n.kind === 'expired' && n.grant.id === lapsed.id), 'an expired grant still published is under Needs you')
 check(needs.some(n => n.kind === 'no-card' && n.pubkey === djcodex.pk), 'an agent with work grants and no card is under Needs you')
 
@@ -163,13 +165,10 @@ check(row(djcodex.pk).answers.work.grantorsFrom === 'assumed' && row(pidog.pk).a
 check(workSentence(row(cardOnly.pk).answers.work, { owner: owner.pk, nameOf }) === 'DJ Codex can give it work.', "the card's own grantors decide whose grants count")
 check(workSentence(row(rosterOnly.pk).answers.work, { owner: owner.pk, nameOf }) === 'Nobody can give it work.', 'a revoked grant gives nobody work')
 
-// Where the page and nvoy's fold disagree about a live approval, Needs you says so. nvoy's fold kept
-// only the newest approval per capability, so withdrawing a duplicate ended the original too; this
-// fixture holds either way, and says which fold is vendored.
-const counted = row(voice.pk).answers.fold.get(owner.pk)?.has('task+act')
-const flagged = needs.some(n => n.kind === 'ignored' && n.grant.id === twiceOld.id)
-check(counted ? !flagged : flagged, `a live approval the vendored fold ${counted ? 'counts is not' : 'ignores is'} flagged under Needs you`)
-check(!needs.some(n => n.kind === 'ignored' && n.grant.id !== twiceOld.id), 'no other approval is flagged as ignored')
+// nvoy counts only the newest approval per capability, and a replaced one never comes back: when the
+// newer copy is withdrawn, the older, though never withdrawn, does not count. Needs you says so.
+check(!row(voice.pk).answers.fold.get(owner.pk)?.has('task+act'), 'withdrawing the newer copy ends the approval, as nvoy decides')
+check(needs.filter(n => n.kind === 'replaced').map(n => n.grant.id).join() === twiceOld.id, 'the older copy left with no effect is under Needs you, and nothing else is')
 
 // 5. Card answers: shown or "not reported", never guessed.
 const a = row(pidog.pk).answers

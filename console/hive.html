@@ -30,6 +30,7 @@
   details.agent summary::before{content:"▸";color:var(--faint);font-size:12px;width:1em}details.agent[open] summary::before{content:"▾"}
   .name{font-weight:700}.npub{font:italic 12px var(--mono);color:var(--faint);overflow-wrap:anywhere}
   .chips{display:flex;gap:6px;flex-wrap:wrap;flex:1 1 200px}
+  .pill.off{opacity:.55;text-decoration:line-through}
   .pill{font:10px var(--mono);letter-spacing:.08em;text-transform:uppercase;border:1px solid;border-radius:999px;padding:3px 8px;white-space:nowrap}
   .stage-tools{color:var(--good)}.stage-grants{color:var(--gold)}.stage-key{color:var(--faint)}
   .role{color:var(--gold)}.role.custom,.role.guest{color:var(--warn)}
@@ -198,7 +199,8 @@ function rowView(r, { owner, nameOf }) {
   chips.appendChild(el('span', `pill stage-${r.stage}`, r.isBridge ? 'waggle bridge' : STAGE[r.stage]))
   for (const role of r.roles) {
     const by = role.by ? ` · ${nameOf(role.by)}` : ''
-    chips.appendChild(el('span', `pill role ${role.role}`, `${ROLE_NAME[role.role]}${by}`))
+    const off = role.inEffect === false ? ' · no effect' : ''
+    chips.appendChild(el('span', `pill role ${role.role}${off ? ' off' : ''}`, `${ROLE_NAME[role.role]}${by}${off}`))
   }
   s.appendChild(chips)
   s.appendChild(el('span', 'npub', shortNpub(r.pubkey)))

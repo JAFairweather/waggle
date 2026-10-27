@@ -123,8 +123,11 @@ its raw sentence from `capability-vocabulary.mjs`.
 | **Channel guest** | `admit`, for a channel | Leftover from waggle carry. Shown, and flagged as a candidate for cleanup. |
 
 The "no duplicates" criterion is computed, not promised. Two live grants with the same
-(grantor, grantee, cap, subject) form a pair, the newer one is listed under **Needs you**, and one
-signature revokes it.
+(grantor, grantee, cap, subject) form a pair, the **older** one is listed under **Needs you**, and one
+signature revokes it. nvoy counts only the newest grant per (grantee, cap) and never revives one it
+replaced (so a time-limited re-issue cannot be undone by its own expiry). Revoking the newer copy
+therefore ends the capability; this is what removed four task+act approvals on 2026-10-25. A live
+grant that a withdrawn or expired newer copy replaced is listed too, as having no effect.
 
 ## Autonomy profiles (criteria 9 and 10)
 

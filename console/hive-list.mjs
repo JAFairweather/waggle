@@ -10,7 +10,7 @@
 // tests/console_hive_list.mjs), so the page and the broker cannot disagree about it. Pure: no DOM and
 // no network, so the suite runs the functions the page runs.
 
-import { foldGrantsWith, grantExpired } from './vendor/nvoy-admission.mjs'
+import { foldGrantsWith, grantExpired, TASK_CAPS } from './vendor/nvoy-admission.mjs'
 import { GRANT_RELAYS } from './vendor/nvoy-grant-relays.mjs'
 import { describeGrant } from './capability-vocabulary.mjs'
 
@@ -86,8 +86,9 @@ export const ROLE_NAME = {
   voice: 'Voice', guest: 'Channel guest', custom: 'Custom',
 }
 
-// Two live grants with the same grantor, grantee, capability and subject are one grant too many;
-// the newer one is listed so that one signature can revoke it.
+// Two live grants with the same grantor, grantee, capability and subject are one grant too many.
+// nvoy counts only the newest per grantee and capability, and an older copy never comes back, so the
+// older one is listed: withdrawing it changes nothing, while withdrawing the newer ends the approval.
 export function duplicates(grants, subjectOf) {
   const groups = new Map()
   for (const g of grants.filter(g => g.live)) {
@@ -96,7 +97,7 @@ export function duplicates(grants, subjectOf) {
     groups.get(key).push(g)
   }
   return [...groups.values()].filter(list => list.length > 1)
-    .map(list => { const [keep, ...extra] = [...list].sort((a, b) => a.at - b.at); return { keep, extra } })
+    .map(list => { const sorted = [...list].sort((a, b) => a.at - b.at); return { keep: sorted.at(-1), extra: sorted.slice(0, -1) } })
 }
 
 // A card is believed only as the agent's own signed statement about itself, and it is part of
@@ -148,8 +149,12 @@ export function buildList({ owner, grantEvents = [], grants = [], table, cards =
     if (role.role === 'custom') needs.push({ kind: 'custom', grant: g, subject, text: `Matches no role: ${role.sentence}` })
     if (role.role === 'guest') needs.push({ kind: 'guest', grant: g, subject, text: 'A channel pass left over from waggle carry. A candidate for cleanup.' })
   }
+  const listed = new Set()
   for (const { keep, extra } of duplicates(grants, table.subjectOf)) {
-    for (const g of extra) needs.push({ kind: 'duplicate', grant: g, keep, subject: table.subjectOf(g.hash), text: 'A second live copy of the same approval. Withdrawing the newer one changes nothing else.' })
+    for (const g of extra) {
+      listed.add(g.id)
+      needs.push({ kind: 'duplicate', grant: g, keep, subject: table.subjectOf(g.hash), text: 'An older copy of an approval given again later. Withdrawing this one changes nothing; withdrawing the newer one would end the approval.' })
+    }
   }
 
   for (const row of rows.values()) {
@@ -162,14 +167,18 @@ export function buildList({ owner, grantEvents = [], grants = [], table, cards =
     row.isBridge = row.pubkey === bridge
     row.stage = card ? 'tools' : row.roles.length ? 'grants' : 'key'
     row.answers = answersFor(row, { owner, grantEvents, table })
-    // The page folds every approval on its own; the broker runs nvoy's fold. Where a live approval
-    // that the agent's grantors gave is one the broker does not count, the two disagree, and the
-    // owner needs to know before trusting either.
+    // nvoy's fold decides which work approvals count: the newest per grantee and capability. One that
+    // is live but replaced has no effect; if its replacement has since been withdrawn or run out,
+    // nothing holds that capability, though a live approval says it should.
     const grantors = card ? card.grantors : [owner]
-    for (const g of grants) {
-      if (!g.live || !grantors.includes(g.grantor) || !['task', 'task+act', 'task-relay'].includes(g.cap) || table.subjectOf(g.hash) !== row.pubkey) continue
-      if (!row.answers.fold.get(g.grantee)?.has(g.cap))
-        needs.push({ kind: 'ignored', grant: g, subject: row.pubkey, text: 'Live and never withdrawn, but the rules the agent runs do not count it, so it has no effect.' })
+    for (const role of row.roles) {
+      const g = role.grant
+      if (!TASK_CAPS.includes(g.cap) || !grantors.includes(g.grantor) || table.subjectOf(g.hash) !== row.pubkey) continue
+      role.inEffect = row.answers.fold.get(g.grantee)?.get(g.cap)?.grantId === g.id
+      if (role.inEffect || listed.has(g.id)) continue
+      needs.push(row.answers.fold.get(g.grantee)?.has(g.cap)
+        ? { kind: 'duplicate', grant: g, subject: row.pubkey, text: 'Replaced by a newer approval for the same thing. Withdrawing this one changes nothing.' }
+        : { kind: 'replaced', grant: g, subject: row.pubkey, text: 'Never withdrawn, but a newer approval for the same thing replaced it and was later withdrawn or ran out, so neither counts. Give it again if it should still hold.' })
     }
     if (!card && row.roles.some(r => ['teammate', 'trusted', 'colleague', 'carrier'].includes(r.role)))
       needs.push({ kind: 'no-card', pubkey: row.pubkey, text: 'Others can give it work, but it has published no agent card: unreachable, not upgraded, or its card is off.' })
