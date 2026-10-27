@@ -66,7 +66,7 @@ import { consoleSigner } from './signer-session.mjs'
 import { loadBridgeKey } from './bridge-key-store.mjs'
 import { validControlState, shortNpub } from './agent-roster.mjs'
 import { scopeHash } from './scope-hash.mjs'
-import { readGrants, scopeTable, readCards, buildList, workSentence, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
+import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
 
 // The bridge publishes its roster to the same relays the Agents page reads.
 const ROSTER_RELAYS = ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub', 'wss://jskitty.com/nostr']
@@ -77,18 +77,19 @@ const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls)
 function query(url, filter) {
   return new Promise(resolve => {
     let ws, done = false; const out = []
-    const end = answered => { if (done) return; done = true; try { ws.close() } catch {} resolve({ url, answered, out }) }
-    try { ws = new WebSocket(url) } catch { return end(false) }
-    const t = setTimeout(() => end(out.length > 0), 9000)
+    const end = state => { if (done) return; done = true; try { ws.close() } catch {} resolve({ url, state, out }) }
+    const cut = () => end(out.length ? 'partial' : 'none')
+    try { ws = new WebSocket(url) } catch { return end('none') }
+    const t = setTimeout(cut, 9000)
     ws.onopen = () => ws.send(JSON.stringify(['REQ', 'hive', filter]))
-    ws.onmessage = e => { try { const m = JSON.parse(e.data); if (m[0] === 'EVENT') out.push(m[2]); if (m[0] === 'EOSE') { clearTimeout(t); end(true) } } catch {} }
-    ws.onerror = () => { clearTimeout(t); end(false) }
+    ws.onmessage = e => { try { const m = JSON.parse(e.data); if (m[0] === 'EVENT') out.push(m[2]); if (m[0] === 'EOSE') { clearTimeout(t); end('complete') } } catch {} }
+    ws.onerror = () => { clearTimeout(t); cut() }
   })
 }
 // One read across a relay set, with the coverage it actually got.
 async function read(relays, filter) {
   const results = await Promise.all(relays.map(u => query(u, filter)))
-  return { events: results.flatMap(r => r.out), answered: results.filter(r => r.answered).length, of: relays.length }
+  return { events: results.flatMap(r => r.out), ...relayCoverage(results.map(r => r.state)) }
 }
 
 const coverage = []
@@ -96,8 +97,8 @@ function cover(label, r) { coverage.push({ label, ...r }) }
 function drawCoverage() {
   const box = $('coverage'); box.textContent = ''; box.hidden = false
   for (const c of coverage) {
-    const d = el('div', c.answered ? '' : 'none')
-    d.append(el('b', null, c.answered ? `${c.answered} of ${c.of}` : 'Unverifiable'), document.createTextNode(` ${c.answered ? 'relays answered for' : '— no relay answered for'} ${c.label}`))
+    const t = coverageText(c), d = el('div', t.none ? 'none' : '')
+    d.append(el('b', null, t.lead), document.createTextNode(` ${t.rest} ${c.label}`))
     box.appendChild(d)
   }
 }
@@ -161,8 +162,13 @@ async function load() {
     const profiles = newestProfiles(names.events)
 
     const { rows, needs } = buildList({ owner, grantEvents, grants, table, cards, roster, bridge, profiles })
+    const partial = {
+      cards: !cardRead.full,
+      approvals: !given.full || !held.full || (others.length > 0 && !otherRevokes.full),
+      keys: !cardRead.full || !given.full || !held.full || (rosterRead ? !rosterRead.full : false),
+    }
     drawCoverage()
-    draw(rows, needs, owner)
+    draw(rows, needs, owner, partial)
     st.className = 'status ok'
     st.textContent = `${rows.length} identities, ${grants.filter(g => g.live).length} live approvals, ${cards.size} agent cards. Read ${new Date().toLocaleTimeString()}.`
   } catch (e) {
@@ -170,28 +176,29 @@ async function load() {
   } finally { $('go').disabled = false }
 }
 
-function draw(rows, needs, owner) {
+function draw(rows, needs, owner, partial) {
   const byKey = new Map(rows.map(r => [r.pubkey, r]))
   const nameOf = pk => pk === owner ? 'you' : byKey.get(pk)?.name || shortNpub(pk)
 
   const needBox = $('needs'); needBox.textContent = ''
   $('needs-panel').hidden = !needs.length
   for (const n of needs) {
-    const d = el('div', 'need', n.text)
+    const d = el('div', 'need', n.kind === 'no-card' && partial.cards ? `${n.text} The card relay did not answer in full, so it may have one.` : n.text)
     if (n.grant) d.appendChild(el('div', 'who', `Approval ${n.grant.id.slice(0, 10)}… from ${nameOf(n.grant.grantor)} to ${nameOf(n.grant.grantee)}${n.subject ? `, for ${/^[0-9a-f]{64}$/.test(n.subject) ? nameOf(n.subject) : n.subject}` : ''}, ${n.grant.cap}.`))
     else d.appendChild(el('div', 'who', nameOf(n.pubkey)))
     needBox.appendChild(d)
   }
 
   $('talk').textContent = TALK_IS_NOT_WORK
-  $('not-read').textContent = `Not read yet: ${NOT_READ.join(', ')}. A key known only to those is not on this list.`
+  const short = partial.keys ? ' Not every relay answered in full, so a key held only on one that did not may be missing too, and a withdrawal held only there may not be counted.' : ''
+  $('not-read').textContent = `Not read yet: ${NOT_READ.join(', ')}. A key known only to those is not on this list.${short}`
   const list = $('list'); list.textContent = ''
-  for (const r of rows) list.appendChild(rowView(r, { owner, nameOf }))
+  for (const r of rows) list.appendChild(rowView(r, { owner, nameOf, partial }))
   $('list-panel').hidden = false
 }
 
 const STAGE = { tools: 'Tools on nave', grants: 'Approvals only', key: 'No tools yet' }
-function rowView(r, { owner, nameOf }) {
+function rowView(r, { owner, nameOf, partial }) {
   const d = el('details', 'agent')
   const s = el('summary')
   s.appendChild(el('span', 'name', r.isOwner ? `${r.name || 'You'} (you)` : r.name || 'No name'))
@@ -210,8 +217,8 @@ function rowView(r, { owner, nameOf }) {
   const item = (term, text, unknown) => { dl.appendChild(el('dt', null, term)); dl.appendChild(el('dd', unknown ? 'unknown' : null, text)) }
   const carriers = a.work.carriers.length ? ` Work addressed to it may also be carried by ${a.work.carriers.map(nameOf).join(', ')}.` : ''
   const assumed = a.work.grantorsFrom === 'assumed' ? ' (No card, so only your approvals are counted.)' : ''
-  item('Who can give it work', `${workSentence(a.work, { owner, nameOf })}${carriers}${assumed}`)
-  const free = a.act.withoutAsking.length ? `It may act without asking on work from ${a.act.withoutAsking.map(nameOf).join(', ')}.` : 'It asks before acting on any work.'
+  item('Who can give it work', `${workSentence(a.work, { owner, nameOf, incomplete: partial.approvals })}${carriers}${assumed}`)
+  const free = a.act.withoutAsking.length ? `It may act without asking on work from ${a.act.withoutAsking.map(nameOf).join(', ')}.` : partial.approvals ? `It asks before acting on any work, ${PARTIAL}.` : 'It asks before acting on any work.'
   const limits = a.act.limits ? ` Chains stop at ${a.act.limits.max_hops} hops; at most ${a.act.limits.per_sender_per_hour} messages an hour from one sender.` : ''
   item('What it may do without asking', `${free}${limits} Tool permissions are ${a.act.harness}.`)
   if (r.card) {
@@ -222,7 +229,7 @@ function rowView(r, { owner, nameOf }) {
     item('Proof it works', `Card signed ${new Date(a.proof.cardSignedAt * 1000).toLocaleString()}. Last task: ${a.proof.lastTask}. Last reply: ${a.proof.lastReply}.`)
   } else {
     for (const term of ['Where it can post', 'What it holds', 'How it works', 'Proof it works'])
-      item(term, r.isOwner ? 'You.' : 'No agent card, so not reported.', true)
+      item(term, r.isOwner ? 'You.' : partial.cards ? `No agent card, ${PARTIAL}.` : 'No agent card, so not reported.', true)
   }
   dl.appendChild(el('dt', null, 'Key')); dl.appendChild(el('dd', 'npub', npub(r.pubkey)))
   d.appendChild(dl)

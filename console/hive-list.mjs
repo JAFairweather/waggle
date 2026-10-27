@@ -217,11 +217,24 @@ export function answersFor(row, { owner, grantEvents, table }) {
 }
 
 // "You and DJ Codex can give it work." Names, never hex, and "you" for the owner.
-export function workSentence(answer, { owner, nameOf }) {
+export function workSentence(answer, { owner, nameOf, incomplete = false }) {
   const givers = [...answer.givers].sort((a, b) => Number(b.pubkey === owner) - Number(a.pubkey === owner))
   const who = givers.map(g => g.pubkey === owner ? 'You' : `${nameOf(g.pubkey)}${g.voice ? ' (as your voice)' : ''}`)
-  if (!who.length) return 'Nobody can give it work.'
+  if (!who.length) return incomplete ? `Nobody, ${PARTIAL}.` : 'Nobody can give it work.'
   const list = who.length === 1 ? who[0] : `${who.slice(0, -1).join(', ')} and ${who.at(-1)}`
   return `${list} can give it work.`
 }
 
+// A relay has answered only when it sends EOSE. One that times out after sending some events is
+// partial, and a read is full only when every relay asked answered. Anything the page says is absent
+// ("nobody", "no card", a missing key) is qualified unless every read it rests on was full.
+export const PARTIAL = 'as far as the relays that answered in full show; not every relay did'
+export function relayCoverage(states) {
+  const complete = states.filter(s => s === 'complete').length, partial = states.filter(s => s === 'partial').length
+  return { complete, partial, of: states.length, full: states.length > 0 && complete === states.length }
+}
+export function coverageText({ complete, partial, of }) {
+  if (!complete && !partial) return { lead: 'Unverifiable', rest: 'no relay answered for', none: true }
+  const extra = partial ? `, ${partial} sent only part before timing out,` : ''
+  return { lead: `${complete} of ${of}`, rest: `relays answered in full${extra} for`, none: !complete }
+}

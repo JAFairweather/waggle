@@ -14,6 +14,8 @@
 //     changes, this fails until the pin is moved on purpose.
 //  5. A card counts only as the agent's own signature naming the owner as a grantor, and answers
 //     no card reports read "not reported", never a guess.
+//  6. A relay has answered only when it sent EOSE. A timeout after some events is partial, and every
+//     absence the page states is qualified unless each read it rests on was full.
 //
 //   node tests/console_hive_list.mjs
 
@@ -23,7 +25,7 @@ import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools'
 import { scopeHash } from '../console/scope-hash.mjs'
-import { readGrants, scopeTable, roleOf, duplicates, readCards, buildList, workSentence, CARD_D, CARD_KIND, GRANT_RELAYS, NOT_READ }
+import { readGrants, scopeTable, roleOf, duplicates, readCards, buildList, workSentence, relayCoverage, coverageText, CARD_D, CARD_KIND, GRANT_RELAYS, NOT_READ }
   from '../console/hive-list.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -169,6 +171,18 @@ check(workSentence(row(rosterOnly.pk).answers.work, { owner: owner.pk, nameOf })
 // newer copy is withdrawn, the older, though never withdrawn, does not count. Needs you says so.
 check(!row(voice.pk).answers.fold.get(owner.pk)?.has('task+act'), 'withdrawing the newer copy ends the approval, as nvoy decides')
 check(needs.filter(n => n.kind === 'replaced').map(n => n.grant.id).join() === twiceOld.id, 'the older copy left with no effect is under Needs you, and nothing else is')
+
+// 6. Coverage: a relay has answered only when it sent EOSE, and absence is qualified otherwise.
+const mixed = relayCoverage(['complete', 'partial', 'none', 'complete'])
+check(mixed.complete === 2 && mixed.partial === 1 && mixed.of === 4 && !mixed.full, 'a relay that timed out after some events is partial, not answered')
+check(relayCoverage(['complete', 'complete']).full && !relayCoverage([]).full, 'a read is full only when every relay asked sent EOSE')
+check(coverageText(relayCoverage(['partial', 'none'])).none && coverageText(relayCoverage(['none'])).lead === 'Unverifiable', 'partial answers alone never show as answered')
+check(/2 of 4 relays answered in full, 1 sent only part/.test(Object.values(coverageText(mixed)).join(' ')), 'the coverage line says how many answered in full and how many in part')
+const nobody = { givers: [] }
+check(workSentence(nobody, { owner: owner.pk, nameOf: () => '' }) === 'Nobody can give it work.' && /^Nobody, as far as the relays that answered in full show/.test(workSentence(nobody, { owner: owner.pk, nameOf: () => '', incomplete: true })), '"nobody" is qualified when an approval read was not full')
+const hive = readFileSync(join(ROOT, 'console/hive.html'), 'utf8')
+check(!/end\(out\.length > 0\)/.test(hive) && /end\('complete'\)/.test(hive) && /out\.length \? 'partial' : 'none'/.test(hive), 'the page marks a relay complete only on EOSE')
+check(['incomplete: partial.approvals', 'partial.cards ?', 'partial.keys ?', 'partial.approvals ? `It asks'].every(t => hive.includes(t)), 'every absence on the page is qualified by the read it rests on')
 
 // 5. Card answers: shown or "not reported", never guessed.
 const a = row(pidog.pk).answers
