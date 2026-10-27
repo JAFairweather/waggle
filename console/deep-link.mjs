@@ -9,8 +9,8 @@
 // shown; it can never introduce a key. That is the property that makes a prefilled grant form safe
 // to open from a URL: a crafted link cannot aim a grant at a stranger.
 //
-// A LINK NEVER SIGNS. It fills the issue form, or opens the revoke confirmation, and stops. Signing
-// stays the owner's click and the signer's approval, exactly as without the link.
+// A LINK NEVER SIGNS. The hive page (#613 M4) puts the change it names in the confirm panel and
+// stops. Signing stays the owner's click and the signer's approval, exactly as without the link.
 //
 // An ambiguous or unknown prefix resolves to nothing and says so. A guess here would be a grant to
 // the wrong key, which is a legitimate operation nothing downstream can catch.

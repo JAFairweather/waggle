@@ -61,6 +61,7 @@
     <button id="go">Read the hive</button>
     <div id="status" class="status" role="status"></div>
     <div id="coverage" class="coverage" hidden></div>
+    <div id="link-status" class="status" role="status"></div>
   </section>
 
   <section class="panel" id="change-panel" hidden><h2>Confirm a change</h2>
@@ -98,8 +99,9 @@ import { loadBridgeKey } from './bridge-key-store.mjs'
 import { validControlState, shortNpub } from './agent-roster.mjs'
 import { scopeHash } from './scope-hash.mjs'
 import { signFresh } from './guarded-signer.mjs'
-import { WORK_CAPS, approvalsOf, draftGrant, draftRevoke, workApprovals, describeChange, applyChange, relayHost } from './hive-change.mjs'
+import { WORK_CAPS, CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, workApprovals, describeChange, applyChange, relayHost } from './hive-change.mjs'
 import { whatIf } from './hive-what-if.mjs'
+import { parseIntent, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
 
 // The bridge publishes its roster to the same relays the Agents page reads.
@@ -234,6 +236,7 @@ function draw(rows, needs, owner, partial) {
   for (const r of rows) list.appendChild(rowView(r, { owner, nameOf, partial }))
   $('list-panel').hidden = false
   drawWhatIf(rows, owner, nameOf, partial)
+  applyIntent({ owner, nameOf })
 }
 
 // "What happens if": any identity writing to any agent, in a channel or a DM, answered by nvoy's
@@ -257,6 +260,39 @@ function drawWhatIf(rows, owner, nameOf, partial) {
     if (caveats.length) { const ul = el('ul'); for (const c of caveats) ul.appendChild(el('li', '', c)); box.appendChild(ul) }
   }
   $('what-if-panel').hidden = false
+}
+
+// A link naming an approval to give or withdraw, from the beeswarm page or the Access tab. It is
+// applied once, after the read, because the keys and approvals read are the only ones it may resolve
+// against (console/deep-link.mjs: a link can never introduce a key). It only fills the confirm panel;
+// signing stays the owner's click and the signer's approval.
+let linkIntent = parseIntent(location.hash)
+if (linkIntent) $('link-status').textContent = 'This page was opened from a link that names a change. Read the hive to see it; nothing is signed until you confirm it.'
+async function applyIntent({ owner, nameOf }) {
+  if (!linkIntent || !hive || hive.owner !== owner) return
+  const intent = linkIntent
+  linkIntent = null
+  history.replaceState(null, '', location.pathname + location.search)
+  const st = $('link-status')
+  const refuse = why => { st.className = 'status err'; st.textContent = `The link was not opened: ${why}.` }
+  if (intent.action === 'invalid') return refuse(intent.why)
+  const { grants, table, rows } = hive
+  if (intent.action === 'revoke') {
+    const r = resolveRevoke(intent, grants.filter(g => g.grantor === owner))
+    if (!r.grant) return refuse(r.why)
+    st.className = 'status'; st.textContent = ''
+    return propose([{ template: draftRevoke({ grantId: r.grant.id }), words: describeChange({ action: 'withdraw', grant: r.grant, agent: table.subjectOf(r.grant.hash) }, nameOf) }])
+  }
+  const r = resolveGrant(intent, { known: rows.map(x => x.pubkey), issuable: CHANGE_CAPS.map(cap => ({ cap, ok: true })) })
+  if (r.why) return refuse(r.why)
+  const cap = r.cap || 'task'
+  if (approvalsOf(grants, { subject: r.on, grantee: r.to, caps: [cap], subjectOf: table.subjectOf }).some(g => g.grantor === owner))
+    return refuse(`${nameOf(r.to)} already holds this from you`)
+  try {
+    const template = await draftGrant({ grantee: r.to, agent: r.on, cap, scopeHash })
+    st.className = 'status'; st.textContent = ''
+    propose([{ template, words: describeChange({ action: 'give', grantee: r.to, agent: r.on, cap }, nameOf) }])
+  } catch (e) { refuse(e.message.replace(/\.$/, '')) }
 }
 
 const STAGE = { tools: 'Tools on nave', grants: 'Approvals only', key: 'No tools yet' }

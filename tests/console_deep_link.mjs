@@ -49,11 +49,16 @@ ok('a revoked grant says it is already revoked', resolveRevoke({ grant: '503099b
 ok('a grant this key did not sign is not offered', resolveRevoke({ grant: 'ffff0000' }, grants).grant === null)
 
 // --- wiring: the link fills; it never signs ---
-const page = readFileSync(join(ROOT, 'console', 'index.html'), 'utf8')
-const body = page.slice(page.indexOf('function applyIntent()'), page.indexOf('\n}\n', page.indexOf('function applyIntent()')))
-ok('the page reads the link and applies it after this key\'s grants are verified', /parseIntent\(location\.hash\)/.test(page) && /renderRows\(\)\n\s+applyIntent\(\)/.test(page))
-ok('applying a link waits for the signed-in key\'s own list', /lastGrantor !== signerPk/.test(body))
-ok('applying a link never signs or confirms', body.length > 0 && !/signFresh|confirm-go|\.signEvent|publish\(/.test(body))
+// The hive page applies the link now (#613 M4); the Access tab only passes it on.
+const access = readFileSync(join(ROOT, 'console', 'index.html'), 'utf8')
+ok('the Access tab forwards a link to the hive page unchanged, and resolves nothing itself',
+  /if \(parseIntent\(location\.hash\)\) location\.replace\(`\/console\/hive\.html\$\{location\.hash\}`\)/.test(access) && !/resolveGrant|resolveRevoke|applyIntent/.test(access))
+const page = readFileSync(join(ROOT, 'console', 'hive.html'), 'utf8')
+const body = page.slice(page.indexOf('async function applyIntent('), page.indexOf('\n}\n', page.indexOf('async function applyIntent(')))
+ok('the hive page reads the link, and applies it once the hive is read and drawn', /let linkIntent = parseIntent\(location\.hash\)/.test(page) && /drawWhatIf\(rows, owner, nameOf, partial\)\n\s+applyIntent\(\{ owner, nameOf \}\)/.test(page))
+ok("applying a link waits for this owner's own read", /!hive \|\| hive\.owner !== owner/.test(body))
+ok('it resolves only against the keys and approvals the page read, and withdraws only your own', /known: rows\.map\(x => x\.pubkey\)/.test(body) && /grants\.filter\(g => g\.grantor === owner\)/.test(body))
+ok('applying a link never signs: it only fills the confirm panel', body.length > 0 && /propose\(/.test(body) && !/signFresh|applyChange|change-go|\.signEvent|publish/.test(body))
 const mod = readFileSync(join(ROOT, 'console', 'deep-link.mjs'), 'utf8')
 ok('the resolver imports nothing, so it cannot reach a signer', !/^import /m.test(mod))
 
