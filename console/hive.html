@@ -66,7 +66,7 @@
 
   <section class="panel" id="change-panel" hidden><h2>Confirm a change</h2>
     <ol id="change-words"></ol>
-    <p class="note">The exact event<span id="change-plural"></span> your signer will be asked to sign. It goes to every relay that holds approvals, and the page reads it back before saying done.</p>
+    <p class="note">The exact event<span id="change-plural"></span> your signer will be asked to sign. <span id="change-proof">It goes to every relay that holds approvals, and the page reads it back before saying done.</span></p>
     <div id="change-json"></div>
     <button id="change-go">Sign and publish</button><button id="change-cancel" class="quiet">Cancel</button>
     <div id="change-status" class="status" role="status"></div>
@@ -102,10 +102,15 @@ import { signFresh } from './guarded-signer.mjs'
 import { WORK_CAPS, CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, workApprovals, describeChange, applyChange, relayHost } from './hive-change.mjs'
 import { whatIf } from './hive-what-if.mjs'
 import { parseIntent, resolveGrant, resolveRevoke } from './deep-link.mjs'
+import { BRIDGE_RELAYS, offeredOps, draftBridgeCommand, describeCommand, applyBridgeCommand } from './hive-bridge.mjs'
+import { controlStateFresh } from './control-state-freshness.mjs'
+import { statusLabel } from './agent-roster.mjs'
 import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
 
-// The bridge publishes its roster to the same relays the Agents page reads.
-const ROSTER_RELAYS = ['wss://nos.lol', 'wss://relay.primal.net', 'wss://relay.ditto.pub', 'wss://jskitty.com/nostr']
+// The bridge publishes its roster to the same relays the Agents page reads, and reads commands there.
+const ROSTER_RELAYS = BRIDGE_RELAYS
+const ROSTER_FILTER = bridge => ({ kinds: [30078], authors: [bridge], '#d': ['waggle-control-state'], limit: 4 })
+const rosterStates = (events, bridge) => events.map(e => validControlState(e, bridge)).filter(Boolean).sort((a, b) => b.observed_at - a.observed_at)
 const $ = id => document.getElementById(id)
 // Everything shown here came from someone else's signature, so it reaches the DOM only as text.
 const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n }
@@ -167,15 +172,15 @@ async function load() {
     const bridge = loadBridgeKey()
     const [cardRead, rosterRead] = await Promise.all([
       read(CARD_RELAYS, { kinds: [30078], '#d': [CARD_D], limit: 500 }),
-      bridge ? read(ROSTER_RELAYS, { kinds: [30078], authors: [bridge], '#d': ['waggle-control-state'], limit: 4 }) : null,
+      bridge ? read(ROSTER_RELAYS, ROSTER_FILTER(bridge)) : null,
     ])
     cover('agent cards', cardRead)
     const cards = readCards(cardRead.events, { owner, verify: verifyEvent })
-    let roster = []
+    let roster = [], rosterState = null
     if (rosterRead) {
       cover('the bridge roster', rosterRead)
-      const states = rosterRead.events.map(e => validControlState(e, bridge)).filter(Boolean).sort((a, b) => b.observed_at - a.observed_at)
-      roster = states[0]?.agents || []
+      rosterState = rosterStates(rosterRead.events, bridge)[0] || null
+      roster = rosterState?.agents || []
     }
 
     st.textContent = 'Reading approvals…'
@@ -200,7 +205,7 @@ async function load() {
     const profiles = newestProfiles(names.events)
 
     const { rows, needs } = buildList({ owner, grantEvents, grants, table, cards, roster, bridge, profiles })
-    hive = { owner, grants, table, rows, bridge }
+    hive = { owner, grants, table, rows, bridge, rosterState }
     const partial = {
       cards: !cardRead.full,
       // A row with no card is folded with the owner alone, so a card that went unread may name other grantors.
@@ -409,7 +414,42 @@ function editorFor(r, { owner, nameOf, partial }) {
   else box.appendChild(el('div', 'note', 'The waggle bridge key is not set in this browser, so carrying is not changed here.'))
   kind({ label: 'Your voice', cap: 'shadow', subject: owner, grantee: r.pubkey,
     held: 'It may speak for you when giving work.', none: 'It does not speak for you.', give: 'Let it speak for you' })
+  bridgeControls(box, r, { nameOf, say })
   return box
+}
+
+// The bridge's own commands for this row (#625): not approvals, but signed instructions the bridge
+// checks against its catalogue. Offered only against a roster fresh enough to act on.
+function bridgeControls(box, r, { nameOf, say }) {
+  const head = box.appendChild(el('div', 'giver'))
+  head.appendChild(el('b', null, "waggle's list"))
+  const state = hive.rosterState
+  if (!hive.bridge || !state) { head.appendChild(el('span', 'note', hive.bridge ? 'The bridge list was not read, so its controls are not offered.' : 'The waggle bridge key is not set in this browser, so its controls are not offered.')); return }
+  if (!controlStateFresh(state.observed_at)) { head.appendChild(el('span', 'note', "The bridge's list is too old to act on. Read the hive again; if it stays old, the bridge is not publishing.")); return }
+  const entry = state.agents.find(a => a.pubkey === r.pubkey)
+  head.appendChild(el('span', 'note', entry ? `${statusLabel(entry.status)}${entry.status === 'revoked' ? '' : `; mentions ${entry.return_lane ? 'are' : 'are not'} carried out to it`}.` : 'not on it.'))
+  const offer = (template) => propose([{ template, words: describeCommand(template, nameOf), bridge: true }])
+  const draft = (op, extra) => { say.className = 'status'; say.textContent = ''
+    try { offer(draftBridgeCommand({ bridge: hive.bridge, agent: r.pubkey, op, extra })) } catch (e) { say.className = 'status err'; say.textContent = e.message } }
+  const LABEL = { agent_admit: 'Let in', agent_pause: 'Pause', agent_resume: 'Resume', agent_revoke: 'Remove', agent_forget: 'Forget',
+    agent_return_lane: x => x.enabled ? 'Carry mentions out' : 'Stop carrying mentions' }
+  for (const { op, extra } of offeredOps(entry)) {
+    const b = head.appendChild(el('button', 'small quiet', typeof LABEL[op] === 'function' ? LABEL[op](extra) : LABEL[op])); b.type = 'button'
+    b.onclick = () => draft(op, extra)
+  }
+  const field = (label, placeholder, button, op, key) => {
+    const line = box.appendChild(el('div', 'add'))
+    line.appendChild(el('span', null, label))
+    const input = line.appendChild(el('input')); input.placeholder = placeholder; input.spellcheck = false; input.setAttribute('aria-label', label)
+    const b = line.appendChild(el('button', 'small', button)); b.type = 'button'
+    b.onclick = () => draft(op, { [key]: input.value })
+  }
+  if (entry) field('Name on this console', entry.label || 'a label, 1–64 characters', 'Draft', 'agent_rename', 'label')
+  field('Channel key', 'ssh-ed25519 …, the .pub line only', 'Draft seat', 'channel_seat', 'key')
+}
+
+async function readRosterStates() {
+  return rosterStates((await read(ROSTER_RELAYS, ROSTER_FILTER(hive.bridge))).events, hive.bridge)
 }
 
 let pending = null
@@ -422,6 +462,9 @@ function propose(changes) {
     json.appendChild(el('pre', 'json', JSON.stringify(c.template, null, 2)))
   }
   $('change-plural').textContent = changes.length > 1 ? `s, one per approval,` : ''
+  $('change-proof').textContent = changes.some(c => c.bridge)
+    ? "It goes to the relays the bridge reads, and the page waits for the bridge's next list before saying done."
+    : 'It goes to every relay that holds approvals, and the page reads it back before saying done.'
   $('change-status').className = 'status'; $('change-status').textContent = ''
   $('change-log').textContent = ''
   $('change-go').disabled = false; $('change-cancel').disabled = false; $('change-cancel').textContent = 'Cancel'
@@ -436,21 +479,27 @@ $('change-go').onclick = async () => {
   const st = $('change-status'), log = $('change-log')
   $('change-go').disabled = true; $('change-cancel').disabled = true
   st.className = 'status'
-  let allDone = true
+  let allDone = true, unproven = false
   try {
     const signer = await consoleSigner()
     for (const c of changes) {
-      const r = await applyChange(c.template, { sign: t => signFresh(t, signer), owner: hive.owner, verify: verifyEvent, connect: url => new WebSocket(url), onStep: step => { st.textContent = `${c.words} Now ${step}…` } })
-      allDone = allDone && r.verdict.done
+      const onStep = step => { st.textContent = `${c.words} Now ${step}…` }
+      const r = c.bridge
+        ? await applyBridgeCommand(c.template, { sign: t => signFresh(t, signer), owner: hive.owner, verify: verifyEvent, connect: url => new WebSocket(url), before: hive.rosterState, readStates: readRosterStates, onStep })
+        : await applyChange(c.template, { sign: t => signFresh(t, signer), owner: hive.owner, verify: verifyEvent, connect: url => new WebSocket(url), onStep })
+      allDone = allDone && r.verdict.done !== false
+      unproven = unproven || r.verdict.done === null
       const sent = r.published.map(p => `${relayHost(p.url)} ${p.outcome}${p.reason ? ` (${p.reason})` : ''}`).join(' · ')
-      log.appendChild(el('div', `result ${r.verdict.done ? 'ok' : 'err'}`, `${c.words}\n${r.text}\nEvent ${r.signed.id.slice(0, 16)}…  Sent: ${sent}`))
+      log.appendChild(el('div', `result ${r.verdict.done === false ? 'err' : 'ok'}`, `${c.words}\n${r.text}\nEvent ${r.signed.id.slice(0, 16)}…  Sent: ${sent}`))
     }
   } catch (e) {
     allDone = false
     log.appendChild(el('div', 'result err', e.message || String(e)))
   }
   st.className = `status ${allDone ? 'ok' : 'err'}`
-  st.textContent = allDone ? 'Done. Reading the hive again, so the list shows what the relays now hold.' : 'Not done. The list is read again so it shows what the relays hold now.'
+  st.textContent = !allDone ? 'Not done. The list is read again so it shows what the relays hold now.'
+    : unproven ? 'Sent. This page cannot see the proof; the result below says where it is. Reading the hive again.'
+      : 'Done. Reading the hive again, so the list shows what the relays now hold.'
   $('change-cancel').disabled = false; $('change-cancel').textContent = 'Close'
   await load()
 }
