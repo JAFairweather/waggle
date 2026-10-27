@@ -13,7 +13,7 @@
 //
 //   node tests/console_hive_bridge.mjs
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools'
@@ -155,6 +155,15 @@ check(page.includes("from './hive-bridge.mjs'") && /function bridgeControls\(/.t
 check(/controlStateFresh\(state\.observed_at\)/.test(page), 'and offers them only against a list fresh enough to act on')
 check(/c\.bridge\s*\?\s*await applyBridgeCommand\(/.test(page) && /before: hive\.rosterState/.test(page), 'a bridge command is signed through the same confirm panel, judged against the list the page drew')
 check(/offeredOps\(entry\)/.test(page) && /draftBridgeCommand\(\{ bridge: hive\.bridge, agent: r\.pubkey/.test(page), 'it offers what offeredOps allows, for the row it is on')
+
+// The Agents tab is retired into this page (#613 M4d): its old address forwards here, and no page
+// links to it any more.
+const old = readFileSync(join(ROOT, 'console/agents.html'), 'utf8')
+check(/http-equiv="refresh" content="0; url=\/console\/hive\.html"/.test(old) && old.length < 2000, 'the old Agents address forwards to the hive page and carries no page of its own')
+const linking = readdirSync(join(ROOT, 'console')).filter(f => f.endsWith('.html') && f !== 'agents.html' && readFileSync(join(ROOT, 'console', f), 'utf8').includes('agents.html'))
+check(linking.length === 0, `no console page links to the Agents tab${linking.length ? ` (still: ${linking.join(', ')})` : ''}`)
+check(/look\.onclick = \(\) => checkFound\(r, look, out\)/.test(page) && /hive\.rosterState\?\.agents\.find\(a => a\.pubkey === r\.pubkey\)/.test(page),
+  "the Agents tab's liveness check is on each hive row, judged against the bridge's own list")
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
 process.exit(pass ? 0 : 1)

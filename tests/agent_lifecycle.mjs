@@ -198,7 +198,7 @@ check(rename('a'.repeat(63)).ok === true, 'PAIR: 63 hex characters is not a key 
 // discipline being trusted.
 const src = f => readFileSync(new URL(f, import.meta.url), 'utf8')
 const copies = [
-  ['console/agents.html', src('../console/agents.html')],
+  ['console/hive-bridge.mjs', src('../console/hive-bridge.mjs')],
   ['src/nostr_egress.mjs', src('../src/nostr_egress.mjs')],
 ]
 for (const [where, text] of copies) {

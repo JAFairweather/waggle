@@ -143,7 +143,7 @@ check(offenders.length === 0,
   `${offenders.length ? `; offenders: ${offenders.join(', ')}` : ''})`)
 check(/const STATUS_LABEL\b/.test(readFileSync(join(CONSOLE, 'agent-roster.mjs'), 'utf8')),
   'NEGATIVE CONTROL — the same scan DOES find the declaration inside the module that owns it')
-check(readFileSync(join(CONSOLE, 'agents.html'), 'utf8').includes("from './agent-roster.mjs'"),
+check(readFileSync(join(CONSOLE, 'hive.html'), 'utf8').includes("from './agent-roster.mjs'"),
   'the agents page consumes the shared vocabulary rather than keeping its own copy')
 
 // The wire values are a protocol surface, not copy. Pin them so a rename has to argue with a test.

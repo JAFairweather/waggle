@@ -122,6 +122,14 @@ console.log('\n4. the report, and the ceiling')
   check(r.counts.missing === 1, '  …and it is counted, not folded into the unknowns')
 }
 {
+  // The hive page checks agents the bridge never seated: no roster entry, nothing negative. That is
+  // not the ceiling, and it is not "0 rows came back negative" either.
+  const r = live.livenessReport({ agent: undefined, profileRead: readOf([kind0({ name: 'Pi' })]) })
+  check(r.atCeiling === false && r.counts.missing === 0 && /Nothing came back negative; 4 rows are not known yet/.test(r.headline),
+    'a named key with no roster entry says nothing came back negative and how much is still open')
+  check(!/\b0 rows?\b/.test(r.headline), '  …and never counts zero negatives as though they were a finding')
+}
+{
   const r = live.livenessReport({ agent: { status: 'admitted' }, profileRead: readOf([]) })
   check(r.nameProven === false && /no published name/.test(r.headline),
     'a key with no name leads with that — it is what makes every other row moot')
@@ -134,10 +142,11 @@ console.log('\n4. the report, and the ceiling')
 }
 
 // ------------------------------------------------------------------------------------------
+// The hive page's Check carries this since the Agents tab was retired (#613 M4d).
 console.log('\n5. the page wires it')
-const page = readFileSync(join(ROOT, 'console', 'agents.html'), 'utf8')
+const page = readFileSync(join(ROOT, 'console', 'hive.html'), 'utf8')
 const pageCode = page.replace(/<!--[\s\S]*?-->/g, '').replace(/^\s*\/\/.*$/gm, '')
-check(/from '\.\/agent-liveness\.mjs'/.test(pageCode), 'agents.html imports the report rather than judging rows inline')
+check(/from '\.\/agent-liveness\.mjs'/.test(pageCode), 'hive.html imports the report rather than judging rows inline')
 check(/readPublic/.test(pageCode) && /from '\.\/profile-publish\.mjs'/.test(pageCode),
   'and reads the profile through the module that already does it, rather than opening a second socket path')
 check(/livenessReport\(/.test(pageCode), 'and renders the report it returns')

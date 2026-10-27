@@ -123,6 +123,10 @@ export function livenessReport({ agent, profileRead = null }) {
   let headline
   if (name.state === PRESENT && atCeiling) {
     headline = `${name.name} is published and reads back cold. Everything still open is settled off this page, not on it.`
+  } else if (name.state === PRESENT && !by(MISSING).length) {
+    // Nothing negative, but something open that this surface could have looked at: a key with no
+    // roster entry, which the hive page shows for every agent the bridge never seated.
+    headline = `${name.name} is published and reads back cold. Nothing came back negative; ${unknown.length} row${unknown.length === 1 ? ' is' : 's are'} not known yet.`
   } else if (name.state === PRESENT) {
     headline = `${name.name} is published and reads back cold — but ${by(MISSING).length} row${by(MISSING).length === 1 ? '' : 's'} came back negative.`
   } else if (name.state === MISSING) {
