@@ -124,7 +124,10 @@ check(/approval id/.test(await threw(() => draftRevoke({ grantId: 'abc' }))), 'a
   check(/not the one shown/.test(forged) && net.sent() === 0, 'so is one that returns a bad signature')
   const otherKey = await threw(() => applyChange(template, opts(net, { sign: sign(strangerSk) })))
   check(/different key/.test(otherKey) && net.sent() === 0, 'and one signed by a different key from the one the page read the hive as')
-  check(sameAsDrafted(signedGrant, template) && !sameAsDrafted({ ...signedGrant, content: 'x' }, template), 'sameAsDrafted compares kind, tags and content')
+  const redated = await threw(() => applyChange(template, opts(net, { sign: t => sign(ownerSk)({ ...t, created_at: t.created_at - 86400 * 365 }) })))
+  check(/not the one shown/.test(redated) && net.sent() === 0, 'and one validly signed by the owner but re-dated, which could change which approval the fold counts')
+  check(sameAsDrafted(signedGrant, template) && !sameAsDrafted({ ...signedGrant, content: 'x' }, template) && !sameAsDrafted({ ...signedGrant, created_at: template.created_at + 1 }, template),
+    'sameAsDrafted compares kind, timestamp, tags and content')
 }
 
 // ── 4. Done is earned by the read-back ───────────────────────────────────────────────────────────

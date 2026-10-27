@@ -57,9 +57,11 @@ export function describeChange(change, nameOf) {
 }
 
 // The signer must hand back the event that was shown, not merely an event: what the owner approved
-// on the page is the only check of content the signing path has (#617, D1).
-export const sameAsDrafted = (signed, template) => signed?.kind === template.kind && signed.content === template.content &&
-  JSON.stringify(signed.tags) === JSON.stringify(template.tags)
+// on the page is the only check of content the signing path has (#617, D1). The timestamp counts
+// too: nvoy's fold keeps the newest approval per grantee and cap, so a re-dated event can decide
+// which approval wins.
+export const sameAsDrafted = (signed, template) => signed?.kind === template.kind && signed.created_at === template.created_at &&
+  signed.content === template.content && JSON.stringify(signed.tags) === JSON.stringify(template.tags)
 
 export function publishTo(signed, { relays = GRANT_RELAYS, connect, timeoutMs = 12000 }) {
   return Promise.all(relays.map(url => new Promise(resolve => {
