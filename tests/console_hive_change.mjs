@@ -22,7 +22,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nos
 import { scopeHash } from '../console/scope-hash.mjs'
 import { scopeHashSync } from '../src/scope_hash.mjs'
 import { readGrants, scopeTable, buildList, GRANT_RELAYS } from '../console/hive-list.mjs'
-import { WORK_CAPS, draftGrant, draftRevoke, freshSalt, workApprovals, describeChange, sameAsDrafted, applyChange, verdictText }
+import { WORK_CAPS, CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, freshSalt, workApprovals, describeChange, sameAsDrafted, applyChange, verdictText }
   from '../console/hive-change.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -97,9 +97,19 @@ const signedGrant = sign(ownerSk)(template)
 }
 
 // ── 2. What may be drafted ───────────────────────────────────────────────────────────────────────
-check(JSON.stringify(WORK_CAPS) === '["task","task+act"]', 'the page gives only task and task+act')
-for (const cap of ['shadow', 'admit', 'task-relay', 'mirror', 'nonsense'])
+check(JSON.stringify(WORK_CAPS) === '["task","task+act"]', 'who can give work is task and task+act')
+check(JSON.stringify(CHANGE_CAPS) === '["task","task+act","task-relay","shadow"]', 'the page changes work, carrying and your voice, and nothing else')
+for (const cap of ['admit', 'admit+read', 'mirror', 'nonsense'])
   check(/gives only/.test(await threw(() => draftGrant({ grantee: colleague, agent, cap, scopeHash }))), `${cap} is refused, not drafted`)
+{
+  const carry = await draftGrant({ grantee: colleague, agent, cap: 'task-relay', scopeHash, salt: SALT, now: 1700000050 })
+  const voice = await draftGrant({ grantee: colleague, agent: owner, cap: 'shadow', scopeHash, salt: SALT, now: 1700000051 })
+  check(carry.tags[2][1] === 'task-relay' && carry.tags[1][1] === scopeHashSync(agent, SALT), 'carrying is drafted over the agent')
+  check(voice.tags[2][1] === 'shadow' && voice.tags[1][1] === scopeHashSync(owner, SALT), "a voice is drafted over the owner's own key, as nvoy's fold reads it")
+  check(/itself/.test(await threw(() => draftGrant({ grantee: owner, agent: owner, cap: 'shadow', scopeHash }))), 'and never over the voice itself')
+  const words = describeChange({ action: 'give', grantee: colleague, agent: owner, cap: 'shadow' }, pk => pk === owner ? 'you' : 'DJ Codex')
+  check(words === 'Give: DJ Codex may speak for you when giving work.', `a voice is worded plainly ("${words}")`)
+}
 check(/itself/.test(await threw(() => draftGrant({ grantee: agent, agent, cap: 'task', scopeHash }))), 'an agent is never approved to give itself work')
 check(/public key/.test(await threw(() => draftGrant({ grantee: 'npub1abc', agent, cap: 'task', scopeHash }))), 'a grantee that is not a hex key is refused')
 check(/salt/.test(await threw(() => draftGrant({ grantee: colleague, agent, cap: 'task', scopeHash, salt: 'abcd' }))), 'a short salt is refused')
@@ -211,6 +221,8 @@ check(verdictText({ kind: 441, done: false, holding: [], stale: [], silent: [], 
   check(!found.some(g => g.cap === 'admit') && !found.some(g => g.id === gone.id) && found.every(g => table.subjectOf(g.hash) === agent),
     'and never a channel pass, an approval already withdrawn, or one over a different agent')
   check(found.filter(g => g.grantor === owner).length === 3, "of which the page withdraws the owner's 3; the stranger's is theirs to withdraw")
+  check(approvalsOf(grants, { subject: agent, grantee: colleague, caps: ['task-relay'], subjectOf: table.subjectOf }).length === 0 && found.every(g => g.cap !== 'task-relay'),
+    'a carrying approval is a kind of its own: not found as work, and not found where none is held')
 }
 
 // ── Plain words ──────────────────────────────────────────────────────────────────────────────────
@@ -233,6 +245,9 @@ check(!/wss:\/\/[^'"]+['"]\s*,\s*['"]wss:\/\//.test(page.replace(/const ROSTER_R
   "it carries no relay list of its own beyond the roster's, so changes publish to the C3 set")
 check(GRANT_RELAYS.includes('wss://relay.nave.pub') && GRANT_RELAYS.length === 4, 'the C3 set is the four grant relays, relay.nave.pub among them')
 check(!/signs nothing yet/.test(page), 'the page no longer says it signs nothing')
+check(/cap: 'task-relay', subject: r\.pubkey, grantee: hive\.bridge/.test(page) && /cap: 'shadow', subject: owner, grantee: r\.pubkey/.test(page),
+  "the page changes carrying (the bridge, over the agent) and your voice (the identity, over your own key)")
+check(!/cap: 'admit/.test(page), 'and never a channel pass')
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
 process.exit(pass ? 0 : 1)

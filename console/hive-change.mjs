@@ -16,6 +16,9 @@ import { describeGrant } from './capability-vocabulary.mjs'
 
 // Who can give it work: work it asks about first, and work it may act on without asking.
 export const WORK_CAPS = ['task', 'task+act']
+// Every approval the page changes: work, the bridge carrying work to an agent, and your voice.
+// Channel passes stay out (#613 M4): they still carry the bridge's returns.
+export const CHANGE_CAPS = [...WORK_CAPS, 'task-relay', 'shadow']
 const HEX64 = /^[0-9a-f]{64}$/
 const SALT = /^[0-9a-f]{32}$/
 const tag = (ev, name) => (Array.isArray(ev?.tags) ? ev.tags : []).find(t => t?.[0] === name)
@@ -28,11 +31,12 @@ export const freshSalt = (random = n => crypto.getRandomValues(new Uint8Array(n)
   [...random(16)].map(b => b.toString(16).padStart(2, '0')).join('')
 
 // The same tag layout as grant.mjs and connect.html, so nvoy's fold reads it like any other grant.
+// `agent` is the approval's subject: the agent for work and carrying, your own key for your voice.
 export async function draftGrant({ grantee, agent, cap, scopeHash, salt = freshSalt(), now = nowSec() }) {
   if (!HEX64.test(grantee || '')) throw new Error('The one to approve is not a public key.')
   if (!HEX64.test(agent || '')) throw new Error('The agent is not a public key.')
-  if (grantee === agent) throw new Error('An agent does not need an approval to give itself work.')
-  if (!WORK_CAPS.includes(cap)) throw new Error(`This page gives only ${WORK_CAPS.join(' or ')}, not ${cap}.`)
+  if (grantee === agent) throw new Error('No one needs an approval over itself.')
+  if (!CHANGE_CAPS.includes(cap)) throw new Error(`This page gives only ${CHANGE_CAPS.join(', ')}, not ${cap}.`)
   if (!SALT.test(salt)) throw new Error('The salt must be 16 random bytes in hex.')
   return { kind: 440, created_at: now, tags: [['p', grantee], ['da-scope', await scopeHash(agent, salt), salt], ['da-cap', cap]], content: '' }
 }
@@ -42,11 +46,12 @@ export function draftRevoke({ grantId, now = nowSec() }) {
   return { kind: 441, created_at: now, tags: [['e', grantId]], content: '' }
 }
 
-// Every live approval that lets `grantee` give `agent` work, duplicates included: stopping someone
+// Every live approval of these kinds from `grantee` over `subject`, duplicates included: stopping
 // withdraws all of them, so an older copy is not left behind.
-export function workApprovals(grants, { agent, grantee, subjectOf }) {
-  return grants.filter(g => g.live && g.grantee === grantee && WORK_CAPS.includes(g.cap) && subjectOf(g.hash) === agent)
+export function approvalsOf(grants, { subject, grantee, caps, subjectOf }) {
+  return grants.filter(g => g.live && g.grantee === grantee && caps.includes(g.cap) && subjectOf(g.hash) === subject)
 }
+export const workApprovals = (grants, { agent, grantee, subjectOf }) => approvalsOf(grants, { subject: agent, grantee, caps: WORK_CAPS, subjectOf })
 
 // Plain words for the confirm panel. Names only, never hex, and the capability sentence is the
 // console's one vocabulary for it.
