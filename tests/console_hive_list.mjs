@@ -183,6 +183,7 @@ check(workSentence(nobody, { owner: owner.pk, nameOf: () => '' }) === 'Nobody ca
 const hive = readFileSync(join(ROOT, 'console/hive.html'), 'utf8')
 check(!/end\(out\.length > 0\)/.test(hive) && /end\('complete'\)/.test(hive) && /out\.length \? 'partial' : 'none'/.test(hive), 'the page marks a relay complete only on EOSE')
 check(['incomplete: partial.approvals', 'partial.cards ?', 'partial.keys ?', 'partial.approvals ? `It asks'].every(t => hive.includes(t)), 'every absence on the page is qualified by the read it rests on')
+check(hive.includes('approvals: !cardRead.full ||'), 'an unread card qualifies who can give work, since its grantors are unknown')
 
 // 5. Card answers: shown or "not reported", never guessed.
 const a = row(pidog.pk).answers

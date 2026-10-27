@@ -164,7 +164,8 @@ async function load() {
     const { rows, needs } = buildList({ owner, grantEvents, grants, table, cards, roster, bridge, profiles })
     const partial = {
       cards: !cardRead.full,
-      approvals: !given.full || !held.full || (others.length > 0 && !otherRevokes.full),
+      // A row with no card is folded with the owner alone, so a card that went unread may name other grantors.
+      approvals: !cardRead.full || !given.full || !held.full || (others.length > 0 && !otherRevokes.full),
       keys: !cardRead.full || !given.full || !held.full || (rosterRead ? !rosterRead.full : false),
     }
     drawCoverage()
