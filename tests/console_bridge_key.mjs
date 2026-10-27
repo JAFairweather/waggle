@@ -132,7 +132,8 @@ check(unwired.length === 0,
 // bridge's — and a confidently wrong 64-hex prefill is worse than an empty box. So the control now
 // asserts that directly, and a consumer has to argue with the assertion below rather than with a
 // proxy for it.
-const CONSUMERS = ['connect.html']
+// hive.html reads it to find the bridge's roster, one of the one list's sources (#613 M1); it has no field.
+const CONSUMERS = ['connect.html', 'hive.html']
 const withoutBridgeInput = pages.filter(p => !withBridgeInput.includes(p) && !CONSUMERS.includes(p))
 check(withoutBridgeInput.length > 0 && withoutBridgeInput.every(p => !reachesStore(p)),
   `NEGATIVE CONTROL — pages that neither collect nor consume the key do not read it (${withoutBridgeInput.join(', ')})`)
