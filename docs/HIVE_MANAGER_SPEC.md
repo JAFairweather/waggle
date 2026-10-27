@@ -2,7 +2,7 @@
 
 Issue: #613. Status: **read by the owner on 2026-10-26. Decisions D1–D6 are accepted, and the
 one-list rule is added. On 2026-10-27 the owner added criteria 9 and 10 (how each agent works, and
-live proof that it does); decision D7 is proposed.**
+live proof that it does); decision D7 is proposed and D8 is open.**
 
 ## The outcome
 
@@ -166,8 +166,11 @@ There are two recipes today:
 - **Autonomous worker**, the desired default. Every setting is named per harness, never as one
   word that means different things:
   - Claude Code: auto mode, with `autoMode` rules as the classifier.
-  - Codex: `on-request` approvals, with `approvals.reviewer = auto_review`. That routes each
-    escalation to Codex's own risk-reviewing subagent, not to a person.
+  - Codex: the reviewer is **open, and the owner's decision (D8)**. `~/.codex/AGENTS.md` (2026-08-08)
+    says review goes to James or the Buzz crew, never to an automated reviewer, and that
+    `approvals_reviewer` stays `user`, because unattended `auto_review` runs took 10–45 hours and
+    cost $16–$77 each. On 2026-10-27 the owner picked "automatic reviewer" for dj-codex without that
+    history to hand. Until D8 is decided, the proposed value is `user`.
   - pi: `--no-approve`, so its tool allowlist and deny rules are its guards.
 
   Each one also gets full work tools, the owner's deny rules and the shared rules
@@ -189,15 +192,19 @@ A row whose settings match no recipe is shown as **custom**, field by field, the
   published on its envelope. They do not prove that the agent used a tool or did the work: the reply
   path (`instance-broker-reply.mjs`) validates and publishes text, and attests nothing about the
   turn. The row says "last replied to an admitted task 12 minutes ago", and never "did work".
-- **Worked (needs instrumentation; a prerequisite of criterion 10).** The harness already knows which
+- **Used tools (needs instrumentation; a prerequisite of criterion 10).** The harness already knows which
   turn it injected for which envelope (`delivered.jsonl`). It adds one task-bound receipt per turn:
   the envelope, the turn, its status, and a count of the tool calls by kind, with no message content.
   - Codex reports tool items on the app-server stream.
   - pi's extension sees each tool call.
   - Claude Code can count them with a `PostToolUse` hook.
 
-  Until a harness writes these receipts, its row shows "work: not reported". Only then can it show
-  "last did work".
+  Until a harness writes these receipts, its row shows "tools: not reported". With them, it shows
+  "last used tools on an admitted turn", with the turn's status and any failed calls. A count proves
+  that a tool ran during the turn. It does not prove that the work was done: a call can fail, only
+  read, or be unrelated.
+- **Work completed** is reserved for a task-specific check of the outcome, such as the artifact the
+  task asked for, its readback, or a merged PR. The page shows it only where such a check exists.
 
 **Needs you** is raised for:
 - an admitted task with no reply within the recipe's window;
@@ -209,8 +216,9 @@ An agent with no admitted work is shown as **no recent demand**, not as Needs yo
 names a scheduled duty with a cadence.
 
 On 2026-10-27, pi-dog's configuration was correct while it could not act, and dj-codex and pi-dog
-replied to tasks without doing them. Tier 1 would have caught the first and missed the second; tier
-2 catches both.
+replied to tasks without doing them. Tier 1 would have shown pi-dog's silence. The tools tier would
+have flagged the replies that used no tool. Neither catches a shallow reply that made an irrelevant
+tool call; only a completion check does.
 
 ## Layers and contracts
 
@@ -327,6 +335,7 @@ rule above. D7 is proposed.**
 | **D4** | Expiry. | **Honour it everywhere**, through the shared fold. |
 | **D5** | Who runs the fleet provisioner. | **First, a fleet command** (`nvoy-provision <name>`) that I run under the autonomy rule when you request it from the page. Automate it from the signed request once that path has done three agents cleanly. |
 | **D7** | Whether profiles are changed from the page. *Proposed 2026-10-27, not yet decided.* | **Like D3.** The page shows the profile and queues "ask for this change". The operator applies it under the autonomy rule, backs up first, restarts the harness and verifies it against the live-proof signal before saying done. Profiles live on boxes the page cannot reach, and a harness cannot safely rewrite its own permissions. |
+| **D8** | The Codex reviewer: `user` (the 2026-08-08 policy) or `auto_review` (the 2026-10-27 pick). *Open.* | **`user`**, with `approval_policy = never` and a writable sandbox limited to the agent's working folders. The sandbox is then the guard, no request ever waits on a reviewer, and nothing runs unattended for hours. |
 | **D6** | Tailscale for the fleet. | **Yes, for harness-to-channel traffic only.** Join nave.pub and add ACLs so each harness box reaches only its own channel endpoint. bunker.nave.pub joins for an admin path, but its public face stays, because signing travels over relays. Then close public port 22 to harness keys once every agent has moved over. |
 
 ## Retired by this work (criterion 6)
