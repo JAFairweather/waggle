@@ -1,11 +1,12 @@
 # Hive manager — spec
 
 Issue: #613. Status: **read by the owner on 2026-10-26. Decisions D1–D6 are accepted, and the
-one-list rule is added.**
+one-list rule is added. On 2026-10-27 the owner added criteria 9 and 10 (how each agent works, and
+live proof that it does); decision D7 is proposed.**
 
 ## The outcome
 
-The owner manages the hive from one page and never from a shell. #613 lists eight criteria, and the
+The owner manages the hive from one page and never from a shell. #613 lists ten criteria, and the
 work is done only when each one has been checked against the live system:
 
 1. He signs into the waggle console with his Bunker and sees **one list** of every identity in the
@@ -20,6 +21,12 @@ work is done only when each one has been checked against the live system:
 7. Someone cold can answer "who can give Pi Dog work?" in under 30 seconds.
 8. A new agent is onboarded from the page. Its tools sit in its own isolated container on nave, the
    agent keeps running on its own box, and it is briefed on the tools.
+9. Each agent also shows **how it works** on its own box: its harness mode, its reviewer, its tools,
+   its model, its working folders and its instructions. Each comes from one named recipe, so the
+   agents work alike unless a row says otherwise.
+10. Each agent shows **live proof**: when it last took an admitted task, used its tools on it and
+    replied. An agent that stops doing that lands in **Needs you**. A correct setting never counts as
+    proof.
 
 ## Why it is hard today
 
@@ -59,7 +66,7 @@ Measured on 2026-10-25/26 against origin/main of waggle, nvoy and nact:
   Grants have already been evicted from public relays twice (memory: grants-live-only-on-ditto), and
   #457 reports a partial read as a complete one.
 
-## The model: one list, four answers, one source each
+## The model: one list, five answers, one source each
 
 **One list. Every identity in the hive is an agent, or could become one.** The owner ruled this on
 2026-10-26. The list is keyed by pubkey, and it replaces all three registries. A row exists for every
@@ -94,6 +101,7 @@ the answers come from grants alone, and the page says so.
 | **What it may do without asking** | `task+act` versus `task` on the work grant. `agent_limits` (hops and rate). `may_set_profile`. The harness's own tool permissions on its box. | Grants and the agent card (below). Harness permissions are shown as "set on <box>, not visible here" until the harness reports them. |
 | **Where it can post** | `may_post.channels`, `per_hour` and `mention[]` from the manifest. Channel membership is the Buzz roster. | The agent card. |
 | **What it holds** | The manifest refs: `bunker_client_ref`, `worker_credential_ref`, `harness.credential_ref` and `wake_webhook`. Also nact `credential:<name>` grants (`nact grant-reader.mjs`). | The agent card, plus nact `/api/state` `credentials` and `entitlements`. Each holding is labelled **has a copy** or **can use, never sees**. |
+| **How it works** | The harness config on the agent's own box, and the instructions file in its workspace (see "Autonomy profiles" below). | The harness's profile report in its agent card. Until a harness reports one, the row says "not reported", never a guess. |
 
 One sentence in the first answer is deliberate, because the code already says it
 (`invocation_policy.mjs:2-4`): **being in a channel lets you talk; it does not let you give work.**
@@ -117,6 +125,47 @@ its raw sentence from `capability-vocabulary.mjs`.
 The "no duplicates" criterion is computed, not promised. Two live grants with the same
 (grantor, grantee, cap, subject) form a pair, the newer one is listed under **Needs you**, and one
 signature revokes it.
+
+## Autonomy profiles (criteria 9 and 10)
+
+**Why this is in scope.** On 2026-10-27 the owner found the agents "neutered": they answered tasks
+and did no work. Nothing in any grant caused it. It took six separate knobs, in six formats, on three
+machines, and no page showed any of them:
+
+| Harness | Knob that had locked it down | Where it lives |
+|---|---|---|
+| Claude Code (mc-claude) | `--continue` restored the old `dontAsk` mode over settings' `auto`; no working folder outside its workspace | `.claude/settings.json`, launch flags |
+| Codex (dj-codex) | Approval policy `never`, no reviewer | `<agent>-harness.json` `approvals` |
+| pi (pi-dog) | `--tools` allowed only the channel tools; a retired model; a resumed session that dropped tools | `<agent>-harness.json`, pi `settings.json`, the session file |
+| OpenClaw (LukeDog) | Nothing locked; it lacked the shared rules | `AGENTS.md` in the container |
+| All injected harnesses | The turn text: "answer it once … otherwise, take no action" | `harness_session.mjs` (nvoy #265) |
+
+**A profile is a recipe, like a role.** It names the settings each harness type maps to:
+
+| Field | Claude Code | Codex | pi | OpenClaw |
+|---|---|---|---|---|
+| Mode | `defaultMode` plus `--permission-mode` | `approval_policy` | `--no-approve` | its own config |
+| Reviewer | `autoMode` rules | `approvals.reviewer` | none | none |
+| Tools | allow and deny rules, MCP servers | sandbox and MCP | `work_tools` and the `--tools` allowlist | `tools` |
+| Model | `model` | `model` | `model` | `model` |
+| Working folders | `additionalDirectories` | `writable_roots` | its cwd | its workspace |
+| Instructions | `CLAUDE.md` | `AGENTS.md` | `AGENTS.md` | `AGENTS.md` |
+
+There are two recipes today:
+- **Autonomous worker**, the default. Auto mode with an automatic reviewer, full work tools, the
+  owner's deny rules, and the shared rules (`HIVE_AGENT_RULES.md`): act on your own, and check in on
+  Buzz for review, feedback and research. Grants, revokes, the Bunker and permanent deletes stay the
+  owner's.
+- **Answerer.** Channel tools only. It is shown, and offered only when the owner picks it.
+
+A row whose settings match no recipe is shown as **custom**, field by field, the same way a grant is.
+
+**Live proof comes from the fleet, not the harness.** The broker already writes each admission to
+`admitted-tasks.jsonl` and each reply as a receipt. The agent card carries the last admitted task and
+the last reply to one. The row shows "last did work 12 minutes ago", and it moves to **Needs you**
+when tasks are admitted without replies, or when nothing has been admitted for longer than the
+recipe expects. On 2026-10-27, pi-dog's configuration was correct while it could not act; only this
+signal would have shown it.
 
 ## Layers and contracts
 
@@ -209,7 +258,10 @@ has a key skips step 2. A new agent goes through six steps:
    - who can give it work;
    - where it may post and how often;
    - the limits it works under;
-   - how to read #waggle-test.
+   - how to read #waggle-test;
+   - the shared rules, `HIVE_AGENT_RULES.md`.
+
+   The harness is installed with the **Autonomous worker** profile unless the owner picks another.
 6. **Role and proof.** The owner picks a role recipe and signs it. The step is only complete when the
    agent posts in #waggle-test **and** another agent gives it work that it is admitted to take
    (an admission receipt on the fleet).
@@ -219,8 +271,8 @@ run there by James or rabidrabbit. Nobody else touches yoga.
 
 ## Decisions for the owner
 
-**All six were decided on 2026-10-26: the owner accepted every recommendation, and added the one-list
-rule above.**
+**D1–D6 were decided on 2026-10-26: the owner accepted every recommendation, and added the one-list
+rule above. D7 is proposed.**
 
 | # | Decision | Recommendation (accepted) |
 |---|---|---|
@@ -229,6 +281,7 @@ rule above.**
 | **D3** | Whether manifest fields (`may_post`, limits) are editable from the page. | **Not in this goal.** Criterion 3 names grants only. The page shows them read-only and queues "ask for this change". Manifest edits stay a fleet change, made under the autonomy rule. |
 | **D4** | Expiry. | **Honour it everywhere**, through the shared fold. |
 | **D5** | Who runs the fleet provisioner. | **First, a fleet command** (`nvoy-provision <name>`) that I run under the autonomy rule when you request it from the page. Automate it from the signed request once that path has done three agents cleanly. |
+| **D7** | Whether profiles are changed from the page. *Proposed 2026-10-27, not yet decided.* | **Like D3.** The page shows the profile and queues "ask for this change". The operator applies it under the autonomy rule, backs up first, restarts the harness and verifies it against the live-proof signal before saying done. Profiles live on boxes the page cannot reach, and a harness cannot safely rewrite its own permissions. |
 | **D6** | Tailscale for the fleet. | **Yes, for harness-to-channel traffic only.** Join nave.pub and add ACLs so each harness box reaches only its own channel endpoint. bunker.nave.pub joins for an admin path, but its public face stays, because signing travels over relays. Then close public port 22 to harness keys once every agent has moved over. |
 
 ## Retired by this work (criterion 6)
@@ -250,15 +303,17 @@ Each step is one PR, reviewed by mydude, with its deploy verified.
 2. **nvoy C3:** one relay set, plus a read that reports coverage. waggle's fold moves onto it, which
    fixes expiry and #457.
 3. **nvoy C1:** the agent card is published on start and on manifest change. Check that all five
-   cards are visible on the relays.
-4. **waggle M1:** the one list, read-only, covering criteria 1, 2 and 4. Every key from every source
+   cards are visible on the relays. The card also carries the harness's profile report and the last
+   admitted task and reply (criteria 9 and 10).
+4. **waggle M1:** the one list, read-only, covering criteria 1, 2, 4, 9 and 10. Every key from every source
    lands on it, and a test asserts that no source can contribute a key the list drops.
 5. **waggle M2:** Change and revoke with a cold read-back (criterion 3).
 6. **waggle M3:** What happens if (criterion 5).
 7. **Retire:** beeswarm links, the tabs, the nact redirects and the docs (criterion 6). Then the
    cold test (criterion 7).
 8. **Onboarding:** `nvoy-provision`, the Tailscale join, the install line and the briefing.
-   HR, crusty and crystalclaude, then this session's own posting identity (criterion 8).
+   HR, crusty and crystalclaude (criterion 8). This session's own posting identity, waggle-dev, was
+   done by hand on 2026-10-26.
 
 ## Out of scope
 
