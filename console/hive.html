@@ -37,6 +37,15 @@
   dl.answers{display:grid;grid-template-columns:minmax(140px,190px) 1fr;gap:7px 16px;margin:12px 0 4px 1.6em;font-size:14px}
   dl.answers dt{font:600 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);padding-top:3px}
   dl.answers dd{margin:0}.unknown{color:var(--faint);font-style:italic}
+  button.small{padding:5px 11px;margin:7px 6px 0 0;font-size:12px}button.quiet{background:transparent;color:var(--gold);border:1px solid var(--line)}
+  select{background:var(--ground);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit;font-size:13px;max-width:100%}
+  .editor{margin-top:9px;padding:11px 13px;border:1px solid var(--line);border-radius:8px;display:grid;gap:8px;font-size:13px}
+  .editor .giver{display:flex;gap:4px 10px;align-items:baseline;flex-wrap:wrap}.editor .giver button{margin:0}
+  .editor .add{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.editor .add button{margin:0}
+  #change-words{margin:0 0 10px;padding-left:1.2em}#change-words li{margin:4px 0}
+  pre.json{font:12px/1.45 var(--mono);background:var(--ground);border:1px solid var(--line);border-radius:6px;padding:10px 12px;margin:8px 0;overflow-x:auto;white-space:pre}
+  .result{font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;border-left:3px solid var(--line);padding:4px 0 4px 10px;margin:8px 0;color:var(--dim)}
+  .result.ok{border-left-color:var(--good)}.result.err{border-left-color:var(--critical)}
   @media (max-width:560px){dl.answers{grid-template-columns:1fr;margin-left:0}dl.answers dd{margin-bottom:6px}}
 </style>
 </head>
@@ -46,10 +55,19 @@
   <p class="sub">Every identity in your hive on one list. Each one is an agent, or could become one, and each answer is read from its own source: approvals from the relays that hold them, configuration from the agent's own signed card, names from profiles. Nothing on this page is a guess. Where a source does not say, the page says <em>not reported</em>.</p>
 
   <section class="panel"><h2>Read the hive</h2>
-    <p class="note">Reads public events and asks your signer only for your public key. This page signs nothing yet.</p>
+    <p class="note">Reads public events and asks your signer only for your public key, until you change who can give an agent work. A change is shown to you in plain words and as the exact event before your signer is asked, and is called done only once the relays serve it back.</p>
     <button id="go">Read the hive</button>
     <div id="status" class="status" role="status"></div>
     <div id="coverage" class="coverage" hidden></div>
+  </section>
+
+  <section class="panel" id="change-panel" hidden><h2>Confirm a change</h2>
+    <ol id="change-words"></ol>
+    <p class="note">The exact event<span id="change-plural"></span> your signer will be asked to sign. It goes to every relay that holds approvals, and the page reads it back before saying done.</p>
+    <div id="change-json"></div>
+    <button id="change-go">Sign and publish</button><button id="change-cancel" class="quiet">Cancel</button>
+    <div id="change-status" class="status" role="status"></div>
+    <div id="change-log"></div>
   </section>
 
   <section class="panel" id="needs-panel" hidden><h2>Needs you</h2><div id="needs"></div></section>
@@ -66,6 +84,8 @@ import { consoleSigner } from './signer-session.mjs'
 import { loadBridgeKey } from './bridge-key-store.mjs'
 import { validControlState, shortNpub } from './agent-roster.mjs'
 import { scopeHash } from './scope-hash.mjs'
+import { signFresh } from './guarded-signer.mjs'
+import { WORK_CAPS, draftGrant, draftRevoke, workApprovals, describeChange, applyChange, relayHost } from './hive-change.mjs'
 import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
 
 // The bridge publishes its roster to the same relays the Agents page reads.
@@ -117,6 +137,8 @@ function newestProfiles(events) {
 }
 
 const npub = pk => { try { return nip19.npubEncode(pk) } catch { return pk } }
+// What the last read saw, for drafting changes against: the owner, the grants and their scopes.
+let hive = null
 
 async function load() {
   const st = $('status'); st.className = 'status'; coverage.length = 0
@@ -162,6 +184,7 @@ async function load() {
     const profiles = newestProfiles(names.events)
 
     const { rows, needs } = buildList({ owner, grantEvents, grants, table, cards, roster, bridge, profiles })
+    hive = { owner, grants, table, rows }
     const partial = {
       cards: !cardRead.full,
       // A row with no card is folded with the owner alone, so a card that went unread may name other grantors.
@@ -215,10 +238,15 @@ function rowView(r, { owner, nameOf, partial }) {
   d.appendChild(s)
 
   const a = r.answers, dl = el('dl', 'answers')
-  const item = (term, text, unknown) => { dl.appendChild(el('dt', null, term)); dl.appendChild(el('dd', unknown ? 'unknown' : null, text)) }
+  const item = (term, text, unknown) => { dl.appendChild(el('dt', null, term)); return dl.appendChild(el('dd', unknown ? 'unknown' : null, text)) }
   const carriers = a.work.carriers.length ? ` Work addressed to it may also be carried by ${a.work.carriers.map(nameOf).join(', ')}.` : ''
   const assumed = a.work.grantorsFrom === 'assumed' ? ' (No card, so only your approvals are counted.)' : ''
-  item('Who can give it work', `${workSentence(a.work, { owner, nameOf, incomplete: partial.approvals })}${carriers}${assumed}`)
+  const work = item('Who can give it work', `${workSentence(a.work, { owner, nameOf, incomplete: partial.approvals })}${carriers}${assumed}`)
+  if (!r.isOwner && !r.isBridge) {
+    const open = el('button', 'small quiet', 'Change'); open.type = 'button'
+    open.onclick = () => { open.hidden = true; work.appendChild(editorFor(r, { owner, nameOf, partial })) }
+    work.appendChild(el('div')).appendChild(open)
+  }
   const free = a.act.withoutAsking.length ? `It may act without asking on work from ${a.act.withoutAsking.map(nameOf).join(', ')}.` : partial.approvals ? `It asks before acting on any work, ${PARTIAL}.` : 'It asks before acting on any work.'
   const limits = a.act.limits ? ` Chains stop at ${a.act.limits.max_hops} hops; at most ${a.act.limits.per_sender_per_hour} messages an hour from one sender.` : ''
   item('What it may do without asking', `${free}${limits} Tool permissions are ${a.act.harness}.`)
@@ -235,6 +263,99 @@ function rowView(r, { owner, nameOf, partial }) {
   dl.appendChild(el('dt', null, 'Key')); dl.appendChild(el('dd', 'npub', npub(r.pubkey)))
   d.appendChild(dl)
   return d
+}
+
+// Change who can give this agent work. Only the owner's own approvals are withdrawn from here; one
+// given by anyone else is theirs to withdraw, and a voice's reach comes from its voice approval.
+function editorFor(r, { owner, nameOf, partial }) {
+  const box = el('div', 'editor')
+  const { grants, table, rows } = hive
+  const shortName = pk => pk === owner ? 'You' : nameOf(pk)
+  for (const g of r.answers.work.givers) {
+    const line = box.appendChild(el('div', 'giver'))
+    line.appendChild(el('b', null, shortName(g.pubkey)))
+    const held = workApprovals(grants, { agent: r.pubkey, grantee: g.pubkey, subjectOf: table.subjectOf })
+    const mine = held.filter(x => x.grantor === owner)
+    if (mine.length) {
+      const stop = line.appendChild(el('button', 'small quiet', 'Stop'))
+      stop.type = 'button'
+      stop.onclick = () => propose(mine.map(grant => ({ template: draftRevoke({ grantId: grant.id }), words: describeChange({ action: 'withdraw', grant, agent: r.pubkey }, nameOf) })))
+      if (mine.length > 1) line.appendChild(el('span', 'note', `${mine.length} approvals, older copies included; stopping withdraws them all.`))
+    } else if (g.voice) {
+      line.appendChild(el('span', 'note', 'gives work as your voice. That comes from its voice approval, which this page does not change.'))
+    } else {
+      const from = [...new Set(held.map(x => x.grantor))].map(nameOf).join(', ') || 'someone else'
+      line.appendChild(el('span', 'note', `was approved by ${from}; only they can withdraw it.`))
+    }
+  }
+  if (partial.approvals) box.appendChild(el('div', 'note', `Givers listed ${PARTIAL}.`))
+
+  const add = box.appendChild(el('div', 'add'))
+  add.appendChild(el('span', null, 'Let'))
+  const who = add.appendChild(el('select'))
+  who.setAttribute('aria-label', 'Who to approve')
+  for (const row of rows) if (row.pubkey !== r.pubkey && !row.isBridge) {
+    const o = who.appendChild(el('option', null, row.isOwner ? 'You' : row.name || shortNpub(row.pubkey))); o.value = row.pubkey
+  }
+  const cap = add.appendChild(el('select'))
+  cap.setAttribute('aria-label', 'What they may do')
+  for (const c of WORK_CAPS) { const o = cap.appendChild(el('option', null, c === 'task' ? 'give it work; it asks before acting' : 'give it work it may act on without asking')); o.value = c }
+  const draft = add.appendChild(el('button', 'small', 'Draft'))
+  draft.type = 'button'
+  const say = box.appendChild(el('div', 'status'))
+  draft.onclick = async () => {
+    say.className = 'status'; say.textContent = ''
+    const held = r.answers.fold.get(who.value)?.get(cap.value)
+    if (held && !held.shadow) { say.textContent = 'They already hold this. Giving it again only makes a duplicate.'; return }
+    try {
+      const template = await draftGrant({ grantee: who.value, agent: r.pubkey, cap: cap.value, scopeHash })
+      propose([{ template, words: describeChange({ action: 'give', grantee: who.value, agent: r.pubkey, cap: cap.value }, nameOf) }])
+    } catch (e) { say.className = 'status err'; say.textContent = e.message }
+  }
+  return box
+}
+
+let pending = null
+function propose(changes) {
+  pending = changes
+  const words = $('change-words'); words.textContent = ''
+  const json = $('change-json'); json.textContent = ''
+  for (const c of changes) {
+    words.appendChild(el('li', null, c.words))
+    json.appendChild(el('pre', 'json', JSON.stringify(c.template, null, 2)))
+  }
+  $('change-plural').textContent = changes.length > 1 ? `s, one per approval,` : ''
+  $('change-status').className = 'status'; $('change-status').textContent = ''
+  $('change-log').textContent = ''
+  $('change-go').disabled = false; $('change-cancel').disabled = false; $('change-cancel').textContent = 'Cancel'
+  $('change-panel').hidden = false
+  $('change-panel').scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+$('change-cancel').onclick = () => { pending = null; $('change-panel').hidden = true }
+$('change-go').onclick = async () => {
+  if (!pending || !hive) return
+  const changes = pending; pending = null
+  const st = $('change-status'), log = $('change-log')
+  $('change-go').disabled = true; $('change-cancel').disabled = true
+  st.className = 'status'
+  let allDone = true
+  try {
+    const signer = await consoleSigner()
+    for (const c of changes) {
+      const r = await applyChange(c.template, { sign: t => signFresh(t, signer), owner: hive.owner, verify: verifyEvent, connect: url => new WebSocket(url), onStep: step => { st.textContent = `${c.words} Now ${step}…` } })
+      allDone = allDone && r.verdict.done
+      const sent = r.published.map(p => `${relayHost(p.url)} ${p.outcome}${p.reason ? ` (${p.reason})` : ''}`).join(' · ')
+      log.appendChild(el('div', `result ${r.verdict.done ? 'ok' : 'err'}`, `${c.words}\n${r.text}\nEvent ${r.signed.id.slice(0, 16)}…  Sent: ${sent}`))
+    }
+  } catch (e) {
+    allDone = false
+    log.appendChild(el('div', 'result err', e.message || String(e)))
+  }
+  st.className = `status ${allDone ? 'ok' : 'err'}`
+  st.textContent = allDone ? 'Done. Reading the hive again, so the list shows what the relays now hold.' : 'Not done. The list is read again so it shows what the relays hold now.'
+  $('change-cancel').disabled = false; $('change-cancel').textContent = 'Close'
+  await load()
 }
 
 $('go').onclick = load
