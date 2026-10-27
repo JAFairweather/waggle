@@ -135,12 +135,23 @@ machines, and no page showed any of them:
 | Harness | Knob that had locked it down | Where it lives |
 |---|---|---|
 | Claude Code (mc-claude) | `--continue` restored the old `dontAsk` mode over settings' `auto`; no working folder outside its workspace | `.claude/settings.json`, launch flags |
-| Codex (dj-codex) | Approval policy `never`, no reviewer | `<agent>-harness.json` `approvals` |
+| Codex (dj-codex) | Approval policy `never`, no reviewer, a read-only sandbox | `<agent>-harness.json` `approvals`, and the `config.toml` the harness generates |
 | pi (pi-dog) | `--tools` allowed only the channel tools; a retired model; a resumed session that dropped tools | `<agent>-harness.json`, pi `settings.json`, the session file |
 | OpenClaw (LukeDog) | Nothing locked; it lacked the shared rules | `AGENTS.md` in the container |
 | All injected harnesses | The turn text: "answer it once … otherwise, take no action" | `harness_session.mjs` (nvoy #265) |
 
-**A profile is a recipe, like a role.** It names the settings each harness type maps to:
+**A profile is a recipe, like a role.** It names the settings each harness type maps to. The row
+shows two things for each field, and never infers one from the other:
+- **desired**, from the recipe the owner picked;
+- **effective**, as the harness reports it, with its source named: the harness JSON, the config it
+  generated, or the flags it launched with. A field the harness does not report is shown as
+  **unknown**. It is never filled in from the recipe.
+
+A mismatch between the two is listed under **Needs you**. Today they do differ: nvoy `main`'s
+`codexConfigToml` (`mcp/tools/harness_session.mjs`) still writes `approval_policy = "never"` and
+`sandbox_mode = "read-only"`. Only the Mac harness branch reads `approvals.policy` and
+`approvals.reviewer` from the harness JSON and passes them on start and resume. That branch is
+unmerged.
 
 | Field | Claude Code | Codex | pi | OpenClaw |
 |---|---|---|---|---|
@@ -152,20 +163,54 @@ machines, and no page showed any of them:
 | Instructions | `CLAUDE.md` | `AGENTS.md` | `AGENTS.md` | `AGENTS.md` |
 
 There are two recipes today:
-- **Autonomous worker**, the default. Auto mode with an automatic reviewer, full work tools, the
-  owner's deny rules, and the shared rules (`HIVE_AGENT_RULES.md`): act on your own, and check in on
-  Buzz for review, feedback and research. Grants, revokes, the Bunker and permanent deletes stay the
-  owner's.
+- **Autonomous worker**, the desired default. Every setting is named per harness, never as one
+  word that means different things:
+  - Claude Code: auto mode, with `autoMode` rules as the classifier.
+  - Codex: `on-request` approvals, with `approvals.reviewer = auto_review`. That routes each
+    escalation to Codex's own risk-reviewing subagent, not to a person.
+  - pi: `--no-approve`, so its tool allowlist and deny rules are its guards.
+
+  Each one also gets full work tools, the owner's deny rules and the shared rules
+  (`HIVE_AGENT_RULES.md`): act on your own, and check in on Buzz for review, feedback and research.
+  The automatic check covers single risky actions. **Review of work** stays with people and the
+  crew: a PR goes to mydude, and grants, revokes, the Bunker, permanent deletes and anything
+  ambiguous go to the owner.
+
+  This is the target. It is not what every harness on `main` produces today; see the mismatch
+  above.
 - **Answerer.** Channel tools only. It is shown, and offered only when the owner picks it.
 
 A row whose settings match no recipe is shown as **custom**, field by field, the same way a grant is.
 
-**Live proof comes from the fleet, not the harness.** The broker already writes each admission to
-`admitted-tasks.jsonl` and each reply as a receipt. The agent card carries the last admitted task and
-the last reply to one. The row shows "last did work 12 minutes ago", and it moves to **Needs you**
-when tasks are admitted without replies, or when nothing has been admitted for longer than the
-recipe expects. On 2026-10-27, pi-dog's configuration was correct while it could not act; only this
-signal would have shown it.
+**Live proof has two tiers, and the row says which one it has.**
+
+- **Replied (measurable today).** The broker writes each admission to `admitted-tasks.jsonl` and each
+  published reply as a receipt. Together they prove that a task was admitted and that a reply was
+  published on its envelope. They do not prove that the agent used a tool or did the work: the reply
+  path (`instance-broker-reply.mjs`) validates and publishes text, and attests nothing about the
+  turn. The row says "last replied to an admitted task 12 minutes ago", and never "did work".
+- **Worked (needs instrumentation; a prerequisite of criterion 10).** The harness already knows which
+  turn it injected for which envelope (`delivered.jsonl`). It adds one task-bound receipt per turn:
+  the envelope, the turn, its status, and a count of the tool calls by kind, with no message content.
+  - Codex reports tool items on the app-server stream.
+  - pi's extension sees each tool call.
+  - Claude Code can count them with a `PostToolUse` hook.
+
+  Until a harness writes these receipts, its row shows "work: not reported". Only then can it show
+  "last did work".
+
+**Needs you** is raised for:
+- an admitted task with no reply within the recipe's window;
+- once tier 2 exists, a reply to a task whose turn used no tool. That is flagged for a look rather
+  than counted as a fault, since a question can rightly need none;
+- a desired/effective mismatch.
+
+An agent with no admitted work is shown as **no recent demand**, not as Needs you, unless a recipe
+names a scheduled duty with a cadence.
+
+On 2026-10-27, pi-dog's configuration was correct while it could not act, and dj-codex and pi-dog
+replied to tasks without doing them. Tier 1 would have caught the first and missed the second; tier
+2 catches both.
 
 ## Layers and contracts
 
@@ -303,8 +348,9 @@ Each step is one PR, reviewed by mydude, with its deploy verified.
 2. **nvoy C3:** one relay set, plus a read that reports coverage. waggle's fold moves onto it, which
    fixes expiry and #457.
 3. **nvoy C1:** the agent card is published on start and on manifest change. Check that all five
-   cards are visible on the relays. The card also carries the harness's profile report and the last
-   admitted task and reply (criteria 9 and 10).
+   cards are visible on the relays. The card also carries the harness's effective-profile report and
+   the last admitted task and reply (criteria 9 and 10, tier 1). The harness turn receipts (tier 2)
+   are a separate nvoy PR, and must land before criterion 10 can be checked.
 4. **waggle M1:** the one list, read-only, covering criteria 1, 2, 4, 9 and 10. Every key from every source
    lands on it, and a test asserts that no source can contribute a key the list drops.
 5. **waggle M2:** Change and revoke with a cold read-back (criterion 3).
