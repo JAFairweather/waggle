@@ -38,6 +38,7 @@
   table.hive tr.group th{padding:18px 8px 6px;text-align:left;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--gold);border-bottom:1px solid var(--line)}
   table.hive tr.group:first-child th{padding-top:6px}
   table.hive tr.group .runs{margin-left:10px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--faint)}
+  table.hive td.post div{white-space:normal}
   table.hive td.names .limit{color:var(--dim);font-size:12px}
   table.hive td.names .absent{color:var(--faint);text-decoration:line-through}
   table.hive tr.detail td{padding:0 0 14px}
@@ -247,7 +248,7 @@ async function load({ owner: rememberedOwner = null } = {}) {
     drawCoverage()
     draw(rows, needs, owner, partial, posting)
     st.className = 'status ok'
-    st.textContent = `Read ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${rows.length} identities · ${partial.approvals || partial.keys ? 'not every relay answered in full' : 'every relay answered'}${posting ? ` · posts counted by the bridge at ${new Date(posting.at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}`
+    st.textContent = `Read ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${rows.length} identities · ${partial.approvals || partial.keys ? 'not every relay answered in full' : 'every relay answered'}${posting ? ` · posts counted by the bridge at ${new Date(posting.at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : bridge ? '' : ' · no bridge key saved, so no post counts: paste it on Config'}`
     $('go').textContent = 'Read again'
   } catch (e) {
     st.className = 'status err'; st.textContent = e.message || String(e)
@@ -390,7 +391,7 @@ function rowView(r, { owner, nameOf, partial, cells, slots, column, posting }) {
   const limit = own || !r.card ? '—' : p ? `Up to ${p.per_hour}/hour in ${p.channels} channel${p.channels === 1 ? '' : 's'}` : 'Replies only'
   // The bridge's count covers every post it saw, replies included; the limit covers new messages.
   const count = own ? undefined : posting?.counts.get(r.pubkey)
-  const post = d.appendChild(el('td', 'names'))
+  const post = d.appendChild(el('td', 'names post'))
   if (count !== undefined) post.appendChild(el('div', 'count', `${count} post${count === 1 ? '' : 's'} in the last hour`))
   post.appendChild(el('div', count !== undefined ? 'limit' : null, limit))
 
