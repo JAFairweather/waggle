@@ -106,3 +106,15 @@ export function validControlState(ev, bridge) {
     return s
   } catch { return null }
 }
+
+// Posts per agent in the bridge's last hour (#638). A malformed block is no count, never zero.
+export function postingCounts(state) {
+  const p = state?.posting
+  if (!p || !Number.isInteger(p.window_secs) || !Array.isArray(p.agents)) return null
+  const counts = new Map()
+  for (const a of p.agents) {
+    if (!/^[0-9a-f]{64}$/.test(String(a?.pubkey || '')) || !Number.isInteger(a.posts) || a.posts < 0) return null
+    counts.set(a.pubkey, a.posts)
+  }
+  return { counts, windowSecs: p.window_secs, at: state.observed_at }
+}
