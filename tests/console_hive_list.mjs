@@ -25,7 +25,7 @@ import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools'
 import { scopeHash } from '../console/scope-hash.mjs'
-import { readGrants, scopeTable, roleOf, duplicates, readCards, buildList, workSentence, relayCoverage, coverageText, CARD_D, CARD_KIND, GRANT_RELAYS, NOT_READ }
+import { readGrants, scopeTable, roleOf, duplicates, readCards, buildList, workSentence, workCell, askCell, relayCoverage, coverageText, CARD_D, CARD_KIND, GRANT_RELAYS, NOT_READ }
   from '../console/hive-list.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -166,6 +166,17 @@ check(row(djcodex.pk).answers.act.withoutAsking.includes(owner.pk), 'task+act is
 check(row(djcodex.pk).answers.work.grantorsFrom === 'assumed' && row(pidog.pk).answers.work.grantorsFrom === 'card', 'without a card the grantors are assumed, and the answer says so')
 check(workSentence(row(cardOnly.pk).answers.work, { owner: owner.pk, nameOf }) === 'DJ Codex can give it work.', "the card's own grantors decide whose grants count")
 check(workSentence(row(rosterOnly.pk).answers.work, { owner: owner.pk, nameOf }) === 'Nobody can give it work.', 'a revoked grant gives nobody work')
+
+// The table's short answers (#634).
+check(workCell(row(pidog.pk).answers.work, { owner: owner.pk, nameOf }) === 'You, DJ Codex, Your voice', 'the table names who can give work, you first, and your voice as such')
+check(workCell(row(rosterOnly.pk).answers.work, { owner: owner.pk, nameOf }) === 'Nobody' && workCell(row(rosterOnly.pk).answers.work, { owner: owner.pk, nameOf, incomplete: true }) === 'Nobody*',
+  'nobody is starred when the read cannot vouch for it')
+check(/^Not on your or .+'s work$/.test(askCell(row(djcodex.pk).answers.act, { owner: owner.pk, nameOf })) && askCell({ withoutAsking: [owner.pk] }, { owner: owner.pk, nameOf }) === 'Not on your work',
+  'task+act reads as not asking on that giver\'s work, yours named first')
+check(askCell(row(pidog.pk).answers.act, { owner: owner.pk, nameOf }) === 'Yes, always' && askCell(row(pidog.pk).answers.act, { owner: owner.pk, nameOf, incomplete: true }) === 'Yes, always*',
+  'with no task+act it always asks, starred when the read is partial')
+check(askCell({ withoutAsking: [djcodex.pk, owner.pk] }, { owner: owner.pk, nameOf }) === "Not on your or DJ Codex's work", 'several are named, you first')
+check(askCell({ withoutAsking: [] }, { owner: owner.pk, nameOf, incomplete: true, givers: 0 }) === '—', 'with nobody to give it work, asking has no answer')
 
 // nvoy counts only the newest approval per capability, and a replaced one never comes back: when the
 // newer copy is withdrawn, the older, though never withdrawn, does not count. Needs you says so.

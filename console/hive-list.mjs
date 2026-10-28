@@ -225,6 +225,20 @@ export function workSentence(answer, { owner, nameOf, incomplete = false }) {
   return `${list} can give it work.`
 }
 
+// The table's short answers: "You, DJ Codex" and "Not on your work". An absence the read cannot
+// vouch for is starred; the page's footnote says why.
+const star = incomplete => incomplete ? '*' : ''
+export function workCell(answer, { owner, nameOf, incomplete = false }) {
+  const givers = [...answer.givers].sort((a, b) => Number(b.pubkey === owner) - Number(a.pubkey === owner))
+  return givers.length ? givers.map(g => g.pubkey === owner ? 'You' : g.voice ? 'Your voice' : nameOf(g.pubkey)).join(', ') : `Nobody${star(incomplete)}`
+}
+export function askCell(act, { owner, nameOf, incomplete = false, givers = 1 }) {
+  if (!givers) return '—'
+  if (!act.withoutAsking.length) return `Yes, always${star(incomplete)}`
+  const whose = [...act.withoutAsking].sort((a, b) => Number(b === owner) - Number(a === owner)).map(pk => pk === owner ? 'your' : `${nameOf(pk)}'s`)
+  return `Not on ${whose.length === 1 ? whose[0] : `${whose.slice(0, -1).join(', ')} or ${whose.at(-1)}`} work`
+}
+
 // A relay has answered only when it sends EOSE. One that times out after sending some events is
 // partial, and a read is full only when every relay asked answered. Anything the page says is absent
 // ("nobody", "no card", a missing key) is qualified unless every read it rests on was full.
