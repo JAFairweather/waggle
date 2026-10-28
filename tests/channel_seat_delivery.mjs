@@ -26,6 +26,7 @@ import { canonicalJson } from '../src/buzz_policy_core.mjs'
 import { SEAT_OP, SEAT_VERSION, keyFingerprint, parseSeatIntent, seatReceipt, seatDecision } from '../src/channel_seat.mjs'
 import { SEAT_COMMAND_D } from '../src/channel_seat_runner.mjs'
 import { readSeatReceipt, seatIntentToForward, seatLogLine } from '../src/channel_seat_delivery.mjs'
+import { SEAT_D, LIFECYCLE_D, canonical as consoleCanonical, draftBridgeCommand, bridgeVerdict } from '../console/hive-bridge.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 let pass = 0, fail = 0
@@ -211,41 +212,31 @@ console.log('\n§4 the console signs what this bridge reads')
 // to be a failing suite, because in production it is a command that publishes fine and is then
 // refused somewhere the operator cannot see.
 
-const page = readFileSync(join(ROOT, 'console/agents.html'), 'utf8')
+// The hive page drafts the seat (#613 M4c). Its drafting module is importable, so everything below
+// calls the real function rather than lifting literals out of a page.
+const draftSeat = k => { try { return draftBridgeCommand({ bridge: BRIDGE, agent: AGENT, op: 'channel_seat', extra: { key: k }, now: NOW }) } catch (e) { return e } }
 
-const seatD = /const SEAT_D = '([^']+)'/.exec(page)
-check(seatD?.[1] === SEAT_COMMAND_D, `the console's SEAT_D is the tag the broker filters on ("${SEAT_COMMAND_D}")`)
-check(/const LIFECYCLE_D = 'waggle-agent-lifecycle'/.test(page), '  …and the lifecycle lane keeps its own, separate tag')
-
-// The handler that composes the intent, extracted so the assertions below read the call site rather
-// than the whole page. The twin-binding failure this project already had once was a suite that
-// rendered a document against itself and could not see what a call site passed it.
-const seatHandler = /\$\('seat'\)\.onclick = \(\) => \{([\s\S]*?)\n\}/.exec(page)?.[1] || ''
-check(seatHandler.length > 0, 'the seat handler is a shape this suite can read')
-check(/send\('channel_seat', \{ key \}, SEAT_D\)/.test(seatHandler),
-  '  …and it sends op=channel_seat on SEAT_D, not on the lifecycle lane')
-check(!/\$\('label'\)/.test(seatHandler), '  …and it does not reach for the rename field')
+check(SEAT_D === SEAT_COMMAND_D, `the console's SEAT_D is the tag the broker filters on ("${SEAT_COMMAND_D}")`)
+check(LIFECYCLE_D === 'waggle-agent-lifecycle' && LIFECYCLE_D !== SEAT_D, '  …and the lifecycle lane keeps its own, separate tag')
+const drafted = draftSeat(KEY)
+check(drafted.tags?.[0]?.[1] === SEAT_D && drafted.tags?.[1]?.[1] === BRIDGE, 'a seat is drafted on SEAT_D, addressed to the bridge, not on the lifecycle lane')
+check(JSON.stringify(Object.keys(JSON.parse(drafted.content))) === '["agent","key","op","v"]', '  …and carries exactly agent, key, op and v: no label, no options')
 
 // KEY ORDER. The bridge compares content bytes against canonicalJson, so an object literal spread in
 // the wrong order publishes a command that is refused at the far end for a reason nobody can see.
-const consoleCanonical = b => JSON.stringify(Object.fromEntries(Object.keys(b).sort().map(k => [k, b[k]])))
-const asSent = consoleCanonical({ v: 1, op: 'channel_seat', agent: AGENT, key: KEY })
-check(asSent === canonicalJson(body()), 'the console\'s key sort produces byte-identical content to canonicalJson')
-check(seatIntentToForward(sign(approverSk, asSent), opts()).ok === true,
+check(drafted.content === canonicalJson(body()), "the console's draft is byte-identical to canonicalJson")
+check(seatIntentToForward(sign(approverSk, drafted.content), opts()).ok === true,
   '  …and an event carrying exactly those bytes is forwarded — the round trip is closed, not asserted')
 // NEGATIVE CONTROL for that claim: the pre-#502 unsorted form is what the check above is protecting
 // against, and it must actually fail.
 check(seatIntentToForward(sign(approverSk, JSON.stringify({ v: 1, op: 'channel_seat', agent: AGENT, key: KEY })), opts()).ok === false,
   '  …and the unsorted form the page used to send is refused — the sort is load-bearing')
-check(/Object\.keys\(body\)\.sort\(\)/.test(page), '  …and the page sorts every command, not only this one')
+check(consoleCanonical({ v: 1, op: 'agent_rename', agent: AGENT, label: 'x' }) === canonicalJson({ v: 1, op: 'agent_rename', agent: AGENT, label: 'x' }),
+  '  …and the console sorts every command, not only this one')
 
-// THE SSH KEY SHAPE, declared in the page and in src/channel_seat.mjs. Compared on real keys and on
-// the rejections, because a client check that is merely stricter is a check that refuses keys the
+// THE SSH KEY SHAPE, declared in the console and in src/channel_seat.mjs. Compared on real keys and
+// on the rejections, because a client check that is merely stricter is a check that refuses keys the
 // broker would have taken.
-const pageRe = /if \(!(\/\^ssh-ed25519 [^\n]*?\/)\.test\(key\)\)/.exec(page)
-check(pageRe, 'the page\'s ssh key shape is a literal this suite can lift')
-const consoleAccepts = k => { try { return new RegExp(pageRe[1].slice(1, -1)).test(k) } catch { return null } }
-check(consoleAccepts(KEY) !== null, '  …and it compiles — a lift that silently failed would agree with src/ on nothing')
 const cases = [
   [KEY, true], [OTHER_KEY, true],
   [`${KEY.split(' ').slice(0, 2).join(' ')}`, true],
@@ -256,49 +247,22 @@ const cases = [
 ]
 for (const [k, want] of cases) {
   const src = parseSeatIntent(body({ key: k })).ok === true
-  check(consoleAccepts(k) === want && src === want,
+  check(!(draftSeat(k) instanceof Error) === want && src === want,
     `console and src/ agree that ${want ? 'this IS' : 'this is NOT'} a seatable key: "${k.slice(0, 34).replace(/\n/g, '\\n') || '(empty)'}…"`)
 }
 
-// The private-key check runs FIRST. Ordering it second would meet the worst paste on the page with
-// "that is not an ed25519 public key", which reads as a typo and invites a retry.
-const privateAt = seatHandler.indexOf('PRIVATE KEY')
-const shapeAt = seatHandler.indexOf('ssh-ed25519 [A-Za-z0-9')
-check(privateAt >= 0 && shapeAt >= 0 && privateAt < shapeAt,
-  'the private-key refusal is tested BEFORE the shape refusal — the worst paste gets the true message')
-// Lifted from the page, not retyped here. A copy in this file would keep passing after the page's
-// own guard was weakened, which is the entire failure this assertion exists to catch.
-const privateRe = /if \((\/BEGIN [^\n]*?\/i)\.test\(key\)\)/.exec(seatHandler)
-check(privateRe, '  …and that guard is a literal this suite can lift from the page')
-// A regex that matches nothing when the lift fails, so a missing guard reports as "it no longer
-// catches an nsec" rather than as a stack trace. A suite that dies is a suite whose remaining
-// assertions did not run, and this file has thirty of them after this line.
-const guard = privateRe ? new RegExp(privateRe[1].slice(1, -2), 'i') : /(?!)/
+// The private-key check runs FIRST. Ordering it second would meet the worst paste with "that is not
+// an ed25519 public key", which reads as a typo and invites a retry.
 for (const bad of ['-----BEGIN OPENSSH PRIVATE KEY-----', 'nsec1qqqqq', 'bunker://abc?relay=wss://x', 'PuTTY-User-Key-File-3: ssh-ed25519']) {
-  check(guard.test(bad), `  …and it catches "${bad.slice(0, 28)}…"`)
+  check(/PRIVATE key/.test(draftSeat(bad).message), `the private-key refusal names "${bad.slice(0, 28)}…" as a private key, before any shape complaint`)
 }
-check(!guard.test(KEY) && !guard.test(OTHER_KEY),
+check(!(draftSeat(KEY) instanceof Error) && !(draftSeat(OTHER_KEY) instanceof Error),
   '  …and a real PUBLIC key is not caught by it — the guard is not simply refusing everything')
 
-// The seat is a widening control and sits with the others that widen, not among the ones that only
-// narrow. That grouping is the page's whole way of telling an owner which decisions are being asked
-// of them, and a control filed on the wrong side of it is a decision made quietly.
-const widens = page.split('class="widens"').slice(1).map(s => s.slice(0, s.indexOf('</div>')))
-check(widens.some(w => /id="seat"/.test(w)), 'the seat button sits inside a `widens` block')
-check(widens.some(w => /id="admit"/.test(w)), '  …the same block class the admit control uses — positive control')
-check(/<td><b>Seat the channel key<\/b><\/td>/.test(page), 'the "what these controls do — and do not" table has a row for it')
-check(/Seat the channel key[\s\S]{0,400}not membership and not a lane/.test(page),
-  '  …and that row says a seat is not membership — the two are separately revocable, and reading them as one is how an owner leaves a channel open')
-
-// A seat does not appear in this roster, so its success message must not borrow the roster's proof.
-check(/if \(d !== SEAT_D\) setTimeout\(load, 2500\)/.test(page),
-  'a seat does not schedule a roster reload — the roster will look identical either way')
-check(/this list will not show it/.test(page), '  …and the message says so rather than implying otherwise')
-
-// The controls are enabled and disabled as one set. A seat field left live against a stale state is
-// the same defect the freshness check exists to prevent, on a new control.
-check(/const CONTROLS = \[[^\]]*'seat-key'[^\]]*'seat'[^\]]*\]/.test(page),
-  'both seat controls are in CONTROLS, so staleness disables them with everything else')
+// A seat does not appear in the roster, so its result must not borrow the roster's proof.
+const seatVerdict = bridgeVerdict(JSON.parse(drafted.content), { observed_at: NOW, agents: [] }, [{ observed_at: NOW + 60, agents: [] }])
+check(seatVerdict.done === null, 'a seat is never called done from the roster — the roster will look identical either way')
+check(/connection check is the proof/.test(seatVerdict.text), '  …and the message says where the proof is instead')
 
 // ---------------------------------------------------------------------------------------------
 console.log('\n§5 the bridge wiring')

@@ -42,6 +42,10 @@
   .editor{margin-top:9px;padding:11px 13px;border:1px solid var(--line);border-radius:8px;display:grid;gap:8px;font-size:13px}
   .editor .giver{display:flex;gap:4px 10px;align-items:baseline;flex-wrap:wrap}.editor .giver button{margin:0}
   .editor .add{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.editor .add button{margin:0}
+  .liveline{display:flex;gap:9px;align-items:baseline;padding:4px 0;font-size:13px;flex-wrap:wrap}
+  .mark{font:13px var(--mono);width:1.1em;flex:none}
+  .mark.present{color:var(--good)}.mark.unverified{color:var(--warn)}.mark.missing{color:var(--critical)}.mark.unknown{color:var(--faint)}
+  .liveline .what{font-weight:650;flex:0 0 190px}.liveline .why{color:var(--dim);flex:1 1 220px}
   #change-words{margin:0 0 10px;padding-left:1.2em}#change-words li{margin:4px 0}
   pre.json{font:12px/1.45 var(--mono);background:var(--ground);border:1px solid var(--line);border-radius:6px;padding:10px 12px;margin:8px 0;overflow-x:auto;white-space:pre}
   .result{font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;border-left:3px solid var(--line);padding:4px 0 4px 10px;margin:8px 0;color:var(--dim)}
@@ -52,7 +56,7 @@
 </style>
 </head>
 <body><main>
-  <nav class="console-tabs" aria-label="waggle console"><a class="active" href="/console/hive.html">Hive</a><a href="/console/">Access</a><a href="/console/connect.html">Connect</a><a href="/console/following.html">Following</a><a href="/console/agents.html">Agents</a><a href="/console/routing.html">Routing</a><a href="/console/config.html">Config</a><a href="/console/setup.html">Setup</a></nav>
+  <nav class="console-tabs" aria-label="waggle console"><a class="active" href="/console/hive.html">Hive</a><a href="/console/">Access</a><a href="/console/connect.html">Connect</a><a href="/console/following.html">Following</a><a href="/console/routing.html">Routing</a><a href="/console/config.html">Config</a><a href="/console/setup.html">Setup</a></nav>
   <h1>Hive</h1>
   <p class="sub">Every identity in your hive on one list. Each one is an agent, or could become one, and each answer is read from its own source: approvals from the relays that hold them, configuration from the agent's own signed card, names from profiles. Nothing on this page is a guess. Where a source does not say, the page says <em>not reported</em>.</p>
 
@@ -105,9 +109,11 @@ import { parseIntent, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { BRIDGE_RELAYS, offeredOps, draftBridgeCommand, describeCommand, applyBridgeCommand } from './hive-bridge.mjs'
 import { controlStateFresh } from './control-state-freshness.mjs'
 import { statusLabel } from './agent-roster.mjs'
+import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
+import { readPublic } from './profile-publish.mjs'
 import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
 
-// The bridge publishes its roster to the same relays the Agents page reads, and reads commands there.
+// The bridge publishes its roster to these relays and reads its commands from them.
 const ROSTER_RELAYS = BRIDGE_RELAYS
 const ROSTER_FILTER = bridge => ({ kinds: [30078], authors: [bridge], '#d': ['waggle-control-state'], limit: 4 })
 const rosterStates = (events, bridge) => events.map(e => validControlState(e, bridge)).filter(Boolean).sort((a, b) => b.observed_at - a.observed_at)
@@ -339,9 +345,35 @@ function rowView(r, { owner, nameOf, partial }) {
     for (const term of ['Where it can post', 'What it holds', 'How it works', 'Proof it works'])
       item(term, r.isOwner ? 'You.' : partial.cards ? `No agent card, ${PARTIAL}.` : 'No agent card, so not reported.', true)
   }
+  if (!r.isOwner && !r.isBridge) {
+    const found = item('Can it be found', 'Not checked here yet. Check reads its published name back cold from the public relays.')
+    const look = el('button', 'small quiet', 'Check'); look.type = 'button'
+    const out = el('div', 'liveness')
+    look.onclick = () => checkFound(r, look, out)
+    found.appendChild(el('div')).appendChild(look); found.appendChild(out)
+  }
   dl.appendChild(el('dt', null, 'Key')); dl.appendChild(el('dd', 'npub', npub(r.pubkey)))
   d.appendChild(dl)
   return d
+}
+
+// Whether anything can address it: a cold read-back of its kind:0, beside what the bridge's list
+// claims (#497). A read that threw did not happen, so it stays unknown rather than "no name".
+async function checkFound(r, button, out) {
+  button.disabled = true
+  out.textContent = 'Reading the public relays…'
+  let read = null
+  try { read = await readPublic(r.pubkey) } catch { read = null }
+  const report = livenessReport({ agent: hive.rosterState?.agents.find(a => a.pubkey === r.pubkey), profileRead: read })
+  out.textContent = ''
+  for (const row of report.rows) {
+    const line = out.appendChild(el('div', 'liveline'))
+    line.appendChild(el('span', `mark ${row.state}`, MARK[row.state]))
+    line.appendChild(el('span', 'what', row.title))
+    line.appendChild(el('span', 'why', row.state === PRESENT ? row.note : `${row.state.toUpperCase()} — ${row.note}`))
+  }
+  out.appendChild(el('p', 'note', report.headline))
+  button.disabled = false
 }
 
 // Change who can give this agent work. Only the owner's own approvals are withdrawn from here; one
@@ -424,7 +456,7 @@ function bridgeControls(box, r, { nameOf, say }) {
   const head = box.appendChild(el('div', 'giver'))
   head.appendChild(el('b', null, "waggle's list"))
   const state = hive.rosterState
-  if (!hive.bridge || !state) { head.appendChild(el('span', 'note', hive.bridge ? 'The bridge list was not read, so its controls are not offered.' : 'The waggle bridge key is not set in this browser, so its controls are not offered.')); return }
+  if (!hive.bridge || !state) { head.appendChild(el('span', 'note', hive.bridge ? 'The bridge list was not read, so its controls are not offered.' : 'The waggle bridge key is not set in this browser, so its controls are not offered. Set it under Find a hive on the Following page.')); return }
   if (!controlStateFresh(state.observed_at)) { head.appendChild(el('span', 'note', "The bridge's list is too old to act on. Read the hive again; if it stays old, the bridge is not publishing.")); return }
   const entry = state.agents.find(a => a.pubkey === r.pubkey)
   head.appendChild(el('span', 'note', entry ? `${statusLabel(entry.status)}${entry.status === 'revoked' ? '' : `; mentions ${entry.return_lane ? 'are' : 'are not'} carried out to it`}.` : 'not on it.'))

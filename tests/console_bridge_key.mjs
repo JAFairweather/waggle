@@ -117,7 +117,8 @@ const reachesStore = (page) => {
   return false
 }
 const withBridgeInput = pages.filter(p => readFileSync(join(CONSOLE, p), 'utf8').includes('id="bridge"'))
-check(withBridgeInput.length >= 4, `pages taking a bridge key: ${withBridgeInput.join(', ') || '(none)'}`)
+// Three since the Agents tab was retired (#613 M4d): Config, Following and Routing collect it.
+check(withBridgeInput.length >= 3, `pages taking a bridge key: ${withBridgeInput.join(', ') || '(none)'}`)
 const unwired = withBridgeInput.filter(p => !reachesStore(p))
 check(unwired.length === 0,
   `every page with a bridge field reaches the shared store${unwired.length ? ` (missing: ${unwired.join(', ')})` : ''}`)
@@ -154,7 +155,7 @@ check(!readFileSync(join(CONSOLE, 'index.html'), 'utf8').includes(STORE),
 // it; this catches a page that has moved the call back to the top of load() and now silently fails
 // to persist at all, which would look exactly like the bug this fixes.
 const persisting = files.filter(f => !f.endsWith(STORE) && readFileSync(f, 'utf8').includes('rememberBridgeKey('))
-check(persisting.length === 4, `four sources persist the key: ${persisting.map(f => f.slice(CONSOLE.length + 1)).join(', ')}`)
+check(persisting.length === 3, `three sources persist the key: ${persisting.map(f => f.slice(CONSOLE.length + 1)).join(', ')}`)
 for (const f of persisting) {
   const src = readFileSync(f, 'utf8')
   const verified = src.indexOf('newestFreshControlState(')

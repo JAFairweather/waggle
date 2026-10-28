@@ -74,7 +74,7 @@ This section exists because the tempting lie in a lifecycle UI is a "destroy age
   - **the label VALUE**, by `CREDENTIAL_SHAPED` — because a name screen does nothing about an owner
     pasting a key into the label box. That paste is published inside the signed rename command, from
     the browser, before any bridge-side check runs, so the screen lives at three independent gates:
-    `console/agents.html` (where the paste happens), `parseLifecycleCommand` (the lane), and the
+    `console/hive-bridge.mjs` (the hive page, where the paste happens), `parseLifecycleCommand` (the lane), and the
     egress schema in `src/nostr_egress.mjs` (the last check before the key). Bare 64-hex is included:
     private keys live as raw hex in env vars in this stack. `tests/agent_lifecycle.mjs` asserts the
     three copies agree, so independence does not become drift.

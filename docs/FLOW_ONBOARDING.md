@@ -41,13 +41,13 @@ I conflated these repeatedly and got four answers wrong in an hour. They are not
 
 | Registry | Written by | Read by | Rendered where | Gives the agent |
 |---|---|---|---|---|
-| **grant set** | signed NIP-DA 440s, replayed at every bridge start | `activeReturnLane` (`src/bridge.mjs:945-960`) | `console/agents.html` — **`WHO'S IN`** | admission. An entry with no route is synthesised as `{mention: 'guest', dynamic: true}`, and **dynamic entries are excluded from mention matching** (`:3678`, `:3722`) — reachable by explicit p-tag or direct reply only |
-| **`public.task_routes`** | `applyTaskRouteCommand` (`src/bridge.mjs:3119`), from `console/config.html` only | `scanReturnLane` (`:3676-3722`) | nowhere on `agents.html` | the at-word. `(channel, sender)`-locked |
+| **grant set** | signed NIP-DA 440s, replayed at every bridge start | `activeReturnLane` (`src/bridge.mjs:945-960`) | `console/hive.html` — the one list (the Agents tab's **`WHO'S IN`** until #613 M4d) | admission. An entry with no route is synthesised as `{mention: 'guest', dynamic: true}`, and **dynamic entries are excluded from mention matching** (`:3678`, `:3722`) — reachable by explicit p-tag or direct reply only |
+| **`public.task_routes`** | `applyTaskRouteCommand` (`src/bridge.mjs:3119`), from `console/config.html` only | `scanReturnLane` (`:3676-3722`) | nowhere on `hive.html` | the at-word. `(channel, sender)`-locked |
 | **`public.return_lane`** | **nothing** — `src/bridge.mjs:440` is the only reference in the source tree and it is a boot-time read | same | nowhere | the at-word, unlocked. Hand-edited config |
 
 Two traps in that table:
 
-- **`agents.html`'s "Carry mentions out to it" does not write a lane entry.** It sends
+- **The hive page's "Carry mentions out" does not write a lane entry.** It sends
   `agent_return_lane`, which sets a **boolean on a roster row** (`src/bridge.mjs:2868`, `:2876`).
   It enables the lane; it does not name anybody.
 - **The two row shapes cannot simply be merged.** Managed routes carry `scan_channel`/`scan_author`
