@@ -314,14 +314,11 @@ sh tools/grant-setup.sh
 
 Then **verify by reading it back**, not by trusting the issuing tool:
 
-- in the console, open the access list and paste **your own npub** as the grantor — the field is
-  "Whose approvals do you want to see?", and signing in fills it for you
-- the agent should appear as a card with the capabilities you granted
-- each line should name who enforces it — the task family says *the agent's runtime*, not the
-  bridge
-
-> Note: the agent will appear on **Access** but not on **Agents**. Those are two registries and
-> nothing connects them yet — issue #321. It is not a failure of this runbook.
+- in the console, open the hive page (`console/hive.html`), sign in, and read the hive
+- the agent should have a row, and "Who can give it work" should name you with the capabilities you
+  granted, each read cold from the relays
+- until the bridge seats it, the row says "waggle's list: not on it." That is expected: a grant
+  and a seat are separate, and the row shows both
 
 ---
 
@@ -372,7 +369,7 @@ That last one matters most. A check that has only ever passed proves nothing.
 | the pairing check prints `cannot read Bunker URI credential` | the credential path is wrong — usually `AGENT_RUNTIME` was never exported, so it expanded to `/credentials/bunker-uri` |
 | the pairing check prints `set NVOY_NSEC or the Bunker credential-file pair` | neither env var reached the process. Check the line continuations in the command |
 | the pairing check hangs, then fails | the pairing itself is broken. `nip46-signer.mjs` swallows the failure at `connect`, so it surfaces on the first real operation — here, sealing. Re-pair from a fresh `bunker://` |
-| the console shows the agent on Access but not Agents | expected today — issue #321 |
+| the hive row says "waggle's list: not on it." | expected until the bridge seats the agent. The grant is read separately, under "Who can give it work" |
 | a capability is refused at request time | `admit+read` and `mirror` cannot be requested. This is intentional — see `--caps` above for why, and do not treat it as a bug to route around |
 | a relay says `pow: 28 bits needed` | normal for `nos.lol`, not a failure. One relay accepting is enough |
 
