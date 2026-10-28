@@ -251,7 +251,9 @@ export function nameSlots(cells, groupOf = () => 0) {
 // Where each agent runs, in the order the table groups them. Agent cards carry no platform yet
 // (#637), so the keys are listed here; anyone not listed is in the last group.
 export const PLATFORMS = Object.freeze([
-  { id: 'you', label: 'You' },
+  { id: 'you', label: 'You', keys: [
+    '8f3829871ec5ed5dff1b6654d3ca878aa1f4312968f318b18b158e1d93f0a37f', // James's Quill: drafts posts for you to sign, your written voice
+  ] },
   { id: 'lab', label: 'Frontier lab harnesses', runs: 'Codex, Claude Code', keys: [
     '231952cb5eb0652c04075f6a1b93e727819ed2ac0bf5238a96c6d2ca51617edd', // DJ Codex
     'ad05b00ee49200d5bd2788fba480621ba6009224f01e48b3e9bce10100421d5c', // MC Claude
