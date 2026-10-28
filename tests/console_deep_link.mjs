@@ -57,6 +57,8 @@ ok('a work link over your own key is refused, with or without a cap', /over an a
   && /over an agent/.test(linked('aaaa1111', mine, null).why || ''))
 ok('a carrying link to anyone but the bridge is refused', /only to the waggle bridge/.test(linked('aaaa1111', 'bbbb2222', 'task-relay', beta).why || ''))
 ok('PAIR: a carrying link to the bridge over an agent fills the form', !linked('bbbb2222', 'aaaa1111', 'task-relay', beta).why)
+ok('a carrying link with no bridge key read is refused, whoever it names', /has not read the bridge key/.test(linked('aaaa1111', 'bbbb2222', 'task-relay').why || '')
+  && /has not read the bridge key/.test(linked('bbbb2222', 'aaaa1111', 'task-relay', '').why || ''))
 
 const grants = [{ id: 'e970d972' + key('a').slice(8), grantee: alpha, live: true }, { id: '503099b6' + key('b').slice(8), grantee: alpha, live: false }]
 ok('a live grant opens its revoke', resolveRevoke({ grant: 'e970d972' }, grants).grant === grants[0])
