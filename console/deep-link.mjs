@@ -69,7 +69,10 @@ export function subjectRule({ cap, to, on, owner, bridge }) {
     return null
   }
   if (on === owner) return `${cap} is given over an agent, not over your own key`
-  if (cap === 'task-relay' && bridge && to !== bridge) return 'carrying is given only to the waggle bridge'
+  if (cap === 'task-relay') {
+    if (!bridge) return 'carrying is given only to the waggle bridge, and this console has not read the bridge key, so the link cannot be checked'
+    if (to !== bridge) return 'carrying is given only to the waggle bridge'
+  }
   return null
 }
 
