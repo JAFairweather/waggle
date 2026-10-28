@@ -25,7 +25,11 @@
   .need{border-left:3px solid var(--warn);padding:6px 0 6px 11px;margin:8px 0;font-size:14px}
   .need .who{color:var(--dim);font-size:13px}
   .bar{display:flex;gap:6px 14px;align-items:baseline;flex-wrap:wrap;margin:4px 0 14px}.bar .status{margin:0;flex:1 1 260px}.bar button{margin:0}
-  .wrap{overflow-x:auto}
+  /* A box that scrolls sideways pins a sticky header to itself, not the page. The table fits from
+     700px, so only a phone gets the box, and there it scrolls both ways so the header still sticks. */
+  .wrap{overflow:auto;max-height:80vh}
+  @media (min-width:700px){.wrap{overflow:visible;max-height:none}}
+  table.hive thead th{position:sticky;top:env(safe-area-inset-top,0px);z-index:1;background:var(--panel);padding-top:9px}
   table.hive{width:100%;border-collapse:collapse;font-size:14px}
   table.hive th{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);text-align:left;padding:0 14px 9px 0;border-bottom:1px solid var(--line);white-space:nowrap}
   table.hive td{padding:10px 14px 10px 0;border-bottom:1px solid var(--line);vertical-align:top}
