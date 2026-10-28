@@ -9,7 +9,7 @@
 <style>
   :root{--ground:#0b0906;--panel:#14100a;--line:#2a2317;--text:#f4efe4;--dim:#9c927f;--faint:#6f6555;--gold:#e2c079;--accent:#cf8a2e;--good:#8fae6a;--warn:#d9a648;--critical:#c0705a;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,monospace;--display:"Iowan Old Style",Palatino,Georgia,serif}
   @media (prefers-color-scheme:light){:root{--ground:#f5f0e4;--panel:#fffdf7;--line:#ddd2ba;--text:#241d12;--dim:#6f6553;--faint:#8a7f66;--gold:#8a5a14;--accent:#8a5a14;--good:#4f7a34;--warn:#9a6a12;--critical:#a2482f}}
-  *{box-sizing:border-box} body{margin:0;background:var(--ground);color:var(--text);font:15px/1.5 var(--sans)} main{max-width:1180px;margin:auto;padding:34px 20px 64px} a{color:var(--gold)} h1{font:600 30px var(--display);margin:0 0 5px}
+  *{box-sizing:border-box} body{margin:0;background:var(--ground);color:var(--text);font:15px/1.5 var(--sans)} main{max-width:900px;margin:auto;padding:34px 20px 64px} a{color:var(--gold)} h1{font:600 30px var(--display);margin:0 0 5px}
   .sub{color:var(--dim);max-width:70ch;margin:0 0 26px}
   .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:17px 18px;margin:15px 0}
   .panel h2{font:600 11px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:0 0 11px}
@@ -29,6 +29,8 @@
   table.hive{width:100%;border-collapse:collapse;font-size:14px}
   table.hive th{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);text-align:left;padding:0 14px 9px 0;border-bottom:1px solid var(--line);white-space:nowrap}
   table.hive td{padding:10px 14px 10px 0;border-bottom:1px solid var(--line);vertical-align:top}
+  table.hive td.names div{white-space:nowrap;line-height:1.45;min-height:1.45em}
+  table.hive td.names .absent{color:var(--faint);text-decoration:line-through}
   table.hive tr.detail td{padding:0 0 14px}
   button.who{background:none;border:0;border-radius:0;padding:0;margin:0;color:var(--text);font:inherit;font-weight:700;cursor:pointer;text-align:left}
   button.who::before{content:"▸ ";color:var(--faint)}button.who[aria-expanded="true"]::before{content:"▾ "}
@@ -115,7 +117,7 @@ import { controlStateFresh } from './control-state-freshness.mjs'
 import { statusLabel } from './agent-roster.mjs'
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
-import { readGrants, scopeTable, readCards, buildList, workSentence, workCell, givesCell, askCell, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
+import { readGrants, scopeTable, readCards, buildList, workSentence, workCell, givesCell, nameSlots, slotted, askCell, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
 
 // The bridge publishes its roster to these relays and reads its commands from them.
 const ROSTER_RELAYS = BRIDGE_RELAYS
@@ -258,7 +260,12 @@ function draw(rows, needs, owner, partial) {
   const short = partial.keys ? ' Not every relay answered in full, so a key held only on one that did not may be missing too, and a withdrawal held only there may not be counted.' : ''
   $('not-read').textContent = `Not read yet: ${NOT_READ.join(', ')}. A key known only to those is not on this list.${short}`
   const list = $('list'); list.textContent = ''
-  for (const r of rows) list.append(...rowView(r, { owner, nameOf, partial, rows }))
+  const cells = new Map(rows.map(r => [r.pubkey, {
+    takes: r.isOwner || r.isBridge ? ['—'] : workCell(r.answers.work, { owner, nameOf, incomplete: partial.approvals }),
+    gives: r.isBridge ? ['—'] : givesCell(r.pubkey, rows, { owner, nameOf, incomplete: partial.approvals }),
+  }]))
+  const slots = { takes: nameSlots([...cells.values()].map(c => c.takes)), gives: nameSlots([...cells.values()].map(c => c.gives)) }
+  for (const r of rows) list.append(...rowView(r, { owner, nameOf, partial, cells: cells.get(r.pubkey), slots }))
   $('partial-note').hidden = !partial.approvals
   $('list-panel').hidden = false
   drawWhatIf(rows, owner, nameOf, partial)
@@ -332,7 +339,17 @@ async function applyIntent({ owner, nameOf }) {
 const STAGE = { tools: 'Has tools on nave', grants: 'Has approvals, no tools yet', key: 'A key with no tools yet' }
 // One line of the table, and the detail line under it that its name opens.
 const openRow = row => { const b = row.querySelector('button.who'); if (b.getAttribute('aria-expanded') !== 'true') b.click() }
-function rowView(r, { owner, nameOf, partial, rows }) {
+// One name to a line, so a column of names reads down rather than across.
+function names(cell, slots, self, verb) {
+  const td = el('td', 'names'), lines = slotted(cell, slots, self)
+  if (!lines) { td.appendChild(el('div', null, cell[0])); return td }
+  for (const { name, state } of lines) {
+    const line = td.appendChild(el('div', state, state === 'self' ? '' : name))
+    if (state === 'absent') line.title = `Not ${verb} ${name}`
+  }
+  return td
+}
+function rowView(r, { owner, nameOf, partial, cells, slots }) {
   const d = el('tr')
   d.dataset.pubkey = r.pubkey
   const detail = el('tr', 'detail'); detail.hidden = true
@@ -341,8 +358,9 @@ function rowView(r, { owner, nameOf, partial, rows }) {
   who.type = 'button'; who.setAttribute('aria-expanded', 'false')
   who.onclick = () => { const open = detail.hidden; detail.hidden = !open; who.setAttribute('aria-expanded', String(open)) }
   const own = r.isOwner || r.isBridge
-  d.appendChild(el('td', null, own ? '—' : workCell(r.answers.work, { owner, nameOf, incomplete: partial.approvals })))
-  d.appendChild(el('td', null, r.isBridge ? '—' : givesCell(r.pubkey, rows, { owner, nameOf, incomplete: partial.approvals })))
+  const self = r.isOwner ? 'You' : r.roles.some(x => x.role === 'voice') ? 'Your voice' : nameOf(r.pubkey)
+  d.appendChild(names(cells.takes, slots.takes, self, 'from'))
+  d.appendChild(names(cells.gives, slots.gives, self, 'to'))
   d.appendChild(el('td', null, own ? '—' : askCell(r.answers.act, { owner, nameOf, incomplete: partial.approvals, givers: r.answers.work.givers.length })))
   const p = r.answers.post
   d.appendChild(el('td', null, own || !r.card ? '—' : p ? `Up to ${p.per_hour}/hour in ${p.channels} channel${p.channels === 1 ? '' : 's'}` : 'Replies only'))

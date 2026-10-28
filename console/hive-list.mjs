@@ -228,14 +228,27 @@ export function workSentence(answer, { owner, nameOf, incomplete = false }) {
 // The table's short answers: "You, DJ Codex" and "Not on your work". An absence the read cannot
 // vouch for is starred; the page's footnote says why.
 const star = incomplete => incomplete ? '*' : ''
+// Both name columns read in one order: you, the others by name, your voice last.
+const rank = n => n === 'You' ? 0 : n === 'Your voice' ? 2 : 1
+const inOrder = names => names.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b, undefined, { sensitivity: 'base' }))
 export function workCell(answer, { owner, nameOf, incomplete = false }) {
-  const givers = [...answer.givers].sort((a, b) => Number(b.pubkey === owner) - Number(a.pubkey === owner))
-  return givers.length ? givers.map(g => g.pubkey === owner ? 'You' : g.voice ? 'Your voice' : nameOf(g.pubkey)).join(', ') : `Nobody${star(incomplete)}`
+  const givers = answer.givers.map(g => g.pubkey === owner ? 'You' : g.voice ? 'Your voice' : nameOf(g.pubkey))
+  return givers.length ? inOrder(givers) : [`Nobody${star(incomplete)}`]
 }
 // The other direction of the same approvals: whose rows name this key as a giver.
 export function givesCell(pubkey, rows, { owner, nameOf, incomplete = false }) {
   const to = rows.filter(r => r.pubkey !== pubkey && r.answers?.work.givers.some(g => g.pubkey === pubkey))
-  return to.length ? to.map(r => r.pubkey === owner ? 'You' : nameOf(r.pubkey)).join(', ') : `Nobody${star(incomplete)}`
+  return to.length ? inOrder(to.map(r => r.pubkey === owner ? 'You' : nameOf(r.pubkey))) : [`Nobody${star(incomplete)}`]
+}
+// Every name a column holds, in one order, so each name sits on the same line in every row and a
+// gap shows who is missing. A cell with nobody in it stays one line.
+const EMPTY = /^(Nobody\*?|—)$/
+export function nameSlots(cells) {
+  return inOrder([...new Set(cells.flat().filter(n => !EMPTY.test(n)))])
+}
+export function slotted(cell, slots, self) {
+  if (cell.length === 1 && EMPTY.test(cell[0])) return null
+  return slots.map(name => ({ name, state: cell.includes(name) ? 'present' : name === self ? 'self' : 'absent' }))
 }
 export function askCell(act, { owner, nameOf, incomplete = false, givers = 1 }) {
   if (!givers) return '—'
