@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { generateSecretKey, getEventHash, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
 import * as nip44 from 'nostr-tools/nip44'
+import { postingTally, agentCardKeys, AGENT_CARD_D, AGENT_CARD_KIND } from '../src/posting_activity.mjs'
 import { sealedTaskRouteCommand } from '../console/task-route-envelope.mjs'
 import { consoleSigner, CONSOLE_SESSION_KEY } from '../console/signer-session.mjs'
 import { confirmedFreshSigner } from '../console/confirmed-fresh-signer.mjs'
@@ -153,6 +154,24 @@ try {
 } catch { ordinaryLabel = false }
 t('PAIR: an ordinary label with a space and punctuation still reaches the signed artifact', ordinaryLabel)
 unlinkSync(AGENT_ROWS)
+
+// Posts per agent in the last hour (#638): counts and keys only, closed like `agents`.
+t('with no scan channel there is nothing counted, so no posting block is published', PUB.scanChannels.length > 0 || !('posting' in buildControlState()))
+const posting = { window_secs: 3600, agents: [{ pubkey: AGENT_B, posts: 0 }, { pubkey: AGENT_A, posts: 12 }] }
+let postingBody = null
+try { postingBody = JSON.parse(wire(await signControlState({ ...buildControlState(), posting })).content).posting } catch { postingBody = null }
+t('a posting block reaches the signed record, sorted by key', postingBody?.window_secs === 3600 &&
+  postingBody.agents.map(a => `${a.pubkey === AGENT_A ? 'A' : 'B'}${a.posts}`).join() === (AGENT_A < AGENT_B ? 'A12,B0' : 'B0,A12'))
+const refusesPosting = async (p, label) => {
+  let refused = false
+  try { await signControlState({ ...buildControlState(), posting: p }) } catch { refused = true }
+  t(label, refused)
+}
+await refusesPosting({ ...posting, channel: 'waggle-test' }, 'the schema refuses a posting block carrying an undeclared field, such as a channel')
+await refusesPosting({ window_secs: 3600, agents: [{ pubkey: AGENT_A, posts: 1, text: 'hello' }] }, 'and a posting row carrying content')
+await refusesPosting({ window_secs: 3600, agents: [{ pubkey: AGENT_A, posts: 1 }, { pubkey: AGENT_A, posts: 2 }] }, 'and a duplicate agent')
+await refusesPosting({ window_secs: 3600, agents: [{ pubkey: AGENT_A, posts: -1 }] }, 'and a negative count')
+await refusesPosting({ window_secs: 5, agents: [] }, 'and a window outside a minute to a day')
 
 let publishedControlId = ''
 const acceptedControl = await publishControlState(async (event) => { publishedControlId = event.id; return 1 }, true)
@@ -816,6 +835,37 @@ const { askBudget } = await import('../src/bridge.mjs')
     /not a failed send/i.test(opsModule))
   t('#331 consent.mjs no longer claims to be unwired — bridge.mjs imports it and the gate is live',
     !/NOT wired into the bridge/.test(readFileSync(new URL('../src/consent.mjs', import.meta.url), 'utf8')))
+}
+
+// Who counts as an agent, and how posts are counted (#638).
+{
+const agentSk = generateSecretKey(), agent = getPublicKey(agentSk)
+const person = getPublicKey(generateSecretKey()), idle = getPublicKey(generateSecretKey())
+const now = 1_800_000_000
+const msg = (id, pubkey, ago) => ({ id, pubkey, created_at: now - ago, content: 'x' })
+
+const tally = postingTally()
+tally.note([msg('a', agent, 10), msg('b', agent, 600), msg('c', person, 5), msg('d', agent, 4000)], now)
+// The scan re-reads its overlap window on every poll; the same ids must not count twice.
+tally.note([msg('a', agent, 10), msg('b', agent, 600)], now)
+const first = tally.summary([agent, idle], now)
+t('posts in the last hour are counted once each, by id', first.agents.find(a => a.pubkey === agent)?.posts === 2)
+t('a post older than the window is not counted', first.window_secs === 3600)
+t('an agent with a card and no posts reads 0, not missing', first.agents.find(a => a.pubkey === idle)?.posts === 0)
+t('a person without a card is never reported, though their posts were seen', !first.agents.some(a => a.pubkey === person))
+t('NEGATIVE CONTROL: the same person is counted once named as an agent', tally.summary([person], now).agents[0].posts === 1)
+t('a post ages out as the window moves', tally.summary([agent], now + 3580).agents[0].posts === 1 && tally.summary([agent], now + 3600).agents[0].posts === 0)
+const junk = postingTally()
+junk.note([{ id: 'x', pubkey: 'not-a-key', created_at: now }, { id: '', pubkey: agent, created_at: now }, { id: 'y', pubkey: agent, created_at: now + 600 }, null], now)
+t('a malformed or future-dated message is not counted', junk.summary([agent], now).agents[0].posts === 0)
+
+const card = finalizeEvent({ kind: AGENT_CARD_KIND, created_at: now, tags: [['d', AGENT_CARD_D]], content: '{}' }, agentSk)
+const otherD = finalizeEvent({ kind: AGENT_CARD_KIND, created_at: now, tags: [['d', 'waggle-control-state']], content: '{}' }, generateSecretKey())
+const forged = { ...JSON.parse(JSON.stringify(card)), pubkey: person }
+const keys = agentCardKeys([card, otherD, forged, { kind: 1 }], verifyEvent)
+t('a signed nvoy agent card makes its key an agent', keys.has(agent))
+t('another d tag, or a card whose signature is not its own key, does not', keys.size === 1 && !keys.has(person))
+
 }
 
 console.log(`\n${pass}/${n} passed`)

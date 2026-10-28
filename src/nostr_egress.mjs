@@ -225,10 +225,32 @@ const controlState = (v) => {
     }).sort((x, y) => x.pubkey.localeCompare(y.pubkey))
   }
   const withAgents = agents === null ? {} : { agents }
+  // Posts per agent in the last hour (#638). Optional and additive like `agents`: a record signed
+  // before it stays valid. Counts and keys only: no channel, no content, no timestamps per post.
+  let withPosting = {}
+  if (s.posting != null) {
+    const p = (typeof s.posting === 'object') ? s.posting : reject('control state posting is invalid')
+    if (Object.keys(p).sort().join(',') !== 'agents,window_secs') reject('control state posting has unexpected fields')
+    const windowSecs = Math.floor(num(p.window_secs, 'control state posting.window_secs'))
+    if (windowSecs < 60 || windowSecs > 86400) reject('control state posting.window_secs out of bounds')
+    const rows = Array.isArray(p.agents) ? p.agents : reject('control state posting.agents is not an array')
+    if (rows.length > 1000) reject('control state posting has too many agents')
+    const seenPosting = new Set()
+    const counted = rows.map((a) => {
+      if (!a || typeof a !== 'object' || Object.keys(a).sort().join(',') !== 'posts,pubkey') reject('control state posting agent has unexpected fields')
+      const pubkey = hex64(a.pubkey, 'control state posting.pubkey')
+      if (seenPosting.has(pubkey)) reject('control state posting has duplicate agent')
+      seenPosting.add(pubkey)
+      const n = Math.floor(num(a.posts, 'control state posting.posts'))
+      if (n < 0 || n > 1000000) reject('control state posting.posts out of bounds')
+      return { pubkey, posts: n }
+    }).sort((x, y) => x.pubkey.localeCompare(y.pubkey))
+    withPosting = { posting: { window_secs: windowSecs, agents: counted } }
+  }
   // v1 originally carried just hive/bridge/publishing/follows. Operations was added as an
   // additive v1 summary, so old signed records must remain valid rather than being rewritten
   // under a fictional v2 contract.
-  if (s.operations == null) return { v: 1, observed_at: observedAt, hive: { id: hiveId, name: hiveName, handle: hiveHandle }, bridge: hex64(s.bridge, 'control state bridge'), publishing: s.publishing, follows: cleaned, ...withAgents }
+  if (s.operations == null) return { v: 1, observed_at: observedAt, hive: { id: hiveId, name: hiveName, handle: hiveHandle }, bridge: hex64(s.bridge, 'control state bridge'), publishing: s.publishing, follows: cleaned, ...withAgents, ...withPosting }
   const operations = (typeof s.operations === 'object') ? s.operations : reject('control state operations is invalid')
   const exact = (obj, keys, label) => { if (Object.keys(obj).sort().join(',') !== keys.slice().sort().join(',')) reject(`${label} has unexpected fields`) }
   const count = (value, label) => { const n = Math.floor(num(value, label)); if (n < 0 || n > 1000000) reject(`${label} out of bounds`); return n }
@@ -261,7 +283,7 @@ const controlState = (v) => {
     if (used > perHour || remaining > perHour || used + remaining !== perHour) reject('control state consent_asks does not add up')
     consentAsks = { per_hour: perHour, used_this_window: used, remaining, window_resets_in: count(a.window_resets_in, 'consent_asks.window_resets_in') }
   }
-  return { v: 1, observed_at: observedAt, hive: { id: hiveId, name: hiveName, handle: hiveHandle }, bridge: hex64(s.bridge, 'control state bridge'), publishing: s.publishing, follows: cleaned, ...withAgents,
+  return { v: 1, observed_at: observedAt, hive: { id: hiveId, name: hiveName, handle: hiveHandle }, bridge: hex64(s.bridge, 'control state bridge'), publishing: s.publishing, follows: cleaned, ...withAgents, ...withPosting,
     operations: { trust: { trusted_repliers: count(trust.trusted_repliers, 'trusted_repliers'), muted_authors: count(trust.muted_authors, 'muted_authors'), watched_notes: count(trust.watched_notes, 'watched_notes') }, lanes,
       gates: { consent_required: gates.consent_required, ask_per_hour: count(gates.ask_per_hour, 'ask_per_hour'), public_content_bytes: count(gates.public_content_bytes, 'public_content_bytes'), public_replier_per_min: count(gates.public_replier_per_min, 'public_replier_per_min'), public_channel_per_min: count(gates.public_channel_per_min, 'public_channel_per_min'), public_lane_per_hour: count(gates.public_lane_per_hour, 'public_lane_per_hour') },
       drops: { relay_preauth: count(drops.relay_preauth, 'relay_preauth'), relay_not_relay: count(drops.relay_not_relay, 'relay_not_relay') },

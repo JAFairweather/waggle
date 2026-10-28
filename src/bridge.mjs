@@ -36,6 +36,7 @@ import WebSocket from './ws_runtime.mjs'
 // Only verifyEvent remains here: every signing symbol moved to nostr_egress.mjs with the key
 // (A3 §2.5). Verification is a public-key operation and belongs wherever input is judged.
 import { getEventHash, verifyEvent } from 'nostr-tools/pure'
+import { postingTally, agentCardKeys, AGENT_CARD_KIND, AGENT_CARD_D } from './posting_activity.mjs'
 import * as nip19 from 'nostr-tools/nip19'
 import { emit, query, checkConfigRenderable, runPolicyShadowSsh, runPolicyWriterSsh, runChannelSeatSsh } from './egress.mjs'
 import { bridgePubkey, bridgeSignerMode, hasBridgeKey, openSeal, openRumor, sealAndWrap, consentTosBlock, signControlState, prepareRelayActionReaction, submitRelayActionReaction } from './nostr_egress.mjs'
@@ -2645,6 +2646,31 @@ const MODERATION_COMMAND_D = 'waggle-moderation'
 const TRUST_COMMAND_D = 'waggle-trust'
 const CONTROL_COMMAND_MAX_AGE_SECS = 15 * 60
 let controlStateTimer = null
+// Posts per agent over the last hour, counted from the scan (#638), and the keys that hold an agent
+// card, which are the only ones reported. The cards are re-read on the control-state refresh.
+const postingCounts = postingTally()
+let agentCards = new Set()
+const AGENT_CARD_RELAYS = ['wss://relay.nave.pub']
+function refreshAgentCards(mkSocket) {
+  const events = []
+  return fanout(AGENT_CARD_RELAYS, {
+    timeoutMs: 5000,
+    mkSocket,
+    each: (ws, done) => {
+      ws.on('open', () => ws.send(JSON.stringify(['REQ', 'cards', { kinds: [AGENT_CARD_KIND], '#d': [AGENT_CARD_D], limit: 1000 }])))
+      ws.on('message', d => {
+        try {
+          const m = JSON.parse(d.toString())
+          if (m[0] === 'EVENT' && m[2]) events.push(m[2])
+          if (m[0] === 'EOSE') done()
+        } catch { /* ignore bad frames */ }
+      })
+      ws.on('error', done)
+    },
+    // A read that found nothing keeps the last good set, so one dead relay does not zero the page.
+    collect: () => { const keys = agentCardKeys(events, verifyEvent); if (keys.size) agentCards = keys; return keys.size },
+  })
+}
 
 function buildControlState() {
   if (!PUB || !BRIDGE_PK || !PUB.mirrorConsentHiveId || !PUB.mirrorConsentHiveName || !PUB.mirrorConsentHiveHandle) return null
@@ -2704,6 +2730,7 @@ function buildControlState() {
       // before it: a record signed without this field stays valid.
       consent_asks: askBudget(),
     },
+    ...(PUB.scanChannels.length ? { posting: postingCounts.summary(agentCards) } : {}),
   }
 }
 
@@ -3958,6 +3985,7 @@ function scanChannel(ch, fetchPage = scanFetchPage) {
         // A full page still above the floor may be truncating the backlog — walk back. Stop once a
         // page yields nothing new, so a same-timestamp cluster can never spin forever.
         if (added > 0 && (msgs || []).length >= SCAN_PAGE_LIMIT && Number.isFinite(oldest) && oldest > floor) return page(oldest)
+        postingCounts.note(acc)
         try { await scanReturnLane(acc, { authors: PUB.scanAuthors, channel: ch }) }
         catch (er) { err(`scan: return-lane carry failed for ${String(ch).slice(0, 8)}…: ${er.message}`) }
         // The cursor advances regardless of any 0/N carry above (a dropped rlSeen key re-carries only
@@ -4268,7 +4296,7 @@ export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, c
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, defuseInvisible, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, revokedGrants, activeReturnLane, seatGrantee, unseatGrantee, seated, seatingCoverageGap, unseatPending, retryPendingUnseats, UNSEATPENDING_MAX_ATTEMPTS, rosterRole, isElevated, seatingAuthority, ELEVATED_ROLES, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, relayRefusals, powDemands, buildControlState, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, handleChannelSeatCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL, rosterChannel, removalChannel }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, defuseInvisible, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, revokedGrants, activeReturnLane, seatGrantee, unseatGrantee, seated, seatingCoverageGap, unseatPending, retryPendingUnseats, UNSEATPENDING_MAX_ATTEMPTS, rosterRole, isElevated, seatingAuthority, ELEVATED_ROLES, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, relayRefusals, powDemands, buildControlState, postingCounts, refreshAgentCards, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, handleChannelSeatCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL, rosterChannel, removalChannel }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests,
   policyRequests, policyWriterInFlight, remotePolicyGatePublic, processRemotePolicyRequest,
   retryRemotePolicyRequests, __setPolicyWriterRunnerForTests, unframePolicyWriterResponse,
@@ -4378,12 +4406,12 @@ if (!process.env.WB_NO_BOOT) {
     PUB.relays.forEach(connectPublic)
     if (PUB.controlStatePublish) {
       log('  owner control state: ON — signed follow/consent summary is published to public relays')
-      scheduleControlState()
+      refreshAgentCards().catch(e => err(`agent cards: read failed: ${e.message}`)).finally(scheduleControlState)
       // A state event that only changes on mutation looks healthy forever even if the bridge is
       // gone. Republish the same bounded snapshot so a console can distinguish "unchanged" from
       // "disconnected" without getting a host-health endpoint or any config access.
       const every = Math.max(60, PUB.controlStateRefreshSecs) * 1000
-      setInterval(scheduleControlState, every)
+      setInterval(() => refreshAgentCards().catch(e => err(`agent cards: read failed: ${e.message}`)).finally(scheduleControlState), every)
     } else log('  owner control state: OFF — no follow/consent metadata is published to relays')
     if (PUB.staging && PUB.approvers.length && FORWARD_MODE === 'buzz') {
       log(`approval console: watching staging for commands from ${PUB.approvers.length} approver(s)`)
