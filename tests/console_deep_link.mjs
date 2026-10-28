@@ -32,6 +32,8 @@ ok('a grant link names grantee, agent and cap', JSON.stringify(parseIntent('#gra
 ok('a prefix shorter than 8 hex is not a key', parseIntent('#revoke=e970').action === 'invalid' && parseIntent('#grant=aaaa&on=bbbb2222').action === 'invalid')
 ok('an npub, markup or a missing agent is refused, not guessed', parseIntent('#grant=npub1xyz&on=bbbb2222').action === 'invalid'
   && parseIntent('#grant=aaaa1111').action === 'invalid' && parseIntent('#grant=aaaa1111&on=bbbb2222&cap=<b>').action === 'invalid')
+ok('an agent link names one agent by prefix', JSON.stringify(parseIntent('#agent=8DB3F0D7')) === JSON.stringify({ action: 'agent', agent: '8db3f0d7' }))
+ok('an agent link with no hex key is refused, not guessed', parseIntent('#agent=npub1xyz').action === 'invalid' && parseIntent('#agent=8db3').action === 'invalid' && parseIntent('#agent=').action === 'invalid')
 ok('no hash, or an unrelated one, is no intent', parseIntent('') === null && parseIntent('#access') === null)
 
 // --- resolution: only what the console already holds ---
@@ -75,6 +77,10 @@ ok("applying a link waits for this owner's own read", /!hive \|\| hive\.owner !=
 ok('it resolves only against the keys and approvals the page read, and withdraws only your own', /known: rows\.map\(x => x\.pubkey\)/.test(body) && /grants\.filter\(g => g\.grantor === owner\)/.test(body))
 ok('it hands the resolver the signed-in owner and the bridge, so the subject rules apply on the page (#624)', /resolveGrant\(intent, \{ known: rows.*, owner, bridge: hive\.bridge \}\)/.test(body))
 ok('applying a link never signs: it only fills the confirm panel', body.length > 0 && /propose\(/.test(body) && !/signFresh|applyChange|change-go|\.signEvent|publish/.test(body))
+const agentBranch = body.slice(body.indexOf("intent.action === 'agent'"), body.indexOf('scrollIntoView'))
+ok("an agent link resolves against the rows read and opens that row, proposing nothing",
+  /resolvePrefix\(intent\.agent, rows\.map\(x => x\.pubkey\)\)/.test(agentBranch) && /row\.open = true/.test(agentBranch) && !/propose\(/.test(agentBranch)
+  && /d\.dataset\.pubkey = r\.pubkey/.test(page))
 const mod = readFileSync(join(ROOT, 'console', 'deep-link.mjs'), 'utf8')
 ok('the resolver imports nothing, so it cannot reach a signer', !/^import /m.test(mod))
 

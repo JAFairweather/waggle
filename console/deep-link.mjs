@@ -17,6 +17,7 @@
 //
 //   #revoke=<grant id prefix>
 //   #grant=<grantee prefix>&on=<agent prefix>&cap=<cap>
+//   #agent=<agent prefix>          opens that agent's row on the hive page and changes nothing
 
 const PREFIX = /^[0-9a-f]{8,64}$/
 const CAP = /^[a-z][a-z+-]{0,19}$/
@@ -39,6 +40,10 @@ export function parseIntent(hash) {
     if (!to || !on) return { action: 'invalid', why: 'this link must name the grantee and the agent by hex prefix' }
     if (cap !== null && !CAP.test(cap)) return { action: 'invalid', why: 'the capability in this link is not one the console knows' }
     return { action: 'grant', to, on, cap }
+  }
+  if (q.has('agent')) {
+    const agent = hex('agent')
+    return agent ? { action: 'agent', agent } : { action: 'invalid', why: 'the agent in this link is not a hex key or prefix' }
   }
   return null
 }
