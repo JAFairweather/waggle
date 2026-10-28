@@ -106,7 +106,7 @@ const roster = [{ pubkey: rosterOnly.pk, label: 'roster-only', status: 'admitted
 // (nvoy's 10440 index, say). `unknown` is in no source at all, so its grant cannot be resolved.
 const candidates = [owner.pk, bridge.pk, subjectOnly.pk, ...roster.map(a => a.pubkey), ...cards.keys(), ...grants.flatMap(g => [g.grantor, g.grantee])]
 const table = await scopeTable(candidates, grants, scopeHash)
-const profiles = new Map([[pidog.pk, { name: 'Pi Dog' }], [djcodex.pk, { display_name: 'DJ Codex' }]])
+const profiles = new Map([[pidog.pk, { name: 'Pi Dog', picture: 'https://example.test/pidog.png' }], [djcodex.pk, { display_name: 'DJ Codex' }]])
 const all = { owner: owner.pk, grantEvents: verified, grants, table, cards, roster, bridge: bridge.pk, profiles }
 const { rows, needs } = buildList(all)
 const row = pk => rows.find(r => r.pubkey === pk)
@@ -135,6 +135,7 @@ for (const [pk, why] of [[cardOnly.pk, 'a card alone'], [rosterOnly.pk, 'the ros
 check(rows[0].pubkey === owner.pk && rows[0].isOwner, 'the owner is a row of the same kind, listed first')
 check(row(rosterOnly.pk).stage === 'key' && row(cardOnly.pk).stage === 'tools' && row(voice.pk).stage === 'grants', 'each row says how far along it is')
 check(row(pidog.pk).name === 'Pi Dog' && row(rosterOnly.pk).name === 'roster-only' && row(cardOnly.pk).name === 'card-only', 'names come from kind 0, then the roster label, then the card')
+check(row(pidog.pk).picture === 'https://example.test/pidog.png' && row(djcodex.pk).picture === null, 'the photo comes from the same kind 0, and a key without one has none')
 
 // 2. Recipes.
 const roles = pk => row(pk).roles.map(r => r.role).sort()
@@ -185,6 +186,8 @@ check(givesCell(stranger.pk, rows, { owner: owner.pk, nameOf }).join() === 'Nobo
   check(slots.join() === 'You,DJ Codex,Pi Dog,Your voice', 'a column holds every name once: you first, your voice last, nobody and dashes left out')
   check(slotted(['You', 'Your voice'], slots, 'DJ Codex').map(l => l.state).join() === 'present,self,absent,present',
     'each row has every name on its own line: present, its own line blank, the missing one marked')
+  check(slotted(['Pi Dog'], slots, 'DJ Codex', ['DJ Codex', 'Pi Dog']).map(l => l.state).join() === 'self,self,present,self',
+    'a name its column never holds is blank, not struck, so both columns can share lines')
   check(slotted(['Nobody*'], slots, 'Pi Dog') === null && slotted(['—'], slots, 'You') === null, 'a cell with nobody stays one line')
 }
 

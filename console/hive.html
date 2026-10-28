@@ -29,6 +29,7 @@
   table.hive{width:100%;border-collapse:collapse;font-size:14px}
   table.hive th{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);text-align:left;padding:0 14px 9px 0;border-bottom:1px solid var(--line);white-space:nowrap}
   table.hive td{padding:10px 14px 10px 0;border-bottom:1px solid var(--line);vertical-align:top}
+  table.hive .avatar{display:inline-block;width:22px;height:22px;border-radius:50%;object-fit:cover;background:var(--line);vertical-align:-6px;margin-right:7px}
   table.hive td.names div{white-space:nowrap;line-height:1.45;min-height:1.45em}
   table.hive td.names .absent{color:var(--faint);text-decoration:line-through}
   table.hive tr.detail td{padding:0 0 14px}
@@ -163,7 +164,7 @@ function newestProfiles(events) {
       if (ev.kind !== 0 || !verifyEvent(ev)) continue
       if (best.has(ev.pubkey) && best.get(ev.pubkey).at >= ev.created_at) continue
       const p = JSON.parse(ev.content)
-      best.set(ev.pubkey, { at: ev.created_at, name: typeof p.name === 'string' ? p.name.slice(0, 64) : null, display_name: typeof p.display_name === 'string' ? p.display_name.slice(0, 64) : null })
+      best.set(ev.pubkey, { at: ev.created_at, name: typeof p.name === 'string' ? p.name.slice(0, 64) : null, display_name: typeof p.display_name === 'string' ? p.display_name.slice(0, 64) : null, picture: typeof p.picture === 'string' && /^https:\/\/\S+$/.test(p.picture) ? p.picture.slice(0, 500) : null })
     } catch {}
   }
   return best
@@ -264,8 +265,9 @@ function draw(rows, needs, owner, partial) {
     takes: r.isOwner || r.isBridge ? ['—'] : workCell(r.answers.work, { owner, nameOf, incomplete: partial.approvals }),
     gives: r.isBridge ? ['—'] : givesCell(r.pubkey, rows, { owner, nameOf, incomplete: partial.approvals }),
   }]))
-  const slots = { takes: nameSlots([...cells.values()].map(c => c.takes)), gives: nameSlots([...cells.values()].map(c => c.gives)) }
-  for (const r of rows) list.append(...rowView(r, { owner, nameOf, partial, cells: cells.get(r.pubkey), slots }))
+  const column = { takes: nameSlots([...cells.values()].map(c => c.takes)), gives: nameSlots([...cells.values()].map(c => c.gives)) }
+  const slots = nameSlots([...column.takes, ...column.gives])
+  for (const r of rows) list.append(...rowView(r, { owner, nameOf, partial, cells: cells.get(r.pubkey), slots, column }))
   $('partial-note').hidden = !partial.approvals
   $('list-panel').hidden = false
   drawWhatIf(rows, owner, nameOf, partial)
@@ -340,8 +342,8 @@ const STAGE = { tools: 'Has tools on nave', grants: 'Has approvals, no tools yet
 // One line of the table, and the detail line under it that its name opens.
 const openRow = row => { const b = row.querySelector('button.who'); if (b.getAttribute('aria-expanded') !== 'true') b.click() }
 // One name to a line, so a column of names reads down rather than across.
-function names(cell, slots, self, verb) {
-  const td = el('td', 'names'), lines = slotted(cell, slots, self)
+function names(cell, slots, self, verb, column) {
+  const td = el('td', 'names'), lines = slotted(cell, slots, self, column)
   if (!lines) { td.appendChild(el('div', null, cell[0])); return td }
   for (const { name, state } of lines) {
     const line = td.appendChild(el('div', state, state === 'self' ? '' : name))
@@ -349,18 +351,22 @@ function names(cell, slots, self, verb) {
   }
   return td
 }
-function rowView(r, { owner, nameOf, partial, cells, slots }) {
+function rowView(r, { owner, nameOf, partial, cells, slots, column }) {
   const d = el('tr')
   d.dataset.pubkey = r.pubkey
   const detail = el('tr', 'detail'); detail.hidden = true
   const cell = detail.appendChild(el('td')); cell.colSpan = 5
-  const who = d.appendChild(el('td')).appendChild(el('button', 'who', r.isOwner ? 'You' : r.isBridge ? `${r.name || 'waggle'} (bridge)` : r.name || (r.roles.some(x => x.role === 'voice') ? 'Your voice' : shortNpub(r.pubkey))))
+  const agent = d.appendChild(el('td'))
+  // The photo from the key's own signed profile, as on the Following page; https only, no referrer.
+  const face = agent.appendChild(el(r.picture ? 'img' : 'span', 'avatar'))
+  if (r.picture) { face.src = r.picture; face.alt = ''; face.loading = 'lazy'; face.referrerPolicy = 'no-referrer'; face.onerror = () => face.replaceWith(el('span', 'avatar')) }
+  const who = agent.appendChild(el('button', 'who', r.isOwner ? 'You' : r.isBridge ? `${r.name || 'waggle'} (bridge)` : r.name || (r.roles.some(x => x.role === 'voice') ? 'Your voice' : shortNpub(r.pubkey))))
   who.type = 'button'; who.setAttribute('aria-expanded', 'false')
   who.onclick = () => { const open = detail.hidden; detail.hidden = !open; who.setAttribute('aria-expanded', String(open)) }
   const own = r.isOwner || r.isBridge
   const self = r.isOwner ? 'You' : r.roles.some(x => x.role === 'voice') ? 'Your voice' : nameOf(r.pubkey)
-  d.appendChild(names(cells.takes, slots.takes, self, 'from'))
-  d.appendChild(names(cells.gives, slots.gives, self, 'to'))
+  d.appendChild(names(cells.takes, slots, self, 'from', column.takes))
+  d.appendChild(names(cells.gives, slots, self, 'to', column.gives))
   d.appendChild(el('td', null, own ? '—' : askCell(r.answers.act, { owner, nameOf, incomplete: partial.approvals, givers: r.answers.work.givers.length })))
   const p = r.answers.post
   d.appendChild(el('td', null, own || !r.card ? '—' : p ? `Up to ${p.per_hour}/hour in ${p.channels} channel${p.channels === 1 ? '' : 's'}` : 'Replies only'))

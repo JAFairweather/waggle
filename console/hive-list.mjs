@@ -162,6 +162,7 @@ export function buildList({ owner, grantEvents = [], grants = [], table, cards =
     const profile = profiles.get(row.pubkey) || {}
     const label = roster.find(a => a.pubkey === row.pubkey)?.label
     row.name = profile.display_name || profile.name || label || card?.instance || null
+    row.picture = profile.picture || null
     row.card = card
     row.isOwner = row.pubkey === owner
     row.isBridge = row.pubkey === bridge
@@ -246,9 +247,11 @@ const EMPTY = /^(Nobody\*?|—)$/
 export function nameSlots(cells) {
   return inOrder([...new Set(cells.flat().filter(n => !EMPTY.test(n)))])
 }
-export function slotted(cell, slots, self) {
+// Both columns share one set of lines, so line N is the same agent across the row. A name the
+// column never holds (nobody gives you work) is blank rather than struck, so a strike is a real gap.
+export function slotted(cell, slots, self, column = slots) {
   if (cell.length === 1 && EMPTY.test(cell[0])) return null
-  return slots.map(name => ({ name, state: cell.includes(name) ? 'present' : name === self ? 'self' : 'absent' }))
+  return slots.map(name => ({ name, state: cell.includes(name) ? 'present' : name === self || !column.includes(name) ? 'self' : 'absent' }))
 }
 export function askCell(act, { owner, nameOf, incomplete = false, givers = 1 }) {
   if (!givers) return '—'
