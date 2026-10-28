@@ -55,6 +55,7 @@ export const CAP_SENTENCE = {
   'task': '{grantee} may send instructions to {subject}',
   'task+act': '{grantee} may send instructions to {subject}, and {subject} may act on them',
   'task-relay': '{grantee} may carry instructions addressed to {subject}',
+  'shadow': '{grantee} may speak for {subject} when giving work',
   'mirror': "{subject} may mirror {grantee}'s public posts",
 }
 
@@ -82,6 +83,7 @@ export const CAP_LABEL = {
   'task': 'Send instructions to the agent',
   'task+act': 'Send instructions the agent may act on',
   'task-relay': 'Carry instructions addressed to the agent',
+  'shadow': 'Speak for you when giving work',
   'mirror': 'Have their public posts mirrored',
 }
 // An unknown capability falls back to its raw protocol name rather than to a friendly phrase.
@@ -99,6 +101,7 @@ export const CAP_SUBJECT = {
   'task': 'agent',
   'task+act': 'agent',
   'task-relay': 'agent',
+  'shadow': 'agent',
   'mirror': 'channel',
 }
 export const capSubject = (c) => CAP_SUBJECT[c] || 'unknown'
@@ -115,6 +118,7 @@ export const CAP_ENFORCER = {
   'task': "the agent's runtime",
   'task+act': "the agent's runtime",
   'task-relay': "the agent's runtime",
+  'shadow': "the agent's runtime",
   'mirror': 'this bridge (authored by the participant, not by you)',
 }
 // Unknown caps get the cautious answer, not a confident one. Claiming "this bridge" for something
@@ -132,6 +136,7 @@ export const PLANE = {
   'task': 'orders',
   'task+act': 'orders',
   'task-relay': 'orders',
+  'shadow': 'orders',
   'mirror': 'door',
 }
 export const PLANE_COPY = {
