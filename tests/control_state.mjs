@@ -45,7 +45,7 @@ writeFileSync(CFG, JSON.stringify({
   },
 }))
 
-const { buildControlState, publishControlState, processConsentEvent, mirrorAsked, mirrorRevoked, PUB,
+const { buildControlState, postingCounts, postingReady, backfillPosting, publishControlState, processConsentEvent, mirrorAsked, mirrorRevoked, PUB,
   grantSet, activeReturnLane, handleControlStateCommand, handleWatchlistControlCommand,
   handleModerationControlCommand, recordPosted,
   handleTaskRouteControlCommand, handleSealedTaskRouteControl, CONTROL_COMMAND_KIND,
@@ -866,6 +866,29 @@ const keys = agentCardKeys([card, otherD, forged, { kind: 1 }], verifyEvent)
 t('a signed nvoy agent card makes its key an agent', keys.has(agent))
 t('another d tag, or a card whose signature is not its own key, does not', keys.size === 1 && !keys.has(person))
 
+}
+
+// After a restart the tally is empty and the scan resumes with only its overlap, so the bridge
+// reads each channel back a full hour before it publishes any count (#639 review).
+{
+  const agent = getPublicKey(generateSecretKey()), ch = 'chan-restart', now = Math.floor(Date.now() / 1000)
+  const recent = Array.from({ length: 200 }, (_, i) => ({ id: `r${i}`, pubkey: agent, created_at: now - 10 - i }))
+  const older = [...Array.from({ length: 30 }, (_, i) => ({ id: `o${i}`, pubkey: agent, created_at: now - 3000 - i })), { id: 'stale', pubkey: agent, created_at: now - 4000 }]
+  const floors = []
+  const fetch = (c, floor, before, cb) => { floors.push(floor); cb(null, before ? older : recent) }
+  const saved = [...PUB.scanChannels]
+  PUB.scanChannels.splice(0, PUB.scanChannels.length, ch)
+  t('RESTART: before the hour is read back, no posting block is published', !('posting' in buildControlState()))
+  const done = await backfillPosting(ch, fetch, now)
+  t('the hour read back pages past a full page to the window floor', done && floors.length === 2 && floors.every(f => f === now - 3600))
+  t('every post in the hour is counted, the one outside it is not', postingCounts.summary([agent], now).agents[0].posts === 230)
+  t('once every scan channel is read back, the count is published', 'posting' in buildControlState())
+  PUB.scanChannels.push('chan-unread')
+  t('a second channel not yet read back holds the count back again', !('posting' in buildControlState()))
+  const failed = await backfillPosting('chan-unread', (c, f, b, cb) => cb(new Error('down')), now)
+  t('a failed read back leaves that channel unready', failed === false && !postingReady.has('chan-unread') && !('posting' in buildControlState()))
+  PUB.scanChannels.splice(0, PUB.scanChannels.length, ...saved)
+  postingReady.clear()
 }
 
 console.log(`\n${pass}/${n} passed`)
