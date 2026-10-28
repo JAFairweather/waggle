@@ -22,7 +22,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { nip19 } from 'nostr-tools'
-import { STATUSES, STATUS_LABEL, statusLabel, validAgent, rosterAgents, shortNpub, agentOptionText }
+import { STATUSES, STATUS_LABEL, statusLabel, validAgent, rosterAgents, postingCounts, shortNpub, agentOptionText }
   from '../console/agent-roster.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -387,6 +387,18 @@ el('route-mention').value = ''                   // so it stops on the mention g
 await el('route-add').onclick()
 check(!/loaded for a different bridge/.test(status()),
   `a key pasted with no roster loaded is never refused for a bridge mismatch (${status()})`)
+
+// Posts per agent in the last hour, from the bridge's signed state (#638).
+{
+  const A = 'a'.repeat(64), B = 'b'.repeat(64)
+  const got = postingCounts({ observed_at: 1800000000, posting: { window_secs: 3600, agents: [{ pubkey: A, posts: 12 }, { pubkey: B, posts: 0 }] } })
+  check(got?.counts.get(A) === 12 && got.counts.get(B) === 0 && got.at === 1800000000, 'posting counts are read per key, 0 kept as 0')
+  check(postingCounts({ observed_at: 1, agents: [] }) === null, 'a bridge that publishes no posting block gives no counts, not zeros')
+  check(postingCounts({ posting: { window_secs: 3600, agents: [{ pubkey: A, posts: -1 }] } }) === null &&
+    postingCounts({ posting: { window_secs: 3600, agents: [{ pubkey: 'x', posts: 1 }] } }) === null, 'a malformed posting block gives no counts at all')
+  const page = readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
+  check(/controlStateFresh\(rosterState\?\.observed_at\) \? postingCounts\(rosterState\)/.test(page), 'the hive shows counts only from a fresh bridge state')
+}
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
 process.exit(pass ? 0 : 1)
