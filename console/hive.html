@@ -24,17 +24,24 @@
   .coverage div{color:var(--dim)}.coverage b{color:var(--text);font-weight:650}.coverage .none b{color:var(--critical)}
   .need{border-left:3px solid var(--warn);padding:6px 0 6px 11px;margin:8px 0;font-size:14px}
   .need .who{color:var(--dim);font-size:13px}
-  details.agent{border-top:1px solid var(--line);padding:11px 0}details.agent:first-of-type{border-top:0}
-  details.agent summary{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;cursor:pointer;list-style:none}
-  details.agent summary::-webkit-details-marker{display:none}
-  details.agent summary::before{content:"▸";color:var(--faint);font-size:12px;width:1em}details.agent[open] summary::before{content:"▾"}
-  .name{font-weight:700}.npub{font:italic 12px var(--mono);color:var(--faint);overflow-wrap:anywhere}
-  .chips{display:flex;gap:6px;flex-wrap:wrap;flex:1 1 200px}
-  .pill.off{opacity:.55;text-decoration:line-through}
-  .pill{font:10px var(--mono);letter-spacing:.08em;text-transform:uppercase;border:1px solid;border-radius:999px;padding:3px 8px;white-space:nowrap}
-  .stage-tools{color:var(--good)}.stage-grants{color:var(--gold)}.stage-key{color:var(--faint)}
-  .role{color:var(--gold)}.role.custom,.role.guest{color:var(--warn)}
-  dl.answers{display:grid;grid-template-columns:minmax(140px,190px) 1fr;gap:7px 16px;margin:12px 0 4px 1.6em;font-size:14px}
+  .bar{display:flex;gap:6px 14px;align-items:baseline;flex-wrap:wrap;margin:4px 0 14px}.bar .status{margin:0;flex:1 1 260px}.bar button{margin:0}
+  .wrap{overflow-x:auto}
+  table.hive{width:100%;border-collapse:collapse;font-size:14px}
+  table.hive th{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);text-align:left;padding:0 14px 9px 0;border-bottom:1px solid var(--line);white-space:nowrap}
+  table.hive td{padding:10px 14px 10px 0;border-bottom:1px solid var(--line);vertical-align:top}
+  table.hive .avatar{display:inline-block;width:22px;height:22px;border-radius:50%;object-fit:cover;background:var(--line);vertical-align:-6px;margin-right:7px}
+  table.hive td.names div{white-space:nowrap;line-height:1.45;min-height:1.45em}
+  table.hive tr.group th{padding:18px 8px 6px;text-align:left;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--gold);border-bottom:1px solid var(--line)}
+  table.hive tr.group:first-child th{padding-top:6px}
+  table.hive tr.group .runs{margin-left:10px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--faint)}
+  table.hive td.names .absent{color:var(--faint);text-decoration:line-through}
+  table.hive tr.detail td{padding:0 0 14px}
+  button.who{background:none;border:0;border-radius:0;padding:0;margin:0;color:var(--text);font:inherit;font-weight:700;cursor:pointer;text-align:left}
+  button.who::before{content:"▸ ";color:var(--faint)}button.who[aria-expanded="true"]::before{content:"▾ "}
+  .footnote{font-size:12.5px;color:var(--dim);margin:10px 0 0}
+  details.about{margin-top:12px;font-size:13px;color:var(--dim)}details.about summary{cursor:pointer}details.about .coverage{margin:8px 0}
+  .npub{font:italic 12px var(--mono);color:var(--faint);overflow-wrap:anywhere}
+  dl.answers{display:grid;grid-template-columns:minmax(140px,190px) 1fr;gap:7px 16px;margin:4px 0 4px 1.2em;font-size:14px}
   dl.answers dt{font:600 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);padding-top:3px}
   dl.answers dd{margin:0}.unknown{color:var(--faint);font-style:italic}
   button.small{padding:5px 11px;margin:7px 6px 0 0;font-size:12px}button.quiet{background:transparent;color:var(--gold);border:1px solid var(--line)}
@@ -58,15 +65,25 @@
 <body><main>
   <nav class="console-tabs" aria-label="waggle console"><a class="active" href="/console/hive.html">Hive</a><a href="/console/">Access</a><a href="/console/connect.html">Connect</a><a href="/console/following.html">Following</a><a href="/console/routing.html">Routing</a><a href="/console/config.html">Config</a><a href="/console/setup.html">Setup</a></nav>
   <h1>Hive</h1>
-  <p class="sub">Every identity in your hive on one list. Each one is an agent, or could become one, and each answer is read from its own source: approvals from the relays that hold them, configuration from the agent's own signed card, names from profiles. Nothing on this page is a guess. Where a source does not say, the page says <em>not reported</em>.</p>
+  <div class="bar"><div id="status" class="status" role="status">Every identity in your hive, and who can give each one work.</div><button id="go">Read the hive</button></div>
+  <div id="link-status" class="status" role="status"></div>
 
-  <section class="panel"><h2>Read the hive</h2>
-    <p class="note">Reads public events and asks your signer only for your public key, until you change who can give an agent work. A change is shown to you in plain words and as the exact event before your signer is asked, and is called done only once the relays serve it back.</p>
-    <button id="go">Read the hive</button>
-    <div id="status" class="status" role="status"></div>
-    <div id="coverage" class="coverage" hidden></div>
-    <div id="link-status" class="status" role="status"></div>
+  <section class="panel" id="list-panel" hidden>
+    <div class="wrap"><table class="hive">
+      <thead><tr><th>Agent</th><th>Takes work from</th><th>Gives work to</th><th>Asks before acting?</th><th>May post</th></tr></thead>
+      <tbody id="list"></tbody>
+    </table></div>
+    <p class="footnote" id="partial-note" hidden>* Not every relay answered in full, so an approval held only on one that did not may be missing.</p>
+    <p class="footnote">Click a name for how it works, what it holds, and its last task, or to change who can give it work.</p>
+    <details class="about"><summary>About this list</summary>
+      <p>Approvals come from the relays that hold them, configuration from each agent's own signed card, and names from profiles. Where a source does not say, the page says <em>not reported</em>. Reading asks your signer only for your public key; a change is shown in plain words and as the exact event before your signer is asked, and is called done only once the relays serve it back.</p>
+      <div id="coverage" class="coverage" hidden></div>
+      <p id="talk"></p>
+      <p id="not-read"></p>
+    </details>
   </section>
+
+  <section class="panel" id="needs-panel" hidden><h2>Needs you</h2><div id="needs"></div></section>
 
   <section class="panel" id="change-panel" hidden><h2>Confirm a change</h2>
     <ol id="change-words"></ol>
@@ -76,8 +93,6 @@
     <div id="change-status" class="status" role="status"></div>
     <div id="change-log"></div>
   </section>
-
-  <section class="panel" id="needs-panel" hidden><h2>Needs you</h2><div id="needs"></div></section>
 
   <section class="panel" id="what-if-panel" hidden><h2>What happens if</h2>
     <p class="note">Pick who writes, to which agent, and where. The answer is the decision nvoy's own code makes on the approvals read above, the same code the agent's broker runs. Work that waggle carries in for someone takes a different path and is not checked here.</p>
@@ -90,11 +105,6 @@
     <div id="what-if-answer" role="status"></div>
   </section>
 
-  <section class="panel" id="list-panel" hidden><h2>Everyone</h2>
-    <p class="note" id="talk"></p>
-    <div id="list"></div>
-    <p class="note" id="not-read"></p>
-  </section>
 </main>
 <script type="module">
 import { verifyEvent, nip19 } from 'nostr-tools'
@@ -111,7 +121,7 @@ import { controlStateFresh } from './control-state-freshness.mjs'
 import { statusLabel } from './agent-roster.mjs'
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
-import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
+import { readGrants, scopeTable, readCards, buildList, workSentence, workCell, givesCell, nameSlots, slotted, askCell, PLATFORMS, platformOf, byPlatform, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
 
 // The bridge publishes its roster to these relays and reads its commands from them.
 const ROSTER_RELAYS = BRIDGE_RELAYS
@@ -157,7 +167,7 @@ function newestProfiles(events) {
       if (ev.kind !== 0 || !verifyEvent(ev)) continue
       if (best.has(ev.pubkey) && best.get(ev.pubkey).at >= ev.created_at) continue
       const p = JSON.parse(ev.content)
-      best.set(ev.pubkey, { at: ev.created_at, name: typeof p.name === 'string' ? p.name.slice(0, 64) : null, display_name: typeof p.display_name === 'string' ? p.display_name.slice(0, 64) : null })
+      best.set(ev.pubkey, { at: ev.created_at, name: typeof p.name === 'string' ? p.name.slice(0, 64) : null, display_name: typeof p.display_name === 'string' ? p.display_name.slice(0, 64) : null, picture: typeof p.picture === 'string' && /^https:\/\/\S+$/.test(p.picture) ? p.picture.slice(0, 500) : null })
     } catch {}
   }
   return best
@@ -167,12 +177,21 @@ const npub = pk => { try { return nip19.npubEncode(pk) } catch { return pk } }
 // What the last read saw, for drafting changes against: the owner, the grants and their scopes.
 let hive = null
 
-async function load() {
+// After one read the page remembers whose hive it read (a public key, never a secret), and reads it
+// on load without asking the signer. A change still signs through the signer, and applyChange
+// refuses one signed by any other key, so a stale memory can mislead a read but publish nothing.
+const OWNER_KEY = 'waggle-hive-owner'
+const remembered = () => { try { const v = localStorage.getItem(OWNER_KEY); return /^[0-9a-f]{64}$/.test(v || '') ? v : null } catch { return null } }
+async function load({ owner: rememberedOwner = null } = {}) {
   const st = $('status'); st.className = 'status'; coverage.length = 0
   $('go').disabled = true
   try {
-    st.textContent = 'Asking your signer for your public key…'
-    const owner = (await (await consoleSigner()).getPublicKey()).toLowerCase()
+    let owner = rememberedOwner
+    if (!owner) {
+      st.textContent = 'Asking your signer for your public key…'
+      owner = (await (await consoleSigner()).getPublicKey()).toLowerCase()
+      try { localStorage.setItem(OWNER_KEY, owner) } catch { /* private mode: ask again next time */ }
+    }
 
     st.textContent = 'Reading agent cards and the bridge roster…'
     const bridge = loadBridgeKey()
@@ -221,7 +240,8 @@ async function load() {
     drawCoverage()
     draw(rows, needs, owner, partial)
     st.className = 'status ok'
-    st.textContent = `${rows.length} identities, ${grants.filter(g => g.live).length} live approvals, ${cards.size} agent cards. Read ${new Date().toLocaleTimeString()}.`
+    st.textContent = `Read ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${rows.length} identities · ${partial.approvals || partial.keys ? 'not every relay answered in full' : 'every relay answered'}`
+    $('go').textContent = 'Read again'
   } catch (e) {
     st.className = 'status err'; st.textContent = e.message || String(e)
   } finally { $('go').disabled = false }
@@ -244,7 +264,22 @@ function draw(rows, needs, owner, partial) {
   const short = partial.keys ? ' Not every relay answered in full, so a key held only on one that did not may be missing too, and a withdrawal held only there may not be counted.' : ''
   $('not-read').textContent = `Not read yet: ${NOT_READ.join(', ')}. A key known only to those is not on this list.${short}`
   const list = $('list'); list.textContent = ''
-  for (const r of rows) list.appendChild(rowView(r, { owner, nameOf, partial }))
+  const cells = new Map(rows.map(r => [r.pubkey, {
+    takes: r.isOwner || r.isBridge ? ['—'] : workCell(r.answers.work, { owner, nameOf, incomplete: partial.approvals }),
+    gives: r.isBridge ? ['—'] : givesCell(r.pubkey, rows, { owner, nameOf, incomplete: partial.approvals }),
+  }]))
+  // The lines in each name cell follow the same platform order as the rows.
+  const group = new Map([['Your voice', 0], ...rows.map(r => [r.isOwner ? 'You' : nameOf(r.pubkey), PLATFORMS.findIndex(p => p.id === platformOf(r))])])
+  const groupOf = n => group.get(n) ?? PLATFORMS.length
+  const column = { takes: nameSlots([...cells.values()].map(c => c.takes), groupOf), gives: nameSlots([...cells.values()].map(c => c.gives), groupOf) }
+  const slots = nameSlots([...column.takes, ...column.gives], groupOf)
+  for (const { platform, rows: inGroup } of byPlatform(rows)) {
+    const head = list.appendChild(el('tr', 'group')).appendChild(el('th', null, platform.label))
+    head.colSpan = 5; head.scope = 'colgroup'
+    if (platform.runs) head.appendChild(el('span', 'runs', platform.runs))
+    for (const r of inGroup) list.append(...rowView(r, { owner, nameOf, partial, cells: cells.get(r.pubkey), slots, column }))
+  }
+  $('partial-note').hidden = !partial.approvals
   $('list-panel').hidden = false
   drawWhatIf(rows, owner, nameOf, partial)
   applyIntent({ owner, nameOf })
@@ -278,7 +313,7 @@ function drawWhatIf(rows, owner, nameOf, partial) {
 // only ones it may resolve against (console/deep-link.mjs: a link can never introduce a key). It only
 // fills the confirm panel or opens a row; signing stays the owner's click and the signer's approval.
 let linkIntent = parseIntent(location.hash)
-if (linkIntent) $('link-status').textContent = linkIntent.action === 'agent' ? 'This page was opened from a link to one agent. Read the hive to open its row.' : 'This page was opened from a link that names a change. Read the hive to see it; nothing is signed until you confirm it.'
+if (linkIntent) $('link-status').textContent = linkIntent.action === 'agent' ? 'This page was opened from a link to one agent. Its row opens once the hive is read.' : 'This page was opened from a link that names a change. Read the hive to see it; nothing is signed until you confirm it.'
 async function applyIntent({ owner, nameOf }) {
   if (!linkIntent || !hive || hive.owner !== owner) return
   const intent = linkIntent
@@ -293,7 +328,7 @@ async function applyIntent({ owner, nameOf }) {
     if (!r.value) return refuse(r.why)
     const row = [...$('list').children].find(d => d.dataset.pubkey === r.value)
     st.className = 'status'; st.textContent = ''
-    row.open = true
+    openRow(row)
     return row.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
   if (intent.action === 'revoke') {
@@ -314,25 +349,43 @@ async function applyIntent({ owner, nameOf }) {
   } catch (e) { refuse(e.message.replace(/\.$/, '')) }
 }
 
-const STAGE = { tools: 'Tools on nave', grants: 'Approvals only', key: 'No tools yet' }
-function rowView(r, { owner, nameOf, partial }) {
-  const d = el('details', 'agent')
-  d.dataset.pubkey = r.pubkey
-  const s = el('summary')
-  s.appendChild(el('span', 'name', r.isOwner ? `${r.name || 'You'} (you)` : r.name || 'No name'))
-  const chips = el('span', 'chips')
-  chips.appendChild(el('span', `pill stage-${r.stage}`, r.isBridge ? 'waggle bridge' : STAGE[r.stage]))
-  for (const role of r.roles) {
-    const by = role.by ? ` · ${nameOf(role.by)}` : ''
-    const off = role.inEffect === false ? ' · no effect' : ''
-    chips.appendChild(el('span', `pill role ${role.role}${off ? ' off' : ''}`, `${ROLE_NAME[role.role]}${by}${off}`))
+const STAGE = { tools: 'Has tools on nave', grants: 'Has approvals, no tools yet', key: 'A key with no tools yet' }
+// One line of the table, and the detail line under it that its name opens.
+const openRow = row => { const b = row.querySelector('button.who'); if (b.getAttribute('aria-expanded') !== 'true') b.click() }
+// One name to a line, so a column of names reads down rather than across.
+function names(cell, slots, self, verb, column) {
+  const td = el('td', 'names'), lines = slotted(cell, slots, self, column)
+  if (!lines) { td.appendChild(el('div', null, cell[0])); return td }
+  for (const { name, state } of lines) {
+    const line = td.appendChild(el('div', state, state === 'self' ? '' : name))
+    if (state === 'absent') line.title = `Not ${verb} ${name}`
   }
-  s.appendChild(chips)
-  s.appendChild(el('span', 'npub', shortNpub(r.pubkey)))
-  d.appendChild(s)
+  return td
+}
+function rowView(r, { owner, nameOf, partial, cells, slots, column }) {
+  const d = el('tr')
+  d.dataset.pubkey = r.pubkey
+  const detail = el('tr', 'detail'); detail.hidden = true
+  const cell = detail.appendChild(el('td')); cell.colSpan = 5
+  const agent = d.appendChild(el('td'))
+  // The photo from the key's own signed profile, as on the Following page; https only, no referrer.
+  const face = agent.appendChild(el(r.picture ? 'img' : 'span', 'avatar'))
+  if (r.picture) { face.src = r.picture; face.alt = ''; face.loading = 'lazy'; face.referrerPolicy = 'no-referrer'; face.onerror = () => face.replaceWith(el('span', 'avatar')) }
+  const who = agent.appendChild(el('button', 'who', r.isOwner ? 'You' : r.isBridge ? `${r.name || 'waggle'} (bridge)` : r.name || (r.roles.some(x => x.role === 'voice') ? 'Your voice' : shortNpub(r.pubkey))))
+  who.type = 'button'; who.setAttribute('aria-expanded', 'false')
+  who.onclick = () => { const open = detail.hidden; detail.hidden = !open; who.setAttribute('aria-expanded', String(open)) }
+  const own = r.isOwner || r.isBridge
+  const self = r.isOwner ? 'You' : r.roles.some(x => x.role === 'voice') ? 'Your voice' : nameOf(r.pubkey)
+  d.appendChild(names(cells.takes, slots, self, 'from', column.takes))
+  d.appendChild(names(cells.gives, slots, self, 'to', column.gives))
+  d.appendChild(el('td', null, own ? '—' : askCell(r.answers.act, { owner, nameOf, incomplete: partial.approvals, givers: r.answers.work.givers.length })))
+  const p = r.answers.post
+  d.appendChild(el('td', null, own || !r.card ? '—' : p ? `Up to ${p.per_hour}/hour in ${p.channels} channel${p.channels === 1 ? '' : 's'}` : 'Replies only'))
 
   const a = r.answers, dl = el('dl', 'answers')
   const item = (term, text, unknown) => { dl.appendChild(el('dt', null, term)); return dl.appendChild(el('dd', unknown ? 'unknown' : null, text)) }
+  const roles = r.roles.map(role => `${ROLE_NAME[role.role]}${role.by ? ` from ${nameOf(role.by)}` : ''}${role.inEffect === false ? ' (no effect)' : ''}`)
+  item('What it is', `${r.isOwner ? 'You.' : r.isBridge ? 'The waggle bridge.' : `${STAGE[r.stage]}.`}${roles.length ? ` ${roles.join('; ')}.` : ''}`)
   const carriers = a.work.carriers.length ? ` Work addressed to it may also be carried by ${a.work.carriers.map(nameOf).join(', ')}.` : ''
   const assumed = a.work.grantorsFrom === 'assumed' ? ' (No card, so only your approvals are counted.)' : ''
   const work = item('Who can give it work', `${workSentence(a.work, { owner, nameOf, incomplete: partial.approvals })}${carriers}${assumed}`)
@@ -362,8 +415,8 @@ function rowView(r, { owner, nameOf, partial }) {
     found.appendChild(el('div')).appendChild(look); found.appendChild(out)
   }
   dl.appendChild(el('dt', null, 'Key')); dl.appendChild(el('dd', 'npub', npub(r.pubkey)))
-  d.appendChild(dl)
-  return d
+  cell.appendChild(dl)
+  return [d, detail]
 }
 
 // Whether anything can address it: a cold read-back of its kind:0, beside what the bridge's list
@@ -511,6 +564,7 @@ function propose(changes) {
   $('change-go').disabled = false; $('change-cancel').disabled = false; $('change-cancel').textContent = 'Cancel'
   $('change-panel').hidden = false
   $('change-panel').scrollIntoView({ behavior: 'smooth', block: 'start' })
+  $('change-panel').scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 $('change-cancel').onclick = () => { pending = null; $('change-panel').hidden = true }
@@ -545,7 +599,9 @@ $('change-go').onclick = async () => {
   await load()
 }
 
-$('go').onclick = load
+$('go').onclick = () => load()
+if (remembered()) load({ owner: remembered() })
+else if (linkIntent) $('link-status').textContent += ' Press Read the hive.'
 </script>
 <script type="module" src="./staleness-guard.mjs"></script>
 </body>

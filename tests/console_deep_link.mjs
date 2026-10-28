@@ -79,7 +79,7 @@ ok('it hands the resolver the signed-in owner and the bridge, so the subject rul
 ok('applying a link never signs: it only fills the confirm panel', body.length > 0 && /propose\(/.test(body) && !/signFresh|applyChange|change-go|\.signEvent|publish/.test(body))
 const agentBranch = body.slice(body.indexOf("intent.action === 'agent'"), body.indexOf('scrollIntoView'))
 ok("an agent link resolves against the rows read and opens that row, proposing nothing",
-  /resolvePrefix\(intent\.agent, rows\.map\(x => x\.pubkey\)\)/.test(agentBranch) && /row\.open = true/.test(agentBranch) && !/propose\(/.test(agentBranch)
+  /resolvePrefix\(intent\.agent, rows\.map\(x => x\.pubkey\)\)/.test(agentBranch) && /openRow\(row\)/.test(agentBranch) && !/propose\(/.test(agentBranch)
   && /d\.dataset\.pubkey = r\.pubkey/.test(page))
 const mod = readFileSync(join(ROOT, 'console', 'deep-link.mjs'), 'utf8')
 ok('the resolver imports nothing, so it cannot reach a signer', !/^import /m.test(mod))

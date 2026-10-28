@@ -25,7 +25,7 @@ import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools'
 import { scopeHash } from '../console/scope-hash.mjs'
-import { readGrants, scopeTable, roleOf, duplicates, readCards, buildList, workSentence, relayCoverage, coverageText, CARD_D, CARD_KIND, GRANT_RELAYS, NOT_READ }
+import { readGrants, scopeTable, roleOf, duplicates, readCards, buildList, workSentence, workCell, givesCell, nameSlots, slotted, askCell, PLATFORMS, platformOf, byPlatform, relayCoverage, coverageText, CARD_D, CARD_KIND, GRANT_RELAYS, NOT_READ }
   from '../console/hive-list.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -106,7 +106,7 @@ const roster = [{ pubkey: rosterOnly.pk, label: 'roster-only', status: 'admitted
 // (nvoy's 10440 index, say). `unknown` is in no source at all, so its grant cannot be resolved.
 const candidates = [owner.pk, bridge.pk, subjectOnly.pk, ...roster.map(a => a.pubkey), ...cards.keys(), ...grants.flatMap(g => [g.grantor, g.grantee])]
 const table = await scopeTable(candidates, grants, scopeHash)
-const profiles = new Map([[pidog.pk, { name: 'Pi Dog' }], [djcodex.pk, { display_name: 'DJ Codex' }]])
+const profiles = new Map([[pidog.pk, { name: 'Pi Dog', picture: 'https://example.test/pidog.png' }], [djcodex.pk, { display_name: 'DJ Codex' }]])
 const all = { owner: owner.pk, grantEvents: verified, grants, table, cards, roster, bridge: bridge.pk, profiles }
 const { rows, needs } = buildList(all)
 const row = pk => rows.find(r => r.pubkey === pk)
@@ -135,6 +135,7 @@ for (const [pk, why] of [[cardOnly.pk, 'a card alone'], [rosterOnly.pk, 'the ros
 check(rows[0].pubkey === owner.pk && rows[0].isOwner, 'the owner is a row of the same kind, listed first')
 check(row(rosterOnly.pk).stage === 'key' && row(cardOnly.pk).stage === 'tools' && row(voice.pk).stage === 'grants', 'each row says how far along it is')
 check(row(pidog.pk).name === 'Pi Dog' && row(rosterOnly.pk).name === 'roster-only' && row(cardOnly.pk).name === 'card-only', 'names come from kind 0, then the roster label, then the card')
+check(row(pidog.pk).picture === 'https://example.test/pidog.png' && row(djcodex.pk).picture === null, 'the photo comes from the same kind 0, and a key without one has none')
 
 // 2. Recipes.
 const roles = pk => row(pk).roles.map(r => r.role).sort()
@@ -167,6 +168,29 @@ check(row(djcodex.pk).answers.work.grantorsFrom === 'assumed' && row(pidog.pk).a
 check(workSentence(row(cardOnly.pk).answers.work, { owner: owner.pk, nameOf }) === 'DJ Codex can give it work.', "the card's own grantors decide whose grants count")
 check(workSentence(row(rosterOnly.pk).answers.work, { owner: owner.pk, nameOf }) === 'Nobody can give it work.', 'a revoked grant gives nobody work')
 
+// The table's short answers (#634).
+check(workCell(row(pidog.pk).answers.work, { owner: owner.pk, nameOf }).join(', ') === 'You, DJ Codex, Your voice', 'the table names who can give work, you first, and your voice as such')
+check(workCell(row(rosterOnly.pk).answers.work, { owner: owner.pk, nameOf }).join() === 'Nobody' && workCell(row(rosterOnly.pk).answers.work, { owner: owner.pk, nameOf, incomplete: true }).join() === 'Nobody*',
+  'nobody is starred when the read cannot vouch for it')
+check(/^Not on your or .+'s work$/.test(askCell(row(djcodex.pk).answers.act, { owner: owner.pk, nameOf })) && askCell({ withoutAsking: [owner.pk] }, { owner: owner.pk, nameOf }) === 'Not on your work',
+  'task+act reads as not asking on that giver\'s work, yours named first')
+check(askCell(row(pidog.pk).answers.act, { owner: owner.pk, nameOf }) === 'Yes, always' && askCell(row(pidog.pk).answers.act, { owner: owner.pk, nameOf, incomplete: true }) === 'Yes, always*',
+  'with no task+act it always asks, starred when the read is partial')
+check(askCell({ withoutAsking: [djcodex.pk, owner.pk] }, { owner: owner.pk, nameOf }) === "Not on your or DJ Codex's work", 'several are named, you first')
+check(askCell({ withoutAsking: [] }, { owner: owner.pk, nameOf, incomplete: true, givers: 0 }) === '—', 'with nobody to give it work, asking has no answer')
+check(givesCell(pidog.pk, rows, { owner: owner.pk, nameOf }).every(n => n !== 'Pi Dog') && givesCell(owner.pk, rows, { owner: owner.pk, nameOf }).includes('Pi Dog'),
+  'gives work to is the same approvals read the other way: you give Pi Dog work, Pi Dog is never its own')
+check(givesCell(stranger.pk, rows, { owner: owner.pk, nameOf }).join() === 'Nobody' && givesCell(stranger.pk, rows, { owner: owner.pk, nameOf, incomplete: true }).join() === 'Nobody*', 'a key no row names gives work to nobody')
+{
+  const slots = nameSlots([['You', 'Pi Dog', 'Your voice'], ['DJ Codex', 'You'], ['Nobody*'], ['—']])
+  check(slots.join() === 'You,DJ Codex,Pi Dog,Your voice', 'a column holds every name once: you first, your voice last, nobody and dashes left out')
+  check(slotted(['You', 'Your voice'], slots, 'DJ Codex').map(l => l.state).join() === 'present,self,absent,present',
+    'each row has every name on its own line: present, its own line blank, the missing one marked')
+  check(slotted(['Pi Dog'], slots, 'DJ Codex', ['DJ Codex', 'Pi Dog']).map(l => l.state).join() === 'self,self,present,self',
+    'a name its column never holds is blank, not struck, so both columns can share lines')
+  check(slotted(['Nobody*'], slots, 'Pi Dog') === null && slotted(['—'], slots, 'You') === null, 'a cell with nobody stays one line')
+}
+
 // nvoy counts only the newest approval per capability, and a replaced one never comes back: when the
 // newer copy is withdrawn, the older, though never withdrawn, does not count. Needs you says so.
 check(!row(voice.pk).answers.fold.get(owner.pk)?.has('task+act'), 'withdrawing the newer copy ends the approval, as nvoy decides')
@@ -196,6 +220,18 @@ check(NOT_READ.length === 3, 'the sources not read yet are named for the page')
 const page = readFileSync(join(ROOT, 'console/hive.html'), 'utf8')
 check(page.includes("from './hive-list.mjs'") && page.includes('"nostr-tools/pure"'), 'hive.html imports the module and maps nostr-tools/pure for the vendored fold')
 check(!/innerHTML\s*=(?!\s*'')/.test(page), 'hive.html writes signed text only through textContent')
+
+// Grouped by where each agent runs (#634): you and your voice first, everyone unlisted last.
+{
+  const key = id => PLATFORMS.find(p => p.id === id).keys[0]
+  const rows = [{ pubkey: 'f'.repeat(64), roles: [] }, { pubkey: key('buzz'), roles: [] }, { pubkey: key('lab'), roles: [] },
+    { pubkey: 'e'.repeat(64), roles: [{ role: 'voice' }] }, { pubkey: '4'.repeat(64), isOwner: true, roles: [] }]
+  check(platformOf(rows[4]) === 'you' && platformOf(rows[3]) === 'you', 'the owner and the owner\'s voice are one group')
+  check(byPlatform(rows).map(g => g.platform.id).join() === 'you,lab,buzz,other', 'groups come in the listed order, and a key nobody listed is last')
+  check(!byPlatform(rows).some(g => g.platform.id === 'grok'), 'a group with nobody in it is not shown')
+  check(PLATFORMS.flatMap(p => p.keys || []).every((k, i, all) => /^[0-9a-f]{64}$/.test(k) && all.indexOf(k) === i), 'every listed key is a key, in one group only')
+  check(nameSlots([['Zed', 'You', 'Amy']], n => ({ You: 0, Zed: 1, Amy: 2 })[n]).join() === 'You,Zed,Amy', 'name lines follow the group order')
+}
 
 if (!pass) { console.error('console_hive_list: FAILED'); process.exit(1) }
 console.log('console_hive_list: one list, every key kept, roles from recipes, nvoy\'s fold pinned')

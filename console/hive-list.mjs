@@ -162,6 +162,7 @@ export function buildList({ owner, grantEvents = [], grants = [], table, cards =
     const profile = profiles.get(row.pubkey) || {}
     const label = roster.find(a => a.pubkey === row.pubkey)?.label
     row.name = profile.display_name || profile.name || label || card?.instance || null
+    row.picture = profile.picture || null
     row.card = card
     row.isOwner = row.pubkey === owner
     row.isBridge = row.pubkey === bridge
@@ -223,6 +224,73 @@ export function workSentence(answer, { owner, nameOf, incomplete = false }) {
   if (!who.length) return incomplete ? `Nobody, ${PARTIAL}.` : 'Nobody can give it work.'
   const list = who.length === 1 ? who[0] : `${who.slice(0, -1).join(', ')} and ${who.at(-1)}`
   return `${list} can give it work.`
+}
+
+// The table's short answers: "You, DJ Codex" and "Not on your work". An absence the read cannot
+// vouch for is starred; the page's footnote says why.
+const star = incomplete => incomplete ? '*' : ''
+// Both name columns read in one order: you, the others by name, your voice last.
+const rank = n => n === 'You' ? 0 : n === 'Your voice' ? 2 : 1
+const inOrder = names => names.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b, undefined, { sensitivity: 'base' }))
+export function workCell(answer, { owner, nameOf, incomplete = false }) {
+  const givers = answer.givers.map(g => g.pubkey === owner ? 'You' : g.voice ? 'Your voice' : nameOf(g.pubkey))
+  return givers.length ? inOrder(givers) : [`Nobody${star(incomplete)}`]
+}
+// The other direction of the same approvals: whose rows name this key as a giver.
+export function givesCell(pubkey, rows, { owner, nameOf, incomplete = false }) {
+  const to = rows.filter(r => r.pubkey !== pubkey && r.answers?.work.givers.some(g => g.pubkey === pubkey))
+  return to.length ? inOrder(to.map(r => r.pubkey === owner ? 'You' : nameOf(r.pubkey))) : [`Nobody${star(incomplete)}`]
+}
+// Every name a column holds, in one order, so each name sits on the same line in every row and a
+// gap shows who is missing. A cell with nobody in it stays one line.
+const EMPTY = /^(Nobody\*?|—)$/
+export function nameSlots(cells, groupOf = () => 0) {
+  return inOrder([...new Set(cells.flat().filter(n => !EMPTY.test(n)))]).sort((a, b) => groupOf(a) - groupOf(b))
+}
+
+// Where each agent runs, in the order the table groups them. Agent cards carry no platform yet
+// (#637), so the keys are listed here; anyone not listed is in the last group.
+export const PLATFORMS = Object.freeze([
+  { id: 'you', label: 'You' },
+  { id: 'lab', label: 'Frontier lab harnesses', runs: 'Codex, Claude Code', keys: [
+    '231952cb5eb0652c04075f6a1b93e727819ed2ac0bf5238a96c6d2ca51617edd', // DJ Codex
+    'ad05b00ee49200d5bd2788fba480621ba6009224f01e48b3e9bce10100421d5c', // MC Claude
+    '38889d4ce187469d41dc0ef3f610a79d42120603fbc8a68b92d8bd67ae63a536', // waggle-dev
+  ] },
+  { id: 'third-party', label: 'Third-party harnesses', runs: 'Pi, OpenClaw', keys: [
+    'e4c0faf44d9aeabcb5459c6c3b76f2c704d7b55c7e0ddb3685fab4e4226935d8', // Pi Dog
+    '1b53f548acebe8dd47252717104350006f49b5c981a86ad4cfaf58d3fd7a0f1e', // lukedog
+  ] },
+  { id: 'grok', label: 'Grok Bot', keys: [
+    '61cb9345ce61bb06d42bef251de746051e608a539c1430142a8afa6593db924c', // GrokDoggyDog
+  ] },
+  { id: 'buzz', label: 'Buzz', keys: [
+    '0a8e0720c3ec52c6bfd9e2545d620cf58e2e8d371244255efce3ddd57ba0a32c', // My Dude
+    '9a07300d3295f392d295cd8f73c8f1d3c725809b2e50fc52815db8682ef940a5', // Dennis
+    'eb586b1e9c214c10762acc0dd4d428ac9156c284162f2d9dcc98562e644d71a5', // Kerouac
+    '5d3848a699e82f81e218aaad2f481bb63c00ff69b813cfca1cafc58ca633eb08', // Neil
+  ] },
+  { id: 'other', label: 'Everyone else' },
+])
+// Your voice speaks for you, so it sits in your group.
+export function platformOf(row) {
+  if (row.isOwner || row.roles?.some(x => x.role === 'voice')) return 'you'
+  return PLATFORMS.find(p => p.keys?.includes(row.pubkey))?.id || 'other'
+}
+export function byPlatform(rows) {
+  return PLATFORMS.map(platform => ({ platform, rows: rows.filter(r => platformOf(r) === platform.id) })).filter(g => g.rows.length)
+}
+// Both columns share one set of lines, so line N is the same agent across the row. A name the
+// column never holds (nobody gives you work) is blank rather than struck, so a strike is a real gap.
+export function slotted(cell, slots, self, column = slots) {
+  if (cell.length === 1 && EMPTY.test(cell[0])) return null
+  return slots.map(name => ({ name, state: cell.includes(name) ? 'present' : name === self || !column.includes(name) ? 'self' : 'absent' }))
+}
+export function askCell(act, { owner, nameOf, incomplete = false, givers = 1 }) {
+  if (!givers) return '—'
+  if (!act.withoutAsking.length) return `Yes, always${star(incomplete)}`
+  const whose = [...act.withoutAsking].sort((a, b) => Number(b === owner) - Number(a === owner)).map(pk => pk === owner ? 'your' : `${nameOf(pk)}'s`)
+  return `Not on ${whose.length === 1 ? whose[0] : `${whose.slice(0, -1).join(', ')} or ${whose.at(-1)}`} work`
 }
 
 // A relay has answered only when it sends EOSE. One that times out after sending some events is
