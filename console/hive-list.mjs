@@ -232,6 +232,11 @@ export function workCell(answer, { owner, nameOf, incomplete = false }) {
   const givers = [...answer.givers].sort((a, b) => Number(b.pubkey === owner) - Number(a.pubkey === owner))
   return givers.length ? givers.map(g => g.pubkey === owner ? 'You' : g.voice ? 'Your voice' : nameOf(g.pubkey)).join(', ') : `Nobody${star(incomplete)}`
 }
+// The other direction of the same approvals: whose rows name this key as a giver.
+export function givesCell(pubkey, rows, { owner, nameOf, incomplete = false }) {
+  const to = rows.filter(r => r.pubkey !== pubkey && r.answers?.work.givers.some(g => g.pubkey === pubkey))
+  return to.length ? to.map(r => r.pubkey === owner ? 'You' : nameOf(r.pubkey)).join(', ') : `Nobody${star(incomplete)}`
+}
 export function askCell(act, { owner, nameOf, incomplete = false, givers = 1 }) {
   if (!givers) return '—'
   if (!act.withoutAsking.length) return `Yes, always${star(incomplete)}`

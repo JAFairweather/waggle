@@ -25,7 +25,7 @@ import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools'
 import { scopeHash } from '../console/scope-hash.mjs'
-import { readGrants, scopeTable, roleOf, duplicates, readCards, buildList, workSentence, workCell, askCell, relayCoverage, coverageText, CARD_D, CARD_KIND, GRANT_RELAYS, NOT_READ }
+import { readGrants, scopeTable, roleOf, duplicates, readCards, buildList, workSentence, workCell, givesCell, askCell, relayCoverage, coverageText, CARD_D, CARD_KIND, GRANT_RELAYS, NOT_READ }
   from '../console/hive-list.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -177,6 +177,9 @@ check(askCell(row(pidog.pk).answers.act, { owner: owner.pk, nameOf }) === 'Yes, 
   'with no task+act it always asks, starred when the read is partial')
 check(askCell({ withoutAsking: [djcodex.pk, owner.pk] }, { owner: owner.pk, nameOf }) === "Not on your or DJ Codex's work", 'several are named, you first')
 check(askCell({ withoutAsking: [] }, { owner: owner.pk, nameOf, incomplete: true, givers: 0 }) === '—', 'with nobody to give it work, asking has no answer')
+check(givesCell(pidog.pk, rows, { owner: owner.pk, nameOf }).split(', ').every(n => n !== 'Pi Dog') && givesCell(owner.pk, rows, { owner: owner.pk, nameOf }).includes('Pi Dog'),
+  'gives work to is the same approvals read the other way: you give Pi Dog work, Pi Dog is never its own')
+check(givesCell(stranger.pk, rows, { owner: owner.pk, nameOf }) === 'Nobody' && givesCell(stranger.pk, rows, { owner: owner.pk, nameOf, incomplete: true }) === 'Nobody*', 'a key no row names gives work to nobody')
 
 // nvoy counts only the newest approval per capability, and a replaced one never comes back: when the
 // newer copy is withdrawn, the older, though never withdrawn, does not count. Needs you says so.

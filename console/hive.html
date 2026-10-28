@@ -9,7 +9,7 @@
 <style>
   :root{--ground:#0b0906;--panel:#14100a;--line:#2a2317;--text:#f4efe4;--dim:#9c927f;--faint:#6f6555;--gold:#e2c079;--accent:#cf8a2e;--good:#8fae6a;--warn:#d9a648;--critical:#c0705a;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,monospace;--display:"Iowan Old Style",Palatino,Georgia,serif}
   @media (prefers-color-scheme:light){:root{--ground:#f5f0e4;--panel:#fffdf7;--line:#ddd2ba;--text:#241d12;--dim:#6f6553;--faint:#8a7f66;--gold:#8a5a14;--accent:#8a5a14;--good:#4f7a34;--warn:#9a6a12;--critical:#a2482f}}
-  *{box-sizing:border-box} body{margin:0;background:var(--ground);color:var(--text);font:15px/1.5 var(--sans)} main{max-width:900px;margin:auto;padding:34px 20px 64px} a{color:var(--gold)} h1{font:600 30px var(--display);margin:0 0 5px}
+  *{box-sizing:border-box} body{margin:0;background:var(--ground);color:var(--text);font:15px/1.5 var(--sans)} main{max-width:1180px;margin:auto;padding:34px 20px 64px} a{color:var(--gold)} h1{font:600 30px var(--display);margin:0 0 5px}
   .sub{color:var(--dim);max-width:70ch;margin:0 0 26px}
   .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:17px 18px;margin:15px 0}
   .panel h2{font:600 11px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:0 0 11px}
@@ -64,7 +64,7 @@
 
   <section class="panel" id="list-panel" hidden>
     <div class="wrap"><table class="hive">
-      <thead><tr><th>Agent</th><th>Takes work from</th><th>Asks before acting?</th><th>Posts in</th></tr></thead>
+      <thead><tr><th>Agent</th><th>Takes work from</th><th>Gives work to</th><th>Asks before acting?</th><th>May post</th></tr></thead>
       <tbody id="list"></tbody>
     </table></div>
     <p class="footnote" id="partial-note" hidden>* Not every relay answered in full, so an approval held only on one that did not may be missing.</p>
@@ -115,7 +115,7 @@ import { controlStateFresh } from './control-state-freshness.mjs'
 import { statusLabel } from './agent-roster.mjs'
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
-import { readGrants, scopeTable, readCards, buildList, workSentence, workCell, askCell, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
+import { readGrants, scopeTable, readCards, buildList, workSentence, workCell, givesCell, askCell, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
 
 // The bridge publishes its roster to these relays and reads its commands from them.
 const ROSTER_RELAYS = BRIDGE_RELAYS
@@ -258,7 +258,7 @@ function draw(rows, needs, owner, partial) {
   const short = partial.keys ? ' Not every relay answered in full, so a key held only on one that did not may be missing too, and a withdrawal held only there may not be counted.' : ''
   $('not-read').textContent = `Not read yet: ${NOT_READ.join(', ')}. A key known only to those is not on this list.${short}`
   const list = $('list'); list.textContent = ''
-  for (const r of rows) list.append(...rowView(r, { owner, nameOf, partial }))
+  for (const r of rows) list.append(...rowView(r, { owner, nameOf, partial, rows }))
   $('partial-note').hidden = !partial.approvals
   $('list-panel').hidden = false
   drawWhatIf(rows, owner, nameOf, partial)
@@ -332,19 +332,20 @@ async function applyIntent({ owner, nameOf }) {
 const STAGE = { tools: 'Has tools on nave', grants: 'Has approvals, no tools yet', key: 'A key with no tools yet' }
 // One line of the table, and the detail line under it that its name opens.
 const openRow = row => { const b = row.querySelector('button.who'); if (b.getAttribute('aria-expanded') !== 'true') b.click() }
-function rowView(r, { owner, nameOf, partial }) {
+function rowView(r, { owner, nameOf, partial, rows }) {
   const d = el('tr')
   d.dataset.pubkey = r.pubkey
   const detail = el('tr', 'detail'); detail.hidden = true
-  const cell = detail.appendChild(el('td')); cell.colSpan = 4
+  const cell = detail.appendChild(el('td')); cell.colSpan = 5
   const who = d.appendChild(el('td')).appendChild(el('button', 'who', r.isOwner ? 'You' : r.isBridge ? `${r.name || 'waggle'} (bridge)` : r.name || (r.roles.some(x => x.role === 'voice') ? 'Your voice' : shortNpub(r.pubkey))))
   who.type = 'button'; who.setAttribute('aria-expanded', 'false')
   who.onclick = () => { const open = detail.hidden; detail.hidden = !open; who.setAttribute('aria-expanded', String(open)) }
   const own = r.isOwner || r.isBridge
   d.appendChild(el('td', null, own ? '—' : workCell(r.answers.work, { owner, nameOf, incomplete: partial.approvals })))
+  d.appendChild(el('td', null, r.isBridge ? '—' : givesCell(r.pubkey, rows, { owner, nameOf, incomplete: partial.approvals })))
   d.appendChild(el('td', null, own ? '—' : askCell(r.answers.act, { owner, nameOf, incomplete: partial.approvals, givers: r.answers.work.givers.length })))
   const p = r.answers.post
-  d.appendChild(el('td', null, own || !r.card ? '—' : p ? `${p.channels} channel${p.channels === 1 ? '' : 's'}, ${p.per_hour}/hour` : 'Replies only'))
+  d.appendChild(el('td', null, own || !r.card ? '—' : p ? `Up to ${p.per_hour}/hour in ${p.channels} channel${p.channels === 1 ? '' : 's'}` : 'Replies only'))
 
   const a = r.answers, dl = el('dl', 'answers')
   const item = (term, text, unknown) => { dl.appendChild(el('dt', null, term)); return dl.appendChild(el('dd', unknown ? 'unknown' : null, text)) }
