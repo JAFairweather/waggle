@@ -2646,10 +2646,16 @@ const MODERATION_COMMAND_D = 'waggle-moderation'
 const TRUST_COMMAND_D = 'waggle-trust'
 const CONTROL_COMMAND_MAX_AGE_SECS = 15 * 60
 let controlStateTimer = null
-// Posts per agent over the last hour, counted from the scan (#638), and the keys that hold an agent
-// card, which are the only ones reported. The cards are re-read on the control-state refresh.
+// Posts per agent over the last hour, counted from the scan (#638). Reported for the keys that hold
+// an agent card, re-read on the control-state refresh, and for the scan authors, who are the Buzz
+// agents with no card (#644). The approvers and grantors among the scan authors are the people who
+// run the hive, not agents, so their counts are never published.
 const postingCounts = postingTally()
 let agentCards = new Set()
+const postingAgents = () => {
+  const people = new Set([...PUB.approvers, ...PUB.grantors])
+  return new Set([...agentCards, ...PUB.scanAuthors.filter(pk => !people.has(pk))])
+}
 // The tally lives in memory, and after a restart the scan resumes from its cursor with only the
 // overlap. So each channel is first read back a full hour, and no count is published until every
 // scan channel has been, or the hour would be understated (#639 review).
@@ -2735,7 +2741,7 @@ function buildControlState() {
       // before it: a record signed without this field stays valid.
       consent_asks: askBudget(),
     },
-    ...(postingPublishable() ? { posting: postingCounts.summary(agentCards) } : {}),
+    ...(postingPublishable() ? { posting: postingCounts.summary(postingAgents()) } : {}),
   }
 }
 
@@ -4322,7 +4328,7 @@ export { rlReactionPending, rlReactionSeen, oweRelayAction, commitLandedCarry, c
 // Exported so a harness can drive the REAL routing functions (not a copy) with synthetic
 // events in dryrun, without opening any relay socket. Set WB_NO_BOOT=1 to import without
 // booting the live subscriber. No effect on normal `node src/bridge.mjs` runs.
-export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, defuseInvisible, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, revokedGrants, activeReturnLane, seatGrantee, unseatGrantee, seated, seatingCoverageGap, unseatPending, retryPendingUnseats, UNSEATPENDING_MAX_ATTEMPTS, rosterRole, isElevated, seatingAuthority, ELEVATED_ROLES, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, relayRefusals, powDemands, buildControlState, postingCounts, postingReady, backfillPosting, refreshAgentCards, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, handleChannelSeatCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL, rosterChannel, removalChannel }
+export { recordUndelivered, UNDELIVERED_PATH, durableSet, durableQueue, rlPending, retryPendingCarries, RLPENDING_MAX_ATTEMPTS, fanout, defuseRefs, defuseMarkup, defuseInvisible, quoted, renderQuarantined, renderReleased, fetchEventById, returnLaneSend, publishWrapToRelays, publishWrapToRelayList, fetchRecipientDmRelays, scanReturnLane, sourceWireRejectReason, pollScanChannels, ensureScanPolling, scanChannel, scanSince, bumpScanCursor, loadScanCursors, agentAuthoredBy, rlSeen, rlKey, loadRlSeen, markRlSeen, addRlSeen, dropRlSeen, route, routePublic, routeDelete, processGrantEvent, grantSet, revokedGrants, activeReturnLane, seatGrantee, unseatGrantee, seated, seatingCoverageGap, unseatPending, retryPendingUnseats, UNSEATPENDING_MAX_ATTEMPTS, rosterRole, isElevated, seatingAuthority, ELEVATED_ROLES, processConsentEvent, mirrorConsent, mirrorRevoked, consentRecordIds, refreshConsentRevocations, CONSENT_REFRESHERS, maybeAskConsent, sendConsentRequest, buildConsentPrefill, mirrorAsked, addWatchAuthor, removeWatchAuthor, refreshWatched, WATCH_REFRESHERS, watchlistTarget, handleWatchlistCommand, handleCommand, applyModerationCommand, handleModerationControlCommand, forwardPublic, clampCreated, rateOk, bumpPubWatermark, loadPubWatermark, markSeen, seen, PUB, postedMap, recordPosted, parseBuzzEventId, resolveChannels, pollCommands, __resetReadPollingForTests, handleRelayIngress, handleSealedTaskRouteControl, relaySeen, markRelaySeen, addRelaySeen, dropRelaySeen, loadRelaySeen, relayRateOk, resolveRelayDest, relayDropTotalPreAuth, relayDropCounts, relayRefusals, powDemands, buildControlState, postingCounts, postingAgents, postingReady, backfillPosting, refreshAgentCards, publishControlState, publishControlStateToRelays, scheduleControlState, handleControlStateCommand, handleWatchlistControlCommand, handleTrustControlCommand, handleAgentLifecycleCommand, handleChannelSeatCommand, loadAgentRows, AGENTROWS_PATH, LIFECYCLE_COMMAND_D, changeTrustTier, TRUST_COMMAND_D, handleTaskRouteControlCommand, recoverConfigJournal, CONTROL_COMMAND_KIND, CONTROL_COMMAND_D, WATCHLIST_COMMAND_D, MODERATION_COMMAND_D, TASK_ROUTE_MESSAGE_TYPE, TASK_ROUTE_PROTOCOL, rosterChannel, removalChannel }
 export { comparePublicShadow, shadowGatePublic, shadowInFlight, __setShadowRunnerForTests,
   policyRequests, policyWriterInFlight, remotePolicyGatePublic, processRemotePolicyRequest,
   retryRemotePolicyRequests, __setPolicyWriterRunnerForTests, unframePolicyWriterResponse,

@@ -45,7 +45,7 @@ writeFileSync(CFG, JSON.stringify({
   },
 }))
 
-const { buildControlState, postingCounts, postingReady, backfillPosting, publishControlState, processConsentEvent, mirrorAsked, mirrorRevoked, PUB,
+const { buildControlState, postingCounts, postingAgents, postingReady, backfillPosting, publishControlState, processConsentEvent, mirrorAsked, mirrorRevoked, PUB,
   grantSet, activeReturnLane, handleControlStateCommand, handleWatchlistControlCommand,
   handleModerationControlCommand, recordPosted,
   handleTaskRouteControlCommand, handleSealedTaskRouteControl, CONTROL_COMMAND_KIND,
@@ -888,6 +888,28 @@ t('another d tag, or a card whose signature is not its own key, does not', keys.
   const failed = await backfillPosting('chan-unread', (c, f, b, cb) => cb(new Error('down')), now)
   t('a failed read back leaves that channel unready', failed === false && !postingReady.has('chan-unread') && !('posting' in buildControlState()))
   PUB.scanChannels.splice(0, PUB.scanChannels.length, ...saved)
+  postingReady.clear()
+}
+
+// The Buzz agents hold no agent card, so their counts come from the scan authors; the approvers and
+// grantors among those are the people who run the hive, and stay unpublished (#644).
+{
+  const buzzAgent = getPublicKey(generateSecretKey()), owner = getPublicKey(generateSecretKey()), ch = 'chan-buzz', now = Math.floor(Date.now() / 1000)
+  const saved = { scanChannels: [...PUB.scanChannels], scanAuthors: [...PUB.scanAuthors], approvers: [...PUB.approvers], grantors: [...PUB.grantors] }
+  PUB.scanChannels.splice(0, PUB.scanChannels.length, ch)
+  PUB.scanAuthors = [buzzAgent, owner]
+  PUB.approvers = [owner]
+  PUB.grantors = []
+  const posts = [{ id: 'b1', pubkey: buzzAgent, created_at: now - 60 }, { id: 'b2', pubkey: buzzAgent, created_at: now - 120 }, { id: 'o1', pubkey: owner, created_at: now - 60 }]
+  await backfillPosting(ch, (c, f, b, cb) => cb(null, b ? [] : posts), now)
+  const rows = buildControlState().posting?.agents || []
+  t('a scan author with no card is counted', rows.find(r => r.pubkey === buzzAgent)?.posts === 2)
+  t('an approver on the scan list is not published', !rows.some(r => r.pubkey === owner) && !postingAgents().has(owner))
+  PUB.approvers = []
+  PUB.grantors = [owner]
+  t('nor is a grantor', !postingAgents().has(owner))
+  Object.assign(PUB, { scanAuthors: saved.scanAuthors, approvers: saved.approvers, grantors: saved.grantors })
+  PUB.scanChannels.splice(0, PUB.scanChannels.length, ...saved.scanChannels)
   postingReady.clear()
 }
 
