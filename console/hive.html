@@ -25,14 +25,14 @@
   .need{border-left:3px solid var(--warn);padding:6px 0 6px 11px;margin:8px 0;font-size:14px}
   .need .who{color:var(--dim);font-size:13px}
   .bar{display:flex;gap:6px 14px;align-items:baseline;flex-wrap:wrap;margin:4px 0 14px}.bar .status{margin:0;flex:1 1 260px}.bar button{margin:0}
-  /* A box that scrolls sideways pins a sticky header to itself, not the page. The table fits from
-     700px, so only a phone gets the box, and there it scrolls both ways so the header still sticks. */
-  .wrap{overflow:auto;max-height:80vh}
-  @media (min-width:700px){.wrap{overflow:visible;max-height:none}}
+  /* Any scrolling box around the table would pin the header to itself, not the page, so there is
+     none: in a narrow window the titles wrap and the text shrinks instead. Separate borders move with the pinned header. */
   table.hive thead th{position:sticky;top:env(safe-area-inset-top,0px);z-index:1;background:var(--panel);padding-top:9px}
-  table.hive{width:100%;border-collapse:collapse;font-size:14px}
-  table.hive th{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);text-align:left;padding:0 14px 9px 0;border-bottom:1px solid var(--line);white-space:nowrap}
-  table.hive td{padding:10px 14px 10px 0;border-bottom:1px solid var(--line);vertical-align:top}
+  table.hive{width:100%;border-collapse:separate;border-spacing:0;font-size:14px}
+  table.hive th{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);text-align:left;padding:0 12px 9px;border-bottom:1px solid var(--line);white-space:nowrap}
+  table.hive td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  table.hive thead th+th,table.hive td+td{border-left:1px solid var(--line)}
+  table.hive thead th:first-child,table.hive td:first-child{padding-left:0}
   table.hive .avatar{display:inline-block;width:22px;height:22px;border-radius:50%;object-fit:cover;background:var(--line);vertical-align:-6px;margin-right:7px}
   table.hive td.names div{white-space:nowrap;line-height:1.45;min-height:1.45em}
   table.hive tr.group th{padding:18px 8px 6px;text-align:left;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--gold);border-bottom:1px solid var(--line)}
@@ -41,6 +41,7 @@
   table.hive td.names .limit{color:var(--dim);font-size:12px}
   table.hive td.names .absent{color:var(--faint);text-decoration:line-through}
   table.hive tr.detail td{padding:0 0 14px}
+  @media (max-width:699px){table.hive{font-size:13px}table.hive th{white-space:normal}table.hive th,table.hive td{padding-inline:6px}}
   button.who{background:none;border:0;border-radius:0;padding:0;margin:0;color:var(--text);font:inherit;font-weight:700;cursor:pointer;text-align:left}
   button.who::before{content:"▸ ";color:var(--faint)}button.who[aria-expanded="true"]::before{content:"▾ "}
   .footnote{font-size:12.5px;color:var(--dim);margin:10px 0 0}
@@ -74,10 +75,10 @@
   <div id="link-status" class="status" role="status"></div>
 
   <section class="panel" id="list-panel" hidden>
-    <div class="wrap"><table class="hive">
+    <table class="hive">
       <thead><tr><th>Agent</th><th>Takes work from</th><th>Gives work to</th><th>Asks before acting?</th><th>May post</th></tr></thead>
       <tbody id="list"></tbody>
-    </table></div>
+    </table>
     <p class="footnote" id="partial-note" hidden>* Not every relay answered in full, so an approval held only on one that did not may be missing.</p>
     <p class="footnote">Click a name for how it works, what it holds, and its last task, or to change who can give it work.</p>
     <details class="about"><summary>About this list</summary>
