@@ -25,7 +25,7 @@ import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools'
 import { scopeHash } from '../console/scope-hash.mjs'
-import { readGrants, scopeTable, roleOf, duplicates, readCards, buildList, workSentence, workCell, givesCell, nameSlots, slotted, askCell, relayCoverage, coverageText, CARD_D, CARD_KIND, GRANT_RELAYS, NOT_READ }
+import { readGrants, scopeTable, roleOf, duplicates, readCards, buildList, workSentence, workCell, givesCell, nameSlots, slotted, askCell, PLATFORMS, platformOf, byPlatform, relayCoverage, coverageText, CARD_D, CARD_KIND, GRANT_RELAYS, NOT_READ }
   from '../console/hive-list.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -220,6 +220,18 @@ check(NOT_READ.length === 3, 'the sources not read yet are named for the page')
 const page = readFileSync(join(ROOT, 'console/hive.html'), 'utf8')
 check(page.includes("from './hive-list.mjs'") && page.includes('"nostr-tools/pure"'), 'hive.html imports the module and maps nostr-tools/pure for the vendored fold')
 check(!/innerHTML\s*=(?!\s*'')/.test(page), 'hive.html writes signed text only through textContent')
+
+// Grouped by where each agent runs (#634): you and your voice first, everyone unlisted last.
+{
+  const key = id => PLATFORMS.find(p => p.id === id).keys[0]
+  const rows = [{ pubkey: 'f'.repeat(64), roles: [] }, { pubkey: key('buzz'), roles: [] }, { pubkey: key('lab'), roles: [] },
+    { pubkey: 'e'.repeat(64), roles: [{ role: 'voice' }] }, { pubkey: '4'.repeat(64), isOwner: true, roles: [] }]
+  check(platformOf(rows[4]) === 'you' && platformOf(rows[3]) === 'you', 'the owner and the owner\'s voice are one group')
+  check(byPlatform(rows).map(g => g.platform.id).join() === 'you,lab,buzz,other', 'groups come in the listed order, and a key nobody listed is last')
+  check(!byPlatform(rows).some(g => g.platform.id === 'grok'), 'a group with nobody in it is not shown')
+  check(PLATFORMS.flatMap(p => p.keys || []).every((k, i, all) => /^[0-9a-f]{64}$/.test(k) && all.indexOf(k) === i), 'every listed key is a key, in one group only')
+  check(nameSlots([['Zed', 'You', 'Amy']], n => ({ You: 0, Zed: 1, Amy: 2 })[n]).join() === 'You,Zed,Amy', 'name lines follow the group order')
+}
 
 if (!pass) { console.error('console_hive_list: FAILED'); process.exit(1) }
 console.log('console_hive_list: one list, every key kept, roles from recipes, nvoy\'s fold pinned')

@@ -244,8 +244,41 @@ export function givesCell(pubkey, rows, { owner, nameOf, incomplete = false }) {
 // Every name a column holds, in one order, so each name sits on the same line in every row and a
 // gap shows who is missing. A cell with nobody in it stays one line.
 const EMPTY = /^(Nobody\*?|—)$/
-export function nameSlots(cells) {
-  return inOrder([...new Set(cells.flat().filter(n => !EMPTY.test(n)))])
+export function nameSlots(cells, groupOf = () => 0) {
+  return inOrder([...new Set(cells.flat().filter(n => !EMPTY.test(n)))]).sort((a, b) => groupOf(a) - groupOf(b))
+}
+
+// Where each agent runs, in the order the table groups them. Agent cards carry no platform yet
+// (#637), so the keys are listed here; anyone not listed is in the last group.
+export const PLATFORMS = Object.freeze([
+  { id: 'you', label: 'You' },
+  { id: 'lab', label: 'Frontier lab harnesses', runs: 'Codex, Claude Code', keys: [
+    '231952cb5eb0652c04075f6a1b93e727819ed2ac0bf5238a96c6d2ca51617edd', // DJ Codex
+    'ad05b00ee49200d5bd2788fba480621ba6009224f01e48b3e9bce10100421d5c', // MC Claude
+    '38889d4ce187469d41dc0ef3f610a79d42120603fbc8a68b92d8bd67ae63a536', // waggle-dev
+  ] },
+  { id: 'third-party', label: 'Third-party harnesses', runs: 'Pi, OpenClaw', keys: [
+    'e4c0faf44d9aeabcb5459c6c3b76f2c704d7b55c7e0ddb3685fab4e4226935d8', // Pi Dog
+    '1b53f548acebe8dd47252717104350006f49b5c981a86ad4cfaf58d3fd7a0f1e', // lukedog
+  ] },
+  { id: 'grok', label: 'Grok Bot', keys: [
+    '61cb9345ce61bb06d42bef251de746051e608a539c1430142a8afa6593db924c', // GrokDoggyDog
+  ] },
+  { id: 'buzz', label: 'Buzz', keys: [
+    '0a8e0720c3ec52c6bfd9e2545d620cf58e2e8d371244255efce3ddd57ba0a32c', // My Dude
+    '9a07300d3295f392d295cd8f73c8f1d3c725809b2e50fc52815db8682ef940a5', // Dennis
+    'eb586b1e9c214c10762acc0dd4d428ac9156c284162f2d9dcc98562e644d71a5', // Kerouac
+    '5d3848a699e82f81e218aaad2f481bb63c00ff69b813cfca1cafc58ca633eb08', // Neil
+  ] },
+  { id: 'other', label: 'Everyone else' },
+])
+// Your voice speaks for you, so it sits in your group.
+export function platformOf(row) {
+  if (row.isOwner || row.roles?.some(x => x.role === 'voice')) return 'you'
+  return PLATFORMS.find(p => p.keys?.includes(row.pubkey))?.id || 'other'
+}
+export function byPlatform(rows) {
+  return PLATFORMS.map(platform => ({ platform, rows: rows.filter(r => platformOf(r) === platform.id) })).filter(g => g.rows.length)
 }
 // Both columns share one set of lines, so line N is the same agent across the row. A name the
 // column never holds (nobody gives you work) is blank rather than struck, so a strike is a real gap.

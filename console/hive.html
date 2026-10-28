@@ -31,6 +31,9 @@
   table.hive td{padding:10px 14px 10px 0;border-bottom:1px solid var(--line);vertical-align:top}
   table.hive .avatar{display:inline-block;width:22px;height:22px;border-radius:50%;object-fit:cover;background:var(--line);vertical-align:-6px;margin-right:7px}
   table.hive td.names div{white-space:nowrap;line-height:1.45;min-height:1.45em}
+  table.hive tr.group th{padding:18px 8px 6px;text-align:left;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--gold);border-bottom:1px solid var(--line)}
+  table.hive tr.group:first-child th{padding-top:6px}
+  table.hive tr.group .runs{margin-left:10px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--faint)}
   table.hive td.names .absent{color:var(--faint);text-decoration:line-through}
   table.hive tr.detail td{padding:0 0 14px}
   button.who{background:none;border:0;border-radius:0;padding:0;margin:0;color:var(--text);font:inherit;font-weight:700;cursor:pointer;text-align:left}
@@ -118,7 +121,7 @@ import { controlStateFresh } from './control-state-freshness.mjs'
 import { statusLabel } from './agent-roster.mjs'
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
-import { readGrants, scopeTable, readCards, buildList, workSentence, workCell, givesCell, nameSlots, slotted, askCell, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
+import { readGrants, scopeTable, readCards, buildList, workSentence, workCell, givesCell, nameSlots, slotted, askCell, PLATFORMS, platformOf, byPlatform, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
 
 // The bridge publishes its roster to these relays and reads its commands from them.
 const ROSTER_RELAYS = BRIDGE_RELAYS
@@ -265,9 +268,17 @@ function draw(rows, needs, owner, partial) {
     takes: r.isOwner || r.isBridge ? ['—'] : workCell(r.answers.work, { owner, nameOf, incomplete: partial.approvals }),
     gives: r.isBridge ? ['—'] : givesCell(r.pubkey, rows, { owner, nameOf, incomplete: partial.approvals }),
   }]))
-  const column = { takes: nameSlots([...cells.values()].map(c => c.takes)), gives: nameSlots([...cells.values()].map(c => c.gives)) }
-  const slots = nameSlots([...column.takes, ...column.gives])
-  for (const r of rows) list.append(...rowView(r, { owner, nameOf, partial, cells: cells.get(r.pubkey), slots, column }))
+  // The lines in each name cell follow the same platform order as the rows.
+  const group = new Map([['Your voice', 0], ...rows.map(r => [r.isOwner ? 'You' : nameOf(r.pubkey), PLATFORMS.findIndex(p => p.id === platformOf(r))])])
+  const groupOf = n => group.get(n) ?? PLATFORMS.length
+  const column = { takes: nameSlots([...cells.values()].map(c => c.takes), groupOf), gives: nameSlots([...cells.values()].map(c => c.gives), groupOf) }
+  const slots = nameSlots([...column.takes, ...column.gives], groupOf)
+  for (const { platform, rows: inGroup } of byPlatform(rows)) {
+    const head = list.appendChild(el('tr', 'group')).appendChild(el('th', null, platform.label))
+    head.colSpan = 5; head.scope = 'colgroup'
+    if (platform.runs) head.appendChild(el('span', 'runs', platform.runs))
+    for (const r of inGroup) list.append(...rowView(r, { owner, nameOf, partial, cells: cells.get(r.pubkey), slots, column }))
+  }
   $('partial-note').hidden = !partial.approvals
   $('list-panel').hidden = false
   drawWhatIf(rows, owner, nameOf, partial)
