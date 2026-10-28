@@ -302,7 +302,7 @@ async function applyIntent({ owner, nameOf }) {
     st.className = 'status'; st.textContent = ''
     return propose([{ template: draftRevoke({ grantId: r.grant.id }), words: describeChange({ action: 'withdraw', grant: r.grant, agent: table.subjectOf(r.grant.hash) }, nameOf) }])
   }
-  const r = resolveGrant(intent, { known: rows.map(x => x.pubkey), issuable: CHANGE_CAPS.map(cap => ({ cap, ok: true })) })
+  const r = resolveGrant(intent, { known: rows.map(x => x.pubkey), issuable: CHANGE_CAPS.map(cap => ({ cap, ok: true })), owner, bridge: hive.bridge })
   if (r.why) return refuse(r.why)
   const cap = r.cap || 'task'
   if (approvalsOf(grants, { subject: r.on, grantee: r.to, caps: [cap], subjectOf: table.subjectOf }).some(g => g.grantor === owner))

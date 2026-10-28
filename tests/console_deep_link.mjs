@@ -45,6 +45,19 @@ ok('a grant link between two known keys fills all three fields', filled.to === a
 ok('a grant link to a key this console never read is refused', /grantee/.test(resolveGrant({ to: 'dddd4444', on: 'bbbb2222', cap: 'task' }, { known: [alpha, beta, me], issuable: ISSUABLE.agent }).why || ''))
 ok('a cap that cannot be issued over an agent is refused', !!resolveGrant({ to: 'aaaa1111', on: 'bbbb2222', cap: 'admit' }, { known: [alpha, beta], issuable: ISSUABLE.agent }).why)
 
+// --- each capability's subject: nothing reaches the confirm panel that nvoy would not count (#624) ---
+const ALL = ['task', 'task+act', 'task-relay', 'shadow'].map(cap => ({ cap, ok: true }))
+const linked = (to, on, cap, bridge) => resolveGrant({ to, on, cap }, { known: [alpha, beta, me], issuable: ALL, owner: me, bridge })
+const mine = me.slice(0, 8)
+ok('a voice link over another agent is refused: nvoy counts a shadow only over the grantor\'s own key',
+  /must name you as the agent/.test(linked('aaaa1111', 'bbbb2222', 'shadow').why || ''))
+ok('PAIR: a voice link over your own key fills the form', linked('aaaa1111', mine, 'shadow').on === me && !linked('aaaa1111', mine, 'shadow').why)
+ok('a voice given to yourself is refused', /not to yourself/.test(linked(mine, mine, 'shadow').why || ''))
+ok('a work link over your own key is refused, with or without a cap', /over an agent, not over your own key/.test(linked('aaaa1111', mine, 'task+act').why || '')
+  && /over an agent/.test(linked('aaaa1111', mine, null).why || ''))
+ok('a carrying link to anyone but the bridge is refused', /only to the waggle bridge/.test(linked('aaaa1111', 'bbbb2222', 'task-relay', beta).why || ''))
+ok('PAIR: a carrying link to the bridge over an agent fills the form', !linked('bbbb2222', 'aaaa1111', 'task-relay', beta).why)
+
 const grants = [{ id: 'e970d972' + key('a').slice(8), grantee: alpha, live: true }, { id: '503099b6' + key('b').slice(8), grantee: alpha, live: false }]
 ok('a live grant opens its revoke', resolveRevoke({ grant: 'e970d972' }, grants).grant === grants[0])
 ok('a revoked grant says it is already revoked', resolveRevoke({ grant: '503099b6' }, grants).grant === null && /already revoked/.test(resolveRevoke({ grant: '503099b6' }, grants).why))
@@ -60,6 +73,7 @@ const body = page.slice(page.indexOf('async function applyIntent('), page.indexO
 ok('the hive page reads the link, and applies it once the hive is read and drawn', /let linkIntent = parseIntent\(location\.hash\)/.test(page) && /drawWhatIf\(rows, owner, nameOf, partial\)\n\s+applyIntent\(\{ owner, nameOf \}\)/.test(page))
 ok("applying a link waits for this owner's own read", /!hive \|\| hive\.owner !== owner/.test(body))
 ok('it resolves only against the keys and approvals the page read, and withdraws only your own', /known: rows\.map\(x => x\.pubkey\)/.test(body) && /grants\.filter\(g => g\.grantor === owner\)/.test(body))
+ok('it hands the resolver the signed-in owner and the bridge, so the subject rules apply on the page (#624)', /resolveGrant\(intent, \{ known: rows.*, owner, bridge: hive\.bridge \}\)/.test(body))
 ok('applying a link never signs: it only fills the confirm panel', body.length > 0 && /propose\(/.test(body) && !/signFresh|applyChange|change-go|\.signEvent|publish/.test(body))
 const agentBranch = body.slice(body.indexOf("intent.action === 'agent'"), body.indexOf('scrollIntoView'))
 ok("an agent link resolves against the rows read and opens that row, proposing nothing",

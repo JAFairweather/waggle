@@ -64,13 +64,30 @@ export function resolveRevoke(intent, grants) {
   return { grant: null, why: gone ? `grant ${intent.grant} is already revoked` : `grant ${intent.grant} is not a live grant signed by this key` }
 }
 
+// What each capability's subject must be for nvoy to count the approval. An approval over any other
+// subject still signs and reads back, so without this a link could end in "Done" for a grant that
+// does nothing (vendor/nvoy-admission.mjs counts a shadow only when its scope is the grantor's key).
+export function subjectRule({ cap, to, on, owner, bridge }) {
+  if (cap === 'shadow') {
+    if (on !== owner) return 'your voice is given over your own key, so the link must name you as the agent; over any other key nvoy never counts it'
+    if (to === owner) return 'your voice is given to an agent, not to yourself'
+    return null
+  }
+  if (on === owner) return `${cap} is given over an agent, not over your own key`
+  if (cap === 'task-relay' && bridge && to !== bridge) return 'carrying is given only to the waggle bridge'
+  return null
+}
+
 // The issue form's three fields for a grant link. The grantee and the agent come only from keys
-// this console has verified; the capability is checked against what may be issued over an agent.
-export function resolveGrant(intent, { known, issuable }) {
+// this console has verified; the capability is checked against what may be issued over an agent,
+// and the subject against what that capability needs, before any confirm panel is shown.
+export function resolveGrant(intent, { known, issuable, owner, bridge }) {
   const to = resolvePrefix(intent.to, known), on = resolvePrefix(intent.on, known)
   if (!to.value) return { why: `the grantee: ${to.why}` }
   if (!on.value) return { why: `the agent: ${on.why}` }
   const allowed = issuable.filter(o => o.ok).map(o => o.cap)
   if (intent.cap !== null && !allowed.includes(intent.cap)) return { why: `${intent.cap} cannot be granted over an agent here` }
+  const why = subjectRule({ cap: intent.cap || 'task', to: to.value, on: on.value, owner, bridge })
+  if (why) return { why }
   return { to: to.value, on: on.value, cap: intent.cap }
 }
