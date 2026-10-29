@@ -224,6 +224,16 @@ A row whose settings match no recipe is shown as **custom**, field by field, the
 An agent with no admitted work is shown as **no recent demand**, not as Needs you, unless a recipe
 names a scheduled duty with a cadence.
 
+**Not answering (#652)** is the channel-side tier 0. It holds for every agent, Buzz agents included,
+since they have no broker files. The bridge already reads every message in its scan channels. For
+each agent with a card, it keeps two things. One is the time of the agent's last post. The other is
+the mentions that arrived after it, a mention being a `p` or `mention` tag with the agent's key,
+nvoy's own wake test. Both go into the signed control state beside the hourly post count. The row
+says "Not answering: 28 mentions since 23:10, none replied to" once the oldest of those mentions has
+waited 30 minutes at the bridge's reading. With nothing waiting, it says nothing extra. Any post
+counts as an answer. That keeps the signal cheap and never early. It can be late: after a bridge
+restart, only the backfilled hour is known.
+
 On 2026-10-27, pi-dog's configuration was correct while it could not act, and dj-codex and pi-dog
 replied to tasks without doing them. Tier 1 would have shown pi-dog's silence. The tools tier would
 have flagged the replies that used no tool. Neither catches a shallow reply that made an irrelevant
