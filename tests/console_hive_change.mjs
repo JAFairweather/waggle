@@ -10,7 +10,9 @@
 //  4. "Done" is earned by a cold read-back, against simulated relays: a relay that says OK and
 //     drops the event is not storage, and a withdrawal is not done while any relay read still serves
 //     the approval without it (#457).
-//  5. The page itself signs through signFresh, publishes to the C3 relay set, and calls signEvent
+//  5. A channel pass is drafted over the channel's id, as grant.mjs drafts it, so the bridge's own
+//     recomputation over its channel matches; the page withdraws one only with a warning (#649).
+//  6. The page itself signs through signFresh, publishes to the C3 relay set, and calls signEvent
 //     nowhere directly.
 //
 //   node tests/console_hive_change.mjs
@@ -22,7 +24,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nos
 import { scopeHash } from '../console/scope-hash.mjs'
 import { scopeHashSync } from '../src/scope_hash.mjs'
 import { readGrants, scopeTable, buildList, GRANT_RELAYS } from '../console/hive-list.mjs'
-import { WORK_CAPS, CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, freshSalt, workApprovals, describeChange, sameAsDrafted, applyChange, verdictText }
+import { WORK_CAPS, CHANGE_CAPS, PASS_CAPS, approvalsOf, draftGrant, draftPass, passesOf, passLookup, channelIdOf, draftRevoke, freshSalt, workApprovals, describeChange, sameAsDrafted, applyChange, verdictText }
   from '../console/hive-change.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -236,7 +238,52 @@ check(verdictText({ kind: 441, done: false, holding: [], stale: [], silent: [], 
     'a withdrawal names the approval it ends, and neither sentence carries a key in hex')
 }
 
-// ── 5. The page ──────────────────────────────────────────────────────────────────────────────────
+// ── Channel passes (#649) ────────────────────────────────────────────────────────────────────────
+{
+  const CHANNEL = 'a8186b53-0000-4000-8000-000000000001', other = 'b0000000-0000-4000-8000-000000000002'
+  const pass = await draftPass({ grantee: agent, channel: CHANNEL.toUpperCase(), scopeHash, salt: SALT, now: 1700000000 })
+  check(JSON.stringify(pass.tags) === JSON.stringify([['p', agent], ['da-scope', scopeHashSync(CHANNEL, SALT), SALT], ['da-cap', 'admit']]) && pass.kind === 440,
+    "a pass has grant.mjs's layout, scoped to the lowercased channel id as the bridge recomputes it")
+  check(/channel's UUID/.test(await threw(() => draftPass({ grantee: agent, channel: 'waggle-test', scopeHash }))) &&
+    /public key/.test(await threw(() => draftPass({ grantee: 'nobody', channel: CHANNEL, scopeHash }))),
+    'a pass needs a channel UUID and a grantee key; a channel name is refused')
+  check(channelIdOf(` ${CHANNEL.toUpperCase()} `) === CHANNEL && channelIdOf('') === null && !CHANGE_CAPS.includes('admit') && PASS_CAPS.includes('admit'),
+    'the channel id is trimmed and lowercased, and passes stay out of the approvals draftGrant gives')
+  const g = (over) => ({ id: over.id, grantor: owner, grantee: agent, cap: 'admit', live: true, ...over })
+  const here = g({ id: 'p1', salt: SALT, hash: scopeHashSync(CHANNEL, SALT) })
+  const elsewhere = g({ id: 'p2', salt: SALT, hash: scopeHashSync(other, SALT) })
+  const grants = [here, elsewhere, g({ id: 'p3', salt: SALT, hash: here.hash, live: false }), g({ id: 'p4', salt: SALT, hash: here.hash, grantor: colleague }),
+    g({ id: 'p5', salt: SALT, hash: here.hash, cap: 'task' }), g({ id: 'p6', salt: SALT, hash: here.hash, grantee: colleague })]
+  const unknown = await passesOf(grants, { grantee: agent, owner, channel: '', scopeHash })
+  const known = await passesOf(grants, { grantee: agent, owner, channel: CHANNEL, scopeHash })
+  check(unknown.here === null && unknown.mine.map(x => x.id).join() === 'p1,p2', "without the channel id, your live passes for it, and only yours, are listed")
+  check(known.here.map(x => x.id).join() === 'p1', 'with it, only the pass for that channel: not a withdrawn one, a colleague\'s, a task grant or another agent\'s')
+  const nameOf = pk => pk === agent ? 'Pi Dog' : 'someone'
+  const words = describeChange({ action: 'give', grantee: agent, agent: CHANNEL, cap: 'admit' }, nameOf)
+  check(words === 'Give: Pi Dog may post into channel a8186b53.', `a pass reads as posting into the named channel: "${words}"`)
+  check(describeChange({ action: 'withdraw', grant: { id: signedGrant.id, cap: 'admit', grantee: agent }, agent: null }, nameOf).endsWith('which says Pi Dog may post into the channel.'),
+    'and its withdrawal still reads plainly when the channel id is not known')
+
+  // A lookup for channel A still hashing when the id changes to B must not report A (#651 review).
+  let releaseA
+  const gateA = new Promise(res => { releaseA = res })
+  const slowForA = async (subject, salt) => { if (subject === CHANNEL) await gateA; return scopeHash(subject, salt) }
+  const states = []
+  const lookup = passLookup({ grants, grantee: agent, owner, scopeHash: slowForA, onState: st => states.push(st) })
+  const forA = lookup(CHANNEL), forB = lookup(other)
+  const b = await forB
+  check(b?.channel === other && b.held.map(x => x.id).join() === 'p2' && !b.pending, 'the newer lookup resolves with its own channel\'s pass')
+  releaseA()
+  check(await forA === null && states.at(-1) === b, 'and the older one, finishing later, is dropped: it never overwrites the newer state')
+  check(states.filter(st => st.pending).length === 2 && states.filter(st => !st.pending).length === 1,
+    'each lookup reports pending first, so the action stays off until the latest resolves')
+  const blank = await passLookup({ grants, grantee: agent, owner, scopeHash })('')
+  check(blank.channel === null && blank.known && blank.held.length === 2, 'with no id typed, every pass of yours for it is listed')
+  const typo = await passLookup({ grants, grantee: agent, owner, scopeHash })('c0000000-0000-4000-8000-000000000003')
+  check(!typo.known && typo.held.length === 0, 'an id none of your passes cover is marked unknown, to catch a mistyped channel')
+}
+
+// ── 6. The page ──────────────────────────────────────────────────────────────────────────────────
 const page = readFileSync(join(ROOT, 'console/hive.html'), 'utf8')
 check(page.includes("from './hive-change.mjs'") && page.includes("from './guarded-signer.mjs'") && /applyChange\([^)]*\{[^}]*sign: t => signFresh\(t, signer\)/s.test(page),
   'hive.html applies changes through hive-change.mjs, signing with signFresh')
@@ -247,7 +294,12 @@ check(GRANT_RELAYS.includes('wss://relay.nave.pub') && GRANT_RELAYS.length === 4
 check(!/signs nothing yet/.test(page), 'the page no longer says it signs nothing')
 check(/cap: 'task-relay', subject: r\.pubkey, grantee: hive\.bridge/.test(page) && /cap: 'shadow', subject: owner, grantee: r\.pubkey/.test(page),
   "the page changes carrying (the bridge, over the agent) and your voice (the identity, over your own key)")
-check(!/cap: 'admit/.test(page), 'and never a channel pass')
+check(/draftPass\(\{ grantee: r\.pubkey, channel, scopeHash \}\)/.test(page) && /passLookup\(\{ grants: hive\.grants, grantee: r\.pubkey, owner, scopeHash,/.test(page),
+  'the page gives a channel pass to the row, and finds the ones to stop among your own')
+check(/b\.disabled = s\.pending \|\|/.test(page) && /if \(pending \|\| channel !== channelIdOf\(id\.value\)\) \{ lookup\(id\.value\); return \}/.test(page),
+  'its action is off while a lookup is pending, and a click re-checks the id in the field before drafting')
+check(/const CUT_OFF = 'Without a pass, waggle refuses its posts and stops carrying mentions to it\.'/.test(page) && /\$\{CUT_OFF\}/.test(page),
+  'withdrawing a pass says what the agent loses')
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
 process.exit(pass ? 0 : 1)

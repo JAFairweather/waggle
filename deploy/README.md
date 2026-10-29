@@ -307,6 +307,11 @@ do not remove it from a `FORWARD_MODE=buzz` service yet.
 The bridge admits a granted participant when it sees a signed NIP-DA 440 from a key in
 `config.public.grantors`. Keep the signing key OFF the box — use a remote signer:
 
+Give and withdraw them on the hive page (`console/hive.html`): open the agent's row, choose
+**Change**, and use **Channel pass**. The page drafts the 440 or 441, the Bunker signs it, and the
+page reads it back cold before saying done (#649). `tools/grant.mjs` stays as the scripted and
+recovery path:
+
 ```
 # 1. Read the pubkey your signer holds (key stays in Amber / nsec.app / Alby):
 GRANTOR_BUNKER='bunker://<pubkey>?relay=wss://…&secret=…' node tools/grant.mjs whoami

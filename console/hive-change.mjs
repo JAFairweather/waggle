@@ -17,7 +17,7 @@ import { describeGrant } from './capability-vocabulary.mjs'
 // Who can give it work: work it asks about first, and work it may act on without asking.
 export const WORK_CAPS = ['task', 'task+act']
 // Every approval the page changes: work, the bridge carrying work to an agent, and your voice.
-// Channel passes stay out (#613 M4): they still carry the bridge's returns.
+// Channel passes are drafted on their own (draftPass): their subject is a channel, not a key.
 export const CHANGE_CAPS = [...WORK_CAPS, 'task-relay', 'shadow']
 const HEX64 = /^[0-9a-f]{64}$/
 const SALT = /^[0-9a-f]{32}$/
@@ -41,6 +41,55 @@ export async function draftGrant({ grantee, agent, cap, scopeHash, salt = freshS
   return { kind: 440, created_at: now, tags: [['p', grantee], ['da-scope', await scopeHash(agent, salt), salt], ['da-cap', cap]], content: '' }
 }
 
+// A channel pass (#649) is an admit: the bridge lets the agent post into its channel, and carries
+// mentions back to it there. Its subject is the channel's id, never a key, and the bridge recomputes
+// the scope over its own channel, so a pass drafted for any other channel binds to nothing.
+export const PASS_CAPS = ['admit', 'admit+read']
+const CHANNEL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+export const channelIdOf = v => { const id = String(v || '').trim().toLowerCase(); return CHANNEL_ID.test(id) ? id : null }
+
+// Only `admit`, as grant.mjs gives: `admit+read` would mean handing over channel key material.
+export async function draftPass({ grantee, channel, scopeHash, salt = freshSalt(), now = nowSec() }) {
+  if (!HEX64.test(grantee || '')) throw new Error('The one to let in is not a public key.')
+  const id = channelIdOf(channel)
+  if (!id) throw new Error('The channel id must be the channel\'s UUID, like 00000000-0000-0000-0000-000000000000.')
+  if (!SALT.test(salt)) throw new Error('The salt must be 16 random bytes in hex.')
+  return { kind: 440, created_at: now, tags: [['p', grantee], ['da-scope', await scopeHash(id, salt), salt], ['da-cap', 'admit']], content: '' }
+}
+
+// Your live passes for `grantee`, and, once the channel id is known, the ones that cover it.
+export async function passesOf(grants, { grantee, owner, channel, scopeHash }) {
+  const mine = grants.filter(g => g.live && g.grantee === grantee && g.grantor === owner && PASS_CAPS.includes(g.cap))
+  const id = channelIdOf(channel)
+  if (!id) return { mine, here: null }
+  const here = []
+  for (const g of mine) if (await scopeHash(id, g.salt) === g.hash) here.push(g)
+  return { mine, here }
+}
+
+// The pass line follows whatever channel id is typed, and each lookup hashes asynchronously. Runs are
+// numbered and only the latest is reported, so a slow lookup for an old id can never arm the action
+// for a new one; the state says `pending` until the latest run resolves (#651 review). `known` is
+// whether any of your passes, to anyone, already cover the id: a check against a mistyped channel.
+export function passLookup({ grants, grantee, owner, scopeHash, onState = () => {} }) {
+  let run = 0
+  return async function lookup(value) {
+    const mine = ++run
+    const channel = channelIdOf(value)
+    onState({ pending: true, channel, held: [], known: false })
+    const { mine: all, here } = await passesOf(grants, { grantee, owner, channel, scopeHash })
+    let known = !channel
+    for (const g of grants) {
+      if (known) break
+      if (g.live && g.grantor === owner && PASS_CAPS.includes(g.cap) && await scopeHash(channel, g.salt) === g.hash) known = true
+    }
+    if (mine !== run) return null
+    const state = { pending: false, channel, held: here || all, known }
+    onState(state)
+    return state
+  }
+}
+
 export function draftRevoke({ grantId, now = nowSec() }) {
   if (!HEX64.test(grantId || '')) throw new Error('That is not an approval id.')
   return { kind: 441, created_at: now, tags: [['e', grantId]], content: '' }
@@ -55,10 +104,12 @@ export const workApprovals = (grants, { agent, grantee, subjectOf }) => approval
 
 // Plain words for the confirm panel. Names only, never hex, and the capability sentence is the
 // console's one vocabulary for it.
+// A pass's subject is a channel, named by its short id once known.
 export function describeChange(change, nameOf) {
-  if (change.action === 'give') return `Give: ${describeGrant({ cap: change.cap, grantee: nameOf(change.grantee), subject: nameOf(change.agent) })}.`
+  const subject = cap => PASS_CAPS.includes(cap) ? (change.agent ? `channel ${change.agent.slice(0, 8)}` : 'the channel') : nameOf(change.agent)
+  if (change.action === 'give') return `Give: ${describeGrant({ cap: change.cap, grantee: nameOf(change.grantee), subject: subject(change.cap) })}.`
   const g = change.grant
-  return `Withdraw approval ${g.id.slice(0, 10)}…, which says ${describeGrant({ cap: g.cap, grantee: nameOf(g.grantee), subject: nameOf(change.agent) })}.`
+  return `Withdraw approval ${g.id.slice(0, 10)}…, which says ${describeGrant({ cap: g.cap, grantee: nameOf(g.grantee), subject: subject(g.cap) })}.`
 }
 
 // The signer must hand back the event that was shown, not merely an event: what the owner approved

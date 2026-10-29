@@ -172,6 +172,14 @@ await refusesPosting({ window_secs: 3600, agents: [{ pubkey: AGENT_A, posts: 1, 
 await refusesPosting({ window_secs: 3600, agents: [{ pubkey: AGENT_A, posts: 1 }, { pubkey: AGENT_A, posts: 2 }] }, 'and a duplicate agent')
 await refusesPosting({ window_secs: 3600, agents: [{ pubkey: AGENT_A, posts: -1 }] }, 'and a negative count')
 await refusesPosting({ window_secs: 5, agents: [] }, 'and a window outside a minute to a day')
+let waitingBody = null
+const waitingRow = { pubkey: AGENT_A, posts: 0, last_post_at: 1, waiting: 28, waiting_since: 2 }
+try { waitingBody = JSON.parse(wire(await signControlState({ ...buildControlState(), posting: { window_secs: 3600, agents: [waitingRow] } })).content).posting.agents[0] } catch { waitingBody = null }
+t('a last post and waiting mentions reach the signed record (#652)', waitingBody?.waiting === 28 && waitingBody.waiting_since === 2 && waitingBody.last_post_at === 1)
+await refusesPosting({ window_secs: 3600, agents: [{ pubkey: AGENT_A, posts: 0, waiting: 3 }] }, 'and a waiting count without its time')
+await refusesPosting({ window_secs: 3600, agents: [{ pubkey: AGENT_A, posts: 0, waiting: 0, waiting_since: 2 }] }, 'and a zero waiting count')
+await refusesPosting({ window_secs: 3600, agents: [{ pubkey: AGENT_A, posts: 0, last_post_at: null }] }, 'and a last post that is present but empty')
+await refusesPosting({ window_secs: 3600, agents: [{ pubkey: AGENT_A, posts: 0, last_post_at: 9_999_999_999 }] }, 'and a last post in the future')
 
 let publishedControlId = ''
 const acceptedControl = await publishControlState(async (event) => { publishedControlId = event.id; return 1 }, true)
@@ -859,6 +867,38 @@ const junk = postingTally()
 junk.note([{ id: 'x', pubkey: 'not-a-key', created_at: now }, { id: '', pubkey: agent, created_at: now }, { id: 'y', pubkey: agent, created_at: now + 600 }, null], now)
 t('a malformed or future-dated message is not counted', junk.summary([agent], now).agents[0].posts === 0)
 
+// Who is not answering (#652). A mention is a p or mention tag naming the agent.
+const quiet = postingTally()
+const said = (id, pubkey, ago, ...named) => ({ ...msg(id, pubkey, ago), tags: named.map(([k, v]) => [k, v]) })
+quiet.note([said('r1', agent, 3000), said('m1', person, 2000, ['p', agent]), said('m2', person, 1500, ['mention', agent]), said('m0', person, 3100, ['p', agent]), said('s1', agent, 1800, ['p', agent])], now)
+quiet.note([said('m1', person, 2000, ['p', agent])], now)
+let row = quiet.summary([agent], now).agents[0]
+t('mentions after its last post wait, counted once each by id; one before it, or its own self-tag, does not',
+  row.last_post_at === now - 1800 && row.waiting === 1 && row.waiting_since === now - 1500)
+quiet.note([said('m3', person, 600, ['p', agent]), said('r2', agent, 300)], now)
+row = quiet.summary([agent], now).agents[0]
+t('a post from the agent answers everything that waited before it', row.last_post_at === now - 300 && !('waiting' in row) && !('waiting_since' in row))
+const late = postingTally()
+late.note([said('r3', agent, 100)], now); late.note([said('m4', person, 200, ['p', agent])], now)
+t('a mention read after a newer reply is already answered: order of reading does not matter', !('waiting' in late.summary([agent], now).agents[0]))
+const capped = postingTally({ waitingCap: 3 })
+capped.note([1, 2, 3, 4, 5].map(i => said(`c${i}`, person, 100 * i, ['p', agent])), now)
+row = capped.summary([agent], now).agents[0]
+t('the waiting list is bounded, keeping the newest', row.waiting === 3 && row.waiting_since === now - 300)
+t('a person who is mentioned is still never reported', !quiet.summary([agent], now).agents.some(a => a.pubkey === person))
+const flood = postingTally({ waitingKeys: 5 })
+for (let round = 0; round < 4; round++) flood.note([said(`f${round}`, person, 100 + round, ...Array.from({ length: 100 }, () => ['p', getPublicKey(generateSecretKey())]))], now)
+let floodRows = 0
+for (const pk of [agent, idle, person]) floodRows += 'waiting' in flood.summary([pk], now).agents[0] ? 1 : 0
+const gated = postingTally({ eligible: pk => pk === agent })
+gated.note([said('g1', person, 100, ['p', agent], ['p', idle], ...Array.from({ length: 50 }, () => ['p', getPublicKey(generateSecretKey())]))], now)
+t('many distinct tagged keys across notes keep at most waitingKeys of them (#652 review)', flood.waitingKeyCount() === 5 && floodRows === 0)
+t('and a key that is not eligible is never kept at all', gated.waitingKeyCount() === 1 && gated.summary([agent], now).agents[0].waiting === 1 && !('waiting' in gated.summary([idle], now).agents[0]))
+const silent = postingTally()
+silent.note([said('q1', person, 100, ['p', idle])], now)
+row = silent.summary([idle], now).agents[0]
+t('an agent seen only being mentioned has no last post, and its mentions wait', !('last_post_at' in row) && row.waiting === 1)
+
 const card = finalizeEvent({ kind: AGENT_CARD_KIND, created_at: now, tags: [['d', AGENT_CARD_D]], content: '{}' }, agentSk)
 const otherD = finalizeEvent({ kind: AGENT_CARD_KIND, created_at: now, tags: [['d', 'waggle-control-state']], content: '{}' }, generateSecretKey())
 const forged = { ...JSON.parse(JSON.stringify(card)), pubkey: person }
@@ -919,6 +959,11 @@ t('another d tag, or a card whose signature is not its own key, does not', keys.
   PUB.scanAuthors = [buzzAgent, carded]
   PUB.grantors = [carded]
   t('a grantor with an agent card is still not published', !postingAgents().has(carded) && postingAgents().has(buzzAgent))
+  // Mentions are kept only for keys that could be published (#652 review): a fresh tagged key costs nothing.
+  const stranger = getPublicKey(generateSecretKey())
+  postingCounts.note([{ id: 'mx', pubkey: carded, created_at: now - 30, tags: [['p', buzzAgent], ['p', stranger], ['p', carded]] }], now)
+  t('the bridge keeps a mention of a counted agent, not of a stranger or a grantor',
+    postingCounts.summary([buzzAgent], now).agents[0].waiting === 1 && !('waiting' in postingCounts.summary([stranger], now).agents[0]))
   Object.assign(PUB, { scanAuthors: saved.scanAuthors, approvers: saved.approvers, grantors: saved.grantors })
   PUB.scanChannels.splice(0, PUB.scanChannels.length, ...saved.scanChannels)
   postingReady.clear()

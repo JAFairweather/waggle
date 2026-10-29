@@ -2650,7 +2650,8 @@ let controlStateTimer = null
 // an agent card, re-read on the control-state refresh, and for the scan authors, who are the Buzz
 // agents with no card (#644). The approvers and grantors among the scan authors are the people who
 // run the hive, not agents, so their counts are never published, even when they hold a card.
-const postingCounts = postingTally()
+// Mentions are kept only for those same keys (#652 review): any participant can tag fresh keys.
+const postingCounts = postingTally({ eligible: pk => postingAgents().has(pk) })
 let agentCards = new Set()
 const postingAgents = () => {
   const people = new Set([...PUB.approvers, ...PUB.grantors])
