@@ -299,6 +299,11 @@ tabs.
   4. The page publishes it to the full relay set.
   5. It does a cold read-back and only then says **done**.
 
+  A **channel pass** (`admit`) is changed the same way, from the agent's row (#649). Its subject is
+  the channel's id, which nothing public names, so the owner types it once and the browser keeps it.
+  The page offers only `admit`, as `tools/grant.mjs` does. Withdrawing one says what the agent loses:
+  waggle refuses its posts and stops carrying mentions to it.
+
   Answers controlled by the manifest show **Ask for this change** instead. That files the request in
   **Needs you** for the fleet operator, because manifest edits are not grants (see decision D3).
 - **Needs you.** Holds duplicate grants, expired grants that are still listed, grants that match no
