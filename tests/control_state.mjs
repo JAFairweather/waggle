@@ -886,6 +886,14 @@ capped.note([1, 2, 3, 4, 5].map(i => said(`c${i}`, person, 100 * i, ['p', agent]
 row = capped.summary([agent], now).agents[0]
 t('the waiting list is bounded, keeping the newest', row.waiting === 3 && row.waiting_since === now - 300)
 t('a person who is mentioned is still never reported', !quiet.summary([agent], now).agents.some(a => a.pubkey === person))
+const flood = postingTally({ waitingKeys: 5 })
+for (let round = 0; round < 4; round++) flood.note([said(`f${round}`, person, 100 + round, ...Array.from({ length: 100 }, (_, i) => ['p', getPublicKey(generateSecretKey())]))], now)
+let floodRows = 0
+for (const pk of [agent, idle, person]) floodRows += 'waiting' in flood.summary([pk], now).agents[0] ? 1 : 0
+const gated = postingTally({ eligible: pk => pk === agent })
+gated.note([said('g1', person, 100, ['p', agent], ['p', idle], ...Array.from({ length: 50 }, () => ['p', getPublicKey(generateSecretKey())]))], now)
+t('many distinct tagged keys across notes keep at most waitingKeys of them (#652 review)', flood.waitingKeyCount() === 5 && floodRows === 0)
+t('and a key that is not eligible is never kept at all', gated.waitingKeyCount() === 1 && gated.summary([agent], now).agents[0].waiting === 1 && !('waiting' in gated.summary([idle], now).agents[0]))
 const silent = postingTally()
 silent.note([said('q1', person, 100, ['p', idle])], now)
 row = silent.summary([idle], now).agents[0]
@@ -951,6 +959,11 @@ t('another d tag, or a card whose signature is not its own key, does not', keys.
   PUB.scanAuthors = [buzzAgent, carded]
   PUB.grantors = [carded]
   t('a grantor with an agent card is still not published', !postingAgents().has(carded) && postingAgents().has(buzzAgent))
+  // Mentions are kept only for keys that could be published (#652 review): a fresh tagged key costs nothing.
+  const stranger = getPublicKey(generateSecretKey())
+  postingCounts.note([{ id: 'mx', pubkey: carded, created_at: now - 30, tags: [['p', buzzAgent], ['p', stranger], ['p', carded]] }], now)
+  t('the bridge keeps a mention of a counted agent, not of a stranger or a grantor',
+    postingCounts.summary([buzzAgent], now).agents[0].waiting === 1 && !('waiting' in postingCounts.summary([stranger], now).agents[0]))
   Object.assign(PUB, { scanAuthors: saved.scanAuthors, approvers: saved.approvers, grantors: saved.grantors })
   PUB.scanChannels.splice(0, PUB.scanChannels.length, ...saved.scanChannels)
   postingReady.clear()

@@ -13,7 +13,8 @@
 // tally also keeps each agent's last post and the mentions that arrived after it. A mention is a
 // p or mention tag naming the agent, the same test nvoy's Buzz listener uses to wake one. Both are
 // per agent, never per post. After a restart only the backfilled hour is known, so a stall that
-// began earlier reads as starting then: late, never early.
+// began earlier reads as starting then: late, never early. Mentions are kept only for `eligible`
+// keys, since anyone can tag a fresh key, and at most `waitingKeys` of them in any case.
 
 export const POSTING_WINDOW_SECS = 3600
 export const AGENT_CARD_D = 'nvoy-agent-card'
@@ -23,7 +24,7 @@ const nowSecs = () => Math.floor(Date.now() / 1000)
 
 // Messages are keyed by id, so the scan's overlap window, which re-reads the last two minutes on
 // every poll, never counts a post twice.
-export function postingTally({ windowSecs = POSTING_WINDOW_SECS, cap = 20000, waitingCap = 1000 } = {}) {
+export function postingTally({ windowSecs = POSTING_WINDOW_SECS, cap = 20000, waitingCap = 1000, waitingKeys = 1000, eligible = () => true } = {}) {
   const posts = new Map()
   const last = new Map()     // pubkey -> created_at of its newest post seen
   const waiting = new Map()  // pubkey -> Map(id -> created_at) of mentions newer than that post
@@ -40,7 +41,11 @@ export function postingTally({ windowSecs = POSTING_WINDOW_SECS, cap = 20000, wa
         const named = new Set((Array.isArray(m.tags) ? m.tags : []).filter(t => (t?.[0] === 'p' || t?.[0] === 'mention') && HEX64.test(String(t[1]))).map(t => t[1]))
         for (const pk of named) {
           if (pk === m.pubkey || at <= (last.get(pk) || 0)) continue
-          if (!waiting.has(pk)) waiting.set(pk, new Map())
+          if (!waiting.has(pk)) {
+            if (!eligible(pk)) continue
+            if (waiting.size >= waitingKeys) waiting.delete(waiting.keys().next().value)
+            waiting.set(pk, new Map())
+          }
           waiting.get(pk).set(m.id, at)
           touched.add(pk)
         }
@@ -54,6 +59,7 @@ export function postingTally({ windowSecs = POSTING_WINDOW_SECS, cap = 20000, wa
       while (posts.size > cap) posts.delete(posts.keys().next().value)
       while (last.size > cap) { const pk = last.keys().next().value; last.delete(pk); waiting.delete(pk) }
     },
+    waitingKeyCount: () => waiting.size,
     summary(agents, now = nowSecs()) {
       prune(now)
       const by = new Map([...agents].filter(pk => HEX64.test(pk)).slice(0, 1000).map(pk => [pk, 0]))
