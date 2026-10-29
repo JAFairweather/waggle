@@ -77,13 +77,15 @@ export function roleOf(grant, { owner, bridges = [], subject }) {
   }
   if (fromOwner && subject && grant.cap === 'task-relay' && bridges.includes(grant.grantee)) return { role: 'carrier', agent: subject, by: grant.grantee }
   if (fromOwner && grant.cap === 'shadow' && subject === owner) return { role: 'voice', agent: grant.grantee }
-  if (grant.cap === 'admit' || grant.cap === 'admit+read') return { role: 'guest', agent: grant.grantee, cleanup: true }
+  // An admit is live, not a leftover: without one the bridge refuses the key's posts and carries it no
+  // mentions (#649), so it is never flagged for cleanup.
+  if (grant.cap === 'admit' || grant.cap === 'admit+read') return { role: 'guest', agent: grant.grantee }
   return { role: 'custom', agent: grant.grantee, sentence: describeGrant({ cap: grant.cap, grantee: grant.grantee, subject: subject || 'an unresolved scope' }) }
 }
 
 export const ROLE_NAME = {
   teammate: 'Teammate', trusted: 'Trusted teammate', colleague: 'Colleague', carrier: 'Carrier',
-  voice: 'Voice', guest: 'Channel guest', custom: 'Custom',
+  voice: 'Voice', guest: 'Channel pass', custom: 'Custom',
 }
 
 // Two live grants with the same grantor, grantee, capability and subject are one grant too many.
@@ -147,7 +149,6 @@ export function buildList({ owner, grantEvents = [], grants = [], table, cards =
     const row = rows.get(role.agent)
     row.roles.push({ ...role, grant: g })
     if (role.role === 'custom') needs.push({ kind: 'custom', grant: g, subject, text: `Matches no role: ${role.sentence}` })
-    if (role.role === 'guest') needs.push({ kind: 'guest', grant: g, subject, text: 'A channel pass left over from waggle carry. A candidate for cleanup.' })
   }
   const listed = new Set()
   for (const { keep, extra } of duplicates(grants, table.subjectOf)) {
