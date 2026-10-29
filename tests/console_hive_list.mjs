@@ -160,7 +160,7 @@ check(needs.some(n => n.kind === 'no-card' && n.pubkey === djcodex.pk), 'an agen
 
 // 4. Who can give it work: nvoy's fold, in words.
 const nameOf = pk => row(pk)?.name || pk.slice(0, 8)
-check(workSentence(row(pidog.pk).answers.work, { owner: owner.pk, nameOf }) === 'You, DJ Codex and Mx Voice can give it work.'.replace('Mx Voice', `${voice.pk.slice(0, 8)} (as your voice)`),
+check(workSentence(row(pidog.pk).answers.work, { owner: owner.pk, nameOf }) === 'You, DJ Codex and Your voice can give it work.',
   'Pi Dog: you, DJ Codex, and your voice can give it work')
 check(row(pidog.pk).answers.work.carriers.includes(bridge.pk), 'the carrier is named apart from who gives work')
 check(row(djcodex.pk).answers.act.withoutAsking.includes(owner.pk), 'task+act is what it may do without asking')

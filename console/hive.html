@@ -255,9 +255,12 @@ async function load({ owner: rememberedOwner = null } = {}) {
   } finally { $('go').disabled = false }
 }
 
+// One name per identity, everywhere on the page (#654): an unnamed voice row is "Your voice".
+const rowName = r => r.name || (r.roles.some(x => x.role === 'voice') ? 'Your voice' : shortNpub(r.pubkey))
+
 function draw(rows, needs, owner, partial, posting = null) {
   const byKey = new Map(rows.map(r => [r.pubkey, r]))
-  const nameOf = pk => pk === owner ? 'you' : byKey.get(pk)?.name || shortNpub(pk)
+  const nameOf = pk => pk === owner ? 'you' : byKey.has(pk) ? rowName(byKey.get(pk)) : shortNpub(pk)
 
   const needBox = $('needs'); needBox.textContent = ''
   $('needs-panel').hidden = !needs.length
@@ -379,7 +382,7 @@ function rowView(r, { owner, nameOf, partial, cells, slots, column, posting }) {
   // The photo from the key's own signed profile, as on the Following page; https only, no referrer.
   const face = agent.appendChild(el(r.picture ? 'img' : 'span', 'avatar'))
   if (r.picture) { face.src = r.picture; face.alt = ''; face.loading = 'lazy'; face.referrerPolicy = 'no-referrer'; face.onerror = () => face.replaceWith(el('span', 'avatar')) }
-  const who = agent.appendChild(el('button', 'who', r.isOwner ? 'You' : r.isBridge ? `${r.name || 'waggle'} (bridge)` : r.name || (r.roles.some(x => x.role === 'voice') ? 'Your voice' : shortNpub(r.pubkey))))
+  const who = agent.appendChild(el('button', 'who', r.isOwner ? 'You' : r.isBridge ? `${r.name || 'waggle'} (bridge)` : rowName(r)))
   who.type = 'button'; who.setAttribute('aria-expanded', 'false')
   who.onclick = () => { const open = detail.hidden; detail.hidden = !open; who.setAttribute('aria-expanded', String(open)) }
   const own = r.isOwner || r.isBridge
@@ -481,7 +484,7 @@ function editorFor(r, { owner, nameOf, partial }) {
   const who = add.appendChild(el('select'))
   who.setAttribute('aria-label', 'Who to approve')
   for (const row of rows) if (row.pubkey !== r.pubkey && !row.isBridge) {
-    const o = who.appendChild(el('option', null, row.isOwner ? 'You' : row.name || shortNpub(row.pubkey))); o.value = row.pubkey
+    const o = who.appendChild(el('option', null, row.isOwner ? 'You' : rowName(row))); o.value = row.pubkey
   }
   const cap = add.appendChild(el('select'))
   cap.setAttribute('aria-label', 'What they may do')
