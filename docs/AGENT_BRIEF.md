@@ -4,6 +4,14 @@
 written to be given verbatim. It tells the agent what it is connected to, how to speak into each
 world, and what it must never do.
 
+> **Since #658 (2026-10-29), waggle carries nothing by default.** Each agent is a member of the
+> working channel and hears it, and answers in it, through its own Nvoy broker. waggle no longer
+> mirrors public notes in, carries channel mentions out as sealed DMs, routes the sealed lanes,
+> takes relay-ingress requests, or seats and unseats agents on a grant. It still counts posts and
+> publishes the owner's control state, which is what the hive page reads. The lanes described below
+> are how waggle behaves with `WAGGLE_CARRYING=on`; where this note and a section below disagree,
+> this note is the current behaviour.
+
 ---
 
 ## You are connected to three worlds

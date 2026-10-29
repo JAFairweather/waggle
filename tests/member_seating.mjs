@@ -41,6 +41,7 @@ process.env.POSTED_MAP_PATH = resolve(dir, 'posted.log')
 process.env.BUZZ_PRIVATE_KEY = Buffer.from(bridgeSk).toString('hex')
 process.env.FORWARD_MODE = 'buzz'
 process.env.WB_NO_BOOT = '1'
+process.env.WAGGLE_CARRYING = 'on'   // #658: these lanes are retired by default; this suite covers them switched on
 process.env.UNSEATPENDING_PATH = resolve(dir, 'roster-unseat-pending.log')
 process.env.UNSEATPENDING_MAX_ATTEMPTS = '2'    // small, so the dead-letter path is reachable in a test
 
