@@ -45,7 +45,7 @@ writeFileSync(CFG, JSON.stringify({
   },
 }))
 
-const { buildControlState, postingCounts, postingAgents, postingReady, backfillPosting, publishControlState, processConsentEvent, mirrorAsked, mirrorRevoked, PUB,
+const { buildControlState, postingCounts, postingAgents, postingReady, refreshAgentCards, backfillPosting, publishControlState, processConsentEvent, mirrorAsked, mirrorRevoked, PUB,
   grantSet, activeReturnLane, handleControlStateCommand, handleWatchlistControlCommand,
   handleModerationControlCommand, recordPosted,
   handleTaskRouteControlCommand, handleSealedTaskRouteControl, CONTROL_COMMAND_KIND,
@@ -908,6 +908,17 @@ t('another d tag, or a card whose signature is not its own key, does not', keys.
   PUB.approvers = []
   PUB.grantors = [owner]
   t('nor is a grantor', !postingAgents().has(owner))
+  // A person who also holds an agent card stays unpublished: the card does not bring the key back.
+  const ownerSk = generateSecretKey(), carded = getPublicKey(ownerSk)
+  const card = finalizeEvent({ kind: AGENT_CARD_KIND, created_at: now, tags: [['d', AGENT_CARD_D]], content: '{}' }, ownerSk)
+  const cardSocket = () => {
+    const on = {}
+    return { on: (ev, f) => { on[ev] = f; if (ev === 'open') queueMicrotask(f) }, send: () => queueMicrotask(() => { on.message?.(JSON.stringify(['EVENT', 'cards', card])); on.message?.(JSON.stringify(['EOSE', 'cards'])) }), close: () => {} }
+  }
+  await refreshAgentCards(cardSocket)
+  PUB.scanAuthors = [buzzAgent, carded]
+  PUB.grantors = [carded]
+  t('a grantor with an agent card is still not published', !postingAgents().has(carded) && postingAgents().has(buzzAgent))
   Object.assign(PUB, { scanAuthors: saved.scanAuthors, approvers: saved.approvers, grantors: saved.grantors })
   PUB.scanChannels.splice(0, PUB.scanChannels.length, ...saved.scanChannels)
   postingReady.clear()

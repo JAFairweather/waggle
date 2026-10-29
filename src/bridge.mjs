@@ -2649,12 +2649,12 @@ let controlStateTimer = null
 // Posts per agent over the last hour, counted from the scan (#638). Reported for the keys that hold
 // an agent card, re-read on the control-state refresh, and for the scan authors, who are the Buzz
 // agents with no card (#644). The approvers and grantors among the scan authors are the people who
-// run the hive, not agents, so their counts are never published.
+// run the hive, not agents, so their counts are never published, even when they hold a card.
 const postingCounts = postingTally()
 let agentCards = new Set()
 const postingAgents = () => {
   const people = new Set([...PUB.approvers, ...PUB.grantors])
-  return new Set([...agentCards, ...PUB.scanAuthors.filter(pk => !people.has(pk))])
+  return new Set([...agentCards, ...PUB.scanAuthors].filter(pk => !people.has(pk)))
 }
 // The tally lives in memory, and after a restart the scan resumes from its cursor with only the
 // overlap. So each channel is first read back a full hour, and no count is published until every
