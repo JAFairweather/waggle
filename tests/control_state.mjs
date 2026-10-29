@@ -887,7 +887,7 @@ row = capped.summary([agent], now).agents[0]
 t('the waiting list is bounded, keeping the newest', row.waiting === 3 && row.waiting_since === now - 300)
 t('a person who is mentioned is still never reported', !quiet.summary([agent], now).agents.some(a => a.pubkey === person))
 const flood = postingTally({ waitingKeys: 5 })
-for (let round = 0; round < 4; round++) flood.note([said(`f${round}`, person, 100 + round, ...Array.from({ length: 100 }, (_, i) => ['p', getPublicKey(generateSecretKey())]))], now)
+for (let round = 0; round < 4; round++) flood.note([said(`f${round}`, person, 100 + round, ...Array.from({ length: 100 }, () => ['p', getPublicKey(generateSecretKey())]))], now)
 let floodRows = 0
 for (const pk of [agent, idle, person]) floodRows += 'waiting' in flood.summary([pk], now).agents[0] ? 1 : 0
 const gated = postingTally({ eligible: pk => pk === agent })
