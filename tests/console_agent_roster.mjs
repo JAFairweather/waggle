@@ -22,7 +22,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { nip19 } from 'nostr-tools'
-import { STATUSES, STATUS_LABEL, statusLabel, validAgent, rosterAgents, postingCounts, shortNpub, agentOptionText }
+import { STATUSES, STATUS_LABEL, statusLabel, validAgent, rosterAgents, postingCounts, notAnswering, NOT_ANSWERING_SECS, shortNpub, agentOptionText }
   from '../console/agent-roster.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -398,6 +398,24 @@ check(!/loaded for a different bridge/.test(status()),
     postingCounts({ posting: { window_secs: 3600, agents: [{ pubkey: 'x', posts: 1 }] } }) === null, 'a malformed posting block gives no counts at all')
   const page = readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
   check(/controlStateFresh\(rosterState\?\.observed_at\) \? postingCounts\(rosterState\)/.test(page), 'the hive shows counts only from a fresh bridge state')
+}
+
+// Who is not answering (#652): mentions waiting with no post since, judged at the bridge's reading.
+{
+  const A = 'a'.repeat(64), B = 'b'.repeat(64), C = 'c'.repeat(64), at = 1800000000
+  const got = postingCounts({ observed_at: at, posting: { window_secs: 3600, agents: [
+    { pubkey: A, posts: 0, last_post_at: at - 7200, waiting: 28, waiting_since: at - NOT_ANSWERING_SECS },
+    { pubkey: B, posts: 3, last_post_at: at - 60, waiting: 2, waiting_since: at - NOT_ANSWERING_SECS + 1 },
+    { pubkey: C, posts: 0 }] } })
+  check(notAnswering(got, A)?.count === 28 && notAnswering(got, A).since === at - NOT_ANSWERING_SECS, 'a mention waiting 30 minutes with no post since reads as not answering')
+  check(got.waiting.get(B)?.count === 2 && notAnswering(got, B) === null, 'one waiting a second less does not, though it is waiting')
+  check(notAnswering(got, C) === null && notAnswering(null, A) === null, 'an agent with nothing waiting is quiet, not stalled; and no counts means no verdict')
+  const bad = extra => postingCounts({ observed_at: at, posting: { window_secs: 3600, agents: [{ pubkey: A, posts: 0, ...extra }] } })
+  check(bad({ waiting: 2 }) === null && bad({ waiting_since: at }) === null && bad({ waiting: 0, waiting_since: at }) === null && bad({ last_post_at: 'x' }) === null,
+    'a waiting count without its time, a zero count, or a malformed time gives no counts at all')
+  const page = readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
+  check(/const stalled = own \? null : notAnswering\(posting, r\.pubkey\)/.test(page) && /'stalled', `Not answering: \$\{stalled\.count\} mention/.test(page),
+    'the hive row says Not answering, with the count, for an agent that is not answering')
 }
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)

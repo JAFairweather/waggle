@@ -172,6 +172,14 @@ await refusesPosting({ window_secs: 3600, agents: [{ pubkey: AGENT_A, posts: 1, 
 await refusesPosting({ window_secs: 3600, agents: [{ pubkey: AGENT_A, posts: 1 }, { pubkey: AGENT_A, posts: 2 }] }, 'and a duplicate agent')
 await refusesPosting({ window_secs: 3600, agents: [{ pubkey: AGENT_A, posts: -1 }] }, 'and a negative count')
 await refusesPosting({ window_secs: 5, agents: [] }, 'and a window outside a minute to a day')
+let waitingBody = null
+const waitingRow = { pubkey: AGENT_A, posts: 0, last_post_at: 1, waiting: 28, waiting_since: 2 }
+try { waitingBody = JSON.parse(wire(await signControlState({ ...buildControlState(), posting: { window_secs: 3600, agents: [waitingRow] } })).content).posting.agents[0] } catch { waitingBody = null }
+t('a last post and waiting mentions reach the signed record (#652)', waitingBody?.waiting === 28 && waitingBody.waiting_since === 2 && waitingBody.last_post_at === 1)
+await refusesPosting({ window_secs: 3600, agents: [{ pubkey: AGENT_A, posts: 0, waiting: 3 }] }, 'and a waiting count without its time')
+await refusesPosting({ window_secs: 3600, agents: [{ pubkey: AGENT_A, posts: 0, waiting: 0, waiting_since: 2 }] }, 'and a zero waiting count')
+await refusesPosting({ window_secs: 3600, agents: [{ pubkey: AGENT_A, posts: 0, last_post_at: null }] }, 'and a last post that is present but empty')
+await refusesPosting({ window_secs: 3600, agents: [{ pubkey: AGENT_A, posts: 0, last_post_at: 9_999_999_999 }] }, 'and a last post in the future')
 
 let publishedControlId = ''
 const acceptedControl = await publishControlState(async (event) => { publishedControlId = event.id; return 1 }, true)
@@ -858,6 +866,30 @@ t('a post ages out as the window moves', tally.summary([agent], now + 3580).agen
 const junk = postingTally()
 junk.note([{ id: 'x', pubkey: 'not-a-key', created_at: now }, { id: '', pubkey: agent, created_at: now }, { id: 'y', pubkey: agent, created_at: now + 600 }, null], now)
 t('a malformed or future-dated message is not counted', junk.summary([agent], now).agents[0].posts === 0)
+
+// Who is not answering (#652). A mention is a p or mention tag naming the agent.
+const quiet = postingTally()
+const said = (id, pubkey, ago, ...named) => ({ ...msg(id, pubkey, ago), tags: named.map(([k, v]) => [k, v]) })
+quiet.note([said('r1', agent, 3000), said('m1', person, 2000, ['p', agent]), said('m2', person, 1500, ['mention', agent]), said('m0', person, 3100, ['p', agent]), said('s1', agent, 1800, ['p', agent])], now)
+quiet.note([said('m1', person, 2000, ['p', agent])], now)
+let row = quiet.summary([agent], now).agents[0]
+t('mentions after its last post wait, counted once each by id; one before it, or its own self-tag, does not',
+  row.last_post_at === now - 1800 && row.waiting === 1 && row.waiting_since === now - 1500)
+quiet.note([said('m3', person, 600, ['p', agent]), said('r2', agent, 300)], now)
+row = quiet.summary([agent], now).agents[0]
+t('a post from the agent answers everything that waited before it', row.last_post_at === now - 300 && !('waiting' in row) && !('waiting_since' in row))
+const late = postingTally()
+late.note([said('r3', agent, 100)], now); late.note([said('m4', person, 200, ['p', agent])], now)
+t('a mention read after a newer reply is already answered: order of reading does not matter', !('waiting' in late.summary([agent], now).agents[0]))
+const capped = postingTally({ waitingCap: 3 })
+capped.note([1, 2, 3, 4, 5].map(i => said(`c${i}`, person, 100 * i, ['p', agent])), now)
+row = capped.summary([agent], now).agents[0]
+t('the waiting list is bounded, keeping the newest', row.waiting === 3 && row.waiting_since === now - 300)
+t('a person who is mentioned is still never reported', !quiet.summary([agent], now).agents.some(a => a.pubkey === person))
+const silent = postingTally()
+silent.note([said('q1', person, 100, ['p', idle])], now)
+row = silent.summary([idle], now).agents[0]
+t('an agent seen only being mentioned has no last post, and its mentions wait', !('last_post_at' in row) && row.waiting === 1)
 
 const card = finalizeEvent({ kind: AGENT_CARD_KIND, created_at: now, tags: [['d', AGENT_CARD_D]], content: '{}' }, agentSk)
 const otherD = finalizeEvent({ kind: AGENT_CARD_KIND, created_at: now, tags: [['d', 'waggle-control-state']], content: '{}' }, generateSecretKey())
