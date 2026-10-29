@@ -221,7 +221,7 @@ export function answersFor(row, { owner, grantEvents, table }) {
 // "You and DJ Codex can give it work." Names, never hex, and "you" for the owner.
 export function workSentence(answer, { owner, nameOf, incomplete = false }) {
   const givers = [...answer.givers].sort((a, b) => Number(b.pubkey === owner) - Number(a.pubkey === owner))
-  const who = givers.map(g => g.pubkey === owner ? 'You' : `${nameOf(g.pubkey)}${g.voice ? ' (as your voice)' : ''}`)
+  const who = givers.map(g => g.pubkey === owner ? 'You' : g.voice ? 'Your voice' : nameOf(g.pubkey))
   if (!who.length) return incomplete ? `Nobody, ${PARTIAL}.` : 'Nobody can give it work.'
   const list = who.length === 1 ? who[0] : `${who.slice(0, -1).join(', ')} and ${who.at(-1)}`
   return `${list} can give it work.`
