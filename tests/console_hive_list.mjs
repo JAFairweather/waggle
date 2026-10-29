@@ -25,7 +25,7 @@ import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools'
 import { scopeHash } from '../console/scope-hash.mjs'
-import { readGrants, scopeTable, roleOf, duplicates, readCards, buildList, workSentence, workCell, givesCell, nameSlots, slotted, askCell, PLATFORMS, platformOf, byPlatform, relayCoverage, coverageText, CARD_D, CARD_KIND, GRANT_RELAYS, NOT_READ }
+import { readGrants, scopeTable, roleOf, duplicates, readCards, buildList, workSentence, workCell, givesCell, nameSlots, slotted, faceMap, askCell, PLATFORMS, platformOf, byPlatform, relayCoverage, coverageText, CARD_D, CARD_KIND, GRANT_RELAYS, NOT_READ }
   from '../console/hive-list.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -232,6 +232,21 @@ check(!/innerHTML\s*=(?!\s*'')/.test(page), 'hive.html writes signed text only t
   check(!byPlatform(rows).some(g => g.platform.id === 'grok'), 'a group with nobody in it is not shown')
   check(PLATFORMS.flatMap(p => p.keys || []).every((k, i, all) => /^[0-9a-f]{64}$/.test(k) && all.indexOf(k) === i), 'every listed key is a key, in one group only')
   check(nameSlots([['Zed', 'You', 'Amy']], n => ({ You: 0, Zed: 1, Amy: 2 })[n]).join() === 'You,Zed,Amy', 'name lines follow the group order')
+}
+
+{ // #656 review: a face is found by name, so a name two rows share must not borrow either row's photo.
+  const named = { a: 'Pi Dog', b: 'Twin', c: 'Twin', d: 'Plain' }
+  const faces = faceMap([
+    { pubkey: 'o', isOwner: true, picture: 'https://x/me.png' },
+    { pubkey: 'a', picture: 'https://x/pi.png', roles: [{ role: 'voice' }] },
+    { pubkey: 'b', picture: 'https://x/b.png' },
+    { pubkey: 'c', picture: 'https://x/c.png' },
+    { pubkey: 'd' },
+  ], pk => named[pk])
+  check(faces.get('You') === 'https://x/me.png' && faces.get('Pi Dog') === 'https://x/pi.png', 'a name wears its own row\'s photo')
+  check(faces.get('Your voice') === 'https://x/pi.png', 'the voice line wears the voice key\'s photo')
+  check(faces.has('Twin') && faces.get('Twin') === null, 'a name two rows share gets no photo, not either one')
+  check(faces.get('Plain') === null, 'a row with no photo gives its name none')
 }
 
 if (!pass) { console.error('console_hive_list: FAILED'); process.exit(1) }

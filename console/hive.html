@@ -35,6 +35,8 @@
   table.hive thead th:first-child,table.hive td:first-child{padding-left:0}
   table.hive .avatar{display:inline-block;width:22px;height:22px;border-radius:50%;object-fit:cover;background:var(--line);vertical-align:-6px;margin-right:7px}
   table.hive td.names div{white-space:nowrap;line-height:1.45;min-height:1.45em}
+  table.hive td.names .avatar{width:16px;height:16px;vertical-align:-3px;margin-right:6px}
+  table.hive td.names .absent .avatar{opacity:.35}
   table.hive tr.group th{padding:18px 8px 6px;text-align:left;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--gold);border-bottom:1px solid var(--line)}
   table.hive tr.group:first-child th{padding-top:6px}
   table.hive tr.group .runs{margin-left:10px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--faint)}
@@ -130,7 +132,7 @@ import { controlStateFresh } from './control-state-freshness.mjs'
 import { statusLabel } from './agent-roster.mjs'
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
-import { readGrants, scopeTable, readCards, buildList, workSentence, workCell, givesCell, nameSlots, slotted, askCell, PLATFORMS, platformOf, byPlatform, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
+import { readGrants, scopeTable, readCards, buildList, workSentence, workCell, givesCell, nameSlots, slotted, faceMap, askCell, PLATFORMS, platformOf, byPlatform, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
 
 // The bridge publishes its roster to these relays and reads its commands from them.
 const ROSTER_RELAYS = BRIDGE_RELAYS
@@ -285,13 +287,14 @@ function draw(rows, needs, owner, partial, posting = null) {
   // The lines in each name cell follow the same platform order as the rows.
   const group = new Map([['Your voice', 0], ...rows.map(r => [r.isOwner ? 'You' : nameOf(r.pubkey), PLATFORMS.findIndex(p => p.id === platformOf(r))])])
   const groupOf = n => group.get(n) ?? PLATFORMS.length
+  const faces = faceMap(rows, nameOf)
   const column = { takes: nameSlots([...cells.values()].map(c => c.takes), groupOf), gives: nameSlots([...cells.values()].map(c => c.gives), groupOf) }
   const slots = nameSlots([...column.takes, ...column.gives], groupOf)
   for (const { platform, rows: inGroup } of byPlatform(rows)) {
     const head = list.appendChild(el('tr', 'group')).appendChild(el('th', null, platform.label))
     head.colSpan = 5; head.scope = 'colgroup'
     if (platform.runs) head.appendChild(el('span', 'runs', platform.runs))
-    for (const r of inGroup) list.append(...rowView(r, { owner, nameOf, partial, cells: cells.get(r.pubkey), slots, column, posting }))
+    for (const r of inGroup) list.append(...rowView(r, { owner, nameOf, partial, cells: cells.get(r.pubkey), slots, column, posting, faces }))
   }
   $('partial-note').hidden = !partial.approvals
   $('list-panel').hidden = false
@@ -367,31 +370,37 @@ const STAGE = { tools: 'Has tools on nave', grants: 'Has approvals, no tools yet
 // One line of the table, and the detail line under it that its name opens.
 const openRow = row => { const b = row.querySelector('button.who'); if (b.getAttribute('aria-expanded') !== 'true') b.click() }
 // One name to a line, so a column of names reads down rather than across.
-function names(cell, slots, self, verb, column) {
+function names(cell, slots, self, verb, column, faces) {
   const td = el('td', 'names'), lines = slotted(cell, slots, self, column)
   if (!lines) { td.appendChild(el('div', null, cell[0])); return td }
   for (const { name, state } of lines) {
-    const line = td.appendChild(el('div', state, state === 'self' ? '' : name))
+    const line = td.appendChild(el('div', state))
+    if (state === 'self') continue
+    line.append(face(faces.get(name)), name)
     if (state === 'absent') line.title = `Not ${verb} ${name}`
   }
   return td
 }
-function rowView(r, { owner, nameOf, partial, cells, slots, column, posting }) {
+// The photo from the key's own signed profile, as on the Following page; https only, no referrer.
+function face(picture) {
+  const f = el(picture ? 'img' : 'span', 'avatar')
+  if (picture) { f.src = picture; f.alt = ''; f.loading = 'lazy'; f.referrerPolicy = 'no-referrer'; f.onerror = () => f.replaceWith(el('span', 'avatar')) }
+  return f
+}
+function rowView(r, { owner, nameOf, partial, cells, slots, column, posting, faces }) {
   const d = el('tr')
   d.dataset.pubkey = r.pubkey
   const detail = el('tr', 'detail'); detail.hidden = true
   const cell = detail.appendChild(el('td')); cell.colSpan = 5
   const agent = d.appendChild(el('td'))
-  // The photo from the key's own signed profile, as on the Following page; https only, no referrer.
-  const face = agent.appendChild(el(r.picture ? 'img' : 'span', 'avatar'))
-  if (r.picture) { face.src = r.picture; face.alt = ''; face.loading = 'lazy'; face.referrerPolicy = 'no-referrer'; face.onerror = () => face.replaceWith(el('span', 'avatar')) }
+  agent.appendChild(face(r.picture))
   const who = agent.appendChild(el('button', 'who', r.isOwner ? 'You' : r.isBridge ? `${r.name || 'waggle'} (bridge)` : rowName(r)))
   who.type = 'button'; who.setAttribute('aria-expanded', 'false')
   who.onclick = () => { const open = detail.hidden; detail.hidden = !open; who.setAttribute('aria-expanded', String(open)) }
   const own = r.isOwner || r.isBridge
   const self = r.isOwner ? 'You' : r.roles.some(x => x.role === 'voice') ? 'Your voice' : nameOf(r.pubkey)
-  d.appendChild(names(cells.takes, slots, self, 'from', column.takes))
-  d.appendChild(names(cells.gives, slots, self, 'to', column.gives))
+  d.appendChild(names(cells.takes, slots, self, 'from', column.takes, faces))
+  d.appendChild(names(cells.gives, slots, self, 'to', column.gives, faces))
   d.appendChild(el('td', null, own ? '—' : askCell(r.answers.act, { owner, nameOf, incomplete: partial.approvals, givers: r.answers.work.givers.length })))
   const p = r.answers.post
   const limit = own || !r.card ? '—' : p ? `Up to ${p.per_hour}/hour in ${p.channels} channel${p.channels === 1 ? '' : 's'}` : 'Replies only'

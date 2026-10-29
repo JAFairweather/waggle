@@ -242,6 +242,16 @@ export function givesCell(pubkey, rows, { owner, nameOf, incomplete = false }) {
   const to = rows.filter(r => r.pubkey !== pubkey && r.answers?.work.givers.some(g => g.pubkey === pubkey))
   return to.length ? inOrder(to.map(r => r.pubkey === owner ? 'You' : nameOf(r.pubkey))) : [`Nobody${star(incomplete)}`]
 }
+// The face each name in a name cell wears: the photo its own row wears. The cells hold names, not
+// keys, so a name two rows share gets no face rather than a guess at which of them it is.
+export function faceMap(rows, nameOf) {
+  const faces = new Map()
+  for (const r of rows) {
+    const named = [r.isOwner ? 'You' : nameOf(r.pubkey), ...r.roles?.some(x => x.role === 'voice') ? ['Your voice'] : []]
+    for (const name of named) faces.set(name, faces.has(name) ? null : r.picture || null)
+  }
+  return faces
+}
 // Every name a column holds, in one order, so each name sits on the same line in every row and a
 // gap shows who is missing. A cell with nobody in it stays one line.
 const EMPTY = /^(Nobody\*?|—)$/
