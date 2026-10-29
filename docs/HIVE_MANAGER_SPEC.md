@@ -120,7 +120,7 @@ its raw sentence from `capability-vocabulary.mjs`.
 | **Colleague** | `task`, from the owner to another agent, for this agent | That agent can give this one work. |
 | **Carrier** | `task-relay`, to the bridge, for the agent | The bridge may carry work addressed to it. |
 | **Voice** | `shadow`, from the owner to a key | That key speaks for the owner (Dead Rabbit). |
-| **Channel guest** | `admit`, for a channel | Leftover from waggle carry. Shown, and flagged as a candidate for cleanup. |
+| **Channel pass** | `admit`, for a channel | Live, not a leftover: the bridge refuses posts from a key without one and carries it no mentions (#649). Shown, never flagged for cleanup. |
 
 The "no duplicates" criterion is computed, not promised. Two live grants with the same
 (grantor, grantee, cap, subject) form a pair, the **older** one is listed under **Needs you**, and one
