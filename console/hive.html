@@ -56,6 +56,7 @@
   .editor{margin-top:9px;padding:11px 13px;border:1px solid var(--line);border-radius:8px;display:grid;gap:8px;font-size:13px}
   .editor .giver{display:flex;gap:4px 10px;align-items:baseline;flex-wrap:wrap}.editor .giver button{margin:0}
   .editor .add{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.editor .add button{margin:0}
+  .editor .channel-id{flex:1 1 16em;max-width:24em;min-width:0;font:inherit;font-variant-numeric:tabular-nums}
   .liveline{display:flex;gap:9px;align-items:baseline;padding:4px 0;font-size:13px;flex-wrap:wrap}
   .mark{font:13px var(--mono);width:1.1em;flex:none}
   .mark.present{color:var(--good)}.mark.unverified{color:var(--warn)}.mark.missing{color:var(--critical)}.mark.unknown{color:var(--faint)}
@@ -120,7 +121,7 @@ import { loadBridgeKey } from './bridge-key-store.mjs'
 import { validControlState, postingCounts, shortNpub } from './agent-roster.mjs'
 import { scopeHash } from './scope-hash.mjs'
 import { signFresh } from './guarded-signer.mjs'
-import { WORK_CAPS, CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, workApprovals, describeChange, applyChange, relayHost } from './hive-change.mjs'
+import { WORK_CAPS, CHANGE_CAPS, PASS_CAPS, approvalsOf, draftGrant, draftPass, passesOf, channelIdOf, draftRevoke, workApprovals, describeChange, applyChange, relayHost } from './hive-change.mjs'
 import { whatIf } from './hive-what-if.mjs'
 import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { BRIDGE_RELAYS, offeredOps, draftBridgeCommand, describeCommand, applyBridgeCommand } from './hive-bridge.mjs'
@@ -500,7 +501,7 @@ function editorFor(r, { owner, nameOf, partial }) {
   }
 
   // The other answers an approval controls on this row: the bridge carrying work to it, and
-  // whether it speaks for you. Channel passes are left alone; they still carry the bridge's returns.
+  // whether it speaks for you. The channel pass has its own control, below.
   const kind = ({ label, cap, subject, grantee, held, none, give }) => {
     const line = box.appendChild(el('div', 'giver'))
     line.appendChild(el('b', null, label))
@@ -521,8 +522,53 @@ function editorFor(r, { owner, nameOf, partial }) {
   else box.appendChild(el('div', 'note', 'The waggle bridge key is not set in this browser, so carrying is not changed here.'))
   kind({ label: 'Your voice', cap: 'shadow', subject: owner, grantee: r.pubkey,
     held: 'It may speak for you when giving work.', none: 'It does not speak for you.', give: 'Let it speak for you' })
+  passControl(box, r, { owner, nameOf, say })
   bridgeControls(box, r, { nameOf, say })
   return box
+}
+
+// The channel pass (#649): waggle refuses posts from an agent with none and carries mentions only to
+// agents that hold one, so withdrawing it says so. Nothing public names the channel, so its id is
+// typed once and kept in this browser; a pass for any other channel binds to nothing.
+const CHANNEL_KEY = 'waggle-hive-channel'
+const savedChannel = () => { try { return localStorage.getItem(CHANNEL_KEY) || '' } catch { return '' } }
+const saveChannel = id => { try { localStorage.setItem(CHANNEL_KEY, id) } catch {} }
+const CUT_OFF = 'Without a pass, waggle refuses its posts and stops carrying mentions to it.'
+function passControl(box, r, { owner, nameOf, say }) {
+  const line = box.appendChild(el('div', 'giver'))
+  line.appendChild(el('b', null, 'Channel pass'))
+  const note = line.appendChild(el('span', 'note'))
+  const id = line.appendChild(el('input', 'channel-id'))
+  id.setAttribute('aria-label', 'Channel id'); id.placeholder = 'channel id'; id.spellcheck = false; id.autocomplete = 'off'
+  id.value = savedChannel()
+  const b = line.appendChild(el('button', 'small quiet')); b.type = 'button'
+  let held = [], channel = null
+  const show = async () => {
+    channel = channelIdOf(id.value)
+    const { mine, here } = await passesOf(hive.grants, { grantee: r.pubkey, owner, channel, scopeHash })
+    held = here || mine
+    let known = !channel
+    for (const g of hive.grants) if (!known && g.live && g.grantor === owner && PASS_CAPS.includes(g.cap) && await scopeHash(channel, g.salt) === g.hash) known = true
+    note.textContent = held.length
+      ? `${channel ? 'It may post into this channel.' : `It holds ${held.length === 1 ? 'a pass' : `${held.length} passes`} from you.`}${held.length > 1 ? ' Stopping withdraws them all.' : ''}`
+      : channel ? `It has no pass for this channel, so waggle refuses its posts there.${known ? '' : ' None of your passes cover this id yet: check it is waggle\'s channel.'}` : 'Type the channel id to give it a pass.'
+    b.textContent = held.length ? 'Stop' : 'Give a pass'
+    b.disabled = !held.length && !channel
+  }
+  id.oninput = show
+  b.onclick = async () => {
+    say.className = 'status'; say.textContent = ''
+    try {
+      if (held.length) {
+        propose(held.map((grant, i) => ({ template: draftRevoke({ grantId: grant.id }),
+          words: `${describeChange({ action: 'withdraw', grant, agent: channel }, nameOf)}${i === held.length - 1 ? ` ${CUT_OFF}` : ''}` })))
+      } else {
+        saveChannel(channel)
+        propose([{ template: await draftPass({ grantee: r.pubkey, channel, scopeHash }), words: describeChange({ action: 'give', grantee: r.pubkey, agent: channel, cap: 'admit' }, nameOf) }])
+      }
+    } catch (e) { say.className = 'status err'; say.textContent = e.message }
+  }
+  show()
 }
 
 // The bridge's own commands for this row (#625): not approvals, but signed instructions the bridge
