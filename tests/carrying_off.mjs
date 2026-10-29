@@ -102,6 +102,7 @@ ok('the channel poll asks scanChannel not to carry', src.includes('await scanCha
 ok('…and skips the carry retries', /if \(!CARRYING\) return\n\s+await retryPendingCarries\(\)/.test(src))
 ok('the sealed lanes are not connected', src.includes('if (CARRYING) RELAYS.forEach(connect)'))
 ok('the staging carry does not run', src.includes('if (CARRYING) scanReturnLane(msgs)'))
+ok('a process with nothing to run idles instead of exiting into a restart loop', /if \(!CARRYING && !PUB\) \{[^\n]*setInterval\(/.test(src))
 
 console.log(fails ? `\n${fails} FAILED` : '\nall passed')
 process.exit(fails ? 1 : 0)
