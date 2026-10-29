@@ -227,6 +227,8 @@ const controlState = (v) => {
   const withAgents = agents === null ? {} : { agents }
   // Posts per agent in the last hour (#638). Optional and additive like `agents`: a record signed
   // before it stays valid. Counts and keys only: no channel, no content, no timestamps per post.
+  // Per agent, optionally (#652): its last post, and how many mentions of it have waited since,
+  // from when. `waiting` and `waiting_since` come as a pair.
   let withPosting = {}
   if (s.posting != null) {
     const p = (typeof s.posting === 'object') ? s.posting : reject('control state posting is invalid')
@@ -237,13 +239,22 @@ const controlState = (v) => {
     if (rows.length > 1000) reject('control state posting has too many agents')
     const seenPosting = new Set()
     const counted = rows.map((a) => {
-      if (!a || typeof a !== 'object' || Object.keys(a).sort().join(',') !== 'posts,pubkey') reject('control state posting agent has unexpected fields')
+      const keys = a && typeof a === 'object' ? Object.keys(a).sort().join(',') : ''
+      if (!['posts,pubkey', 'last_post_at,posts,pubkey', 'posts,pubkey,waiting,waiting_since', 'last_post_at,posts,pubkey,waiting,waiting_since'].includes(keys)) reject('control state posting agent has unexpected fields')
       const pubkey = hex64(a.pubkey, 'control state posting.pubkey')
       if (seenPosting.has(pubkey)) reject('control state posting has duplicate agent')
       seenPosting.add(pubkey)
       const n = Math.floor(num(a.posts, 'control state posting.posts'))
       if (n < 0 || n > 1000000) reject('control state posting.posts out of bounds')
-      return { pubkey, posts: n }
+      const when = (v, label) => { const t = Math.floor(num(v, label)); if (t < 1 || t > observedAt + 900) reject(`${label} out of bounds`); return t }
+      const row = { pubkey, posts: n }
+      if ('last_post_at' in a) row.last_post_at = when(a.last_post_at, 'control state posting.last_post_at')
+      if ('waiting' in a) {
+        row.waiting = Math.floor(num(a.waiting, 'control state posting.waiting'))
+        if (row.waiting < 1 || row.waiting > 1000000) reject('control state posting.waiting out of bounds')
+        row.waiting_since = when(a.waiting_since, 'control state posting.waiting_since')
+      }
+      return row
     }).sort((x, y) => x.pubkey.localeCompare(y.pubkey))
     withPosting = { posting: { window_secs: windowSecs, agents: counted } }
   }

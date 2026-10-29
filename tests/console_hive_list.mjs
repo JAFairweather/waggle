@@ -142,7 +142,7 @@ const roles = pk => row(pk).roles.map(r => r.role).sort()
 check(JSON.stringify(roles(pidog.pk)) === JSON.stringify(['carrier', 'colleague', 'teammate', 'teammate']), 'Pi Dog is a teammate (twice: a duplicate), has DJ Codex as a colleague, and the bridge as its carrier')
 check(roles(djcodex.pk).includes('trusted'), 'task+act from the owner makes a trusted teammate')
 check(roles(voice.pk).includes('voice'), 'shadow from the owner to a key makes it the owner\'s voice')
-check(roles(granteeOnly.pk).includes('guest') && needs.some(n => n.kind === 'guest'), 'a channel admit is a guest, flagged for cleanup')
+check(roles(granteeOnly.pk).includes('guest') && !needs.some(n => n.grant?.cap === 'admit'), 'a channel admit is a channel pass, and never flagged for cleanup: the bridge needs it (#649)')
 check(roles(stranger.pk).includes('custom') && needs.some(n => n.kind === 'custom' && n.grant.id === custom.id), 'a grant matching no recipe is custom and listed, never dropped')
 check(!roles(rosterOnly.pk).length, 'a revoked grant gives no role')
 check(!row(cardOnly.pk).roles.some(r => r.grant.id === lapsed.id), 'an expired grant gives no role')
@@ -227,6 +227,7 @@ check(!/innerHTML\s*=(?!\s*'')/.test(page), 'hive.html writes signed text only t
   const rows = [{ pubkey: 'f'.repeat(64), roles: [] }, { pubkey: key('buzz'), roles: [] }, { pubkey: key('lab'), roles: [] },
     { pubkey: 'e'.repeat(64), roles: [{ role: 'voice' }] }, { pubkey: '4'.repeat(64), isOwner: true, roles: [] }]
   check(platformOf(rows[4]) === 'you' && platformOf(rows[3]) === 'you', 'the owner and the owner\'s voice are one group')
+  check(platformOf({ pubkey: '8f3829871ec5ed5dff1b6654d3ca878aa1f4312968f318b18b158e1d93f0a37f', roles: [] }) === 'you', 'your written voice, the Quill, sits in your group too')
   check(byPlatform(rows).map(g => g.platform.id).join() === 'you,lab,buzz,other', 'groups come in the listed order, and a key nobody listed is last')
   check(!byPlatform(rows).some(g => g.platform.id === 'grok'), 'a group with nobody in it is not shown')
   check(PLATFORMS.flatMap(p => p.keys || []).every((k, i, all) => /^[0-9a-f]{64}$/.test(k) && all.indexOf(k) === i), 'every listed key is a key, in one group only')

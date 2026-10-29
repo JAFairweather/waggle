@@ -40,6 +40,7 @@
   table.hive tr.group .runs{margin-left:10px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--faint)}
   table.hive td.post div{white-space:normal}
   table.hive td.names .limit{color:var(--dim);font-size:12px}
+  table.hive td.names .stalled{color:var(--critical);font-weight:600}
   table.hive td.names .absent{color:var(--faint);text-decoration:line-through}
   table.hive tr.detail td{padding:0 0 14px}
   @media (max-width:699px){table.hive{font-size:13px}table.hive th{white-space:normal}table.hive th,table.hive td{padding-inline:6px}}
@@ -118,7 +119,7 @@
 import { verifyEvent, nip19 } from 'nostr-tools'
 import { consoleSigner } from './signer-session.mjs'
 import { loadBridgeKey } from './bridge-key-store.mjs'
-import { validControlState, postingCounts, shortNpub } from './agent-roster.mjs'
+import { validControlState, postingCounts, notAnswering, shortNpub } from './agent-roster.mjs'
 import { scopeHash } from './scope-hash.mjs'
 import { signFresh } from './guarded-signer.mjs'
 import { WORK_CAPS, CHANGE_CAPS, approvalsOf, draftGrant, draftPass, passLookup, channelIdOf, draftRevoke, workApprovals, describeChange, applyChange, relayHost } from './hive-change.mjs'
@@ -138,6 +139,7 @@ const rosterStates = (events, bridge) => events.map(e => validControlState(e, br
 const $ = id => document.getElementById(id)
 // Everything shown here came from someone else's signature, so it reaches the DOM only as text.
 const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n }
+const clock = (secs, from = Date.now() / 1000) => new Date(secs * 1000).toLocaleString([], from - secs > 20 * 3600 ? { weekday: 'short', hour: '2-digit', minute: '2-digit' } : { hour: '2-digit', minute: '2-digit' })
 
 function query(url, filter) {
   return new Promise(resolve => {
@@ -393,6 +395,8 @@ function rowView(r, { owner, nameOf, partial, cells, slots, column, posting }) {
   // The bridge's count covers every post it saw, replies included; the limit covers new messages.
   const count = own ? undefined : posting?.counts.get(r.pubkey)
   const post = d.appendChild(el('td', 'names post'))
+  const stalled = own ? null : notAnswering(posting, r.pubkey)
+  if (stalled) post.appendChild(el('div', 'stalled', `Not answering: ${stalled.count} mention${stalled.count === 1 ? '' : 's'} since ${clock(stalled.since, posting.at)}, none replied to`))
   if (count !== undefined) post.appendChild(el('div', 'count', `${count} post${count === 1 ? '' : 's'} in the last hour`))
   post.appendChild(el('div', count !== undefined ? 'limit' : null, limit))
 

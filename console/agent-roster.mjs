@@ -111,10 +111,21 @@ export function validControlState(ev, bridge) {
 export function postingCounts(state) {
   const p = state?.posting
   if (!p || !Number.isInteger(p.window_secs) || !Array.isArray(p.agents)) return null
-  const counts = new Map()
+  const counts = new Map(), waiting = new Map()
+  const when = v => v === undefined || (Number.isInteger(v) && v > 0)
   for (const a of p.agents) {
     if (!/^[0-9a-f]{64}$/.test(String(a?.pubkey || '')) || !Number.isInteger(a.posts) || a.posts < 0) return null
+    if (!when(a.last_post_at) || !when(a.waiting_since) || (a.waiting === undefined) !== (a.waiting_since === undefined) || !(a.waiting === undefined || (Number.isInteger(a.waiting) && a.waiting > 0))) return null
     counts.set(a.pubkey, a.posts)
+    if (a.waiting) waiting.set(a.pubkey, { count: a.waiting, since: a.waiting_since, lastPostAt: a.last_post_at ?? null })
   }
-  return { counts, windowSecs: p.window_secs, at: state.observed_at }
+  return { counts, waiting, windowSecs: p.window_secs, at: state.observed_at }
+}
+
+// An agent is not answering when a mention of it has waited this long with no post from it since
+// (#652). Measured at the bridge's own reading, so a stale page never ages a wait on its own.
+export const NOT_ANSWERING_SECS = 30 * 60
+export function notAnswering(posting, pubkey, afterSecs = NOT_ANSWERING_SECS) {
+  const w = posting?.waiting?.get(pubkey)
+  return w && posting.at - w.since >= afterSecs ? w : null
 }
