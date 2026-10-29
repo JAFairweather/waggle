@@ -913,7 +913,7 @@ t('another d tag, or a card whose signature is not its own key, does not', keys.
   const card = finalizeEvent({ kind: AGENT_CARD_KIND, created_at: now, tags: [['d', AGENT_CARD_D]], content: '{}' }, ownerSk)
   const cardSocket = () => {
     const on = {}
-    return { on: (ev, f) => { on[ev] = f; if (ev === 'open') queueMicrotask(f) }, send: () => queueMicrotask(() => { on.message?.(JSON.stringify(['EVENT', 'cards', card])); on.message?.(JSON.stringify(['EOSE', 'cards'])) }), close: () => {} }
+    return { on: (ev, f) => { on[ev] = f; if (ev === 'open') Promise.resolve().then(f) }, send: () => Promise.resolve().then(() => { on.message?.(JSON.stringify(['EVENT', 'cards', card])); on.message?.(JSON.stringify(['EOSE', 'cards'])) }), close: () => {} }
   }
   await refreshAgentCards(cardSocket)
   PUB.scanAuthors = [buzzAgent, carded]
