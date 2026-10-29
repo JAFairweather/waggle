@@ -67,6 +67,29 @@ export async function passesOf(grants, { grantee, owner, channel, scopeHash }) {
   return { mine, here }
 }
 
+// The pass line follows whatever channel id is typed, and each lookup hashes asynchronously. Runs are
+// numbered and only the latest is reported, so a slow lookup for an old id can never arm the action
+// for a new one; the state says `pending` until the latest run resolves (#651 review). `known` is
+// whether any of your passes, to anyone, already cover the id: a check against a mistyped channel.
+export function passLookup({ grants, grantee, owner, scopeHash, onState = () => {} }) {
+  let run = 0
+  return async function lookup(value) {
+    const mine = ++run
+    const channel = channelIdOf(value)
+    onState({ pending: true, channel, held: [], known: false })
+    const { mine: all, here } = await passesOf(grants, { grantee, owner, channel, scopeHash })
+    let known = !channel
+    for (const g of grants) {
+      if (known) break
+      if (g.live && g.grantor === owner && PASS_CAPS.includes(g.cap) && await scopeHash(channel, g.salt) === g.hash) known = true
+    }
+    if (mine !== run) return null
+    const state = { pending: false, channel, held: here || all, known }
+    onState(state)
+    return state
+  }
+}
+
 export function draftRevoke({ grantId, now = nowSec() }) {
   if (!HEX64.test(grantId || '')) throw new Error('That is not an approval id.')
   return { kind: 441, created_at: now, tags: [['e', grantId]], content: '' }

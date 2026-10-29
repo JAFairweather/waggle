@@ -24,7 +24,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nos
 import { scopeHash } from '../console/scope-hash.mjs'
 import { scopeHashSync } from '../src/scope_hash.mjs'
 import { readGrants, scopeTable, buildList, GRANT_RELAYS } from '../console/hive-list.mjs'
-import { WORK_CAPS, CHANGE_CAPS, PASS_CAPS, approvalsOf, draftGrant, draftPass, passesOf, channelIdOf, draftRevoke, freshSalt, workApprovals, describeChange, sameAsDrafted, applyChange, verdictText }
+import { WORK_CAPS, CHANGE_CAPS, PASS_CAPS, approvalsOf, draftGrant, draftPass, passesOf, passLookup, channelIdOf, draftRevoke, freshSalt, workApprovals, describeChange, sameAsDrafted, applyChange, verdictText }
   from '../console/hive-change.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -263,6 +263,24 @@ check(verdictText({ kind: 441, done: false, holding: [], stale: [], silent: [], 
   check(words === 'Give: Pi Dog may post into channel a8186b53.', `a pass reads as posting into the named channel: "${words}"`)
   check(describeChange({ action: 'withdraw', grant: { id: signedGrant.id, cap: 'admit', grantee: agent }, agent: null }, nameOf).endsWith('which says Pi Dog may post into the channel.'),
     'and its withdrawal still reads plainly when the channel id is not known')
+
+  // A lookup for channel A still hashing when the id changes to B must not report A (#651 review).
+  let releaseA
+  const gateA = new Promise(res => { releaseA = res })
+  const slowForA = async (subject, salt) => { if (subject === CHANNEL) await gateA; return scopeHash(subject, salt) }
+  const states = []
+  const lookup = passLookup({ grants, grantee: agent, owner, scopeHash: slowForA, onState: st => states.push(st) })
+  const forA = lookup(CHANNEL), forB = lookup(other)
+  const b = await forB
+  check(b?.channel === other && b.held.map(x => x.id).join() === 'p2' && !b.pending, 'the newer lookup resolves with its own channel\'s pass')
+  releaseA()
+  check(await forA === null && states.at(-1) === b, 'and the older one, finishing later, is dropped: it never overwrites the newer state')
+  check(states.filter(st => st.pending).length === 2 && states.filter(st => !st.pending).length === 1,
+    'each lookup reports pending first, so the action stays off until the latest resolves')
+  const blank = await passLookup({ grants, grantee: agent, owner, scopeHash })('')
+  check(blank.channel === null && blank.known && blank.held.length === 2, 'with no id typed, every pass of yours for it is listed')
+  const typo = await passLookup({ grants, grantee: agent, owner, scopeHash })('c0000000-0000-4000-8000-000000000003')
+  check(!typo.known && typo.held.length === 0, 'an id none of your passes cover is marked unknown, to catch a mistyped channel')
 }
 
 // ── 6. The page ──────────────────────────────────────────────────────────────────────────────────
@@ -276,8 +294,10 @@ check(GRANT_RELAYS.includes('wss://relay.nave.pub') && GRANT_RELAYS.length === 4
 check(!/signs nothing yet/.test(page), 'the page no longer says it signs nothing')
 check(/cap: 'task-relay', subject: r\.pubkey, grantee: hive\.bridge/.test(page) && /cap: 'shadow', subject: owner, grantee: r\.pubkey/.test(page),
   "the page changes carrying (the bridge, over the agent) and your voice (the identity, over your own key)")
-check(/draftPass\(\{ grantee: r\.pubkey, channel, scopeHash \}\)/.test(page) && /passesOf\(hive\.grants, \{ grantee: r\.pubkey, owner, channel, scopeHash \}\)/.test(page),
+check(/draftPass\(\{ grantee: r\.pubkey, channel, scopeHash \}\)/.test(page) && /passLookup\(\{ grants: hive\.grants, grantee: r\.pubkey, owner, scopeHash,/.test(page),
   'the page gives a channel pass to the row, and finds the ones to stop among your own')
+check(/b\.disabled = s\.pending \|\|/.test(page) && /if \(pending \|\| channel !== channelIdOf\(id\.value\)\) \{ lookup\(id\.value\); return \}/.test(page),
+  'its action is off while a lookup is pending, and a click re-checks the id in the field before drafting')
 check(/const CUT_OFF = 'Without a pass, waggle refuses its posts and stops carrying mentions to it\.'/.test(page) && /\$\{CUT_OFF\}/.test(page),
   'withdrawing a pass says what the agent loses')
 
