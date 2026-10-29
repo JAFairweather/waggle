@@ -132,7 +132,7 @@ import { controlStateFresh } from './control-state-freshness.mjs'
 import { statusLabel } from './agent-roster.mjs'
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
-import { readGrants, scopeTable, readCards, buildList, workSentence, workCell, givesCell, nameSlots, slotted, askCell, PLATFORMS, platformOf, byPlatform, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
+import { readGrants, scopeTable, readCards, buildList, workSentence, workCell, givesCell, nameSlots, slotted, faceMap, askCell, PLATFORMS, platformOf, byPlatform, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
 
 // The bridge publishes its roster to these relays and reads its commands from them.
 const ROSTER_RELAYS = BRIDGE_RELAYS
@@ -287,8 +287,7 @@ function draw(rows, needs, owner, partial, posting = null) {
   // The lines in each name cell follow the same platform order as the rows.
   const group = new Map([['Your voice', 0], ...rows.map(r => [r.isOwner ? 'You' : nameOf(r.pubkey), PLATFORMS.findIndex(p => p.id === platformOf(r))])])
   const groupOf = n => group.get(n) ?? PLATFORMS.length
-  // A name in a name cell wears the face its own row wears.
-  const faces = new Map(rows.flatMap(r => [[r.isOwner ? 'You' : nameOf(r.pubkey), r.picture], ...r.roles?.some(x => x.role === 'voice') ? [['Your voice', r.picture]] : []]))
+  const faces = faceMap(rows, nameOf)
   const column = { takes: nameSlots([...cells.values()].map(c => c.takes), groupOf), gives: nameSlots([...cells.values()].map(c => c.gives), groupOf) }
   const slots = nameSlots([...column.takes, ...column.gives], groupOf)
   for (const { platform, rows: inGroup } of byPlatform(rows)) {
