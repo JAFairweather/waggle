@@ -114,6 +114,11 @@ const FORWARD_MODE = process.env.FORWARD_MODE || 'buzz'
 // lanes: dedup is per-process (module-level `seen` + its own seen-ids.log), so two instances both
 // routing the sealed lanes deliver every wrap TWICE, byte-identical (research & verification, 2026-07-28). Default on.
 const SEALED_LANES = (process.env.SEALED_LANES || 'on').toLowerCase() !== 'off'
+// #658: waggle no longer carries. Every agent hears #waggle-test through its own broker, so the
+// mirror, the return lane, the sealed lanes, relay ingress and seating are all retired by default.
+// What stays is what the hive page reads: the post counts, the grants, and the control state.
+// WAGGLE_CARRYING=on brings the old lanes back, and is what their tests run under.
+const CARRYING = /^(1|true|yes|on)$/i.test(process.env.WAGGLE_CARRYING || '')
 const SINCE_SECS = process.env.SINCE_SECS != null ? Number(process.env.SINCE_SECS) : 172800 // 48h
 const SINCE = Math.floor(Date.now() / 1000) - SINCE_SECS
 // Concord channel streams DON'T backdate created_at (CORD-01: "created_at is not tweaked"),
@@ -1172,7 +1177,7 @@ function processGrantEvent(ev, { emitFn = emit, queryFn = query } = {}) {
       }
       grantSet.delete(pk)
       log(`NIPDA revoked: grantee ${pk.slice(0, 12)}… held no other grant, no longer admitted (441 ${ev.id.slice(0, 12)}…)`)
-      unseatGrantee(pk, emitFn)   // the row loses its only justification the moment the LAST grant does
+      if (CARRYING) unseatGrantee(pk, emitFn)   // the row loses its only justification the moment the LAST grant does
     }
     // Silence here was the other half of #364. A 441 matching nothing is ordinary — the 440 has
     // usually not arrived yet, and `revokedGrants` above is what makes that safe — but "recorded,
@@ -1207,7 +1212,7 @@ function processGrantEvent(ev, { emitFn = emit, queryFn = query } = {}) {
   grants.set(ev.id, ev.pubkey)
   grantSet.set(pk, grants)
   if (!already) log(`NIPDA granted: ${pk.slice(0, 12)}… admitted (${cap}, 440 ${ev.id.slice(0, 12)}…${grants.size > 1 ? `, ${grants.size} live grants` : ''})`)
-  seatGrantee(pk, emitFn, queryFn)
+  if (CARRYING) seatGrantee(pk, emitFn, queryFn)
 }
 
 // In-door consent (#131/#132, docs/CONSENT.md §8). A SEPARATE lane from grantSet by construction —
@@ -2728,7 +2733,7 @@ function buildControlState() {
     // aggregate counters only: no channel UUIDs, host paths, relay URLs, credentials, or payloads.
     operations: {
       trust: { trusted_repliers: PUB.trustedRepliers.length, muted_authors: PUB.muted.length, watched_notes: PUB.events.length },
-      lanes: { public_read: true, sealed: SEALED_LANES, return_watch: PUB.scanChannels.length > 0, relay_ingress: PUB.relayChannels.length > 0 },
+      lanes: { public_read: CARRYING, sealed: CARRYING && SEALED_LANES, return_watch: CARRYING && PUB.scanChannels.length > 0, relay_ingress: CARRYING && PUB.relayChannels.length > 0 },
       gates: {
         consent_required: PUB.mirrorRequireConsent,
         ask_per_hour: PUB.mirrorAskPerHour,
@@ -3246,9 +3251,9 @@ async function handleSealedTaskRouteControl(ev, { openSealFn = openSeal, openRum
 }
 
 function dispatchBridgeWrap(ev) {
-  if (!PUB?.approvers.length) return PUB?.relayChannels.length ? handleRelayIngress(ev) : undefined
+  if (!PUB?.approvers.length) return CARRYING && PUB?.relayChannels.length ? handleRelayIngress(ev) : undefined
   return handleSealedTaskRouteControl(ev).then(result => {
-    if (!result.handled && PUB.relayChannels.length) return handleRelayIngress(ev, {
+    if (!result.handled && CARRYING && PUB.relayChannels.length) return handleRelayIngress(ev, {
       openedSeal: result.openedSeal, openedRumor: result.openedRumor, budgetCharged: result.budgetCharged,
     })
   }).catch(e => err(`task route: sealed command handler failed: ${e.message}`))
@@ -3908,7 +3913,7 @@ async function pollCommands(now = Date.now()) {
     let msgs
     try { msgs = JSON.parse(String(so).slice(String(so).indexOf('['))) } catch { throw new Error('unparseable staging read') }
     for (const m of msgs) { if ((m.created_at || 0) >= cmdCursor - 300) handleCommand(m).catch(er => err(`commands: ${er.message}`)) }
-    scanReturnLane(msgs)
+    if (CARRYING) scanReturnLane(msgs)
       .then(() => retryPendingCarries())                  // #117: owed carries, independent of the cursor
       .then(() => retryPendingUnseats())                  // #356 B3: owed roster removals, same tick
       .then(() => retryPendingReactions())
@@ -3980,7 +3985,7 @@ function scanFetchPage(ch, floor, before, cb) {
 // --before boundary that re-includes a same-timestamp message never double-counts, and a page that
 // adds zero new ids terminates the walk (guards against a same-created_at cluster larger than the
 // page). Nothing routes and the cursor does not move if a page read fails.
-function scanChannel(ch, fetchPage = scanFetchPage) {
+function scanChannel(ch, fetchPage = scanFetchPage, carry = true) {
   const floor = scanSince(ch)
   const acc = []
   const seenIds = new Set()
@@ -3998,7 +4003,7 @@ function scanChannel(ch, fetchPage = scanFetchPage) {
         // page yields nothing new, so a same-timestamp cluster can never spin forever.
         if (added > 0 && (msgs || []).length >= SCAN_PAGE_LIMIT && Number.isFinite(oldest) && oldest > floor) return page(oldest)
         postingCounts.note(acc)
-        try { await scanReturnLane(acc, { authors: PUB.scanAuthors, channel: ch }) }
+        if (carry) try { await scanReturnLane(acc, { authors: PUB.scanAuthors, channel: ch }) }
         catch (er) { err(`scan: return-lane carry failed for ${String(ch).slice(0, 8)}…: ${er.message}`) }
         // The cursor advances regardless of any 0/N carry above (a dropped rlSeen key re-carries only
         // while it stays inside the overlap window, and each such attempt is itself a loud 0/N). So the
@@ -4045,8 +4050,9 @@ async function pollScanChannels() {
   if (!PUB.scanChannels.length) return
   for (const ch of PUB.scanChannels) {
     if (!postingReady.has(ch) && await backfillPosting(ch) && postingPublishable()) scheduleControlState()
-    try { await scanChannel(ch) } catch (e) { err(`scan: poll failed for ${String(ch).slice(0, 8)}…: ${e.message}`) }
+    try { await scanChannel(ch, scanFetchPage, CARRYING) } catch (e) { err(`scan: poll failed for ${String(ch).slice(0, 8)}…: ${e.message}`) }
   }
+  if (!CARRYING) return
   await retryPendingCarries()
   await retryPendingUnseats()
   await retryPendingReactions()
@@ -4055,8 +4061,9 @@ async function pollScanChannels() {
 let scanPollingTimer = null
 function ensureScanPolling() {
   if (process.env.WB_NO_BOOT || scanPollingTimer || !PUB?.scanChannels.length || !hasBridgeKey() || FORWARD_MODE !== 'buzz') return false
-  log(`return-lane scan: ${PUB.scanChannels.length} channel(s) · ${activeReturnLane().length} recipient(s) · signer gate ${PUB.scanAuthors.length} key(s)`)
-  if (!PUB.scanAuthors.length) err('WARN: scan_channels configured but scan_authors gate is EMPTY — default-closed, NO mentions will route until the crew roster is set.')
+  if (!CARRYING) log(`channel scan: ${PUB.scanChannels.length} channel(s) · counting posts only, carrying nothing (#658)`)
+  else log(`return-lane scan: ${PUB.scanChannels.length} channel(s) · ${activeReturnLane().length} recipient(s) · signer gate ${PUB.scanAuthors.length} key(s)`)
+  if (CARRYING && !PUB.scanAuthors.length) err('WARN: scan_channels configured but scan_authors gate is EMPTY — default-closed, NO mentions will route until the crew roster is set.')
   pollScanChannels().catch(e => err(`scan: initial poll failed: ${e.message}`))
   scanPollingTimer = setInterval(() => pollScanChannels().catch(e => err(`scan: poll failed: ${e.message}`)), 15000)
   return true
@@ -4121,6 +4128,7 @@ function connectPublic(url) {
     // unchanged grant set does not churn the relay with an identical REQ.
     let grantedSubKey = null
     const subscribeGranted = () => {
+      if (!CARRYING) return   // #658: an admitted agent's notes are no longer mirrored
       const authors = [...grantSet.keys()].sort()
       const key = authors.join(',')
       if (!authors.length || key === grantedSubKey) return
@@ -4138,6 +4146,7 @@ function connectPublic(url) {
     // than lingering behind a stale filter. watchedSubKey guards against churning an unchanged set.
     let watchedSubKey = null
     const subscribeWatched = () => {
+      if (!CARRYING) return   // #658: nor is a watched author's
       const authors = PUB.authors.slice().sort()
       const key = authors.join(',')
       if (key === watchedSubKey) return
@@ -4212,11 +4221,11 @@ function connectPublic(url) {
       log(`[pub ${url}] open, subscribing (since=${PUB.since}, backfill<=${PUB.backfillLimit})`)
       // A4: relay-side `limit` bounds the first-connect backfill so a watched author's whole
       // history can't be pulled into a channel. The app-side buf cap below is defense in depth.
-      if (PUB.authors.length) { expect.add('pa'); ws.send(JSON.stringify(['REQ', 'pa', { kinds: [1], authors: PUB.authors, since: PUB.since, limit: PUB.backfillLimit }])) }
-      if (PUB.events.length) { expect.add('pe'); ws.send(JSON.stringify(['REQ', 'pe', { kinds: [1], '#e': PUB.events, since: PUB.since, limit: PUB.backfillLimit }])) }
+      if (CARRYING && PUB.authors.length) { expect.add('pa'); ws.send(JSON.stringify(['REQ', 'pa', { kinds: [1], authors: PUB.authors, since: PUB.since, limit: PUB.backfillLimit }])) }
+      if (CARRYING && PUB.events.length) { expect.add('pe'); ws.send(JSON.stringify(['REQ', 'pe', { kinds: [1], '#e': PUB.events, since: PUB.since, limit: PUB.backfillLimit }])) }
       // A7: kind:5 deletes from watched authors. Longer lookback than the kind:1 watermark
       // (deletes are rare + idempotent; one issued during downtime must not be missed).
-      if (PUB.authors.length) { expect.add('pd'); ws.send(JSON.stringify(['REQ', 'pd', { kinds: [5], authors: PUB.authors, since: Math.floor(Date.now() / 1000) - DEL_SINCE_SECS, limit: PUB.backfillLimit }])) }
+      if (CARRYING && PUB.authors.length) { expect.add('pd'); ws.send(JSON.stringify(['REQ', 'pd', { kinds: [5], authors: PUB.authors, since: Math.floor(Date.now() / 1000) - DEL_SINCE_SECS, limit: PUB.backfillLimit }])) }
       watchedSubKey = PUB.authors.slice().sort().join(',')   // #206: initial pa/pd already cover this set; a later watchlist change re-fires subscribeWatched
       // NIP-DA: grants + revocations from the grantor set. Wide lookback — a standing
       // grant issued weeks ago must survive any restart (stateless consumption).
@@ -4376,6 +4385,7 @@ if (!process.env.WB_NO_BOOT) {
   }
   log(`waggle — mode=${FORWARD_MODE}, ${TARGETS.length} recipients, ${RELAYS.length} relays, ${PLANE_AUTHORS.length} channel plane(s), dm-since=${SINCE} (${SINCE_SECS}s), chan-since=${CHANNEL_SINCE} (${CHANNEL_SINCE_SECS}s)`)
   log(`  Nostr identity signer: ${bridgeSignerMode() === 'nip46' ? 'REMOTE (NIP-46; identity nsec absent from host)' : bridgeSignerMode() === 'local' ? 'LOCAL (legacy BUZZ_PRIVATE_KEY)' : 'OFF'}`)
+  if (!CARRYING) log('carrying: OFF (#658) — no mirror, return lane, sealed lanes, relay ingress or seating; posts are counted and the control state is published. WAGGLE_CARRYING=on restores them.')
   if (!SEALED_LANES) {
     log('sealed lanes: DISABLED (SEALED_LANES=off) — DM + Concord channel routing OFF; running PUBLIC read lane only')
     if (!PUB) { err('FATAL: SEALED_LANES=off but no public read lane configured (cfg.public.inbox) — nothing to do.'); process.exit(1) }
@@ -4384,7 +4394,7 @@ if (!process.env.WB_NO_BOOT) {
     if (!TARGETS.length) { err('FATAL: no recipients configured.'); process.exit(1) }
     if (!RELAYS.length) { err('FATAL: no relays configured.'); process.exit(1) }
     log(`  lane-2 caps: ${L2.perPlane.postsPerMinute}/plane/min ${L2.perPlane.postsPerHour}/plane/h · ${L2.perPlane.perRecipientPerMinute}/recipient/min (+${L2.burst.recipientBurst} burst) · ${L2.global.totalPostsPerHour}/global/h · max ${L2.perPlane.maxEventBytes}B · boot allowance ${L2.burst.bootBackfillMax}`)
-    RELAYS.forEach(connect)
+    if (CARRYING) RELAYS.forEach(connect)
   }
   if (PUB) {
     if (!PUB.relays.length) err('WARN: public read lane configured but cfg.public.relays is empty — nothing to listen on')

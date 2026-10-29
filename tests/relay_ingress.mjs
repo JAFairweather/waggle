@@ -50,6 +50,7 @@ process.env.BUZZ_PRIVATE_KEY = Buffer.from(bridgeSk).toString('hex')
 process.env.FORWARD_MODE = 'buzz'
 process.env.WB_STUB_SEND = '1'
 process.env.WB_NO_BOOT = '1'
+process.env.WAGGLE_CARRYING = 'on'   // #658: these lanes are retired by default; this suite covers them switched on
 
 const bridge = await import('../src/bridge.mjs')
 const { handleRelayIngress, route, grantSet, relaySeen, addRelaySeen, dropRelaySeen, relayDropCounts, relayDropTotalPreAuth, resolveRelayDest, rateOk, relayRateOk, PUB } = bridge
