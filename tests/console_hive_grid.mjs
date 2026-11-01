@@ -8,6 +8,7 @@
 //     platform; the rest fold into one line.
 //  3. A square the owner cannot change says why, and is never offered: a voice's reach, someone
 //     else's approval, an approval someone else also gave, a card that does not count the owner.
+//     An approval from a grantor the agent does not count locks nothing: the agent ignores it.
 //  4. Clicking a square waits for a signature, and clicking it again takes that back.
 //  5. Old channel passes and waggle carrying, which nothing reads since #658, are offered for
 //     withdrawal: the owner's live ones only.
@@ -72,6 +73,10 @@ const asVoice = cellOf(at(pi), at(voice), ctx)
 check(asVoice.on && !asVoice.can && /voice/.test(asVoice.why), "your voice's reach is locked, and says why")
 const open = cellOf(at(mc), at(dev), ctx)
 check(!open.on && open.can, 'an empty square can be filled')
+// Its card counts only you, and the fold shows DJ Codex; another grantor's approval sits alongside, ignored.
+const mcCounted = row(mc, { givers: [dj] })
+const ignored = cellOf(mcCounted, at(dj), { ...ctx, grants: [...grants, grant(owner, dj, 'task', mc), grant(other, dj, 'task', mc)] })
+check(ignored.on && ignored.can && ignored.mine.length === 1 && !ignored.others?.length, "an approval from someone the agent's card does not count never locks your square")
 const uncounted = cellOf(at(dennis), at(owner), ctx)
 check(!uncounted.on && !uncounted.can && /card/.test(uncounted.why), "a card that does not count your approvals locks its row's squares")
 

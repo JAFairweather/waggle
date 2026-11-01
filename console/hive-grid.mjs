@@ -32,9 +32,13 @@ export function agentsOf(rows) {
 export function cellOf(row, giver, { owner, grants, subjectOf }) {
   if (row.pubkey === giver.pubkey) return { on: false, self: true }
   const g = row.answers.work.givers.find(x => x.pubkey === giver.pubkey)
+  // Only approvals from grantors the agent counts keep a square on, as in answersFor: its card's
+  // grantors, or the owner alone without a card. Another approval it ignores never locks a square.
+  const counted = row.card ? row.card.grantors : [owner]
   const held = approvalsOf(grants, { subject: row.pubkey, grantee: giver.pubkey, caps: WORK_CAPS, subjectOf })
+    .filter(x => counted.includes(x.grantor))
   const mine = held.filter(x => x.grantor === owner)
-  const counts = row.card ? row.card.grantors.includes(owner) : true
+  const counts = counted.includes(owner)
   if (!g) return counts ? { on: false, mine, can: true } : { on: false, mine, can: false, why: 'Its card does not count your approvals, so one from you would do nothing.' }
   if (g.voice) return { on: true, mine, can: false, why: 'Gives work as your voice, wherever you can. It stops only if it stops speaking for you.' }
   const others = [...new Set(held.filter(x => x.grantor !== owner).map(x => x.grantor))]
