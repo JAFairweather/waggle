@@ -43,12 +43,10 @@ check(seated.rows.length === empty.rows.length, 'a roster row adds a source to a
 check(buildList({ owner: O.pk, grants: [], table, roster: [] }).rows.every(r => r.pubkey === O.pk),
   'NEGATIVE CONTROL — with no grants, no cards and no roster, only the owner is listed')
 
-// ---- 2. the roster line is scoped to the roster --------------------------------------------------
+// ---- 2. the page makes no claim about the roster --------------------------------------------------
 const page = readFileSync(join(ROOT, 'console', 'hive.html'), 'utf8')
-const fn = page.slice(page.indexOf('function bridgeControls('), page.indexOf('\n}\n', page.indexOf('function bridgeControls(')))
-check(fn.length > 200 && fn.includes(`el('b', null, "waggle's list")`), "the roster line is headed waggle's list, so its answer has a scope")
-const absent = /:\s*'([^']*)'\)\)/.exec(fn.slice(fn.indexOf('const entry =')))?.[1]
-check(absent === 'not on it.', `an agent the roster lacks reads "${absent}", a statement about that list`)
+// The roster line went with the bridge's controls (#662), so the page states nothing about that list.
+check(!page.includes("waggle's list") && !page.includes("'not on it.'"), "the hive page no longer has a roster line to scope")
 const ABSENCE_CLAIMS = ['Nobody is in this hive', 'This hive has admitted no agents', 'No agents', 'no agents yet', 'There are no agents']
 check(!ABSENCE_CLAIMS.some(c => page.includes(c)), 'the hive page makes no claim about the hive being empty')
 check(ABSENCE_CLAIMS.some(c => 'Nobody is in this hive yet.'.includes(c)), 'NEGATIVE CONTROL — the same check DOES flag the sentence this issue was filed about')
