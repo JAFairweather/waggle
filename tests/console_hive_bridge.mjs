@@ -9,7 +9,7 @@
 //  3. The paste checks agree with their src/ twins and refuse before anything is drafted.
 //  4. "Done" is the bridge's next list showing the change, never a relay OK; a seat is only "sent".
 //     Nothing is published unless the signed event is the one shown, by the owner, against a fresh list.
-//  5. The page offers the controls and routes them through this module.
+//  5. The page no longer offers the controls (#662): carrying is retired, and it signs no command.
 //
 //   node tests/console_hive_bridge.mjs
 
@@ -151,10 +151,10 @@ check(Object.values(BRIDGE_OPS).every(o => !/admi(t|ssion)|grant/i.test(o.words(
 
 // ── 5. The page ──────────────────────────────────────────────────────────────────────────────────
 const page = readFileSync(join(ROOT, 'console/hive.html'), 'utf8')
-check(page.includes("from './hive-bridge.mjs'") && /function bridgeControls\(/.test(page) && /bridgeControls\(box, r,/.test(page), "each row's editor carries the bridge's controls from hive-bridge.mjs")
-check(/controlStateFresh\(state\.observed_at\)/.test(page), 'and offers them only against a list fresh enough to act on')
-check(/c\.bridge\s*\?\s*await applyBridgeCommand\(/.test(page) && /before: hive\.rosterState/.test(page), 'a bridge command is signed through the same confirm panel, judged against the list the page drew')
-check(/offeredOps\(entry\)/.test(page) && /draftBridgeCommand\(\{ bridge: hive\.bridge, agent: r\.pubkey/.test(page), 'it offers what offeredOps allows, for the row it is on')
+// Carrying is retired (#658), and with it the bridge's controls on the hive page (#662): the page
+// reads the bridge's list for posting counts and the found check, and signs no command for it.
+check(/import \{ BRIDGE_RELAYS \} from '\.\/hive-bridge\.mjs'/.test(page) && !/draftBridgeCommand|applyBridgeCommand|offeredOps/.test(page),
+  'the hive page reads the bridge list from the relays hive-bridge.mjs names, and signs no bridge command')
 
 // The Agents tab is retired into this page (#613 M4d): its old address forwards here, and no page
 // links to it any more.

@@ -292,14 +292,14 @@ check(!/wss:\/\/[^'"]+['"]\s*,\s*['"]wss:\/\//.test(page.replace(/const ROSTER_R
   "it carries no relay list of its own beyond the roster's, so changes publish to the C3 set")
 check(GRANT_RELAYS.includes('wss://relay.nave.pub') && GRANT_RELAYS.length === 4, 'the C3 set is the four grant relays, relay.nave.pub among them')
 check(!/signs nothing yet/.test(page), 'the page no longer says it signs nothing')
-check(/cap: 'task-relay', subject: r\.pubkey, grantee: hive\.bridge/.test(page) && /cap: 'shadow', subject: owner, grantee: r\.pubkey/.test(page),
-  "the page changes carrying (the bridge, over the agent) and your voice (the identity, over your own key)")
-check(/draftPass\(\{ grantee: r\.pubkey, channel, scopeHash \}\)/.test(page) && /passLookup\(\{ grants: hive\.grants, grantee: r\.pubkey, owner, scopeHash,/.test(page),
-  'the page gives a channel pass to the row, and finds the ones to stop among your own')
-check(/b\.disabled = s\.pending \|\|/.test(page) && /if \(pending \|\| channel !== channelIdOf\(id\.value\)\) \{ lookup\(id\.value\); return \}/.test(page),
-  'its action is off while a lookup is pending, and a click re-checks the id in the field before drafting')
-check(/const CUT_OFF = 'Without a pass, waggle refuses its posts and stops carrying mentions to it\.'/.test(page) && /\$\{CUT_OFF\}/.test(page),
-  'withdrawing a pass says what the agent loses')
+// The grid (#662) changes who can give work, one square at a time, and nothing else: carrying and the
+// channel pass are retired (#658), so the page only offers to withdraw what is left of them.
+check(/draftGrant\(\{ grantee: giver\.pubkey, agent: row\.pubkey, cap: 'task', scopeHash \}\)/.test(page) && /cell\.mine\.map\(g => draftRevoke\(\{ grantId: g\.id \}\)\)/.test(page),
+  'a square gives work it asks before acting on, and withdraws only your own approvals behind it')
+check(!/draftPass\(|passLookup\(|cap: 'task-relay', subject|cap: 'shadow', subject/.test(page),
+  'the page no longer gives a channel pass, carrying, or a voice')
+check(/leftovers\(hive\.grants, \{ owner \}\)/.test(page) && /draft: \(\) => \[draftRevoke\(\{ grantId: g\.id \}\)\]/.test(page),
+  'it offers to withdraw your old passes and carrying, and nothing else of theirs')
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
 process.exit(pass ? 0 : 1)
