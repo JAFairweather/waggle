@@ -4396,6 +4396,9 @@ if (!process.env.WB_NO_BOOT) {
     log(`  lane-2 caps: ${L2.perPlane.postsPerMinute}/plane/min ${L2.perPlane.postsPerHour}/plane/h · ${L2.perPlane.perRecipientPerMinute}/recipient/min (+${L2.burst.recipientBurst} burst) · ${L2.global.totalPostsPerHour}/global/h · max ${L2.perPlane.maxEventBytes}B · boot allowance ${L2.burst.bootBackfillMax}`)
     if (CARRYING) RELAYS.forEach(connect)
   }
+  // #660: with carrying off, a sealed-lanes-only process has nothing to run. Exiting would have
+  // Restart=always relaunch it every 5 s, so it idles until its unit is retired.
+  if (!CARRYING && !PUB) { log('nothing to run — carrying is off and no public read lane is configured; idling until this unit is retired (#660)'); setInterval(() => {}, 1 << 30) }
   if (PUB) {
     if (!PUB.relays.length) err('WARN: public read lane configured but cfg.public.relays is empty — nothing to listen on')
     // #345: this set is BOTH what we listen on and what sealed wraps fan out to. Two relays read
