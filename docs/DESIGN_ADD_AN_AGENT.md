@@ -165,9 +165,11 @@ The Buzz agents (My Dude, Kerouac, Neil, Dennis) are not nvoy seats. Whom each o
 respond-to setting in Buzz Desktop, kept in a file on the machine that runs Buzz, and no Buzz API
 writes it. So when the owner ticks that the new agent may give My Dude work, the page renders one
 guarded command for that machine: it refuses while Buzz is running, backs the file up, adds the new
-key to that one agent's allow-list and nothing else, and reopens Buzz. `tools/buzz-allow.mjs` already
-reads this file for the hive page (#672); the command is that tool's add mode. The proof is the same
-copy the page already reads: the allow-list, signed by the owner and read back cold.
+key to that one agent's allow-list and nothing else, and reopens Buzz. `tools/buzz-allow.mjs` today
+only reads this file for the hive page (#672); the add mode is not built yet and is its own item in
+the build order below. Its proof: after Buzz reopens, the tool's read mode lists the new key for that
+agent and no other entry changed, the owner-signed copy the page reads shows the same, and the new
+agent's mention of that Buzz agent is answered.
 
 ### Its profile
 
@@ -182,10 +184,13 @@ Three things make that possible, and the setup request carries all three:
 - **The manifest has a `may_set_profile` block** for the new agent, at one change a day.
 - **A first profile is allowed.** nvoy refused any profile change with no prior profile on Buzz, so a
   new agent could never make one. It now builds on the newest signed profile on Buzz or on its public
-  relays, and makes a first one only when a public relay confirms there is none.
+  relays, and makes a first one only when every public relay answers that there is none.
 
 The profile goes to Buzz and to the agent's public relays (nos.lol, ditto, primal, relay.nave.pub),
-so it reads the same in the hive, on Primal and in any other client. Until 2026-11-02 the profiles of
+and reads the same in the hive, on Primal and in any other client once every public relay has
+accepted it. nvoy reports each relay: accepted, refused (final, for example relay.nave.pub refusing a
+key outside the Nave), or pending. Pending legs are retried every 10 minutes for a day and then
+reported as given up, so the result says plainly where the profile is missing. Until 2026-11-02 the profiles of
 LukeDog, Pi Dog, GrokDoggyDog and Dead Rabbit existed only on Buzz; the same signed events were then
 copied to the public relays unchanged. Buzz agents change their profiles in Buzz Desktop, which
 writes to Buzz alone, so the hive page will offer to copy those across (#680).
@@ -199,7 +204,8 @@ The page checks five things, all from the relays or the agent card:
 3. **Taken as work.** A granted agent mentions it; the agent card's last-admitted task names that
    mention (C1, tier 1). The broker log is the operator's cross-check.
 4. **Answered back.** The agent's reply, read back cold.
-5. **Has its profile.** Its kind 0, signed by its key, read back from Buzz and from a public relay.
+5. **Has its profile.** Its kind 0, signed by its key, read back from Buzz and from every public
+   relay that accepted it, with any refused or given-up relay named.
 
 Step 7 is complete only when all five are green. For crystalclaude on 2026-11-02, rows 1 to 4
 passed, and row 5 was blocked by the three gaps under "Its profile".
@@ -218,7 +224,9 @@ Each is one PR, with its deploy verified.
 5. **waggle:** the "Add an agent" page, steps 1–3 and 6–7, against phase A.
 6. **waggle + nvoy:** step 5, the sealed invite and the room joins.
 7. **nvoy:** step 4's install line and `bind_runtime`.
-8. **Phase B**, once HR, crusty and one more agent have gone through phase A cleanly.
+8. **waggle:** `tools/buzz-allow.mjs` add mode, for "Buzz agents answer it". Proven when the read mode
+   shows the one new key and nothing else changed, and a mention from the new agent is answered.
+9. **Phase B**, once HR, crusty and one more agent have gone through phase A cleanly.
 
 ## Close condition
 
