@@ -230,6 +230,7 @@ check(!/innerHTML\s*=(?!\s*'')/.test(page), 'hive.html writes signed text only t
   check(platformOf({ pubkey: '8f3829871ec5ed5dff1b6654d3ca878aa1f4312968f318b18b158e1d93f0a37f', roles: [] }) === 'you', 'your written voice, the Quill, sits in your group too')
   check(byPlatform(rows).map(g => g.platform.id).join() === 'you,lab,buzz,other', 'groups come in the listed order, and a key nobody listed is last')
   check(!byPlatform(rows).some(g => g.platform.id === 'grok'), 'a group with nobody in it is not shown')
+  check(platformOf({ pubkey: 'a135942aa05d90fff5d2062c78c61c1208903be241d3a93cb55e7009e87a3d8b', roles: [] }) === 'lab', 'crystalclaude, a Claude Code session on its own box, sits with the frontier lab harnesses')
   check(PLATFORMS.flatMap(p => p.keys || []).every((k, i, all) => /^[0-9a-f]{64}$/.test(k) && all.indexOf(k) === i), 'every listed key is a key, in one group only')
   check(nameSlots([['Zed', 'You', 'Amy']], n => ({ You: 0, Zed: 1, Amy: 2 })[n]).join() === 'You,Zed,Amy', 'name lines follow the group order')
 }

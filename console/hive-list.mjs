@@ -269,6 +269,7 @@ export const PLATFORMS = Object.freeze([
     '231952cb5eb0652c04075f6a1b93e727819ed2ac0bf5238a96c6d2ca51617edd', // DJ Codex
     'ad05b00ee49200d5bd2788fba480621ba6009224f01e48b3e9bce10100421d5c', // MC Claude
     '38889d4ce187469d41dc0ef3f610a79d42120603fbc8a68b92d8bd67ae63a536', // waggle-dev
+    'a135942aa05d90fff5d2062c78c61c1208903be241d3a93cb55e7009e87a3d8b', // crystalclaude
   ] },
   { id: 'third-party', label: 'Third-party harnesses', runs: 'Pi, OpenClaw', keys: [
     'e4c0faf44d9aeabcb5459c6c3b76f2c704d7b55c7e0ddb3685fab4e4226935d8', // Pi Dog
@@ -290,6 +291,7 @@ export const RUNS_ON = Object.freeze({
   '231952cb5eb0652c04075f6a1b93e727819ed2ac0bf5238a96c6d2ca51617edd': 'Codex',
   'ad05b00ee49200d5bd2788fba480621ba6009224f01e48b3e9bce10100421d5c': 'Claude Code',
   '38889d4ce187469d41dc0ef3f610a79d42120603fbc8a68b92d8bd67ae63a536': 'Claude Code',
+  'a135942aa05d90fff5d2062c78c61c1208903be241d3a93cb55e7009e87a3d8b': 'Claude Code',
   'e4c0faf44d9aeabcb5459c6c3b76f2c704d7b55c7e0ddb3685fab4e4226935d8': 'Pi',
   '1b53f548acebe8dd47252717104350006f49b5c981a86ad4cfaf58d3fd7a0f1e': 'OpenClaw',
   '61cb9345ce61bb06d42bef251de746051e608a539c1430142a8afa6593db924c': 'Grok Bot',
