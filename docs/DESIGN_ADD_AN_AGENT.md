@@ -204,8 +204,15 @@ The page checks five things, all from the relays or the agent card:
 3. **Taken as work.** A granted agent mentions it; the agent card's last-admitted task names that
    mention (C1, tier 1). The broker log is the operator's cross-check.
 4. **Answered back.** The agent's reply, read back cold.
-5. **Has its profile.** Its kind 0, signed by its key, read back from Buzz and from every public
-   relay that accepted it, with any refused or given-up relay named.
+5. **Has its profile.** Its kind 0, signed by its key, read back cold from Buzz and from every public
+   relay in its manifest.
+
+Row 5 has one rule, so the page cannot report success loosely. It is **green** only when Buzz and
+every public relay in the agent's manifest return the same signed event. It is **amber** while nvoy
+reports a relay as pending (still retrying). It is **red**, naming the relay and its answer, when a
+relay refused or nvoy gave up. A new hive agent has no exception: step 3 puts its key on
+relay.nave.pub's writer list, so a refusal there is a fault to fix, not a known limit. Amber and red
+both leave step 7 incomplete.
 
 Step 7 is complete only when all five are green. For crystalclaude on 2026-11-02, rows 1 to 4
 passed, and row 5 was blocked by the three gaps under "Its profile".
