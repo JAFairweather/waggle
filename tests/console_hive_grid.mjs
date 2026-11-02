@@ -199,7 +199,12 @@ const part = { ...ctx, buzz: buzzOf({ events: [copy], full: false }, { owner, ve
 const unknown = cellOf(at(mydude), at(dj), part)
 check(unknown.unknown && !unknown.on && !unknown.can && cellOf(at(dennis), at(dev), { ...ctx, buzz: buzzOf({ events: [], full: false }, { owner, verify: () => true }) }).unknown,
   'a copy read from fewer than every relay is unknown, even when no copy came back')
-check(!cellOf(at(mydude), at(dj), { ...ctx, buzz: buzzOf({ events: [], full: true }, { owner, verify: () => true }) }).buzz, 'with no copy ever signed, nvoy answers as before')
+const none = buzzOf({ events: [], full: true }, { owner, verify: () => true }), bare = cellOf(at(mydude), at(owner), { ...ctx, buzz: none })
+check(cellOf(at(mydude), at(owner), ctx).can && bare.buzz && bare.unknown && !bare.can && !bare.on && /not been copied/.test(bare.why) && !reachOf(rows, at(owner), none).some(r => [mydude, dennis].includes(r.pubkey)),
+  'with no copy signed, a Buzz square is unknown and never offered, and counts for nobody, where nvoy alone would offer a grant')
+const onlyMyDude = buzzOf({ events: [signedBy(draftBuzz(new Map([[mydude, new Set([owner])]]), 500), owner, 500)], full: true }, { owner, verify: () => true })
+const omitted = cellOf(at(dennis), at(owner), { ...ctx, buzz: onlyMyDude })
+check(omitted.unknown && !omitted.can && !omitted.on && cellOf(at(mydude), at(owner), { ...ctx, buzz: onlyMyDude }).on, 'a Buzz agent a copy leaves out is unknown, not handed to nvoy')
 check(buzzWords(lists, say) === "copy Buzz Desktop's allow-lists: " + [`${say(dennis)} takes work from anyone`, `${say(mydude)} takes work from 3 identities`].sort().join('; '), 'the copy reads as one plain change')
 const settings = [
   { name: 'My Dude', respond_to: 'owner-only', definition_respond_to: 'allowlist', system_prompt: 'secret' },

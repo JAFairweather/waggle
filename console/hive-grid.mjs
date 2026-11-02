@@ -107,14 +107,18 @@ export function buzzWords(lists, nameOf) {
   const each = [...lists].map(([a, s]) => `${nameOf(a)} takes work from ${s.has('*') ? 'anyone' : !s.size ? 'nobody' : s.size === 1 ? nameOf([...s][0]) : `${s.size} identities`}`).sort()
   return `copy Buzz Desktop's allow-lists: ${each.join('; ')}`
 }
-// The Buzz list that answers for this agent, or null when nvoy's fold does.
-const buzzList = (row, buzz) => buzz?.known ? buzz.lists?.get(row.pubkey) || null : null
+// A Buzz agent is one the page knows runs in Buzz, or one a copy names. Buzz alone decides who gives
+// it work, so once the page reads Buzz copies its square never falls back to nvoy: until a full read
+// returns a copy naming it, the answer is unknown.
+export const isBuzz = (row, buzz) => platformOf(row) === 'buzz' || !!buzz?.lists?.has(row.pubkey)
+const buzzList = (row, buzz) => buzz.known ? buzz.lists?.get(row.pubkey) || null : null
 const buzzTakes = (list, giver) => list.has('*') || list.has(giver.pubkey)
 
 // The agents a giver can give work to now, by nvoy's fold, or by Buzz for a Buzz agent.
 export const reachOf = (rows, giver, buzz = null) => rows.filter(r => {
+  if (!buzz || !isBuzz(r, buzz)) return r.answers?.work.givers.some(g => g.pubkey === giver.pubkey)
   const list = buzzList(r, buzz)
-  return list ? r.pubkey !== giver.pubkey && buzzTakes(list, giver) : r.answers?.work.givers.some(g => g.pubkey === giver.pubkey)
+  return !!list && r.pubkey !== giver.pubkey && buzzTakes(list, giver)
 })
 
 // One square. `on` is what nvoy's fold says now; `mine` are the owner's own approvals behind it,
@@ -122,10 +126,11 @@ export const reachOf = (rows, giver, buzz = null) => rows.filter(r => {
 // square is Buzz's answer, and the page never offers to change it.
 export function cellOf(row, giver, { owner, grants, subjectOf, buzz = null }) {
   if (row.pubkey === giver.pubkey) return { on: false, self: true }
-  if (buzz && !buzz.known && (buzz.lists?.has(row.pubkey) || platformOf(row) === 'buzz'))
-    return { on: false, can: false, buzz: true, unknown: true, why: 'Not every relay returned your copy of the Buzz allow-lists, so this is unknown. Read again.' }
-  const list = buzzList(row, buzz)
-  if (list) {
+  if (buzz && isBuzz(row, buzz)) {
+    const list = buzzList(row, buzz)
+    if (!list) return { on: false, can: false, buzz: true, unknown: true, why: buzz.known
+      ? "Buzz Desktop decides this, and this agent's allow-list has not been copied here yet. Run tools/buzz-allow.mjs on the machine that runs Buzz."
+      : 'Not every relay returned your copy of the Buzz allow-lists, so this is unknown. Read again.' }
     const on = buzzTakes(list, giver)
     return { on, can: false, buzz: true, why: `Buzz Desktop decides this: ${on ? 'it is' : 'it is not'} on this agent's allow-list. Change it in Buzz Desktop, then copy the lists here again.` }
   }

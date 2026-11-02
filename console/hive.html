@@ -177,7 +177,7 @@ import { validControlState, postingCounts, notAnswering, shortNpub } from './age
 import { scopeHash } from './scope-hash.mjs'
 import { signFresh } from './guarded-signer.mjs'
 import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, describeChange, applyChange, relayHost } from './hive-change.mjs'
-import { gridOf, reachOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, BUZZ_D, buzzOf, draftBuzz, sameBuzz, buzzWords, day } from './hive-grid.mjs'
+import { gridOf, reachOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, BUZZ_D, buzzOf, draftBuzz, sameBuzz, buzzWords, isBuzz, day } from './hive-grid.mjs'
 import { whatIf } from './hive-what-if.mjs'
 import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { BRIDGE_RELAYS } from './hive-bridge.mjs'
@@ -546,8 +546,11 @@ function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting, wid
   item('What it is', `${STAGE[r.stage]}.${roles.length ? ` ${roles.join('; ')}.` : ''}`)
   const assumed = a.work.grantorsFrom === 'assumed' ? ' (No card, so only your approvals are counted.)' : ''
   const buzzed = hive.buzz.known && hive.buzz.lists?.get(r.pubkey)
+  const unbuzzed = !buzzed && isBuzz(r, hive.buzz)
   item('Who can give it work', buzzed ? `Set in Buzz Desktop, on its allow-list as copied ${day(hive.buzz.signedAt)}: ${buzzed.has('*') ? 'anyone' : [...buzzed].map(nameOf).sort().join(', ') || 'nobody'}.`
-    : `${workSentence(a.work, { owner, nameOf, incomplete: partial.approvals })}${assumed}`)
+    : unbuzzed ? hive.buzz.known ? 'Set in Buzz Desktop, on its allow-list, which has not been copied here yet. Run tools/buzz-allow.mjs on the machine that runs Buzz.'
+      : 'Set in Buzz Desktop. Unknown here, because not every relay returned your copy of the allow-lists.'
+      : `${workSentence(a.work, { owner, nameOf, incomplete: partial.approvals })}${assumed}`, unbuzzed)
   const free = a.act.withoutAsking.length ? `It may act without asking on work from ${a.act.withoutAsking.map(nameOf).join(', ')}.` : partial.approvals ? `It asks before acting on any work, ${PARTIAL}.` : 'It asks before acting on any work.'
   const limits = a.act.limits ? ` Chains stop at ${a.act.limits.max_hops} hops; at most ${a.act.limits.per_sender_per_hour} messages an hour from one sender.` : ''
   item('What it may do without asking', `${free}${limits} Tool permissions are ${a.act.harness}.`)
