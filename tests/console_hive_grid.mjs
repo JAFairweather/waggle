@@ -16,6 +16,10 @@
 //     folded columns share one blank span that folds with them.
 //  8. Approvals that do nothing read as one plain item per kind (#670): who let whom do what, when,
 //     what holds today, and one withdrawal per approval for the owner's own; never an approval id.
+//  9. A Buzz agent's column is Buzz Desktop's allow-list as the owner last copied it (#672): only
+//     their own newest signed copy counts, its squares say "set in Buzz" and are never offered, a
+//     copy read from fewer than every relay is unknown, and the copy tool and its link carry public
+//     keys only.
 //  3. A square the owner cannot change says why, and is never offered: a voice's reach, someone
 //     else's approval, an approval someone else also gave, a card that does not count the owner.
 //     An approval from a grantor the agent does not count locks nothing: the agent ignores it.
@@ -26,7 +30,9 @@
 //   node tests/console_hive_grid.mjs
 
 import { PLATFORMS } from '../console/hive-list.mjs'
-import { gridOf, reachOf, agentsOf, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, ACTIVE_KIND, ACTIVE_D, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers } from '../console/hive-grid.mjs'
+import { buzzLists, buzzLink } from '../tools/buzz-allow.mjs'
+import { parseIntent } from '../console/deep-link.mjs'
+import { gridOf, reachOf, agentsOf, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, ACTIVE_KIND, ACTIVE_D, BUZZ_D, readBuzz, buzzOf, draftBuzz, sameBuzz, buzzWords, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers } from '../console/hive-grid.mjs'
 
 let pass = true
 const check = (cond, label) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${label}`); if (!cond) pass = false }
@@ -170,6 +176,42 @@ check(idle.groups[2].text === "On 19 Oct Dennis let MC Claude take work from Den
 check(idle.groups[0].can && idle.groups[0].grants.map(g => g.grant.id).join() === '1,2,3' && idle.groups[0].grants[0].words === 'withdraw an old approval that let DJ Codex act on your work without asking',
   'the owner withdraws each approval in the group, each change in plain words')
 check(!idle.groups.some(g => /[0-9a-f]{10}|from you to you/.test(g.text)), 'no approval ids and no "from you to you"')
+
+// 9. Buzz allow-lists.
+const lists = new Map([[mydude, new Set([owner, dj, voice])], [dennis, new Set(['*'])]])
+const copy = { ...draftBuzz(lists, 200), pubkey: owner }
+check(copy.kind === ACTIVE_KIND && copy.tags[0].join() === `d,${BUZZ_D}` && copy.tags.slice(1).every(t => t.slice(1).every(v => /^[0-9a-f]{64}$/.test(v) || v === '*')),
+  'the copy drafts as one replaceable event of public keys only')
+const signedBy = (ev, pubkey, at) => ({ ...ev, pubkey, created_at: at })
+const older = signedBy(draftBuzz(new Map([[mydude, new Set([owner])]]), 100), owner, 100)
+const read = readBuzz([older, copy, signedBy(draftBuzz(new Map(), 300), other, 300), { ...copy, tags: [['d', ACTIVE_D]], created_at: 400 }], { owner, verify: () => true })
+check(read.signedAt === 200 && sameBuzz(read.lists, lists), "only the owner's own newest copy counts; another key's, or the Active list, is no copy")
+check(!readBuzz([copy], { owner, verify: () => false }), 'an unverified copy is no copy')
+const whole = buzzOf({ events: [copy], full: true }, { owner, verify: () => true })
+const bctx = { ...ctx, buzz: whole }
+const on = cellOf(at(mydude), at(dj), bctx), off = cellOf(at(mydude), at(dev), bctx), any = cellOf(at(dennis), at(dev), bctx)
+check(on.on && on.buzz && !on.can && /Buzz Desktop/.test(on.why) && !off.on && off.buzz && !off.can && any.on,
+  "a Buzz agent's square is its allow-list, marked as Buzz's, and never offered")
+check(squareOf(on) === 'on' && cellOf(at(pi), at(dev), bctx).buzz === undefined, 'an agent with no Buzz list is still answered by nvoy')
+check(JSON.stringify(reachOf(rows, at(dj), whole).map(r => r.pubkey)) === JSON.stringify([pi, mydude, dennis]) && !reachOf(rows, at(dennis), whole).some(r => r.pubkey === dennis),
+  'reading across a row counts the Buzz agents that answer it, and never itself')
+const part = { ...ctx, buzz: buzzOf({ events: [copy], full: false }, { owner, verify: () => true }) }
+const unknown = cellOf(at(mydude), at(dj), part)
+check(unknown.unknown && !unknown.on && !unknown.can && cellOf(at(dennis), at(dev), { ...ctx, buzz: buzzOf({ events: [], full: false }, { owner, verify: () => true }) }).unknown,
+  'a copy read from fewer than every relay is unknown, even when no copy came back')
+check(!cellOf(at(mydude), at(dj), { ...ctx, buzz: buzzOf({ events: [], full: true }, { owner, verify: () => true }) }).buzz, 'with no copy ever signed, nvoy answers as before')
+check(buzzWords(lists, say) === "copy Buzz Desktop's allow-lists: " + [`${say(dennis)} takes work from anyone`, `${say(mydude)} takes work from 3 identities`].sort().join('; '), 'the copy reads as one plain change')
+const settings = [
+  { name: 'My Dude', respond_to: 'owner-only', definition_respond_to: 'allowlist', system_prompt: 'secret' },
+  { name: 'My Dude', pubkey: mydude.toUpperCase(), respond_to: 'allowlist', respond_to_allowlist: [dj, voice, dj, 'npub1junk'], auth_tag: 'tag', system_prompt: 'secret' },
+  { name: 'Dennis', pubkey: dennis, respond_to: 'anyone' }, { name: 'Neil', pubkey: dev, respond_to: 'owner-only' }, { name: 'Odd', pubkey: giver, respond_to: 'mentions' },
+]
+const out = buzzLists(settings), link = buzzLink(out.parts)
+check(out.skipped.join() === 'Odd' && out.parts.length === 3 && !/secret|tag|junk/.test(link), 'the tool reads keys only, and names a setting it does not know rather than guess')
+const intent = parseIntent(new URL(link).hash)
+check(intent.action === 'buzz' && JSON.stringify(intent.lists.find(([a]) => a === mydude)[1]) === JSON.stringify([dj, voice].sort()) && intent.lists.some(([a, s]) => a === dev && s.join() === 'owner'),
+  'the link round-trips to the page as whole keys, with the owner and anyone marked')
+check(parseIntent(`#buzz=${mydude}:abc`).action === 'invalid' && parseIntent(`#buzz=${mydude}:${dj}:x`).action === 'invalid', 'a link with anything but whole keys is refused')
 
 if (!pass) { console.log('\nconsole_hive_grid: FAIL'); process.exit(1) }
 console.log('\nconsole_hive_grid: ok')

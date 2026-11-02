@@ -18,6 +18,11 @@
 //   #revoke=<grant id prefix>
 //   #grant=<grantee prefix>&on=<agent prefix>&cap=<cap>
 //   #agent=<agent prefix>          opens that agent's row on the hive page and changes nothing
+//   #buzz=<agent>:<sender>,…;…     Buzz Desktop's allow-lists, from tools/buzz-allow.mjs (#672)
+//
+// The Buzz link carries whole keys, since it copies lists the owner's own machine holds, but the
+// rule stands: the page refuses it unless every key in it is one the hive already shows. A sender
+// is a key, '*' for anyone, or 'owner' for the signed-in owner.
 
 const PREFIX = /^[0-9a-f]{8,64}$/
 const CAP = /^[a-z][a-z+-]{0,19}$/
@@ -40,6 +45,17 @@ export function parseIntent(hash) {
     if (!to || !on) return { action: 'invalid', why: 'this link must name the grantee and the agent by hex prefix' }
     if (cap !== null && !CAP.test(cap)) return { action: 'invalid', why: 'the capability in this link is not one the console knows' }
     return { action: 'grant', to, on, cap }
+  }
+  if (q.has('buzz')) {
+    const lists = [], KEY = /^[0-9a-f]{64}$/
+    for (const part of (q.get('buzz') || '').toLowerCase().split(';')) {
+      const [agent, senders = '', extra] = part.split(':')
+      const list = senders ? senders.split(',') : []
+      if (extra !== undefined || !KEY.test(agent) || !list.every(s => s === '*' || s === 'owner' || KEY.test(s)))
+        return { action: 'invalid', why: 'the Buzz lists in this link are not whole keys' }
+      lists.push([agent, list])
+    }
+    return { action: 'buzz', lists }
   }
   if (q.has('agent')) {
     const agent = hex('agent')
