@@ -21,8 +21,8 @@ export function agentsOf(rows) {
 }
 
 // The whole grid. Rows: every identity but the bridge, grouped by where it runs, you first. One that
-// runs nowhere known, gives no work and takes none is quiet: it heads no column, and its row folds
-// away under the rest, so every identity is still on the one list.
+// runs nowhere known, gives no work and takes none is quiet: its row and its column fold away
+// together, last, so the top holds the agents and a new key can still be given its first work (#664).
 export function gridOf(rows) {
   const giving = givesWork(rows)
   const { groups, folded } = agentsOf(rows)
@@ -30,7 +30,8 @@ export function gridOf(rows) {
   const lines = PLATFORMS.map(platform => ({ platform,
     rows: rows.filter(r => !r.isBridge && !quiet.includes(r) && platformOf(r) === platform.id).sort((a, b) => rank(a) - rank(b)) }))
     .filter(g => g.rows.length)
-  return { lines, takers: groups.flatMap(g => g.rows), quiet }
+  const takers = groups.flatMap(g => g.rows)
+  return { lines, takers, quiet, columns: [...takers, ...quiet] }
 }
 
 // The agents a giver can give work to now, by nvoy's fold.

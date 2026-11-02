@@ -6,7 +6,8 @@
 //     bridge has none, and an identity that runs nowhere known, gives nothing and takes nothing is
 //     quiet: its row and its column fold away together.
 //  2. The columns are the agents the page knows where they run and anyone that takes work, so
-//     reading across a row says whom it can give work to (#664).
+//     reading across a row says whom it can give work to (#664). A quiet identity's column comes
+//     last, folded, so a newly found key can still be given its first work.
 //  3. A square the owner cannot change says why, and is never offered: a voice's reach, someone
 //     else's approval, an approval someone else also gave, a card that does not count the owner.
 //     An approval from a grantor the agent does not count locks nothing: the agent ignores it.
@@ -49,7 +50,7 @@ const at = pk => rows.find(r => r.pubkey === pk)
 const ctx = { owner, grants, subjectOf }
 
 // 1. Rows.
-const { lines, takers, quiet } = gridOf(rows)
+const { lines, takers, quiet, columns } = gridOf(rows)
 check(JSON.stringify(lines.map(g => g.platform.id)) === JSON.stringify(['you', 'lab', 'third-party', 'buzz', 'other']), 'rows group by where they run, you first')
 check(lines[0].rows[0].pubkey === owner && lines[0].rows[1].pubkey === voice, 'you head the first row, your voice the second')
 check(lines.at(-1).rows.map(r => r.pubkey).join() === giver, 'an identity that gives work but runs nowhere known keeps its row')
@@ -62,8 +63,12 @@ check(JSON.stringify(reachOf(rows, at(dev)).map(r => r.pubkey)) === JSON.stringi
 // 2. Columns.
 check(JSON.stringify(takers.map(r => r.pubkey)) === JSON.stringify([mc, dev, dj, pi, mydude, dennis]), 'agents head the columns in platform order')
 check(!takers.some(r => r.isOwner || r.isBridge || r.pubkey === voice), 'you, your voice and the bridge head no column')
+check(JSON.stringify(columns.map(r => r.pubkey)) === JSON.stringify([...takers, ...quiet].map(r => r.pubkey)) && columns.at(-1).pubkey === stray,
+  'a quiet identity heads the last column, folded with its row')
+const first = cellOf(at(stray), at(owner), ctx)
+check(!first.on && first.can, 'a newly found key can be given its first work from its column')
 const { folded } = agentsOf(rows)
-check(folded.map(r => r.pubkey).sort().join() === [voice, stray, giver].sort().join(), 'identities that take no work and run nowhere known head no column')
+check(folded.map(r => r.pubkey).sort().join() === [voice, stray, giver].sort().join(), 'identities that take no work and run nowhere known head no agent column')
 
 // 3. Squares.
 check(cellOf(at(pi), at(pi), ctx).self, 'an agent meets itself in a square that does nothing')

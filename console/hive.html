@@ -37,7 +37,7 @@
   table.grid th.taker .avatar{display:block;margin:0 auto 5px}
   table.grid th.taker,table.grid td.cell,table.grid th.posts,table.grid td.posts{border-left:1px solid var(--line)}
   table.grid tbody th.agent{text-align:left;font-weight:400;padding:8px 10px 8px 0;border-bottom:1px solid var(--line)}
-  /* Quiet identities fold away as rows; they take no work, so they head no column; the square being pointed at lights its two names. */
+  /* Quiet identities fold away as a row and a column together, so the top stays the agents; shown, the grid scrolls in its own box; the square being pointed at lights its two names. */
   table.grid:not(.all) .more{display:none}
   table.grid th.taker.hot,table.grid th.agent.hot .who{color:var(--gold)}
   table.grid td{border-bottom:1px solid var(--line)}
@@ -63,6 +63,7 @@
   @media (max-width:699px){table.grid{font-size:13px}table.grid thead th{font-size:10.5px}.sq{width:24px;height:24px;border-radius:6px}table.grid thead th.corner{min-width:120px}table.grid .agent .summary{margin-left:0}
     /* On a phone the grid scrolls in its own box, so the page never scrolls sideways; the header and the names stay pinned. */
     .grid-wrap{overflow:auto;max-height:calc(100vh - 120px)}table.grid tbody th.agent{position:sticky;left:0;z-index:1;background:var(--panel)}table.grid thead th.corner{left:0;z-index:2}}
+  .grid-wrap.wide{overflow:auto;max-height:calc(100vh - 120px)}.grid-wrap.wide table.grid tbody th.agent{position:sticky;left:0;z-index:1;background:var(--panel)}.grid-wrap.wide table.grid thead th.corner{left:0;z-index:2}
   button.who{background:none;border:0;border-radius:0;padding:0;margin:0;color:var(--text);font:inherit;font-weight:700;cursor:pointer;text-align:left}
   button.who::before{content:"▸ ";color:var(--faint)}button.who[aria-expanded="true"]::before{content:"▾ "}
   button.link{background:none;border:0;padding:0;margin:0;color:var(--gold);font:inherit;font-weight:650;cursor:pointer;text-decoration:underline}
@@ -326,16 +327,15 @@ function draw(rows, needs, owner, partial, posting = null) {
 
   // The grid (#662, #664): a row per identity that gives work, grouped by where it runs, and a column
   // per agent that takes it, so reading across a row says whom it can give work to.
-  const { lines, takers, quiet } = gridOf(rows)
-  const columns = takers
+  const { lines, takers, quiet, columns } = gridOf(rows)
   const width = columns.length + 2
-  const table = $('list').closest('table'); table.classList.remove('all')
+  const table = $('list').closest('table'); table.classList.remove('all'); table.parentElement.classList.remove('wide')
   const head = $('grid-head'); head.textContent = ''
   head.appendChild(el('th', 'corner', 'Gives work to →')).scope = 'col'
   // A long name breaks only where its words meet: GrokDoggyDog as Grok·Doggy·Dog, never mid-word.
   const breakable = name => name.split(/(?<=[a-z])(?=[A-Z])|(?<=[- ])/).flatMap((w, i) => i ? [el('wbr'), w] : [w])
   for (const t of columns) {
-    const th = head.appendChild(el('th', 'taker')); th.scope = 'col'
+    const th = head.appendChild(el('th', quiet.includes(t) ? 'taker more' : 'taker')); th.scope = 'col'
     th.append(face(t.picture), ...breakable(rowName(t)))
   }
   const posts = head.appendChild(el('th', 'posts', 'Posts / hour')); posts.scope = 'col'
@@ -347,7 +347,7 @@ function draw(rows, needs, owner, partial, posting = null) {
   const section = (label, runs, inGroup, cls) => {
     const tr = el('tr', `group${cls ? ` ${cls}` : ''}`), th = tr.appendChild(el('th', null, label)); th.colSpan = width; th.scope = 'colgroup'
     if (runs) th.appendChild(el('span', 'runs', runs))
-    const pairs = inGroup.map(r => rowView(r, { owner, nameOf, partial, rows, columns, posting, width }))
+    const pairs = inGroup.map(r => rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting, width }))
     for (const [d] of pairs) if (cls) d.classList.add(cls)
     list.append(tr, ...pairs.flat())
   }
@@ -358,7 +358,7 @@ function draw(rows, needs, owner, partial, posting = null) {
     more.append(`${quiet.length} other identit${quiet.length === 1 ? 'y gives' : 'ies give'} no work, take${quiet.length === 1 ? 's' : ''} none, and run${quiet.length === 1 ? 's' : ''} nowhere this page knows. `)
     const show = more.appendChild(el('button', 'link', 'Show them')); show.type = 'button'
     show.onclick = () => {
-      const all = table.classList.toggle('all')
+      const all = table.classList.toggle('all'); table.parentElement.classList.toggle('wide', all)
       if (!all) for (const d of list.querySelectorAll('tr.more:not(.group)')) { d.nextElementSibling.hidden = true; d.querySelector('button.who').setAttribute('aria-expanded', 'false') }
       show.textContent = all ? 'Hide them' : 'Show them'
     }
@@ -452,7 +452,7 @@ function face(picture) {
   if (picture) { f.src = picture; f.alt = ''; f.loading = 'lazy'; f.referrerPolicy = 'no-referrer'; f.onerror = () => f.replaceWith(el('span', 'avatar')) }
   return f
 }
-function rowView(r, { owner, nameOf, partial, rows, columns, posting, width }) {
+function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting, width }) {
   const d = el('tr')
   d.dataset.pubkey = r.pubkey
   const detail = el('tr', 'detail'); detail.hidden = true
@@ -467,7 +467,7 @@ function rowView(r, { owner, nameOf, partial, rows, columns, posting, width }) {
   // This row gives; each column takes. The square's key and answer are the taker's, as nvoy folds it.
   columns.forEach((t, i) => {
     const key = cellKey(t, r)
-    const b = d.appendChild(el('td', 'cell')).appendChild(el('button', 'sq')); b.type = 'button'
+    const b = d.appendChild(el('td', quiet.includes(t) ? 'cell more' : 'cell')).appendChild(el('button', 'sq')); b.type = 'button'
     grid.cells.set(key, { row: t, giver: r, cell: cellOf(t, r, { owner, grants: hive.grants, subjectOf: hive.table.subjectOf }), button: b })
     paint(key)
     b.onclick = () => click(key)
