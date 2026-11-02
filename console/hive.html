@@ -53,6 +53,7 @@
   table.grid td.posts .stalled{color:var(--critical);font-weight:600;white-space:normal}
   table.grid .agent .summary{display:block;font-size:12.5px;color:var(--dim);margin-left:29px}
   table.grid .agent .tick{display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:11px;font-weight:500;color:var(--faint);cursor:pointer;vertical-align:1px}table.grid .agent .tick input{margin:0;accent-color:var(--gold)}
+  table.grid .agent .copy{display:block;margin:1px 0 0 29px}dd .copy{margin-left:8px}table.grid .agent .copy,dd .copy{background:none;border:0;border-radius:0;padding:0;font-size:11px;font-weight:500;color:var(--faint);cursor:pointer;text-decoration:underline dotted;vertical-align:1px}table.grid .agent .copy:hover,dd .copy:hover{color:var(--gold)}
   table.grid .avatar{display:inline-block;width:22px;height:22px;border-radius:50%;object-fit:cover;background:var(--line);vertical-align:-6px;margin-right:7px}
   table.grid tr.group th{padding:16px 0 6px;text-align:left;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--gold);border-bottom:1px solid var(--line)}
   table.grid tr.group:first-child th{padding-top:6px}
@@ -69,7 +70,7 @@
   .legend{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;font-size:13px;color:var(--dim);margin:0 0 12px}
   .legend>span{display:inline-flex;align-items:center;gap:7px}
   .legend .sq{width:18px;height:18px;border-radius:5px;font-size:12px;line-height:14px;cursor:default}
-  @media (max-width:699px){table.grid{font-size:13px}table.grid thead th{font-size:10.5px}.sq{width:24px;height:24px;border-radius:6px}table.grid thead th.corner{min-width:120px}table.grid .agent .summary{margin-left:0}
+  @media (max-width:699px){table.grid{font-size:13px}table.grid thead th{font-size:10.5px}.sq{width:24px;height:24px;border-radius:6px}table.grid thead th.corner{min-width:120px}table.grid .agent .summary,table.grid .agent .copy{margin-left:0}
     /* On a phone the grid scrolls in its own box, so the page never scrolls sideways; the header and the names stay pinned. */
     .grid-wrap{overflow:auto;max-height:calc(100vh - 120px)}table.grid tbody th.agent{position:sticky;left:0;z-index:1;background:var(--panel)}table.grid thead th.corner{left:0;z-index:2}}
   .grid-wrap.wide{overflow:auto;max-height:calc(100vh - 120px)}.grid-wrap.wide table.grid tbody th.agent{position:sticky;left:0;z-index:1;background:var(--panel)}.grid-wrap.wide table.grid thead th.corner{left:0;z-index:2}
@@ -569,6 +570,20 @@ function face(picture) {
   if (picture) { f.src = picture; f.alt = ''; f.loading = 'lazy'; f.referrerPolicy = 'no-referrer'; f.onerror = () => f.replaceWith(el('span', 'avatar')) }
   return f
 }
+// Copy an identity's npub, so it can be pasted into Buzz, a Bunker or a command. The clipboard can
+// refuse (an older browser, a page without focus); then the row's details open with the npub
+// selected, to copy by hand, rather than the page claiming a copy that did not happen.
+function copyButton(into, r, keyText, detail) {
+  const b = into.appendChild(el('button', 'copy', 'Copy npub')); b.type = 'button'
+  b.title = `Copy ${rowName(r)}'s npub`
+  b.onclick = async () => {
+    const said = t => { b.textContent = t; setTimeout(() => { b.textContent = 'Copy npub' }, 1600) }
+    try { await navigator.clipboard.writeText(npub(r.pubkey)); said('Copied') } catch {
+      detail.hidden = false; detail.previousElementSibling?.querySelector('button.who')?.setAttribute('aria-expanded', 'true')
+      getSelection().selectAllChildren(keyText); said('Select and copy')
+    }
+  }
+}
 function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting, width }) {
   const d = el('tr')
   d.dataset.pubkey = r.pubkey
@@ -588,6 +603,8 @@ function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting, wid
     box.onchange = () => { if (box.checked === grid.active.has(r.pubkey)) ticks.delete(r.pubkey); else ticks.set(r.pubkey, box.checked); drafted.delete('active'); drawBar() }
     grid.boxes.set(r.pubkey, box)
   }
+  const keyText = el('span', null, npub(r.pubkey))
+  copyButton(agent, r, keyText, detail)
   grid.summaries.set(r.pubkey, { reach: reachOf(rows, r, hive.buzz).length, line: agent.appendChild(el('span', 'summary')), partial: partial.approvals })
   summarize(r.pubkey)
   // This row gives; each column takes. The square's key and answer are the taker's, as nvoy folds it.
@@ -638,7 +655,8 @@ function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting, wid
   const out = el('div', 'liveness')
   look.onclick = () => checkFound(r, look, out)
   found.appendChild(el('div')).appendChild(look); found.appendChild(out)
-  dl.appendChild(el('dt', null, 'Key')); dl.appendChild(el('dd', 'npub', npub(r.pubkey)))
+  dl.appendChild(el('dt', null, 'Key'))
+  const key = dl.appendChild(el('dd', 'npub')); key.appendChild(keyText); copyButton(key, r, keyText, detail)
   cell.appendChild(dl)
   return [d, detail]
 }
