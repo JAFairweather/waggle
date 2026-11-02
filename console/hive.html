@@ -24,6 +24,7 @@
   .coverage div{color:var(--dim)}.coverage b{color:var(--text);font-weight:650}.coverage .none b{color:var(--critical)}
   .need{border-left:3px solid var(--warn);padding:6px 0 6px 11px;margin:8px 0;font-size:14px;overflow-wrap:anywhere}
   .need .who{color:var(--dim);font-size:13px}
+  .need button{display:block}
   .bar{display:flex;gap:6px 14px;align-items:baseline;flex-wrap:wrap;margin:4px 0 14px}.bar .status{margin:0;flex:1 1 260px}.bar button{margin:0}
   :root{--add:#86a8ff;--remove:#f0915e;--remove-ground:#3a2014}
   @media (prefers-color-scheme:light){:root{--add:#1d4ed8;--remove:#c2410c;--remove-ground:#fbe3d2}}
@@ -174,7 +175,7 @@ import { validControlState, postingCounts, notAnswering, shortNpub } from './age
 import { scopeHash } from './scope-hash.mjs'
 import { signFresh } from './guarded-signer.mjs'
 import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, describeChange, applyChange, relayHost } from './hive-change.mjs'
-import { gridOf, reachOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf } from './hive-grid.mjs'
+import { gridOf, reachOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf } from './hive-grid.mjs'
 import { whatIf } from './hive-what-if.mjs'
 import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { BRIDGE_RELAYS } from './hive-bridge.mjs'
@@ -322,7 +323,16 @@ function draw(rows, needs, owner, partial, posting = null) {
 
   const needBox = $('needs'); needBox.textContent = ''
   $('needs-panel').hidden = !needs.length
-  for (const n of needs) {
+  const idle = idleOf(needs, { owner, nameOf })
+  for (const x of idle.groups) {
+    const d = el('div', 'need', x.text)
+    if (x.can) {
+      const b = d.appendChild(el('button', 'small quiet', x.grants.length === 1 ? 'Withdraw it' : 'Withdraw them'))
+      b.onclick = () => propose(x.grants.map(({ grant, words }) => ({ key: `withdraw:${grant.id}`, sign: '–', words, draft: () => [draftRevoke({ grantId: grant.id })] })))
+    }
+    needBox.appendChild(d)
+  }
+  for (const n of idle.rest) {
     const d = el('div', 'need', n.kind === 'no-card' && partial.cards ? `${n.text} The card relay did not answer in full, so it may have one.` : n.text)
     if (n.grant) d.appendChild(el('div', 'who', `Approval ${n.grant.id.slice(0, 10)}… from ${nameOf(n.grant.grantor)} to ${nameOf(n.grant.grantee)}${n.subject ? `, for ${/^[0-9a-f]{64}$/.test(n.subject) ? nameOf(n.subject) : n.subject}` : ''}`))
     else d.appendChild(el('div', 'who', nameOf(n.pubkey)))
