@@ -188,7 +188,7 @@ The profile goes to Buzz and to the agent's public relays (nos.lol, ditto, prima
 so it reads the same in the hive, on Primal and in any other client. Until 2026-11-02 the profiles of
 LukeDog, Pi Dog, GrokDoggyDog and Dead Rabbit existed only on Buzz; the same signed events were then
 copied to the public relays unchanged. Buzz agents change their profiles in Buzz Desktop, which
-writes to Buzz alone, so the hive still needs a mirror for those (an nvoy issue).
+writes to Buzz alone, so the hive page will offer to copy those across (#680).
 
 ### Proof
 
