@@ -156,7 +156,7 @@ const unanswered = back => back.filter(r => r.state !== 'complete').map(r => r.u
 
 export function grantVerdict(signed, back) {
   const holding = back.filter(r => r.events.some(e => e.id === signed.id)).map(r => r.url)
-  return { kind: 440, done: holding.length > 0, holding, stale: [], silent: unanswered(back), of: back.length }
+  return { kind: signed.kind, done: holding.length > 0, holding, stale: [], silent: unanswered(back), of: back.length }
 }
 
 // The withdrawal counts wherever it is held, the way readGrants and nvoy's fold count it: by its
@@ -171,6 +171,10 @@ export function withdrawalVerdict(revoke, grantId, back) {
 export function verdictText(v) {
   const hosts = list => list.map(relayHost).join(', ')
   const silent = v.silent.length ? ` ${v.silent.length} of ${v.of} relays did not answer the read-back in full (${hosts(v.silent)}).` : ''
+  // The owner's list of active identities (#666) replaces the last one; it grants nothing.
+  if (v.kind === 30078) return v.done
+    ? `Done. ${v.holding.length} of ${v.of} relays serve your list back (${hosts(v.holding)}).${silent}`
+    : `Not done. It was signed and sent, but no relay served it back. A relay's OK is not storage.${silent}`
   if (v.kind === 440) return v.done
     ? `Done. ${v.holding.length} of ${v.of} relays serve it back (${hosts(v.holding)}).${v.holding.length === 1 ? ' Only one relay holds it: if that relay drops it, the approval stops counting.' : ''}${silent}`
     : `Not done. It was signed and sent, but no relay served it back. A relay's OK is not storage.${silent}`
@@ -192,7 +196,7 @@ export async function applyChange(template, { sign, owner, verify, connect, rela
   const published = await publishTo(signed, { relays, connect, timeoutMs })
   onStep('reading it back')
   let verdict
-  if (signed.kind === 440) {
+  if (signed.kind !== 441) {
     verdict = grantVerdict(signed, await readBackFrom([{ ids: [signed.id] }], { relays, connect, verify, timeoutMs }))
   } else {
     const grantId = tag(signed, 'e')[1]

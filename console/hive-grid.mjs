@@ -21,18 +21,48 @@ export function agentsOf(rows) {
 }
 
 // The whole grid. Rows: every identity but the bridge, grouped by where it runs, you first. One that
-// runs nowhere known, gives no work and takes none is quiet: its row and its column fold away
-// together, last, so the top holds the agents and a new key can still be given its first work (#664).
-export function gridOf(rows) {
+// is not active folds away, its row and its column together, last, so the top holds the agents and a
+// new key can still be given its first work (#664). The owner says which are active (#666); until
+// they do, one that runs nowhere known, gives no work and takes none is not.
+export function gridOf(rows, active = null) {
   const giving = givesWork(rows)
   const { groups, folded } = agentsOf(rows)
-  const quiet = folded.filter(r => platformOf(r) === 'other' && !giving.has(r.pubkey))
+  const quiet = active ? rows.filter(r => !r.isOwner && !r.isBridge && !active.has(r.pubkey))
+    : folded.filter(r => platformOf(r) === 'other' && !giving.has(r.pubkey))
   const lines = PLATFORMS.map(platform => ({ platform,
     rows: rows.filter(r => !r.isBridge && !quiet.includes(r) && platformOf(r) === platform.id).sort((a, b) => rank(a) - rank(b)) }))
     .filter(g => g.rows.length)
-  const takers = groups.flatMap(g => g.rows)
+  const takers = groups.flatMap(g => g.rows).filter(r => !quiet.includes(r))
   return { lines, takers, quiet, columns: [...takers, ...quiet] }
 }
+
+// The owner's say over which identities are active (#666): one replaceable event, signed by the owner
+// alone, naming each active key. The newest valid one wins; without one, the grid decides.
+export const ACTIVE_KIND = 30078, ACTIVE_D = 'waggle-hive-active'
+const HEX64 = /^[0-9a-f]{64}$/
+export function readActive(events, { owner, verify }) {
+  let best = null
+  for (const ev of events || []) {
+    try {
+      if (ev?.kind !== ACTIVE_KIND || ev.pubkey !== owner || !ev.tags.some(t => t[0] === 'd' && t[1] === ACTIVE_D) || !verify(ev)) continue
+      if (!best || best.signedAt < ev.created_at) best = { keys: new Set(ev.tags.filter(t => t[0] === 'p' && HEX64.test(t[1])).map(t => t[1])), signedAt: ev.created_at }
+    } catch { /* an unreadable list is no list */ }
+  }
+  return best
+}
+// Only a read that every relay answered in full says what the list holds now: a relay that did not
+// answer may hold a newer one. Until then the ticks show the grid's guess and cannot change it.
+export const activeOf = (read, ctx) => ({ keys: readActive(read.events, ctx)?.keys || null, known: !!read.full })
+// The ticks waiting to be signed, as one replacement of the whole list, or nothing while it is unknown.
+export function tickChange({ active, ticks, known }, nameOf) {
+  if (!known || !ticks.size) return null
+  const keys = new Set(active), on = [], off = []
+  for (const [pk, want] of ticks) { if (want) keys.add(pk); else keys.delete(pk); (want ? on : off).push(nameOf(pk)) }
+  return { keys, words: [on.length && `mark ${on.join(', ')} active`, off.length && `set ${off.join(', ')} aside`].filter(Boolean).join('; ') }
+}
+export const activeNow = (rows, active = null) => new Set(gridOf(rows, active).lines.flatMap(g => g.rows).filter(r => !r.isOwner).map(r => r.pubkey))
+export const draftActive = (keys, now = Math.floor(Date.now() / 1000)) =>
+  ({ kind: ACTIVE_KIND, created_at: now, content: '', tags: [['d', ACTIVE_D], ...[...keys].sort().map(k => ['p', k])] })
 
 // The agents a giver can give work to now, by nvoy's fold.
 export const reachOf = (rows, giver) => rows.filter(r => r.answers?.work.givers.some(g => g.pubkey === giver.pubkey))

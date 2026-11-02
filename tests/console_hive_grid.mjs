@@ -8,6 +8,10 @@
 //  2. The columns are the agents the page knows where they run and anyone that takes work, so
 //     reading across a row says whom it can give work to (#664). A quiet identity's column comes
 //     last, folded, so a newly found key can still be given its first work.
+//  6. The owner says which identities are active (#666): only their own newest signed list counts,
+//     an identity left off it folds away, row and column together, and the list drafts as one
+//     replaceable event naming public keys only. Without one, the grid decides as before. A list
+//     read from fewer than every relay is unknown, and no tick may replace it.
 //  3. A square the owner cannot change says why, and is never offered: a voice's reach, someone
 //     else's approval, an approval someone else also gave, a card that does not count the owner.
 //     An approval from a grantor the agent does not count locks nothing: the agent ignores it.
@@ -18,7 +22,7 @@
 //   node tests/console_hive_grid.mjs
 
 import { PLATFORMS } from '../console/hive-list.mjs'
-import { gridOf, reachOf, agentsOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers } from '../console/hive-grid.mjs'
+import { gridOf, reachOf, agentsOf, readActive, activeNow, draftActive, activeOf, tickChange, ACTIVE_KIND, ACTIVE_D, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers } from '../console/hive-grid.mjs'
 
 let pass = true
 const check = (cond, label) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${label}`); if (!cond) pass = false }
@@ -108,6 +112,32 @@ check(summaryOf(3) === 'Gives work to 3' && summaryOf(0) === 'Gives work to nobo
 // 5. Leftovers.
 const left = leftovers(grants, { owner })
 check(left.length === 2 && left.every(g => g.grantor === owner && g.live), "only the owner's live passes and carrying are offered for withdrawal")
+
+// 6. Active.
+const listed = (pubkey, keys, created_at, d = ACTIVE_D) => ({ kind: ACTIVE_KIND, pubkey, created_at, tags: [['d', d], ...keys.map(k => ['p', k])], content: '' })
+const yes = () => true
+const mine = readActive([listed(owner, [pi], 10), listed(owner, [pi, stray], 20), listed(other, [mc], 30), listed(owner, [dev], 40, 'something-else')], { owner, verify: yes })
+check(mine.signedAt === 20 && [...mine.keys].sort().join() === [pi, stray].sort().join(), "only the owner's own newest list counts")
+check(readActive([listed(owner, [pi], 10)], { owner, verify: () => false }) === null && readActive([], { owner, verify: yes }) === null, 'a list that does not verify is no list, and no list leaves the grid to decide')
+const chosen = gridOf(rows, mine.keys)
+check(chosen.lines.flatMap(g => g.rows).map(r => r.pubkey).sort().join() === [owner, pi, stray].sort().join(), 'with a list, you and the active identities have rows')
+check(chosen.takers.map(r => r.pubkey).join() === pi && chosen.columns.at(-1).pubkey !== pi && chosen.columns.length === rows.length - 3,
+  'an identity set aside folds its column too, so it can still be given work')
+check(JSON.stringify([...activeNow(rows)].sort()) === JSON.stringify(lines.flatMap(g => g.rows).filter(r => r.pubkey !== owner).map(r => r.pubkey).sort()),
+  'before any list, the active identities are the ones the grid shows')
+const drafted = draftActive(new Set([pi, dev]), 99)
+check(drafted.kind === ACTIVE_KIND && drafted.created_at === 99 && drafted.content === '' &&
+  JSON.stringify(drafted.tags) === JSON.stringify([['d', ACTIVE_D], ...[pi, dev].sort().map(k => ['p', k])]), 'the list drafts as one replaceable event of public keys')
+
+const full = activeOf({ events: [listed(owner, [pi], 10)], full: true }, { owner, verify: yes })
+const short = activeOf({ events: [], full: false }, { owner, verify: yes })
+check(full.known && full.keys.has(pi) && !short.known && short.keys === null, 'a list is known only from a read every relay answered in full')
+const ticked = new Map([[pi, false], [dev, true]])
+check(tickChange({ active: new Set([pi, mc]), ticks: ticked, known: false }, nameOf) === null,
+  'while the list is unknown, no tick can replace it, so ticks signed before are never undone by a guess')
+const change = tickChange({ active: new Set([pi, mc]), ticks: ticked, known: true }, pk => ({ [pi]: 'Pi Dog', [dev]: 'waggle-dev' })[pk])
+check([...change.keys].sort().join() === [mc, dev].sort().join() && change.words === 'mark waggle-dev active; set Pi Dog aside',
+  'once known, the ticks replace the list it holds now')
 
 if (!pass) { console.log('\nconsole_hive_grid: FAIL'); process.exit(1) }
 console.log('\nconsole_hive_grid: ok')
