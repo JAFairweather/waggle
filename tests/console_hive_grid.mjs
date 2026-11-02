@@ -12,6 +12,8 @@
 //     an identity left off it folds away, row and column together, and the list drafts as one
 //     replaceable event naming public keys only. Without one, the grid decides as before. A list
 //     read from fewer than every relay is unknown, and no tick may replace it.
+//  7. Above the names, one label spans each run of neighbouring agents in the same harness (#668);
+//     folded columns share one blank span that folds with them.
 //  3. A square the owner cannot change says why, and is never offered: a voice's reach, someone
 //     else's approval, an approval someone else also gave, a card that does not count the owner.
 //     An approval from a grantor the agent does not count locks nothing: the agent ignores it.
@@ -22,7 +24,7 @@
 //   node tests/console_hive_grid.mjs
 
 import { PLATFORMS } from '../console/hive-list.mjs'
-import { gridOf, reachOf, agentsOf, readActive, activeNow, draftActive, activeOf, tickChange, ACTIVE_KIND, ACTIVE_D, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers } from '../console/hive-grid.mjs'
+import { gridOf, reachOf, agentsOf, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, ACTIVE_KIND, ACTIVE_D, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers } from '../console/hive-grid.mjs'
 
 let pass = true
 const check = (cond, label) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${label}`); if (!cond) pass = false }
@@ -138,6 +140,13 @@ check(tickChange({ active: new Set([pi, mc]), ticks: ticked, known: false }, nam
 const change = tickChange({ active: new Set([pi, mc]), ticks: ticked, known: true }, pk => ({ [pi]: 'Pi Dog', [dev]: 'waggle-dev' })[pk])
 check([...change.keys].sort().join() === [mc, dev].sort().join() && change.words === 'mark waggle-dev active; set Pi Dog aside',
   'once known, the ticks replace the list it holds now')
+
+// 7. Runs on.
+const runs = runsOf(columns, quiet)
+check(JSON.stringify(runs) === JSON.stringify([
+  { label: 'Claude Code', span: 2, more: false }, { label: 'Codex', span: 1, more: false }, { label: 'Pi', span: 1, more: false },
+  { label: 'Buzz', span: 2, more: false }, { label: '', span: 1, more: true }]), 'neighbours in one harness share one label, and folded columns one blank')
+check(runs.reduce((n, r) => n + r.span, 0) === columns.length, 'the labels span every column exactly once')
 
 if (!pass) { console.log('\nconsole_hive_grid: FAIL'); process.exit(1) }
 console.log('\nconsole_hive_grid: ok')
