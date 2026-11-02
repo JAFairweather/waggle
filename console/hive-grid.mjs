@@ -50,6 +50,16 @@ export function readActive(events, { owner, verify }) {
   }
   return best
 }
+// Only a read that every relay answered in full says what the list holds now: a relay that did not
+// answer may hold a newer one. Until then the ticks show the grid's guess and cannot change it.
+export const activeOf = (read, ctx) => ({ keys: readActive(read.events, ctx)?.keys || null, known: !!read.full })
+// The ticks waiting to be signed, as one replacement of the whole list, or nothing while it is unknown.
+export function tickChange({ active, ticks, known }, nameOf) {
+  if (!known || !ticks.size) return null
+  const keys = new Set(active), on = [], off = []
+  for (const [pk, want] of ticks) { if (want) keys.add(pk); else keys.delete(pk); (want ? on : off).push(nameOf(pk)) }
+  return { keys, words: [on.length && `mark ${on.join(', ')} active`, off.length && `set ${off.join(', ')} aside`].filter(Boolean).join('; ') }
+}
 export const activeNow = (rows, active = null) => new Set(gridOf(rows, active).lines.flatMap(g => g.rows).filter(r => !r.isOwner).map(r => r.pubkey))
 export const draftActive = (keys, now = Math.floor(Date.now() / 1000)) =>
   ({ kind: ACTIVE_KIND, created_at: now, content: '', tags: [['d', ACTIVE_D], ...[...keys].sort().map(k => ['p', k])] })
