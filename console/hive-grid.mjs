@@ -126,3 +126,40 @@ export function summaryOf(count, partial = false) {
 export function leftovers(grants, { owner }) {
   return grants.filter(g => g.live && g.grantor === owner && (PASS_CAPS.includes(g.cap) || g.cap === 'task-relay'))
 }
+
+// Needs you, for approvals that do nothing (#670): one plain item per kind of approval, naming the
+// agents, instead of a line per approval. Only the one who gave them can withdraw them.
+const TIDY = ['replaced', 'duplicate', 'expired']
+const listed = names => names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
+const day = at => new Date(at * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' })
+function deed(cap, giver, agents) {
+  const whose = giver === 'you' ? 'your' : `${giver}'s`
+  if (cap === 'task+act') return `${agents} act on ${whose} work without asking`
+  if (cap === 'task') return `${agents} take work from ${giver}`
+  return `${agents} hold a "${cap}" approval for ${giver}`
+}
+export function idleOf(needs, { owner, nameOf }) {
+  const groups = new Map(), rest = []
+  for (const n of needs) {
+    if (!TIDY.includes(n.kind) || !n.grant) { rest.push(n); continue }
+    const g = n.grant, key = [n.kind, g.grantor, g.grantee, g.cap].join('|')
+    if (!groups.has(key)) groups.set(key, { kind: n.kind, grantor: g.grantor, grantee: g.grantee, cap: g.cap, needs: [] })
+    groups.get(key).needs.push(n)
+  }
+  const named = s => /^[0-9a-f]{64}$/.test(s || '') ? nameOf(s) : s || 'an agent'
+  return { rest, groups: [...groups.values()].map(x => {
+    const who = nameOf(x.grantor), giver = nameOf(x.grantee), count = x.needs.length, one = count === 1
+    const agents = listed([...new Set(x.needs.map(n => named(n.subject)))].sort())
+    const days = [...new Set(x.needs.map(n => n.grant.at).sort((a, b) => a - b).map(day))]
+    const when = days.length === 1 ? `On ${days[0]}` : `Between ${days[0]} and ${days.at(-1)}`
+    const did = `${who} let ${deed(x.cap, giver, agents)}`
+    const text = x.kind === 'replaced'
+      ? `${when} ${did}. That later ended, so ${x.cap === 'task+act' ? 'today they ask before acting' : 'it no longer holds'}. ${one ? 'This old approval was' : `These ${count} old approvals were`} left behind and ${one ? 'does' : 'do'} nothing.`
+      : x.kind === 'duplicate'
+        ? `${when} ${did} more than once. Only the newest counts, so ${one ? 'the older copy does' : `the ${count} older copies do`} nothing.`
+        : `${when} ${did}, but ${one ? 'it has' : 'they have'} run out. ${one ? 'The expired approval is' : `The ${count} expired approvals are`} still published and ${one ? 'does' : 'do'} nothing.`
+    const can = x.grantor === owner
+    return { kind: x.kind, text: `${text[0].toUpperCase()}${text.slice(1)}${can ? '' : ` Only ${who} can withdraw ${one ? 'it' : 'them'}.`}`, can,
+      grants: x.needs.map(n => ({ grant: n.grant, words: `withdraw an old approval that let ${deed(x.cap, giver, named(n.subject))}` })) }
+  }) }
+}

@@ -14,6 +14,8 @@
 //     read from fewer than every relay is unknown, and no tick may replace it.
 //  7. Above the names, one label spans each run of neighbouring agents in the same harness (#668);
 //     folded columns share one blank span that folds with them.
+//  8. Approvals that do nothing read as one plain item per kind (#670): who let whom do what, when,
+//     what holds today, and one withdrawal per approval for the owner's own; never an approval id.
 //  3. A square the owner cannot change says why, and is never offered: a voice's reach, someone
 //     else's approval, an approval someone else also gave, a card that does not count the owner.
 //     An approval from a grantor the agent does not count locks nothing: the agent ignores it.
@@ -24,7 +26,7 @@
 //   node tests/console_hive_grid.mjs
 
 import { PLATFORMS } from '../console/hive-list.mjs'
-import { gridOf, reachOf, agentsOf, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, ACTIVE_KIND, ACTIVE_D, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers } from '../console/hive-grid.mjs'
+import { gridOf, reachOf, agentsOf, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, ACTIVE_KIND, ACTIVE_D, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers } from '../console/hive-grid.mjs'
 
 let pass = true
 const check = (cond, label) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${label}`); if (!cond) pass = false }
@@ -147,6 +149,27 @@ check(JSON.stringify(runs) === JSON.stringify([
   { label: 'Claude Code', span: 2, more: false }, { label: 'Codex', span: 1, more: false }, { label: 'Pi', span: 1, more: false },
   { label: 'Buzz', span: 2, more: false }, { label: '', span: 1, more: true }]), 'neighbours in one harness share one label, and folded columns one blank')
 check(runs.reduce((n, r) => n + r.span, 0) === columns.length, 'the labels span every column exactly once')
+
+// 8. Approvals that do nothing.
+const pk = c => c.repeat(64), me = pk('a'), names = { [pk('b')]: 'Pi Dog', [pk('c')]: 'DJ Codex', [pk('d')]: 'MC Claude', [pk('e')]: 'Dennis' }
+const say = k => k === me ? 'you' : names[k] || k.slice(0, 8)
+const oct19 = Date.UTC(2026, 9, 19, 12) / 1000
+const old = (id, kind, subject, cap = 'task+act', grantor = me, grantee = me, at = oct19) => ({ kind, subject, text: 'raw', grant: { id, grantor, grantee, cap, at } })
+const idle = idleOf([
+  old('1', 'replaced', pk('c')), old('2', 'replaced', pk('b')), old('3', 'replaced', pk('d')),
+  old('4', 'duplicate', pk('b'), 'task', me, pk('c'), oct19 - 86400 * 3),
+  old('5', 'expired', pk('d'), 'task', pk('e'), pk('e')),
+  { kind: 'no-card', pubkey: pk('c'), text: 'no card' },
+], { owner: me, nameOf: say })
+check(idle.groups.length === 3 && idle.rest.map(n => n.kind).join() === 'no-card', 'one item per kind of approval; anything else is left as it was')
+check(idle.groups[0].text === 'On 19 Oct you let DJ Codex, MC Claude and Pi Dog act on your work without asking. That later ended, so today they ask before acting. These 3 old approvals were left behind and do nothing.',
+  'replaced approvals say who, when, what holds today, and that they do nothing, in one sentence')
+check(idle.groups[1].text === 'On 16 Oct you let Pi Dog take work from DJ Codex more than once. Only the newest counts, so the older copy does nothing.', 'an older copy says only the newest counts')
+check(idle.groups[2].text === "On 19 Oct Dennis let MC Claude take work from Dennis, but it has run out. The expired approval is still published and does nothing. Only Dennis can withdraw it." && !idle.groups[2].can,
+  "someone else's approval is explained but not offered: only they can withdraw it")
+check(idle.groups[0].can && idle.groups[0].grants.map(g => g.grant.id).join() === '1,2,3' && idle.groups[0].grants[0].words === 'withdraw an old approval that let DJ Codex act on your work without asking',
+  'the owner withdraws each approval in the group, each change in plain words')
+check(!idle.groups.some(g => /[0-9a-f]{10}|from you to you/.test(g.text)), 'no approval ids and no "from you to you"')
 
 if (!pass) { console.log('\nconsole_hive_grid: FAIL'); process.exit(1) }
 console.log('\nconsole_hive_grid: ok')
