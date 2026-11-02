@@ -41,11 +41,11 @@ ok('the egress why enum is the lanes plus the release outcome, and nothing else'
 ok('lane ids are unique', new Set(LANE_IDS).size === LANE_IDS.length)
 
 // The consent gate is derived from lane data rather than a repeated pair of names, so
-// adding a lane cannot silently escape it. Pin the current, deliberate answer: the two
-// non-consensual lanes are gated; the two that already imply consent are not.
-ok('exactly the two non-consensual lanes are consent-gated',
+// adding a lane cannot silently escape it. Pin the current, deliberate answer: only a stranger's
+// reply is gated. A followed writer is the owner's choice (#649), and the other two imply consent.
+ok('only the stranger-reply lane is consent-gated',
   LANES.filter(l => l.consentGated).map(l => l.id).join(' | ') ===
-  'mirrored feed | reply to our note')
+  'reply to our note')
 ok('the two lanes that require a watched note are the reply lanes',
   LANES.filter(l => l.requiresWatchedNotes).map(l => l.id).join(' | ') ===
   'standing follow | reply to our note')

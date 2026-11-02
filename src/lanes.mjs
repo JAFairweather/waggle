@@ -21,11 +21,12 @@
 export const LANES = [
   {
     id: 'mirrored feed',
-    // Highest trust: an author the operator chose to mirror. Not questioned.
+    // Highest trust: an author the owner chose to follow. Not questioned, and not asked (#649):
+    // the owner defines who the hive follows, and nothing else gates it.
     from: 'watch_authors',
     dest: 'community channel',
     mentions: false,
-    consentGated: true,       // §8 in-door gate applies (default-off)
+    consentGated: false,      // #649: following is the owner's choice alone
     requiresWatchedNotes: false,
     membershipInSignedState: true,   // `follows[]` IS PUB.authors, with per-author consent
   },

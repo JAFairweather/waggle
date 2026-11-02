@@ -106,6 +106,9 @@
   .result{font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;border-left:3px solid var(--faint);padding:4px 0 4px 10px;margin:8px 0}
   .result.ok{border-left-color:var(--good)}.result.err{border-left-color:var(--critical)}
   .ask{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px}.ask button{margin:0}
+  #following-list{margin:4px 0 12px}.follow-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}.follow-row:last-child{border-bottom:0}
+  .follow-row .avatar{display:inline-block;width:26px;height:26px;border-radius:50%;object-fit:cover;background:var(--line);flex:none}.follow-row .who-name{flex:1;min-width:0;overflow-wrap:anywhere}.follow-row button{margin:0}
+  #follow-target{flex:1;min-width:0;max-width:440px;background:var(--ground);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:7px 10px;font:13px var(--mono)}
   #what-if-answer ul{margin:6px 0 0;padding-left:1.2em;color:var(--dim);font-size:12.5px}
   #what-if-answer .result{color:var(--dim)}
   @media (max-width:560px){dl.answers{grid-template-columns:1fr;margin-left:0}dl.answers dd{margin-bottom:6px}}
@@ -141,6 +144,13 @@
       <p id="talk"></p>
       <p id="not-read"></p>
     </details>
+  </section>
+
+  <section class="panel" id="following-panel" hidden><h2>Following</h2>
+    <p class="note">Public writers whose posts come into #waggle-test. You choose them; nothing else from outside gets in.</p>
+    <div id="following-list"></div>
+    <div class="ask"><input id="follow-target" placeholder="Paste an npub or profile link" spellcheck="false" autocomplete="off" aria-label="Writer to follow"><button id="follow-go" class="small">Follow</button></div>
+    <div id="following-status" class="status" role="status"></div>
   </section>
 
   <section class="panel" id="leftovers-panel" hidden><h2>Old approvals</h2>
@@ -185,6 +195,7 @@ import { whatIf } from './hive-what-if.mjs'
 import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { BRIDGE_RELAYS } from './hive-bridge.mjs'
 import { controlStateFresh } from './control-state-freshness.mjs'
+import { followsOf, writerKey, draftFollow, applyFollow } from './hive-following.mjs'
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
 import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK, RUNS_LOGO } from './hive-list.mjs'
@@ -294,7 +305,7 @@ async function load({ owner: rememberedOwner = null } = {}) {
     const table = await scopeTable(candidates, grants, scopeHash)
 
     st.textContent = 'Reading names…'
-    const everyone = [...new Set([...candidates, ...grants.map(g => table.subjectOf(g.hash)).filter(s => /^[0-9a-f]{64}$/.test(s || ''))])]
+    const everyone = [...new Set([...candidates, ...followsOf(rosterState), ...grants.map(g => table.subjectOf(g.hash)).filter(s => /^[0-9a-f]{64}$/.test(s || ''))])]
     const names = await read([...new Set([...CARD_RELAYS, ...GRANT_RELAYS])], { kinds: [0], authors: everyone, limit: everyone.length * 3 })
     cover('profiles', names)
     const profiles = newestProfiles(names.events)
@@ -312,12 +323,65 @@ async function load({ owner: rememberedOwner = null } = {}) {
     }
     drawCoverage()
     draw(rows, needs, owner, partial, posting)
+    drawFollowing(rosterState, profiles, bridge)
     st.className = 'status ok'
     st.textContent = `Read ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${rows.length} identities · ${partial.approvals || partial.keys || partial.active ? 'not every relay answered in full' : 'every relay answered'}${partial.active ? ', so the Active ticks are locked and the Buzz columns unknown until a full read' : ''}${posting ? ` · posts counted by the bridge at ${new Date(posting.at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : bridge ? '' : ' · no bridge key saved, so no post counts: paste it on Config'}`
     $('go').textContent = 'Read again'
   } catch (e) {
     st.className = 'status err'; st.textContent = e.message || String(e)
   } finally { $('go').disabled = false }
+}
+
+// ── Following (#649): the public writers whose posts enter the hive. The owner chooses them. ──
+function drawFollowing(state, profiles, bridge) {
+  $('following-panel').hidden = false
+  const list = $('following-list'); list.textContent = ''
+  const live = !!bridge && !!state && controlStateFresh(state.observed_at)
+  const why = !bridge ? 'This browser does not know the waggle bridge key yet, so it cannot read or change who the hive follows.'
+    : !state ? 'The bridge has not published its state, so who the hive follows cannot be read.'
+      : !live ? 'The bridge has not published its state for a while, so the list below may be out of date, and changes wait until it does.' : ''
+  const follows = followsOf(state)
+  if (!follows.length && state) list.append(el('p', 'note', 'The hive follows nobody yet.'))
+  for (const pk of follows) {
+    const p = profiles.get(pk) || {}
+    const row = el('div', 'follow-row')
+    const stop = el('button', 'small quiet', 'Stop following'); stop.disabled = !live
+    stop.onclick = () => changeFollow(pk, false)
+    row.append(face(p.picture), el('span', 'who-name', p.display_name || p.name || shortNpub(pk)), stop)
+    list.append(row)
+  }
+  $('follow-go').disabled = !live; $('follow-target').disabled = !live
+  const fs = $('following-status'); fs.className = why ? 'status err' : 'status'; fs.textContent = why
+}
+
+async function changeFollow(target, follow) {
+  const fs = $('following-status'); fs.className = 'status'
+  const buttons = [...document.querySelectorAll('#following-panel button')]
+  buttons.forEach(b => { b.disabled = true })
+  try {
+    const template = draftFollow({ bridge: hive.bridge, target, follow })
+    const signer = await consoleSigner()
+    const r = await applyFollow(template, {
+      sign: t => signFresh(t, signer), owner: hive.owner, verify: verifyEvent, connect: url => new WebSocket(url),
+      before: hive.rosterState, relays: ROSTER_RELAYS,
+      readStates: async () => rosterStates((await read(ROSTER_RELAYS, ROSTER_FILTER(hive.bridge))).events, hive.bridge),
+      onStep: step => { fs.textContent = `${follow ? 'Following' : 'Stopping'}: ${step}…` },
+    })
+    fs.className = r.verdict.done ? 'status ok' : 'status'; fs.textContent = r.text
+    if (r.verdict.done) { $('follow-target').value = ''; await load({ owner: hive.owner }); $('following-status').className = 'status ok'; $('following-status').textContent = r.text }
+  } catch (e) {
+    fs.className = 'status err'; fs.textContent = e.message || String(e)
+  } finally {
+    const live = !!hive?.bridge && controlStateFresh(hive?.rosterState?.observed_at)
+    buttons.forEach(b => { b.disabled = !live })
+  }
+}
+$('follow-go').onclick = () => {
+  const fs = $('following-status')
+  let pk
+  try { pk = writerKey($('follow-target').value, nip19.decode) } catch (e) { fs.className = 'status err'; fs.textContent = e.message; return }
+  if (followsOf(hive?.rosterState).includes(pk)) { fs.className = 'status'; fs.textContent = 'The hive already follows them.'; return }
+  changeFollow(pk, true)
 }
 
 // One name per identity, everywhere on the page (#654): an unnamed voice row is "Your voice".

@@ -57,6 +57,11 @@ let n = 0, pass = 0
 const t = (name, ok) => { n++; if (ok) { pass++; console.log(`ok - ${name}`) } else console.log(`FAIL - ${name}`) }
 const wire = (ev) => JSON.parse(JSON.stringify(ev))
 const stateOf = () => buildControlState().follows.find(f => f.pubkey === watched)?.consent
+// #649 ships followed writers ungated. Every consent word below describes a lane the gate DOES
+// cover, so the file restores that lane for them and proves the shipped default at the end.
+const { LANES } = await import('../src/lanes.mjs')
+const feedLane = LANES.find(l => l.id === 'mirrored feed')
+feedLane.consentGated = true
 
 t('a configured watched author starts pending', stateOf() === 'pending')
 mirrorAsked.add(watched)
@@ -699,6 +704,21 @@ t('#389 …and the other author is unaffected — the projection is per-author, 
 t('#389 the muted label names the APPROVER as the refuser, not the author',
   /by you/i.test(CONSENT_LABEL.muted) && !/declined/i.test(CONSENT_LABEL.muted))
 PUB.muted.pop(); PUB.authors.pop()
+
+// #649, the shipped default: the owner defines who is followed and nothing else gates it. With the
+// gate switched on, an asked, a withdrawn and a muted writer are all carried, and say so.
+feedLane.consentGated = false
+const asked649 = getPublicKey(generateSecretKey())
+PUB.authors.push(asked649, mutedOnly); PUB.muted.push(mutedOnly); mirrorAsked.add(asked649)
+const word649 = pk => buildControlState().follows.find(f => f.pubkey === pk)?.consent
+t('#649 with the gate ON a followed writer who was asked reads pending — carried, not held',
+  word649(asked649) === 'pending')
+t('#649 …a writer who withdrew reads pending too, because the post still goes through', word649(watched) === 'pending')
+t('#649 …and so does a muted one', word649(mutedOnly) === 'pending')
+t('#649 every word published for a followed writer is a carrying word',
+  buildControlState().follows.every(f => CONSENT_IS_CARRYING[f.consent] === true))
+PUB.muted.pop(); PUB.authors.pop(); PUB.authors.pop(); mirrorAsked.delete(asked649)
+feedLane.consentGated = true
 PUB.mirrorRequireConsent = false
 
 // Precedence is copied from routePublic's gate, so assert the pairs that could plausibly be ordered

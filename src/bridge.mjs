@@ -1960,6 +1960,8 @@ async function forwardPublic(ev, why, dest, quarantine) {
   })
 }
 
+// Does the in-door gate cover followed writers at all? Read from the lane, like the gate itself.
+const FEED_LANE_GATED = () => LANES.some(l => l.id === LANE_IDS[0] && l.consentGated)
 function routePublic(ev) {
   if (!ev || !ev.id || ev.kind !== 1 || seen.has(ev.id)) return
   // Signature verification is MANDATORY, and it comes BEFORE the trust classification below —
@@ -2701,15 +2703,21 @@ function buildControlState() {
     // It used to be four words for six realities: grandfathered, muted, never-asked and gated-held
     // all published as `pending`, and a grandfathered author is CARRIED. Precedence lives in
     // consent_state.mjs, copied from routePublic's gate rather than chosen here.
+    // #649: when the lane is not gated, every followed writer is carried, so only the words that
+    // describe a carry can be true: active, grandfathered or pending.
     follows: PUB.authors.map((pubkey) => ({
       pubkey,
-      consent: consentState({
+      consent: FEED_LANE_GATED() ? consentState({
         consented: mirrorConsent.has(pubkey),
         grandfathered: PUB.mirrorGrandfathered.includes(pubkey),
         revoked: mirrorRevoked.has(pubkey),
         muted: PUB.muted.includes(pubkey),
         asked: mirrorAsked.has(pubkey),
         gated: PUB.mirrorRequireConsent,
+      }) : consentState({
+        consented: mirrorConsent.has(pubkey),
+        grandfathered: PUB.mirrorGrandfathered.includes(pubkey),
+        gated: false,
       }),
     })),
     // Per-agent lifecycle rows (#309). Public-safe by construction: a public key, a status from a
@@ -2733,7 +2741,7 @@ function buildControlState() {
     // aggregate counters only: no channel UUIDs, host paths, relay URLs, credentials, or payloads.
     operations: {
       trust: { trusted_repliers: PUB.trustedRepliers.length, muted_authors: PUB.muted.length, watched_notes: PUB.events.length },
-      lanes: { public_read: CARRYING, sealed: CARRYING && SEALED_LANES, return_watch: CARRYING && PUB.scanChannels.length > 0, relay_ingress: CARRYING && PUB.relayChannels.length > 0 },
+      lanes: { public_read: CARRYING || PUB.authors.length > 0, sealed: CARRYING && SEALED_LANES, return_watch: CARRYING && PUB.scanChannels.length > 0, relay_ingress: CARRYING && PUB.relayChannels.length > 0 },
       gates: {
         consent_required: PUB.mirrorRequireConsent,
         ask_per_hour: PUB.mirrorAskPerHour,
@@ -4146,7 +4154,6 @@ function connectPublic(url) {
     // than lingering behind a stale filter. watchedSubKey guards against churning an unchanged set.
     let watchedSubKey = null
     const subscribeWatched = () => {
-      if (!CARRYING) return   // #658: nor is a watched author's
       const authors = PUB.authors.slice().sort()
       const key = authors.join(',')
       if (key === watchedSubKey) return
@@ -4221,11 +4228,13 @@ function connectPublic(url) {
       log(`[pub ${url}] open, subscribing (since=${PUB.since}, backfill<=${PUB.backfillLimit})`)
       // A4: relay-side `limit` bounds the first-connect backfill so a watched author's whole
       // history can't be pulled into a channel. The app-side buf cap below is defense in depth.
-      if (CARRYING && PUB.authors.length) { expect.add('pa'); ws.send(JSON.stringify(['REQ', 'pa', { kinds: [1], authors: PUB.authors, since: PUB.since, limit: PUB.backfillLimit }])) }
+      // #649: following is not carrying. The owner's followed writers enter the hive whatever the
+      // carrying switch says; everything else on this connection stays behind it.
+      if (PUB.authors.length) { expect.add('pa'); ws.send(JSON.stringify(['REQ', 'pa', { kinds: [1], authors: PUB.authors, since: PUB.since, limit: PUB.backfillLimit }])) }
       if (CARRYING && PUB.events.length) { expect.add('pe'); ws.send(JSON.stringify(['REQ', 'pe', { kinds: [1], '#e': PUB.events, since: PUB.since, limit: PUB.backfillLimit }])) }
       // A7: kind:5 deletes from watched authors. Longer lookback than the kind:1 watermark
       // (deletes are rare + idempotent; one issued during downtime must not be missed).
-      if (CARRYING && PUB.authors.length) { expect.add('pd'); ws.send(JSON.stringify(['REQ', 'pd', { kinds: [5], authors: PUB.authors, since: Math.floor(Date.now() / 1000) - DEL_SINCE_SECS, limit: PUB.backfillLimit }])) }
+      if (PUB.authors.length) { expect.add('pd'); ws.send(JSON.stringify(['REQ', 'pd', { kinds: [5], authors: PUB.authors, since: Math.floor(Date.now() / 1000) - DEL_SINCE_SECS, limit: PUB.backfillLimit }])) }
       watchedSubKey = PUB.authors.slice().sort().join(',')   // #206: initial pa/pd already cover this set; a later watchlist change re-fires subscribeWatched
       // NIP-DA: grants + revocations from the grantor set. Wide lookback — a standing
       // grant issued weeks ago must survive any restart (stateless consumption).

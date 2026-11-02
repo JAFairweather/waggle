@@ -82,13 +82,14 @@ check(!held(routeOf(feedPost(partSk))), 'OFF: a mirrored-feed author with no con
 
 // --- ON — the gate engages --------------------------------------------------------------------
 PUB.mirrorRequireConsent = true
-check(held(routeOf(feedPost(partSk))), 'ON: a mirrored feed with no consent is HELD')
+// #649: the owner defines who the hive follows, and nothing else gates it. The gate stays for a
+// stranger's reply, which is where the rest of this file proves it.
+check(!held(routeOf(feedPost(partSk))), 'ON: a followed writer with no consent is NOT held (#649 — the owner chose them)')
 check(!held(routeOf(feedPost(grandSk))), 'ON: a grandfathered author flows without a consent record')
 
-// consent arrives → the feed flows
 processConsentEvent(consent(partSk))
 check(mirrorConsent.has(participant), 'processConsentEvent builds the set from a participant 440')
-check(!held(routeOf(feedPost(partSk))), 'ON: once consented, the mirrored feed flows')
+check(!held(routeOf(feedPost(partSk))), 'ON: a consented followed writer flows too')
 
 // --- the reply lane: held INVISIBLY (before staging) until consent -----------------------------
 check(held(routeOf(replyPost(replierSk))), 'ON: an un-consented reply is HELD before staging (invisible)')
@@ -109,7 +110,12 @@ const refreshBeforeOwnRevoke = revocationRefreshes
 processConsentEvent(revokeBy(partSk, c.id))       // the participant's OWN 441
 check(!mirrorConsent.has(participant), 'the participant\'s own 441 revokes their consent')
 check(revocationRefreshes === refreshBeforeOwnRevoke + 1, 'a valid 441 refreshes the record-id revocation subscription')
-check(held(routeOf(feedPost(partSk))), 'ON: after revocation, the feed is held again')
+check(!held(routeOf(feedPost(partSk))), 'ON: after revocation a followed writer still flows (#649)')
+const rc = consent(replierSk)
+processConsentEvent(rc)
+check(!held(routeOf(replyPost(replierSk))), 'ON: a consented replier flows')
+processConsentEvent(revokeBy(replierSk, rc.id))
+check(held(routeOf(replyPost(replierSk))), 'ON: after the replier withdraws, their reply is held again')
 
 // --- processConsentEvent ignores what is not a mirror consent (fresh keys, non-vacuous) --------
 const aSk = generateSecretKey(), aPk = getPublicKey(aSk)
@@ -133,20 +139,20 @@ check(mirrorConsent.has(ePk), 'a well-formed mirror consent for this bridge+comm
 // Exercises the ToS bump the reviewer flagged as untested. mirror_require_consent stays ON.
 const V1 = 'a'.repeat(64), V2 = 'b'.repeat(64)
 const vSk = generateSecretKey(), vPk = getPublicKey(vSk)
-const wSk = generateSecretKey(), wPk = getPublicKey(wSk)
-PUB.authors.push(vPk, wPk)   // make them mirrored-feed authors so their posts reach the gate
+const wSk = generateSecretKey()
+// Replies to our watched note, so their posts reach the gate (#649: a followed writer's do not).
 PUB.mirrorExpectedTosHash = V1
 processConsentEvent(consent(vSk, { tos: V1 }))
 check(mirrorConsent.get(vPk)?.tosHash === V1, 'the consent records the terms hash it was given')
-check(!held(routeOf(feedPost(vSk))), 'version ON: a consent matching the current ToS flows')
+check(!held(routeOf(replyPost(vSk))), 'version ON: a consent matching the current ToS flows')
 PUB.mirrorExpectedTosHash = V2                                   // a material v1->v2 bump
-check(held(routeOf(feedPost(vSk))), 'version ON: after a ToS bump, the stale-terms consent is HELD (fails closed)')
+check(held(routeOf(replyPost(vSk))), 'version ON: after a ToS bump, the stale-terms consent is HELD (fails closed)')
 processConsentEvent(consent(vSk, { tos: V2 }))                   // the participant re-consents under v2
-check(!held(routeOf(feedPost(vSk))), 'version ON: re-consent under the new terms flows again')
+check(!held(routeOf(replyPost(vSk))), 'version ON: re-consent under the new terms flows again')
 
 PUB.mirrorExpectedTosHash = null                                // unconfigured → presence-only (back-compat)
 processConsentEvent(consent(wSk, { tos: 'deadbeef'.repeat(8) }))
-check(!held(routeOf(feedPost(wSk))), 'version OFF (no hash configured): presence-only, any-terms consent flows')
+check(!held(routeOf(replyPost(wSk))), 'version OFF (no hash configured): presence-only, any-terms consent flows')
 
 realLog(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
 process.exit(pass ? 0 : 1)
