@@ -2,7 +2,7 @@
 // it, and a square where they meet, so reading across a row says whom it can give work to (#664).
 // Pure, so the page and the tests read the same answers.
 import { WORK_CAPS, PASS_CAPS, approvalsOf } from './hive-change.mjs'
-import { PLATFORMS, platformOf } from './hive-list.mjs'
+import { PLATFORMS, RUNS_ON, platformOf } from './hive-list.mjs'
 
 const AGENT_PLATFORMS = ['lab', 'third-party', 'grok', 'buzz']
 const rank = row => row.isOwner ? -1 : PLATFORMS.findIndex(p => p.id === platformOf(row))
@@ -34,6 +34,19 @@ export function gridOf(rows, active = null) {
     .filter(g => g.rows.length)
   const takers = groups.flatMap(g => g.rows).filter(r => !quiet.includes(r))
   return { lines, takers, quiet, columns: [...takers, ...quiet] }
+}
+
+// The row above the names: one label over each run of neighbouring columns that share a harness
+// (#668). Folded columns share one blank span, folded with them.
+export function runsOf(columns, quiet = []) {
+  const spans = []
+  for (const r of columns) {
+    const more = quiet.includes(r), label = more ? '' : RUNS_ON[r.pubkey] || ''
+    const last = spans.at(-1)
+    if (last && last.label === label && last.more === more) last.span++
+    else spans.push({ label, span: 1, more })
+  }
+  return spans
 }
 
 // The owner's say over which identities are active (#666): one replaceable event, signed by the owner

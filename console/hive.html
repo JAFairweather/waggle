@@ -34,6 +34,9 @@
   table.grid thead th{position:sticky;top:env(safe-area-inset-top,0px);z-index:1;background:var(--panel);border-bottom:1px solid var(--line);padding:9px 3px;font-size:12px;font-weight:650;line-height:1.15;text-align:center;vertical-align:bottom}
   table.grid thead th.corner{text-align:left;font:600 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim);padding-left:0;min-width:170px}
   table.grid thead th.posts{font:600 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim);padding-inline:8px}
+  table.grid thead tr#grid-runs th{height:26px;padding:6px 3px 0;border-bottom:0;font:600 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--dim);vertical-align:bottom}
+  table.grid thead tr#grid-runs th.runtime:not(:empty){border-left:1px solid var(--line);box-shadow:inset 0 2px 0 var(--line)}
+  table.grid thead tr#grid-head th{top:calc(env(safe-area-inset-top,0px) + 26px)}
   table.grid th.taker .avatar{display:block;margin:0 auto 5px}
   table.grid th.taker,table.grid td.cell,table.grid th.posts,table.grid td.posts{border-left:1px solid var(--line)}
   table.grid tbody th.agent{text-align:left;font-weight:400;padding:8px 10px 8px 0;border-bottom:1px solid var(--line)}
@@ -120,7 +123,7 @@
       <span id="ask-note"></span>
     </div>
     <div class="grid-wrap"><table class="grid">
-      <thead><tr id="grid-head"></tr></thead>
+      <thead><tr id="grid-runs"></tr><tr id="grid-head"></tr></thead>
       <tbody id="list"></tbody>
     </table></div>
     <p class="footnote" id="folded" hidden></p>
@@ -171,7 +174,7 @@ import { validControlState, postingCounts, notAnswering, shortNpub } from './age
 import { scopeHash } from './scope-hash.mjs'
 import { signFresh } from './guarded-signer.mjs'
 import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, describeChange, applyChange, relayHost } from './hive-change.mjs'
-import { gridOf, reachOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive } from './hive-grid.mjs'
+import { gridOf, reachOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, runsOf } from './hive-grid.mjs'
 import { whatIf } from './hive-what-if.mjs'
 import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { BRIDGE_RELAYS } from './hive-bridge.mjs'
@@ -341,6 +344,13 @@ function draw(rows, needs, owner, partial, posting = null) {
     const th = head.appendChild(el('th', quiet.includes(t) ? 'taker more' : 'taker')); th.scope = 'col'
     th.append(face(t.picture), ...breakable(rowName(t)))
   }
+  // Above the names, what each runs on (#668).
+  const runs = $('grid-runs'); runs.textContent = ''
+  runs.appendChild(el('th', 'corner', 'Runs on'))
+  for (const { label, span, more } of runsOf(columns, quiet)) {
+    const th = runs.appendChild(el('th', `runtime${more ? ' more' : ''}`, label)); th.colSpan = span; if (label) th.scope = 'colgroup'
+  }
+  runs.appendChild(el('th', 'runtime'))
   const posts = head.appendChild(el('th', 'posts', 'Posts / hour')); posts.scope = 'col'
   posts.title = 'Posts in the last hour, against the hourly limit for new messages'
   grid = { cells: new Map(), summaries: new Map(), boxes: new Map(), nameOf, owner, head: [...head.children], active: activeNow(rows, hive.active) }
