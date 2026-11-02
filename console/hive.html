@@ -35,9 +35,12 @@
   table.grid thead th{position:sticky;top:env(safe-area-inset-top,0px);z-index:1;background:var(--panel);border-bottom:1px solid var(--line);padding:9px 3px;font-size:12px;font-weight:650;line-height:1.15;text-align:center;vertical-align:bottom}
   table.grid thead th.corner{text-align:left;font:600 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim);padding-left:0;min-width:170px}
   table.grid thead th.posts{font:600 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim);padding-inline:8px}
-  table.grid thead tr#grid-runs th{height:26px;padding:6px 3px 0;border-bottom:0;font:600 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--dim);vertical-align:bottom}
+  table.grid thead tr#grid-runs th{height:44px;padding:6px 2px 0;border-bottom:0;font:600 10px var(--mono);letter-spacing:.03em;text-align:center;text-transform:uppercase;color:var(--dim);vertical-align:bottom}
+  table.grid thead tr#grid-runs th.corner{text-align:left}
+  table.grid thead tr#grid-runs th img.logo{display:block;width:18px;height:18px;margin:0 auto 4px;border-radius:4px}
+  table.grid thead tr#grid-runs th{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0}
   table.grid thead tr#grid-runs th.runtime:not(:empty){border-left:1px solid var(--line);box-shadow:inset 0 2px 0 var(--line)}
-  table.grid thead tr#grid-head th{top:calc(env(safe-area-inset-top,0px) + 26px)}
+  table.grid thead tr#grid-head th{top:calc(env(safe-area-inset-top,0px) + 44px)}
   table.grid th.taker .avatar{display:block;margin:0 auto 5px}
   table.grid th.taker,table.grid td.cell,table.grid th.posts,table.grid td.posts{border-left:1px solid var(--line)}
   table.grid tbody th.agent{text-align:left;font-weight:400;padding:8px 10px 8px 0;border-bottom:1px solid var(--line)}
@@ -182,7 +185,7 @@ import { BRIDGE_RELAYS } from './hive-bridge.mjs'
 import { controlStateFresh } from './control-state-freshness.mjs'
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
-import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK } from './hive-list.mjs'
+import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK, RUNS_LOGO } from './hive-list.mjs'
 
 // The bridge publishes its roster to these relays and reads its commands from them.
 const ROSTER_RELAYS = BRIDGE_RELAYS
@@ -360,7 +363,10 @@ function draw(rows, needs, owner, partial, posting = null) {
   const runs = $('grid-runs'); runs.textContent = ''
   runs.appendChild(el('th', 'corner', 'Runs on'))
   for (const { label, span, more } of runsOf(columns, quiet)) {
-    const th = runs.appendChild(el('th', `runtime${more ? ' more' : ''}`, label)); th.colSpan = span; if (label) th.scope = 'colgroup'
+    const th = runs.appendChild(el('th', `runtime${more ? ' more' : ''}`)); th.colSpan = span
+    if (label) { th.scope = 'colgroup'; th.title = label }
+    if (RUNS_LOGO[label]) { const logo = th.appendChild(el('img', 'logo')); logo.src = RUNS_LOGO[label]; logo.alt = '' }
+    th.append(label)
   }
   runs.appendChild(el('th', 'runtime'))
   const posts = head.appendChild(el('th', 'posts', 'Posts / hour')); posts.scope = 'col'

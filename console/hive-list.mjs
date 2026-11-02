@@ -295,6 +295,11 @@ export const RUNS_ON = Object.freeze({
   '61cb9345ce61bb06d42bef251de746051e608a539c1430142a8afa6593db924c': 'Grok Bot',
   ...Object.fromEntries(PLATFORMS.find(p => p.id === 'buzz').keys.map(k => [k, 'Buzz'])),
 })
+// Each harness's logo, drawn beside its name over the columns.
+export const RUNS_LOGO = Object.freeze({
+  Codex: 'assets/runs-on/codex.svg', 'Claude Code': 'assets/runs-on/claude-code.svg', Pi: 'assets/runs-on/pi.svg',
+  OpenClaw: 'assets/runs-on/openclaw.svg', 'Grok Bot': 'assets/runs-on/grok-bot.png', Buzz: 'assets/runs-on/buzz.png',
+})
 // Your voice speaks for you, so it sits in your group.
 export function platformOf(row) {
   if (row.isOwner || row.roles?.some(x => x.role === 'voice')) return 'you'
