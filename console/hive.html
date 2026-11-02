@@ -174,7 +174,7 @@ import { validControlState, postingCounts, notAnswering, shortNpub } from './age
 import { scopeHash } from './scope-hash.mjs'
 import { signFresh } from './guarded-signer.mjs'
 import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, describeChange, applyChange, relayHost } from './hive-change.mjs'
-import { gridOf, reachOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, runsOf } from './hive-grid.mjs'
+import { gridOf, reachOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf } from './hive-grid.mjs'
 import { whatIf } from './hive-what-if.mjs'
 import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { BRIDGE_RELAYS } from './hive-bridge.mjs'
@@ -294,17 +294,19 @@ async function load({ owner: rememberedOwner = null } = {}) {
     const profiles = newestProfiles(names.events)
 
     const { rows, needs } = buildList({ owner, grantEvents, grants, table, cards, roster, bridge, profiles })
-    hive = { owner, grants, table, rows, bridge, rosterState, active: readActive(activeRead.events, { owner, verify: verifyEvent })?.keys || null }
+    const active = activeOf(activeRead, { owner, verify: verifyEvent })
+    hive = { owner, grants, table, rows, bridge, rosterState, active: active.keys, activeKnown: active.known }
     const partial = {
       cards: !cardRead.full,
       // A row with no card is folded with the owner alone, so a card that went unread may name other grantors.
       approvals: !cardRead.full || !given.full || !held.full || (others.length > 0 && !otherRevokes.full),
       keys: !cardRead.full || !given.full || !held.full || (rosterRead ? !rosterRead.full : false),
+      active: !active.known,
     }
     drawCoverage()
     draw(rows, needs, owner, partial, posting)
     st.className = 'status ok'
-    st.textContent = `Read ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${rows.length} identities · ${partial.approvals || partial.keys ? 'not every relay answered in full' : 'every relay answered'}${posting ? ` · posts counted by the bridge at ${new Date(posting.at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : bridge ? '' : ' · no bridge key saved, so no post counts: paste it on Config'}`
+    st.textContent = `Read ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${rows.length} identities · ${partial.approvals || partial.keys || partial.active ? 'not every relay answered in full' : 'every relay answered'}${partial.active ? ', so the Active ticks are locked until a full read' : ''}${posting ? ` · posts counted by the bridge at ${new Date(posting.at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : bridge ? '' : ' · no bridge key saved, so no post counts: paste it on Config'}`
     $('go').textContent = 'Read again'
   } catch (e) {
     st.className = 'status err'; st.textContent = e.message || String(e)
@@ -479,7 +481,8 @@ function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting, wid
   // Whether the owner keeps it on the grid (#666). Ticking waits for a signature like a square does.
   if (!r.isOwner && !r.isBridge) {
     const tick = agent.appendChild(el('label', 'tick')), box = tick.appendChild(el('input'))
-    box.type = 'checkbox'; box.checked = grid.active.has(r.pubkey)
+    box.type = 'checkbox'; box.checked = grid.active.has(r.pubkey); box.disabled = !hive.activeKnown
+    if (box.disabled) tick.title = 'Not every relay returned your Active list, so changing it now could undo ticks you signed before. Read again.'
     tick.append('Active')
     box.onchange = () => { if (box.checked === grid.active.has(r.pubkey)) ticks.delete(r.pubkey); else ticks.set(r.pubkey, box.checked); drafted.delete('active'); drawBar() }
     grid.boxes.set(r.pubkey, box)
@@ -610,12 +613,8 @@ function changes() {
   }
   for (const [key, x] of extras) out.push({ key, ...x })
   // Every tick goes into one list, so they sign as one event.
-  if (ticks.size) {
-    const keys = new Set(grid.active), on = [], off = []
-    for (const [pk, want] of ticks) { if (want) keys.add(pk); else keys.delete(pk); (want ? on : off).push(grid.nameOf(pk)) }
-    out.push({ key: 'active', sign: '✓', words: [on.length && `mark ${on.join(', ')} active`, off.length && `set ${off.join(', ')} aside`].filter(Boolean).join('; '),
-      draft: () => [draftActive(keys)] })
-  }
+  const tick = tickChange({ active: grid.active, ticks, known: hive.activeKnown }, grid.nameOf)
+  if (tick) out.push({ key: 'active', sign: '✓', words: tick.words, draft: () => [draftActive(tick.keys)] })
   return out
 }
 const templatesOf = c => { if (!drafted.has(c.key)) drafted.set(c.key, Promise.resolve(c.draft())); return drafted.get(c.key) }
