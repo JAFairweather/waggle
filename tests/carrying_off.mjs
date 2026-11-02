@@ -45,7 +45,7 @@ process.env.WB_STUB_SEND = '1'
 process.env.WB_NO_BOOT = '1'
 delete process.env.WAGGLE_CARRYING
 
-const { scanChannel, postingCounts, processGrantEvent, grantSet, seatGrantee, seated, buildControlState } = await import('../src/bridge.mjs')
+const { scanChannel, postingCounts, processGrantEvent, grantSet, seatGrantee, seated, buildControlState, routePublic, PUB } = await import('../src/bridge.mjs')
 
 let fails = 0
 const ok = (n, c) => { console.log(`${c ? 'ok  ' : 'FAIL'} — ${n}`); if (!c) fails++ }
@@ -96,10 +96,27 @@ ok('…and removes nobody from the channel', calls.length === 0)
 const lanes = buildControlState().operations.lanes
 ok('no lane is reported as running', Object.values(lanes).every(v => v === false))
 
+// --- #649: following is not carrying. A followed writer's post still enters the hive -------------
+const writerSk = generateSecretKey()
+const stranger = wire(finalizeEvent({ kind: 1, content: 'not followed', created_at: now - 2, tags: [] }, generateSecretKey()))
+const followed = wire(finalizeEvent({ kind: 1, content: 'a followed writer', created_at: now - 1, tags: [] }, writerSk))
+const posted = () => existsSync(process.env.POSTED_MAP_PATH) ? readFileSync(process.env.POSTED_MAP_PATH, 'utf8') : ''
+routePublic(stranger)
+await settle()
+ok('a writer the owner does not follow is not carried', !posted().includes(stranger.id))
+PUB.authors.push(getPublicKey(writerSk))
+routePublic(followed)
+await settle()
+ok('a writer the owner follows is carried into the channel', posted().includes(followed.id))
+ok('…and the control state says the public read lane is running', buildControlState().operations.lanes.public_read === true)
+PUB.authors.pop()
+
 // --- the boot wiring: the loops that would carry are behind the switch ----------------------------
 const src = readFileSync(new URL('../src/bridge.mjs', import.meta.url), 'utf8')
 ok('the channel poll asks scanChannel not to carry', src.includes('await scanChannel(ch, scanFetchPage, CARRYING)'))
 ok('…and skips the carry retries', /if \(!CARRYING\) return\n\s+await retryPendingCarries\(\)/.test(src))
+ok('the followed-writer subscription is NOT behind the switch',
+  src.includes("if (PUB.authors.length) { expect.add('pa')") && !/if \(!CARRYING\) return\s+\/\/ #658: nor is a watched author's/.test(src))
 ok('the sealed lanes are not connected', src.includes('if (CARRYING) RELAYS.forEach(connect)'))
 ok('the staging carry does not run', src.includes('if (CARRYING) scanReturnLane(msgs)'))
 ok('a process with nothing to run idles instead of exiting into a restart loop', /if \(!CARRYING && !PUB\) \{[^\n]*setInterval\(/.test(src))
