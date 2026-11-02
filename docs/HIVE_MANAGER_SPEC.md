@@ -314,6 +314,11 @@ tabs.
 
 ## Onboarding (criterion 8)
 
+**Superseded in detail by [DESIGN_ADD_AN_AGENT.md](DESIGN_ADD_AN_AGENT.md) (2026-11-02)**, which
+is drawn from crystalclaude's onboarding, the first one run end to end. It has seven steps: the six
+below, plus joining the hive and its rooms, which this outline missed. The outline stays as the
+record of what was decided on 2026-10-26.
+
 **Tools on nave, agent on its own box.** That is the owner's ruling of 2026-10-26, and it matches
 `nvoy docs/HARNESS_PLACEMENT.md`. Onboarding starts from a row on the one list. A row that already
 has a key skips step 2. A new agent goes through six steps:
@@ -391,7 +396,9 @@ Each step is one PR, reviewed by mydude, with its deploy verified.
 7. **Retire:** beeswarm links, the tabs, the nact redirects and the docs (criterion 6). Then the
    cold test (criterion 7).
 8. **Onboarding:** `nvoy-provision`, the Tailscale join, the install line and the briefing.
-   HR, crusty and crystalclaude (criterion 8). This session's own posting identity, waggle-dev, was
+   HR, crusty and crystalclaude (criterion 8). Its own build order is in
+   [DESIGN_ADD_AN_AGENT.md](DESIGN_ADD_AN_AGENT.md). crystalclaude was onboarded by hand on
+   2026-11-02 and posted in #waggle-test under its own key. This session's own posting identity, waggle-dev, was
    done by hand on 2026-10-26.
 
 ## Out of scope
