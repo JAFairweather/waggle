@@ -1,11 +1,13 @@
-// console_hive_grid.mjs — the hive as one grid of who can give work to whom (#662).
+// console_hive_grid.mjs — the hive as one grid of who can give work to whom (#662, #664).
 //
 // What this suite holds:
 //
-//  1. The columns are you, then everyone the page knows where they run, then anyone else who gives
-//     work; the bridge and an identity that gives nothing head no column.
-//  2. The rows are the agents the page knows where they run and anyone that takes work, grouped by
-//     platform; the rest fold into one line.
+//  1. The rows are every identity that might give work, grouped by where it runs, you first; the
+//     bridge has none, and an identity that runs nowhere known, gives nothing and takes nothing is
+//     quiet: its row and its column fold away together.
+//  2. The columns are the agents the page knows where they run and anyone that takes work, so
+//     reading across a row says whom it can give work to (#664). A quiet identity's column comes
+//     last, folded, so a newly found key can still be given its first work.
 //  3. A square the owner cannot change says why, and is never offered: a voice's reach, someone
 //     else's approval, an approval someone else also gave, a card that does not count the owner.
 //     An approval from a grantor the agent does not count locks nothing: the agent ignores it.
@@ -16,7 +18,7 @@
 //   node tests/console_hive_grid.mjs
 
 import { PLATFORMS } from '../console/hive-list.mjs'
-import { giversOf, agentsOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers } from '../console/hive-grid.mjs'
+import { gridOf, reachOf, agentsOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers } from '../console/hive-grid.mjs'
 
 let pass = true
 const check = (cond, label) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${label}`); if (!cond) pass = false }
@@ -47,18 +49,26 @@ const rows = [
 const at = pk => rows.find(r => r.pubkey === pk)
 const ctx = { owner, grants, subjectOf }
 
-// 1. Columns.
-const columns = giversOf(rows).map(r => r.pubkey)
-check(columns[0] === owner && columns[1] === voice, 'you head the first column, your voice the second')
-check(JSON.stringify(columns.slice(2, -1)) === JSON.stringify([mc, dev, dj, pi, mydude, dennis]), 'agents follow in platform order, each one a column')
-check(columns.at(-1) === giver, 'an identity that gives work but runs nowhere known heads the last column')
-check(!columns.includes(bridge) && !columns.includes(stray), 'the bridge and an identity that gives nothing head no column')
+// 1. Rows.
+const { lines, takers, quiet, columns } = gridOf(rows)
+check(JSON.stringify(lines.map(g => g.platform.id)) === JSON.stringify(['you', 'lab', 'third-party', 'buzz', 'other']), 'rows group by where they run, you first')
+check(lines[0].rows[0].pubkey === owner && lines[0].rows[1].pubkey === voice, 'you head the first row, your voice the second')
+check(lines.at(-1).rows.map(r => r.pubkey).join() === giver, 'an identity that gives work but runs nowhere known keeps its row')
+const rowKeys = lines.flatMap(g => g.rows).map(r => r.pubkey)
+check(!rowKeys.includes(bridge) && !rowKeys.includes(stray), 'the bridge has no row, and a quiet identity folds away')
+check(quiet.map(r => r.pubkey).join() === stray, 'only the identity that gives, takes and runs nothing is quiet')
+check(JSON.stringify(reachOf(rows, at(dev)).map(r => r.pubkey)) === JSON.stringify([pi]) && !reachOf(rows, at(mc)).length,
+  'reading across a row counts whom it can give work to')
 
-// 2. Rows.
-const { groups, folded } = agentsOf(rows)
-check(JSON.stringify(groups.map(g => g.platform.id)) === JSON.stringify(['lab', 'third-party', 'buzz']), 'rows group by platform, in the table order')
-check(folded.map(r => r.pubkey).sort().join() === [voice, stray, giver].sort().join(), 'identities that take no work and run nowhere known fold away')
-check(!groups.flatMap(g => g.rows).some(r => r.isOwner || r.isBridge), 'you and the bridge have no row')
+// 2. Columns.
+check(JSON.stringify(takers.map(r => r.pubkey)) === JSON.stringify([mc, dev, dj, pi, mydude, dennis]), 'agents head the columns in platform order')
+check(!takers.some(r => r.isOwner || r.isBridge || r.pubkey === voice), 'you, your voice and the bridge head no column')
+check(JSON.stringify(columns.map(r => r.pubkey)) === JSON.stringify([...takers, ...quiet].map(r => r.pubkey)) && columns.at(-1).pubkey === stray,
+  'a quiet identity heads the last column, folded with its row')
+const first = cellOf(at(stray), at(owner), ctx)
+check(!first.on && first.can, 'a newly found key can be given its first work from its column')
+const { folded } = agentsOf(rows)
+check(folded.map(r => r.pubkey).sort().join() === [voice, stray, giver].sort().join(), 'identities that take no work and run nowhere known head no agent column')
 
 // 3. Squares.
 check(cellOf(at(pi), at(pi), ctx).self, 'an agent meets itself in a square that does nothing')
@@ -78,7 +88,7 @@ const mcCounted = row(mc, { givers: [dj] })
 const ignored = cellOf(mcCounted, at(dj), { ...ctx, grants: [...grants, grant(owner, dj, 'task', mc), grant(other, dj, 'task', mc)] })
 check(ignored.on && ignored.can && ignored.mine.length === 1 && !ignored.others?.length, "an approval from someone the agent's card does not count never locks your square")
 const uncounted = cellOf(at(dennis), at(owner), ctx)
-check(!uncounted.on && !uncounted.can && /card/.test(uncounted.why), "a card that does not count your approvals locks its row's squares")
+check(!uncounted.on && !uncounted.can && /card/.test(uncounted.why), "a card that does not count your approvals locks its column's squares")
 
 // 4. Waiting changes.
 let pending = new Map()
@@ -93,7 +103,7 @@ check(squareOf(yours) === 'on' && squareOf(open) === 'off' && squareOf({ self: t
 const nameOf = pk => ({ [dev]: 'waggle-dev', [mc]: 'MC Claude' })[pk]
 check(changeWords({ action: 'add', giver: dev, agent: mc }, nameOf) === 'waggle-dev may give MC Claude work', 'an addition reads as one plain sentence')
 check(changeWords({ action: 'remove', giver: dev, agent: mc }, nameOf) === 'waggle-dev stops giving MC Claude work', 'a removal reads as one plain sentence')
-check(summaryOf(3) === '3 can give it work' && summaryOf(0) === 'Nobody can give it work', 'each row sums up in words')
+check(summaryOf(3) === 'Gives work to 3' && summaryOf(0) === 'Gives work to nobody' && /as far as/.test(summaryOf(0, true)), 'each row sums up in words')
 
 // 5. Leftovers.
 const left = leftovers(grants, { owner })
