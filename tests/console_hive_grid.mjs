@@ -13,7 +13,7 @@
 //     replaceable event naming public keys only. Without one, the grid decides as before. A list
 //     read from fewer than every relay is unknown, and no tick may replace it.
 //  7. Above the names, one label spans each run of neighbouring agents in the same harness (#668);
-//     folded columns share one blank span that folds with them.
+//     folded columns share one blank span that folds with them. Each harness shows its logo.
 //  8. Approvals that do nothing read as one plain item per kind (#670): who let whom do what, when,
 //     what holds today, and one withdrawal per approval for the owner's own; never an approval id.
 //  9. A Buzz agent's column is Buzz Desktop's allow-list as the owner last copied it (#672): only
@@ -29,7 +29,8 @@
 //
 //   node tests/console_hive_grid.mjs
 
-import { PLATFORMS } from '../console/hive-list.mjs'
+import { existsSync } from 'node:fs'
+import { PLATFORMS, RUNS_ON, RUNS_LOGO } from '../console/hive-list.mjs'
 import { buzzLists, buzzLink } from '../tools/buzz-allow.mjs'
 import { parseIntent } from '../console/deep-link.mjs'
 import { gridOf, reachOf, agentsOf, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, ACTIVE_KIND, ACTIVE_D, BUZZ_D, readBuzz, buzzOf, draftBuzz, sameBuzz, buzzWords, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers } from '../console/hive-grid.mjs'
@@ -155,6 +156,7 @@ check(JSON.stringify(runs) === JSON.stringify([
   { label: 'Claude Code', span: 2, more: false }, { label: 'Codex', span: 1, more: false }, { label: 'Pi', span: 1, more: false },
   { label: 'Buzz', span: 2, more: false }, { label: '', span: 1, more: true }]), 'neighbours in one harness share one label, and folded columns one blank')
 check(runs.reduce((n, r) => n + r.span, 0) === columns.length, 'the labels span every column exactly once')
+check([...new Set(Object.values(RUNS_ON))].every(h => RUNS_LOGO[h] && existsSync(new URL(`../console/${RUNS_LOGO[h]}`, import.meta.url))), 'every harness named over a column has its logo, and the file is there')
 
 // 8. Approvals that do nothing.
 const pk = c => c.repeat(64), me = pk('a'), names = { [pk('b')]: 'Pi Dog', [pk('c')]: 'DJ Codex', [pk('d')]: 'MC Claude', [pk('e')]: 'Dennis' }
