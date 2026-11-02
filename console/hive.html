@@ -60,6 +60,7 @@
   table.grid tr.detail td{padding:0 0 14px}
   .sq{display:inline-block;box-sizing:border-box;width:30px;height:30px;margin:0;padding:0;border-radius:7px;font:700 16px/1 var(--sans);background:transparent;border:1.5px solid var(--line);color:transparent;cursor:pointer;vertical-align:middle;text-align:center}
   .sq.on{background:var(--gold);border-color:var(--gold)}.sq.on.theirs{opacity:.55}
+  .sq.on.buzz{background:radial-gradient(circle,var(--gold) 0 34%,transparent 38%);border:2px solid var(--gold)}.sq.unknown{border-style:dashed}
   .sq.add{border:2px solid var(--add);color:var(--add)}
   .sq.remove{background:var(--remove-ground);border:2px solid var(--remove);color:var(--remove)}
   .sq.self{border-color:transparent;color:var(--faint);cursor:default}
@@ -121,6 +122,7 @@
     <div class="legend">
       <span><span class="sq on"></span>Can give it work</span>
       <span><span class="sq on theirs"></span>Approved by someone else</span>
+      <span><span class="sq on buzz"></span><span id="buzz-note">Set in Buzz Desktop</span></span>
       <span><span class="sq off"></span>Can't</span>
       <span><span class="sq add">+</span>Will be added</span>
       <span><span class="sq remove">–</span>Will be removed</span>
@@ -178,7 +180,7 @@ import { validControlState, postingCounts, notAnswering, shortNpub } from './age
 import { scopeHash } from './scope-hash.mjs'
 import { signFresh } from './guarded-signer.mjs'
 import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, describeChange, applyChange, relayHost } from './hive-change.mjs'
-import { gridOf, reachOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf } from './hive-grid.mjs'
+import { gridOf, reachOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, BUZZ_D, buzzOf, draftBuzz, sameBuzz, buzzWords, isBuzz, day } from './hive-grid.mjs'
 import { whatIf } from './hive-what-if.mjs'
 import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { BRIDGE_RELAYS } from './hive-bridge.mjs'
@@ -263,10 +265,10 @@ async function load({ owner: rememberedOwner = null } = {}) {
     const [cardRead, rosterRead, activeRead] = await Promise.all([
       read(CARD_RELAYS, { kinds: [30078], '#d': [CARD_D], limit: 500 }),
       bridge ? read(ROSTER_RELAYS, ROSTER_FILTER(bridge)) : null,
-      read(GRANT_RELAYS, { kinds: [ACTIVE_KIND], authors: [owner], '#d': [ACTIVE_D], limit: 8 }),
+      read(GRANT_RELAYS, { kinds: [ACTIVE_KIND], authors: [owner], '#d': [ACTIVE_D, BUZZ_D], limit: 16 }),
     ])
     cover('agent cards', cardRead)
-    cover('your active list', activeRead)
+    cover('your Active list and your copy of the Buzz allow-lists', activeRead)
     const cards = readCards(cardRead.events, { owner, verify: verifyEvent })
     let roster = [], rosterState = null, posting = null
     if (rosterRead) {
@@ -299,7 +301,8 @@ async function load({ owner: rememberedOwner = null } = {}) {
 
     const { rows, needs } = buildList({ owner, grantEvents, grants, table, cards, roster, bridge, profiles })
     const active = activeOf(activeRead, { owner, verify: verifyEvent })
-    hive = { owner, grants, table, rows, bridge, rosterState, active: active.keys, activeKnown: active.known }
+    const buzz = buzzOf(activeRead, { owner, verify: verifyEvent })
+    hive = { owner, grants, table, rows, bridge, rosterState, active: active.keys, activeKnown: active.known, buzz }
     const partial = {
       cards: !cardRead.full,
       // A row with no card is folded with the owner alone, so a card that went unread may name other grantors.
@@ -310,7 +313,7 @@ async function load({ owner: rememberedOwner = null } = {}) {
     drawCoverage()
     draw(rows, needs, owner, partial, posting)
     st.className = 'status ok'
-    st.textContent = `Read ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${rows.length} identities · ${partial.approvals || partial.keys || partial.active ? 'not every relay answered in full' : 'every relay answered'}${partial.active ? ', so the Active ticks are locked until a full read' : ''}${posting ? ` · posts counted by the bridge at ${new Date(posting.at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : bridge ? '' : ' · no bridge key saved, so no post counts: paste it on Config'}`
+    st.textContent = `Read ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${rows.length} identities · ${partial.approvals || partial.keys || partial.active ? 'not every relay answered in full' : 'every relay answered'}${partial.active ? ', so the Active ticks are locked and the Buzz columns unknown until a full read' : ''}${posting ? ` · posts counted by the bridge at ${new Date(posting.at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : bridge ? '' : ' · no bridge key saved, so no post counts: paste it on Config'}`
     $('go').textContent = 'Read again'
   } catch (e) {
     st.className = 'status err'; st.textContent = e.message || String(e)
@@ -399,6 +402,9 @@ function draw(rows, needs, owner, partial, posting = null) {
   $('ask-note').textContent = free.length
     ? `${free.map(r => `${rowName(r)} acts without asking on work from ${r.answers.act.withoutAsking.map(nameOf).join(', ')}`).join('; ')}. Everyone else asks first.`
     : partial.approvals ? `Every agent here asks before acting, ${PARTIAL}.` : 'Every agent here asks before acting.'
+  const b = hive.buzz
+  $('buzz-note').textContent = !b.known ? 'Set in Buzz Desktop: unknown until every relay answers'
+    : b.signedAt ? `Set in Buzz Desktop, copied ${day(b.signedAt)}` : 'Set in Buzz Desktop: not copied yet (run tools/buzz-allow.mjs where Buzz runs)'
   drawLeftovers(owner, nameOf)
   $('partial-note').hidden = !partial.approvals
   $('list-panel').hidden = false
@@ -445,6 +451,21 @@ async function applyIntent({ owner, nameOf }) {
   const refuse = why => { st.className = 'status err'; st.textContent = `The link was not opened: ${why}.` }
   if (intent.action === 'invalid') return refuse(intent.why)
   const { grants, table, rows } = hive
+  // Buzz Desktop's allow-lists (#672): every key must already be on the grid, and the copy replaces
+  // the last one only when that one was read in full.
+  if (intent.action === 'buzz') {
+    const shown = new Set(rows.map(x => x.pubkey)), lists = new Map()
+    for (const [agent, senders] of intent.lists) {
+      const list = new Set(senders.map(x => x === 'owner' ? owner : x))
+      if (![agent, ...list].every(k => k === '*' || shown.has(k))) return refuse('it names a key the grid does not show')
+      lists.set(agent, list)
+    }
+    if (!hive.buzz.known) return refuse('not every relay returned your last copy of the Buzz allow-lists, so a new one could undo a newer one. Read again, then run the copy command again')
+    st.className = 'status ok'
+    if (sameBuzz(lists, hive.buzz.lists)) { st.textContent = 'Your copy of the Buzz allow-lists already matches Buzz Desktop. Nothing to sign.'; return }
+    st.textContent = ''
+    return propose([{ key: 'buzz', sign: '✓', words: buzzWords(lists, nameOf), draft: () => [draftBuzz(lists)] }])
+  }
   if (intent.action === 'agent') {
     const r = resolvePrefix(intent.agent, rows.map(x => x.pubkey))
     if (!r.value) return refuse(r.why)
@@ -503,13 +524,13 @@ function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting, wid
     box.onchange = () => { if (box.checked === grid.active.has(r.pubkey)) ticks.delete(r.pubkey); else ticks.set(r.pubkey, box.checked); drafted.delete('active'); drawBar() }
     grid.boxes.set(r.pubkey, box)
   }
-  grid.summaries.set(r.pubkey, { reach: reachOf(rows, r).length, line: agent.appendChild(el('span', 'summary')), partial: partial.approvals })
+  grid.summaries.set(r.pubkey, { reach: reachOf(rows, r, hive.buzz).length, line: agent.appendChild(el('span', 'summary')), partial: partial.approvals })
   summarize(r.pubkey)
   // This row gives; each column takes. The square's key and answer are the taker's, as nvoy folds it.
   columns.forEach((t, i) => {
     const key = cellKey(t, r)
     const b = d.appendChild(el('td', quiet.includes(t) ? 'cell more' : 'cell')).appendChild(el('button', 'sq')); b.type = 'button'
-    grid.cells.set(key, { row: t, giver: r, cell: cellOf(t, r, { owner, grants: hive.grants, subjectOf: hive.table.subjectOf }), button: b })
+    grid.cells.set(key, { row: t, giver: r, cell: cellOf(t, r, { owner, grants: hive.grants, subjectOf: hive.table.subjectOf, buzz: hive.buzz }), button: b })
     paint(key)
     b.onclick = () => click(key)
     // Pointing at a square lights its row's name and its column's name, so the pair it joins is plain.
@@ -530,7 +551,12 @@ function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting, wid
   const roles = r.roles.map(role => `${ROLE_NAME[role.role]}${role.by ? ` from ${nameOf(role.by)}` : ''}${role.inEffect === false ? ' (no effect)' : ''}`)
   item('What it is', `${STAGE[r.stage]}.${roles.length ? ` ${roles.join('; ')}.` : ''}`)
   const assumed = a.work.grantorsFrom === 'assumed' ? ' (No card, so only your approvals are counted.)' : ''
-  item('Who can give it work', `${workSentence(a.work, { owner, nameOf, incomplete: partial.approvals })}${assumed}`)
+  const buzzed = hive.buzz.known && hive.buzz.lists?.get(r.pubkey)
+  const unbuzzed = !buzzed && isBuzz(r, hive.buzz)
+  item('Who can give it work', buzzed ? `Set in Buzz Desktop, on its allow-list as copied ${day(hive.buzz.signedAt)}: ${buzzed.has('*') ? 'anyone' : [...buzzed].map(nameOf).sort().join(', ') || 'nobody'}.`
+    : unbuzzed ? hive.buzz.known ? 'Set in Buzz Desktop, on its allow-list, which has not been copied here yet. Run tools/buzz-allow.mjs on the machine that runs Buzz.'
+      : 'Set in Buzz Desktop. Unknown here, because not every relay returned your copy of the allow-lists.'
+      : `${workSentence(a.work, { owner, nameOf, incomplete: partial.approvals })}${assumed}`, unbuzzed)
   const free = a.act.withoutAsking.length ? `It may act without asking on work from ${a.act.withoutAsking.map(nameOf).join(', ')}.` : partial.approvals ? `It asks before acting on any work, ${PARTIAL}.` : 'It asks before acting on any work.'
   const limits = a.act.limits ? ` Chains stop at ${a.act.limits.max_hops} hops; at most ${a.act.limits.per_sender_per_hour} messages an hour from one sender.` : ''
   item('What it may do without asking', `${free}${limits} Tool permissions are ${a.act.harness}.`)
@@ -562,7 +588,7 @@ function paint(key) {
   const { row, giver, cell, button } = grid.cells.get(key)
   const state = squareOf(cell, waiting.get(key))
   const who = upper(grid.nameOf(giver.pubkey)), whom = grid.nameOf(row.pubkey)
-  button.className = `sq ${state}${cell.on && !cell.can ? ' theirs' : ''}`
+  button.className = `sq ${state}${cell.buzz ? ' buzz' : cell.on && !cell.can ? ' theirs' : ''}${cell.unknown ? ' unknown' : ''}`
   button.textContent = state === 'add' ? '+' : state === 'remove' ? '–' : state === 'self' ? '·' : ''
   const label = cell.self ? `${whom} itself` : state === 'add' ? `${who} will be able to give ${whom} work` : state === 'remove' ? `${who} will stop giving ${whom} work`
     : `${who} ${cell.on ? 'can' : "can't"} give ${whom} work`

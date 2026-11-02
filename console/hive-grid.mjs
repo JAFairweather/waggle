@@ -77,13 +77,63 @@ export const activeNow = (rows, active = null) => new Set(gridOf(rows, active).l
 export const draftActive = (keys, now = Math.floor(Date.now() / 1000)) =>
   ({ kind: ACTIVE_KIND, created_at: now, content: '', tags: [['d', ACTIVE_D], ...[...keys].sort().map(k => ['p', k])] })
 
-// The agents a giver can give work to now, by nvoy's fold.
-export const reachOf = (rows, giver) => rows.filter(r => r.answers?.work.givers.some(g => g.pubkey === giver.pubkey))
+// Whom a Buzz agent takes work from (#672). Buzz Desktop keeps each agent's allow-list on the owner's
+// machine, and no API reads it, so the owner signs a copy: one replaceable event like the Active list,
+// an `agent` tag per Buzz agent and an `allow` tag per sender ('*' for anyone). The page can only copy
+// what Buzz holds; changing it stays in Buzz.
+export const BUZZ_D = 'waggle-hive-buzz-allow'
+export function readBuzz(events, { owner, verify }) {
+  let best = null
+  for (const ev of events || []) {
+    try {
+      if (ev?.kind !== ACTIVE_KIND || ev.pubkey !== owner || !ev.tags.some(t => t[0] === 'd' && t[1] === BUZZ_D) || !verify(ev)) continue
+      if (best && best.signedAt >= ev.created_at) continue
+      const lists = new Map(ev.tags.filter(t => t[0] === 'agent' && HEX64.test(t[1])).map(t => [t[1], new Set()]))
+      for (const [k, agent, sender] of ev.tags) if (k === 'allow' && lists.has(agent) && (sender === '*' || HEX64.test(sender))) lists.get(agent).add(sender)
+      best = { lists, signedAt: ev.created_at }
+    } catch { /* an unreadable copy is no copy */ }
+  }
+  return best
+}
+// As with the Active list, only a read every relay answered in full says what the copy holds now.
+export function buzzOf(read, ctx) {
+  const b = readBuzz(read.events, ctx)
+  return { lists: b?.lists || null, signedAt: b?.signedAt || null, known: !!read.full }
+}
+export const draftBuzz = (lists, now = Math.floor(Date.now() / 1000)) => ({ kind: ACTIVE_KIND, created_at: now, content: '',
+  tags: [['d', BUZZ_D], ...[...lists.keys()].sort().flatMap(a => [['agent', a], ...[...lists.get(a)].sort().map(s => ['allow', a, s])])] })
+export const sameBuzz = (a, b) => !!a && !!b && a.size === b.size && [...a].every(([k, s]) => b.has(k) && b.get(k).size === s.size && [...s].every(x => b.get(k).has(x)))
+export function buzzWords(lists, nameOf) {
+  const each = [...lists].map(([a, s]) => `${nameOf(a)} takes work from ${s.has('*') ? 'anyone' : !s.size ? 'nobody' : s.size === 1 ? nameOf([...s][0]) : `${s.size} identities`}`).sort()
+  return `copy Buzz Desktop's allow-lists: ${each.join('; ')}`
+}
+// A Buzz agent is one the page knows runs in Buzz, or one a copy names. Buzz alone decides who gives
+// it work, so once the page reads Buzz copies its square never falls back to nvoy: until a full read
+// returns a copy naming it, the answer is unknown.
+export const isBuzz = (row, buzz) => platformOf(row) === 'buzz' || !!buzz?.lists?.has(row.pubkey)
+const buzzList = (row, buzz) => buzz.known ? buzz.lists?.get(row.pubkey) || null : null
+const buzzTakes = (list, giver) => list.has('*') || list.has(giver.pubkey)
+
+// The agents a giver can give work to now, by nvoy's fold, or by Buzz for a Buzz agent.
+export const reachOf = (rows, giver, buzz = null) => rows.filter(r => {
+  if (!buzz || !isBuzz(r, buzz)) return r.answers?.work.givers.some(g => g.pubkey === giver.pubkey)
+  const list = buzzList(r, buzz)
+  return !!list && r.pubkey !== giver.pubkey && buzzTakes(list, giver)
+})
 
 // One square. `on` is what nvoy's fold says now; `mine` are the owner's own approvals behind it,
-// the only ones the owner can withdraw. A square that cannot change says why.
-export function cellOf(row, giver, { owner, grants, subjectOf }) {
+// the only ones the owner can withdraw. A square that cannot change says why. A Buzz agent's
+// square is Buzz's answer, and the page never offers to change it.
+export function cellOf(row, giver, { owner, grants, subjectOf, buzz = null }) {
   if (row.pubkey === giver.pubkey) return { on: false, self: true }
+  if (buzz && isBuzz(row, buzz)) {
+    const list = buzzList(row, buzz)
+    if (!list) return { on: false, can: false, buzz: true, unknown: true, why: buzz.known
+      ? "Buzz Desktop decides this, and this agent's allow-list has not been copied here yet. Run tools/buzz-allow.mjs on the machine that runs Buzz."
+      : 'Not every relay returned your copy of the Buzz allow-lists, so this is unknown. Read again.' }
+    const on = buzzTakes(list, giver)
+    return { on, can: false, buzz: true, why: `Buzz Desktop decides this: ${on ? 'it is' : 'it is not'} on this agent's allow-list. Change it in Buzz Desktop, then copy the lists here again.` }
+  }
   const g = row.answers.work.givers.find(x => x.pubkey === giver.pubkey)
   // Only approvals from grantors the agent counts keep a square on, as in answersFor: its card's
   // grantors, or the owner alone without a card. Another approval it ignores never locks a square.
@@ -131,7 +181,7 @@ export function leftovers(grants, { owner }) {
 // agents, instead of a line per approval. Only the one who gave them can withdraw them.
 const TIDY = ['replaced', 'duplicate', 'expired']
 const listed = names => names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
-const day = at => new Date(at * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' })
+export const day = at => new Date(at * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' })
 function deed(cap, giver, agents) {
   const whose = giver === 'you' ? 'your' : `${giver}'s`
   if (cap === 'task+act') return `${agents} act on ${whose} work without asking`
