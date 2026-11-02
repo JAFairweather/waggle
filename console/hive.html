@@ -34,9 +34,12 @@
   table.grid thead th{position:sticky;top:env(safe-area-inset-top,0px);z-index:1;background:var(--panel);border-bottom:1px solid var(--line);padding:9px 3px;font-size:12px;font-weight:650;line-height:1.15;text-align:center;vertical-align:bottom}
   table.grid thead th.corner{text-align:left;font:600 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim);padding-left:0;min-width:170px}
   table.grid thead th.posts{font:600 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--dim);padding-inline:8px}
-  table.grid th.giver .avatar{display:block;margin:0 auto 5px}
-  table.grid th.giver,table.grid td.cell,table.grid th.posts,table.grid td.posts{border-left:1px solid var(--line)}
+  table.grid th.taker .avatar{display:block;margin:0 auto 5px}
+  table.grid th.taker,table.grid td.cell,table.grid th.posts,table.grid td.posts{border-left:1px solid var(--line)}
   table.grid tbody th.agent{text-align:left;font-weight:400;padding:8px 10px 8px 0;border-bottom:1px solid var(--line)}
+  /* Quiet identities fold away as rows; they take no work, so they head no column; the square being pointed at lights its two names. */
+  table.grid:not(.all) .more{display:none}
+  table.grid th.taker.hot,table.grid th.agent.hot .who{color:var(--gold)}
   table.grid td{border-bottom:1px solid var(--line)}
   table.grid td.cell{text-align:center;padding:5px 2px}
   table.grid td.posts{padding:8px 10px;font-size:13px;color:var(--dim);white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -101,7 +104,7 @@
 <body><main class="wide">
   <nav class="console-tabs" aria-label="waggle console"><a class="active" href="/console/hive.html">Hive</a><a href="/console/">Access</a><a href="/console/connect.html">Connect</a><a href="/console/following.html">Following</a><a href="/console/routing.html">Routing</a><a href="/console/config.html">Config</a><a href="/console/setup.html">Setup</a></nav>
   <h1>Who can give work to whom</h1>
-  <p class="sub">Read across a row to see who can give that agent work. Click a square to change it. Nothing changes until you sign.</p>
+  <p class="sub">Read across a row to see whom it can give work to; read down a column to see who can give that agent work. Click a square to change it. Nothing changes until you sign.</p>
   <div class="bar"><div id="status" class="status" role="status">Every identity in your hive, and who can give each one work.</div><button id="go">Read the hive</button></div>
   <div id="link-status" class="status" role="status"></div>
 
@@ -166,7 +169,7 @@ import { validControlState, postingCounts, notAnswering, shortNpub } from './age
 import { scopeHash } from './scope-hash.mjs'
 import { signFresh } from './guarded-signer.mjs'
 import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, describeChange, applyChange, relayHost } from './hive-change.mjs'
-import { giversOf, agentsOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers } from './hive-grid.mjs'
+import { gridOf, reachOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers } from './hive-grid.mjs'
 import { whatIf } from './hive-what-if.mjs'
 import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { BRIDGE_RELAYS } from './hive-bridge.mjs'
@@ -321,42 +324,46 @@ function draw(rows, needs, owner, partial, posting = null) {
   const short = partial.keys ? ' Not every relay answered in full, so a key held only on one that did not may be missing too, and a withdrawal held only there may not be counted.' : ''
   $('not-read').textContent = `Not read yet: ${NOT_READ.join(', ')}. A key known only to those is not on this list.${short}`
 
-  // The grid (#662): a column per identity that can give work, a row per agent, grouped by where it runs.
-  const givers = giversOf(rows), { groups, folded } = agentsOf(rows)
-  const width = givers.length + 2
+  // The grid (#662, #664): a row per identity that gives work, grouped by where it runs, and a column
+  // per agent that takes it, so reading across a row says whom it can give work to.
+  const { lines, takers, quiet } = gridOf(rows)
+  const columns = takers
+  const width = columns.length + 2
+  const table = $('list').closest('table'); table.classList.remove('all')
   const head = $('grid-head'); head.textContent = ''
-  head.appendChild(el('th', 'corner', 'Agent ↓ · gives work →')).scope = 'col'
+  head.appendChild(el('th', 'corner', 'Gives work to →')).scope = 'col'
   // A long name breaks only where its words meet: GrokDoggyDog as Grok·Doggy·Dog, never mid-word.
   const breakable = name => name.split(/(?<=[a-z])(?=[A-Z])|(?<=[- ])/).flatMap((w, i) => i ? [el('wbr'), w] : [w])
-  for (const g of givers) { const th = head.appendChild(el('th', 'giver')); th.scope = 'col'; th.append(face(g.picture), ...breakable(g.isOwner ? 'You' : rowName(g))) }
+  for (const t of columns) {
+    const th = head.appendChild(el('th', 'taker')); th.scope = 'col'
+    th.append(face(t.picture), ...breakable(rowName(t)))
+  }
   const posts = head.appendChild(el('th', 'posts', 'Posts / hour')); posts.scope = 'col'
   posts.title = 'Posts in the last hour, against the hourly limit for new messages'
-  grid = { cells: new Map(), summaries: new Map(), nameOf, owner }
+  grid = { cells: new Map(), summaries: new Map(), nameOf, owner, head: [...head.children] }
   waiting = new Map(); extras = new Map(); drafted = new Map()
   $('why').textContent = ''
   const list = $('list'); list.textContent = ''
-  const section = (label, runs, inGroup) => {
-    const tr = el('tr', 'group'), th = tr.appendChild(el('th', null, label)); th.colSpan = width; th.scope = 'colgroup'
+  const section = (label, runs, inGroup, cls) => {
+    const tr = el('tr', `group${cls ? ` ${cls}` : ''}`), th = tr.appendChild(el('th', null, label)); th.colSpan = width; th.scope = 'colgroup'
     if (runs) th.appendChild(el('span', 'runs', runs))
-    const pairs = inGroup.map(r => rowView(r, { owner, nameOf, partial, givers, posting, width }))
+    const pairs = inGroup.map(r => rowView(r, { owner, nameOf, partial, rows, columns, posting, width }))
+    for (const [d] of pairs) if (cls) d.classList.add(cls)
     list.append(tr, ...pairs.flat())
-    return [tr, ...pairs.map(([d]) => d)]
   }
-  for (const { platform, rows: inGroup } of groups) section(platform.label, platform.runs, inGroup)
-  const more = $('folded'); more.textContent = ''; more.hidden = !folded.length
-  if (folded.length) {
-    const lines = section('Everyone else', 'takes no work, and runs nowhere this page knows', folded)
-    for (const tr of lines) tr.hidden = true
-    more.append(`${folded.length} other identit${folded.length === 1 ? 'y takes' : 'ies take'} no work and run${folded.length === 1 ? 's' : ''} nowhere this page knows. `)
+  for (const { platform, rows: inGroup } of lines) section(platform.label, platform.runs, inGroup)
+  if (quiet.length) section('Everyone else', 'gives no work, takes none, and runs nowhere this page knows', quiet, 'more')
+  const more = $('folded'); more.textContent = ''; more.hidden = !quiet.length
+  if (quiet.length) {
+    more.append(`${quiet.length} other identit${quiet.length === 1 ? 'y gives' : 'ies give'} no work, take${quiet.length === 1 ? 's' : ''} none, and run${quiet.length === 1 ? 's' : ''} nowhere this page knows. `)
     const show = more.appendChild(el('button', 'link', 'Show them')); show.type = 'button'
     show.onclick = () => {
-      const hide = !lines[0].hidden
-      for (const tr of lines) tr.hidden = hide
-      if (hide) for (const d of lines.slice(1)) { d.nextElementSibling.hidden = true; d.querySelector('button.who').setAttribute('aria-expanded', 'false') }
-      show.textContent = hide ? 'Show them' : 'Hide them'
+      const all = table.classList.toggle('all')
+      if (!all) for (const d of list.querySelectorAll('tr.more:not(.group)')) { d.nextElementSibling.hidden = true; d.querySelector('button.who').setAttribute('aria-expanded', 'false') }
+      show.textContent = all ? 'Hide them' : 'Show them'
     }
   }
-  const free = groups.flatMap(g => g.rows).filter(r => r.answers.act.withoutAsking.length)
+  const free = takers.filter(r => r.answers.act.withoutAsking.length)
   $('ask-note').textContent = free.length
     ? `${free.map(r => `${rowName(r)} acts without asking on work from ${r.answers.act.withoutAsking.map(nameOf).join(', ')}`).join('; ')}. Everyone else asks first.`
     : partial.approvals ? `Every agent here asks before acting, ${PARTIAL}.` : 'Every agent here asks before acting.'
@@ -445,7 +452,7 @@ function face(picture) {
   if (picture) { f.src = picture; f.alt = ''; f.loading = 'lazy'; f.referrerPolicy = 'no-referrer'; f.onerror = () => f.replaceWith(el('span', 'avatar')) }
   return f
 }
-function rowView(r, { owner, nameOf, partial, givers, posting, width }) {
+function rowView(r, { owner, nameOf, partial, rows, columns, posting, width }) {
   const d = el('tr')
   d.dataset.pubkey = r.pubkey
   const detail = el('tr', 'detail'); detail.hidden = true
@@ -455,15 +462,19 @@ function rowView(r, { owner, nameOf, partial, givers, posting, width }) {
   const who = agent.appendChild(el('button', 'who', rowName(r)))
   who.type = 'button'; who.setAttribute('aria-expanded', 'false')
   who.onclick = () => { const open = detail.hidden; detail.hidden = !open; who.setAttribute('aria-expanded', String(open)) }
-  grid.summaries.set(r.pubkey, { row: r, line: agent.appendChild(el('span', 'summary')), partial: partial.approvals })
+  grid.summaries.set(r.pubkey, { reach: reachOf(rows, r).length, line: agent.appendChild(el('span', 'summary')), partial: partial.approvals })
   summarize(r.pubkey)
-  for (const g of givers) {
-    const key = cellKey(r, g)
+  // This row gives; each column takes. The square's key and answer are the taker's, as nvoy folds it.
+  columns.forEach((t, i) => {
+    const key = cellKey(t, r)
     const b = d.appendChild(el('td', 'cell')).appendChild(el('button', 'sq')); b.type = 'button'
-    grid.cells.set(key, { row: r, giver: g, cell: cellOf(r, g, { owner, grants: hive.grants, subjectOf: hive.table.subjectOf }), button: b })
+    grid.cells.set(key, { row: t, giver: r, cell: cellOf(t, r, { owner, grants: hive.grants, subjectOf: hive.table.subjectOf }), button: b })
     paint(key)
     b.onclick = () => click(key)
-  }
+    // Pointing at a square lights its row's name and its column's name, so the pair it joins is plain.
+    b.onpointerenter = b.onfocus = () => { agent.classList.add('hot'); grid.head[i + 1].classList.add('hot') }
+    b.onpointerleave = b.onblur = () => { agent.classList.remove('hot'); grid.head[i + 1].classList.remove('hot') }
+  })
   const own = r.isOwner || r.isBridge
   const p = r.answers.post
   // The bridge's count covers every post it saw, replies included; the limit covers new messages.
@@ -519,9 +530,9 @@ function paint(key) {
   button.setAttribute('aria-disabled', String(!cell.can))
 }
 function summarize(pk) {
-  const { row, line, partial } = grid.summaries.get(pk)
-  let count = row.answers.work.givers.length
-  for (const [key, action] of waiting) if (grid.cells.get(key).row === row) count += action === 'add' ? 1 : -1
+  const { reach, line, partial } = grid.summaries.get(pk)
+  let count = reach
+  for (const [key, action] of waiting) if (grid.cells.get(key).giver.pubkey === pk) count += action === 'add' ? 1 : -1
   line.textContent = summaryOf(count, partial)
 }
 function click(key) {
@@ -533,7 +544,7 @@ function click(key) {
   if (!cell.can) return
   waiting = toggle(waiting, key, cell)
   drafted.delete(key)
-  paint(key); summarize(row.pubkey); drawBar()
+  paint(key); summarize(giver.pubkey); drawBar()
 }
 
 // Whether anything can address it: a cold read-back of its kind:0, beside what the bridge's list
@@ -611,7 +622,7 @@ $('change-cancel').onclick = () => {
   if (barState === 'edit') {
     const keys = [...waiting.keys()]
     waiting = new Map(); extras = new Map(); drafted = new Map()
-    for (const key of keys) { paint(key); summarize(grid.cells.get(key).row.pubkey) }
+    for (const key of keys) { paint(key); summarize(grid.cells.get(key).giver.pubkey) }
   }
   barState = 'edit'
   drawBar()

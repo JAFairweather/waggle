@@ -1,5 +1,6 @@
-// The hive as one grid (#662): a row per agent, a column per identity that can give work, and a
-// square where they meet. Pure, so the page and the tests read the same answers.
+// The hive as one grid (#662): a row per identity that can give work, a column per agent that takes
+// it, and a square where they meet, so reading across a row says whom it can give work to (#664).
+// Pure, so the page and the tests read the same answers.
 import { WORK_CAPS, PASS_CAPS, approvalsOf } from './hive-change.mjs'
 import { PLATFORMS, platformOf } from './hive-list.mjs'
 
@@ -7,16 +8,8 @@ const AGENT_PLATFORMS = ['lab', 'third-party', 'grok', 'buzz']
 const rank = row => row.isOwner ? -1 : PLATFORMS.findIndex(p => p.id === platformOf(row))
 const givesWork = rows => new Set(rows.flatMap(r => r.answers?.work.givers.map(g => g.pubkey) || []))
 
-// Columns: you, then every identity the page knows where it runs, then anyone else who gives some
-// agent work. The bridge gives no work.
-export function giversOf(rows) {
-  const giving = givesWork(rows)
-  return rows.filter(r => !r.isBridge && (r.isOwner || platformOf(r) !== 'other' || giving.has(r.pubkey)))
-    .sort((a, b) => rank(a) - rank(b))
-}
-
-// Rows: every agent the page knows where it runs, and anyone else that takes work. The rest have
-// an empty row, so they fold into one line; one that gives work still heads its column.
+// Columns: every agent the page knows where it runs, and anyone else that takes work. The rest
+// take nothing, so they fold away.
 export function agentsOf(rows) {
   const shown = [], folded = []
   for (const r of rows) {
@@ -26,6 +19,22 @@ export function agentsOf(rows) {
   const groups = PLATFORMS.map(platform => ({ platform, rows: shown.filter(r => platformOf(r) === platform.id) })).filter(g => g.rows.length)
   return { groups, folded }
 }
+
+// The whole grid. Rows: every identity but the bridge, grouped by where it runs, you first. One that
+// runs nowhere known, gives no work and takes none is quiet: it heads no column, and its row folds
+// away under the rest, so every identity is still on the one list.
+export function gridOf(rows) {
+  const giving = givesWork(rows)
+  const { groups, folded } = agentsOf(rows)
+  const quiet = folded.filter(r => platformOf(r) === 'other' && !giving.has(r.pubkey))
+  const lines = PLATFORMS.map(platform => ({ platform,
+    rows: rows.filter(r => !r.isBridge && !quiet.includes(r) && platformOf(r) === platform.id).sort((a, b) => rank(a) - rank(b)) }))
+    .filter(g => g.rows.length)
+  return { lines, takers: groups.flatMap(g => g.rows), quiet }
+}
+
+// The agents a giver can give work to now, by nvoy's fold.
+export const reachOf = (rows, giver) => rows.filter(r => r.answers?.work.givers.some(g => g.pubkey === giver.pubkey))
 
 // One square. `on` is what nvoy's fold says now; `mine` are the owner's own approvals behind it,
 // the only ones the owner can withdraw. A square that cannot change says why.
@@ -62,10 +71,10 @@ export function changeWords({ action, giver, agent }, nameOf) {
   return action === 'add' ? `${who} may give ${whom} work` : `${who} stops giving ${whom} work`
 }
 
-// "3 can give it work" under each name, counted as it will be once the waiting changes are signed.
+// "Gives work to 3" under each name, counted as it will be once the waiting changes are signed.
 export function summaryOf(count, partial = false) {
-  if (!count) return partial ? 'Nobody, as far as the relays read show' : 'Nobody can give it work'
-  return `${count} can give it work`
+  if (!count) return partial ? 'Gives work to nobody, as far as the relays read show' : 'Gives work to nobody'
+  return `Gives work to ${count}`
 }
 
 // The owner's approvals for the two ways in that waggle no longer uses (#658): the channel pass
