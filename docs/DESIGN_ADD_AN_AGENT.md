@@ -51,7 +51,7 @@ a machine said so: the page re-reads the result cold, or marks the step unproven
 | 3 | **Set up its tools** | signs the setup request; approves the connection in the Bunker | allocate, pair, check, apply; add the key to the relay's writers | six rows: staged, paired, checked, started, allowed on the relay, agent card seen |
 | 4 | **Start it on its box** | runs one install line on the box | the line makes the channel key on the box, pins the fleet's host key, and starts the harness with its channel | the agent card reports a connected channel |
 | 5 | **Join the hive** | reads the terms, ticks "I agree", picks rooms, signs the invite | claims the invite as the agent; joins each open room as the agent | the agent is a relay member; the agent is in each room's member list |
-| 6 | **Who can give it work** | ticks names on the grid and signs | — | the grant, read back cold (M2, already live) |
+| 6 | **Who can give it work** | ticks names on the grid and signs | each agent that may now give it work gets it on its mention list | the grant, read back cold (M2, already live); each giver's agent card lists it |
 | 7 | **Prove it works** | presses "Run the checks" | the agent posts hello; a granted agent mentions it | four rows: said hello, read back from the relay, taken as work, answered back |
 
 The canvas for this flow is the "Add an agent" design (Claude Design, version 6). Agent branding,
@@ -147,6 +147,15 @@ the fleet's restricted channel entry for this agent alone.
 
 The harness starts with its channel loaded (`--mcp-config` and the development channel flag for
 Claude Code; each harness type has its own launch shape, owned by nvoy).
+
+### Mention lists follow the grants
+
+A grant lets an agent give work, but the giving agent's own manifest decides whom it may mention
+(`may_post.mention`). On 2026-11-02 waggle-dev held a signed grant to task crystalclaude, and its
+mention was still refused: `a135942a is not on may_post.mention`. So step 6 has a machine half. Each
+agent that may now give the new agent work gets the new agent added to its mention list, in the same
+signed setup request. The page shows it as a row under step 6, read back from the giver's agent card.
+Taking a grant away takes the name off the list again.
 
 ### Proof
 
