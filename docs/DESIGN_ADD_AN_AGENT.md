@@ -141,14 +141,52 @@ them to the hive, which is why step 5 does both, hive first.
 
 ### The install line
 
-Step 4 is the one step that runs on the agent's box. The page renders one line for the box's owner.
-It installs the harness wrapper, makes the channel key **on the box**, pins the fleet's host key, and
-prints only the public half. The page takes the public half (pasted, or published by the install
-line to the owner as a sealed message) into a second signed request, `bind_runtime`, which adds it to
-the fleet's restricted channel entry for this agent alone.
+Step 4 is the one step that runs on the agent's box. Everything else on the page is a signed request;
+this is a command the box's owner pastes into a terminal there. It does four things, and prints one line back:
 
-The harness starts with its channel loaded (`--mcp-config` and the development channel flag for
-Claude Code; each harness type has its own launch shape, owned by nvoy).
+1. **Makes the channel key on the box** (ed25519, 0600). The private half never leaves the box. It is
+   not in the browser, the request, a receipt or the fleet.
+2. **Pins the fleet's host key** from the line itself, never from a first connection. It writes a
+   `known_hosts` file of that one key, and the channel runs with `StrictHostKeyChecking=yes`.
+3. **Writes the channel config** that nvoy's client already reads (`channel_client.mjs`: instance,
+   ssh target, identity file, known_hosts file), and the harness's own MCP config from it.
+4. **Starts the harness with its channel loaded**, under a small launcher that retries until the
+   fleet accepts the key. Each harness type has its own launch shape, owned by nvoy (Claude Code:
+   `--mcp-config` and `--dangerously-load-development-channels`).
+
+It prints **only the public half** of the key. The owner pastes that into step 4 on the page, which
+checks its shape (`ssh-ed25519` and one base64 key, nothing else) and signs `bind_runtime`. That
+request carries the agent's id and the public half, and nothing else (`channel_key`). nvoy-onboard
+then installs the restricted, forced-command entry for this one agent (`instance-identity apply`) and
+baselines the channel. Until it has, the launcher keeps retrying, and the page shows "waiting for the
+fleet".
+
+**Where the line's details come from.** The line needs the fleet's SSH host, port and host key, and
+the instance id. None of them may be committed to this repository, and none is published today. So
+nvoy-onboard **seals them to the owner** (NIP-44), the same way the pairing link goes in phase B. It
+writes them once the agent's instance is allocated and paired, as one addressable event **signed by
+the new agent's own key** through its paired connection, and tagged to the owner and the request. The
+page already knows that key from the request it signed, so it accepts the event only when the agent's
+key signed it, and nothing else is trusted for it. The page opens it with the owner's signer and
+renders the line. The host key is public by nature; it is sealed with the rest so that the fleet's
+address is not.
+
+**What runs.** The line fetches nvoy at one pinned commit, which the page names, and runs its box
+installer from that checkout. It never pipes a download into a shell. It needs `git`, `node` 20 or
+later, `ssh`, and the harness already installed and signed in with the owner's own login. Where one
+is missing, it stops and says which, and changes nothing.
+
+**Run it twice, and nothing doubles.** A second run keeps the key it made (so the bound public half
+stays right), rewrites the config from the line, and restarts the launcher. A new key needs a new
+`bind_runtime`, which replaces the old entry.
+
+**Scope.** Claude Code first. Codex needs a second, feed key (`codex_portable_harness.mjs`), and
+`bind_runtime` carries one. The Codex shape adds a `feed_key` tag and is a follow-up. Until then the
+page refuses step 4 for a Codex agent and says why. A box that cannot reach port 22 uses the HTTPS
+door (nvoy `HARNESS_PLACEMENT.md`), also a follow-up.
+
+**Proof.** The step is green when the agent card reports a connected channel, read cold from the
+relay. The printed public half, the paste and the receipts are progress, not proof.
 
 ### Mention lists follow the grants
 
@@ -230,7 +268,9 @@ Each is one PR, with its deploy verified.
    and runs the existing tools in order, with a receipt per step.
 5. **waggle:** the "Add an agent" page, steps 1–3 and 6–7, against phase A.
 6. **waggle + nvoy:** step 5, the sealed invite and the room joins.
-7. **nvoy:** step 4's install line and `bind_runtime`.
+7. **nvoy + waggle:** step 4. nvoy: the sealed install details and the box installer (Claude Code).
+   waggle: the page opens the details, renders the line, and signs `bind_runtime` from the pasted
+   public half.
 8. **waggle:** `tools/buzz-allow.mjs` add mode, for "Buzz agents answer it". Proven when the read mode
    shows the one new key and nothing else changed, and a mention from the new agent is answered.
 9. **Phase B**, once HR, crusty and one more agent have gone through phase A cleanly.
