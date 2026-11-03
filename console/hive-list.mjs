@@ -103,7 +103,8 @@ export function duplicates(grants, subjectOf) {
 }
 
 // A card is believed only as the agent's own signed statement about itself, and it is part of
-// this hive only if it names the owner as a grantor. The newest valid card per key wins.
+// this hive only if it names the owner as a grantor. The newest valid card per key wins, and keeps
+// its event, whose signature its sealed owner_view rests on (owner-view.mjs).
 export function readCards(events, { owner, verify }) {
   const cards = new Map()
   for (const ev of events || []) {
@@ -112,7 +113,7 @@ export function readCards(events, { owner, verify }) {
       const card = JSON.parse(ev.content)
       if (card?.version !== 1 || card.pubkey !== ev.pubkey || !Array.isArray(card.grantors) || !card.grantors.includes(owner)) continue
       const prior = cards.get(ev.pubkey)
-      if (!prior || prior.signedAt < ev.created_at) cards.set(ev.pubkey, { ...card, signedAt: ev.created_at })
+      if (!prior || prior.signedAt < ev.created_at) cards.set(ev.pubkey, { ...card, signedAt: ev.created_at, event: ev })
     } catch { /* an unparseable card is no card */ }
   }
   return cards
