@@ -265,13 +265,13 @@ export const PLATFORMS = Object.freeze([
   { id: 'you', label: 'You', keys: [
     '8f3829871ec5ed5dff1b6654d3ca878aa1f4312968f318b18b158e1d93f0a37f', // James's Quill: drafts posts for you to sign, your written voice
   ] },
-  { id: 'lab', label: 'Frontier lab harnesses', runs: 'Codex, Claude Code', keys: [
-    '231952cb5eb0652c04075f6a1b93e727819ed2ac0bf5238a96c6d2ca51617edd', // DJ Codex
+  { id: 'lab', label: 'Frontier lab harnesses', runs: 'Claude Code', keys: [
     'ad05b00ee49200d5bd2788fba480621ba6009224f01e48b3e9bce10100421d5c', // MC Claude
     '38889d4ce187469d41dc0ef3f610a79d42120603fbc8a68b92d8bd67ae63a536', // waggle-dev
     'a135942aa05d90fff5d2062c78c61c1208903be241d3a93cb55e7009e87a3d8b', // crystalclaude
   ] },
-  { id: 'third-party', label: 'Third-party harnesses', runs: 'Pi, OpenClaw', keys: [
+  { id: 'third-party', label: 'Third-party harnesses', runs: 'Hermes, Pi, OpenClaw', keys: [
+    '231952cb5eb0652c04075f6a1b93e727819ed2ac0bf5238a96c6d2ca51617edd', // DJ Codex: on the Hermes agent since 3 Nov, the name kept
     'e4c0faf44d9aeabcb5459c6c3b76f2c704d7b55c7e0ddb3685fab4e4226935d8', // Pi Dog
     '1b53f548acebe8dd47252717104350006f49b5c981a86ad4cfaf58d3fd7a0f1e', // lukedog
   ] },
@@ -288,7 +288,7 @@ export const PLATFORMS = Object.freeze([
 ])
 // The harness each agent runs in, named over its column (#668). Cards carry no platform yet (#637).
 export const RUNS_ON = Object.freeze({
-  '231952cb5eb0652c04075f6a1b93e727819ed2ac0bf5238a96c6d2ca51617edd': 'Codex',
+  '231952cb5eb0652c04075f6a1b93e727819ed2ac0bf5238a96c6d2ca51617edd': 'Hermes',
   'ad05b00ee49200d5bd2788fba480621ba6009224f01e48b3e9bce10100421d5c': 'Claude Code',
   '38889d4ce187469d41dc0ef3f610a79d42120603fbc8a68b92d8bd67ae63a536': 'Claude Code',
   'a135942aa05d90fff5d2062c78c61c1208903be241d3a93cb55e7009e87a3d8b': 'Claude Code',
@@ -299,7 +299,7 @@ export const RUNS_ON = Object.freeze({
 })
 // Each harness's logo, drawn beside its name over the columns.
 export const RUNS_LOGO = Object.freeze({
-  Codex: 'assets/runs-on/codex.svg', 'Claude Code': 'assets/runs-on/claude-code.svg', Pi: 'assets/runs-on/pi.svg',
+  Hermes: 'assets/runs-on/hermes.png', Codex: 'assets/runs-on/codex.svg', 'Claude Code': 'assets/runs-on/claude-code.svg', Pi: 'assets/runs-on/pi.svg',
   OpenClaw: 'assets/runs-on/openclaw.svg', 'Grok Bot': 'assets/runs-on/grok-bot.png', Buzz: 'assets/runs-on/buzz.png',
 })
 // Your voice speaks for you, so it sits in your group.

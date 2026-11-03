@@ -39,7 +39,7 @@ let pass = true
 const check = (cond, label) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${label}`); if (!cond) pass = false }
 
 const key = id => PLATFORMS.find(p => p.id === id).keys
-const [dj, mc, dev] = key('lab'), [pi] = key('third-party'), [mydude, dennis] = key('buzz')
+const [mc, dev] = key('lab'), [dj, pi] = key('third-party'), [mydude, dennis] = key('buzz')
 const owner = '01'.repeat(32), voice = '02'.repeat(32), other = '03'.repeat(32), bridge = '04'.repeat(32), stray = '05'.repeat(32), giver = '06'.repeat(32)
 
 let n = 0
@@ -76,7 +76,7 @@ check(JSON.stringify(reachOf(rows, at(dev)).map(r => r.pubkey)) === JSON.stringi
   'reading across a row counts whom it can give work to')
 
 // 2. Columns.
-check(JSON.stringify(takers.map(r => r.pubkey)) === JSON.stringify([mc, dev, dj, pi, mydude, dennis]), 'agents head the columns in platform order')
+check(JSON.stringify(takers.map(r => r.pubkey)) === JSON.stringify([mc, dev, pi, dj, mydude, dennis]), 'agents head the columns in platform order')
 check(!takers.some(r => r.isOwner || r.isBridge || r.pubkey === voice), 'you, your voice and the bridge head no column')
 check(JSON.stringify(columns.map(r => r.pubkey)) === JSON.stringify([...takers, ...quiet].map(r => r.pubkey)) && columns.at(-1).pubkey === stray,
   'a quiet identity heads the last column, folded with its row')
@@ -153,7 +153,7 @@ check([...change.keys].sort().join() === [mc, dev].sort().join() && change.words
 // 7. Runs on.
 const runs = runsOf(columns, quiet)
 check(JSON.stringify(runs) === JSON.stringify([
-  { label: 'Claude Code', span: 2, more: false }, { label: 'Codex', span: 1, more: false }, { label: 'Pi', span: 1, more: false },
+  { label: 'Claude Code', span: 2, more: false }, { label: 'Pi', span: 1, more: false }, { label: 'Hermes', span: 1, more: false },
   { label: 'Buzz', span: 2, more: false }, { label: '', span: 1, more: true }]), 'neighbours in one harness share one label, and folded columns one blank')
 check(runs.reduce((n, r) => n + r.span, 0) === columns.length, 'the labels span every column exactly once')
 check([...new Set(Object.values(RUNS_ON))].every(h => RUNS_LOGO[h] && existsSync(new URL(`../console/${RUNS_LOGO[h]}`, import.meta.url))), 'every harness named over a column has its logo, and the file is there')
