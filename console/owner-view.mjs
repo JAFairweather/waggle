@@ -136,3 +136,41 @@ export function mentionLines(v, { nameOf, shortKey }) {
   for (const r of v.view.refused) lines.push(`Refused: grant ${r.grant.slice(0, 10)}…, ${r.reason}`)
   return { lines }
 }
+
+// ── The fix (step 4) ────────────────────────────────────────────────────────────────────────
+// The owner's own live mention grants for `giver` over `agent`, and where they stand on the agent's
+// card. Only the card naming a grant's own id on the giver's entry proves the agent took it; the
+// giver merely being listed is not proof, and a card that can't be read leaves the grant pending.
+export const mentionGrantsOf = (grants, { owner, giver, agent, subjectOf }) =>
+  grants.filter(g => g.live && g.cap === 'mention' && g.grantor === owner && g.grantee === giver && subjectOf(g.hash) === agent)
+
+export function mentionStatus(view, mine) {
+  if (!mine.length) return { state: 'none' }
+  if (view?.state !== 'readable') return { state: 'pending', grants: mine }
+  // Proof is this grant's id on its own giver's entry, in a card no older than the grant. The same
+  // second counts; an older card cannot have read it, so neither its listing nor its refusal counts,
+  // and an id under another key proves nothing.
+  const takes = (e, g) => e.pubkey === g.grantee && e.grants.includes(g.id) && view.signedAt >= g.at
+  const taken = view.view.mention.find(e => mine.some(g => takes(e, g)))
+  if (taken) return { state: 'taken', entry: taken }
+  const read = new Set(mine.filter(g => view.signedAt >= g.at).map(g => g.id))
+  const refused = view.view.refused.filter(r => read.has(r.grant))
+  const waiting = mine.filter(g => !refused.some(r => r.grant === g.id))
+  return waiting.length ? { state: 'pending', grants: waiting } : { state: 'refused', refused }
+}
+
+// The name another key already holds on this list, which would make the grant a refused one.
+export function nameClash(view, name, giver) {
+  if (view?.state !== 'readable' || !name) return null
+  return view.view.mention.find(e => e.pubkey !== giver && e.name && e.name.toLowerCase() === name.toLowerCase()) || null
+}
+
+export const mentionWhatIf = ({ agentName, giverName, name }) => `${agentName} will be able to mention ${giverName} as @${name}.`
+export const PUBLIC_NAME = 'The name is public. Anyone reading the approval relays sees that some agent may mention this key under it; the agent itself stays hashed.'
+export const PENDING = agentName => `Signed, waiting for ${agentName} to take it. The flag clears when ${agentName}'s card lists this approval.`
+
+// The owner's own live grants on one entry of the list: the ones a 441 from this owner can end.
+export const ownGrantsOn = (entry, grants, owner) => {
+  const ids = new Set(entry?.grants || [])
+  return grants.filter(g => g.live && g.cap === 'mention' && g.grantor === owner && ids.has(g.id))
+}
