@@ -137,3 +137,51 @@ export function pairCheck(rowA, rowB, ctx) {
   const directions = [direction(A, B, ctx), direction(B, A, ctx)]
   return { kinds: { [A.pubkey]: A.kind, [B.pubkey]: B.kind }, directions, summary: summaryOf(directions, ctx.nameOf) }
 }
+
+// The page's view, as on the Claude Design board "Why can't A reach B?": one key gives the work and
+// the other does it. Work in is the giver's way to the doer; Answer out is the doer's way back to the
+// giver by name. It is one direction of pairCheck; swapping the two keys gives the other. "In the
+// channel now" is left off the board's lanes: the page has no roster read, and the channel line says so.
+const LABELS = {
+  1: (d, g) => `${g} can give ${d} work`,
+  2: (d, g) => `${d} takes ${g}'s posts as work`,
+  3: d => `${d} is connected`,
+  4: (d, g) => `${d} and ${g} share a channel`,
+  6: d => `The relay takes ${d}'s posts`,
+  7: (d, g) => `${d} may mention ${g}`,
+  8: (d, g) => `${g} hears the mention`,
+}
+const blocks = lines => lines.findIndex(l => l.state === 'closed')
+
+export function reachView(giverRow, doerRow, ctx) {
+  const res = pairCheck(doerRow, giverRow, ctx)
+  const dir = res.directions[0]
+  const [d, g] = [ctx.nameOf(doerRow.pubkey), ctx.nameOf(giverRow.pubkey)]
+  const label = l => ({ ...l, label: LABELS[l.gate](d, g) })
+  const work = dir.work.map(label)
+  const answer = dir.reach.filter(l => l.gate !== 5).map(label)
+  for (const lane of [work, answer]) {
+    const at = blocks(lane)
+    if (at >= 0) for (const l of lane.slice(at + 1)) if (l.state === 'not-read') l.says = `Not checked: an earlier step fails. ${l.says}`
+  }
+  const drawn = lane => lane.filter(l => !l.notDrawn)
+  const words = (lane, closed, unsure, clear) => {
+    const c = drawn(lane).find(l => l.state === 'closed')
+    if (c) return { state: 'closed', text: typeof closed === 'function' ? closed(c) : closed }
+    if (drawn(lane).some(l => l.state === 'cant-tell')) return { state: 'cant-tell', text: unsure }
+    return { state: drawn(lane).length ? 'counted' : 'none', text: drawn(lane).length ? clear : '' }
+  }
+  const lanes = {
+    work: { title: `Work in · ${g} → ${d}`, gates: work },
+    answer: { title: `Answer out · ${d} → ${g}`, gates: answer },
+  }
+  const verdict = [
+    words(work, 'Work can’t get in.', 'Can’t tell whether work gets in.', 'Nothing the page read stops work getting in.'),
+    words(answer, c => c.gate === 7 ? 'The answer can’t come back by name.' : 'The answer can’t come back.', 'Can’t tell whether the answer comes back.', 'Nothing the page read stops the answer coming back.'),
+  ].filter(v => v.text)
+  const fixAt = [...work, ...answer].find(l => l.state === 'closed' && l.fix)
+  const fix = fixAt && (fixAt.fix === 'mention'
+    ? { kind: 'mention', agent: doerRow.pubkey, giver: giverRow.pubkey, text: `Let ${d} mention ${g} by name. It is one approval, signed by you.`, button: 'Draft the change' }
+    : { kind: 'square', agent: doerRow.pubkey, giver: giverRow.pubkey, text: `Let ${g} give ${d} work. It is one square on the grid, signed by you.`, button: 'Show its square' })
+  return { kinds: res.kinds, lanes, verdict, fix: fix || null }
+}

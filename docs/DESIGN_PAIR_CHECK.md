@@ -16,6 +16,19 @@ has to work out which gate closed by hand. On 2026-11-03 that took a person pass
 Pick two keys on the hive page: two agents, or an agent and a person. The page lists every gate in
 both directions. Each line carries a state, its source in words, and the fix if the page has one.
 
+**On the page it is laid out as the board is** (board 4, "Why can't A reach B?"). One picker names
+the key that **gives the work** and the other the key that **does the work**; ⇄ swaps them, and the
+swap is how the other direction is read. Two lanes sit side by side: **Work in** (the giver's way to
+the doer: gates 1–3) and **Answer out** (the doer's way back to the giver by name: gates 4, 6, 7
+and 8). Gate 5 is left off the lanes, because the page has no roster read; the channel line already
+says that configuration is not membership. Each gate has a round mark: a filled ✓ for Proven, an
+outlined ✓ for Claimed, a filled ✕ for Closed, a solid-ringed ? for Can't tell and a dashed ? for
+Not read yet. The state is also written under the line, next to its source. A Not read yet gate after
+a Closed one in the same lane says "Not checked: an earlier step fails". Beside the pickers there is
+one verdict line per lane, such as "The answer can't come back by name.". There is one fix banner,
+for the first Closed gate that has a fix. `reachView` in `console/pair-check.mjs` is this view: it
+is one direction of `pairCheck`, and the suite holds that their states agree.
+
 It is a section of `hive.html`, not a new page, in keeping with #613's move off separate pages. It
 opens from a row's **Check with…** action, or as `hive.html#pair`. It reads only what the hive page
 has already read. **It adds no relay queries and signs nothing.** A fix it offers goes into the

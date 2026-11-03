@@ -15,7 +15,7 @@
 //   node tests/console_pair_check.mjs
 
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools'
-import { pairCheck, kindOf, summaryOf, STATES } from '../console/pair-check.mjs'
+import { pairCheck, kindOf, summaryOf, STATES, reachView } from '../console/pair-check.mjs'
 import { readGrants, scopeTable, answersFor, PLATFORMS } from '../console/hive-list.mjs'
 import { draftRevoke } from '../console/hive-change.mjs'
 import { scopeHash } from '../console/scope-hash.mjs'
@@ -180,6 +180,28 @@ const allDrawn = res => res.directions.flatMap(d => [...d.work, ...d.reach]).fil
   check(summaryOf([{ from: mc.pk, to: pi.pk, work: [], reach: [] }], nameOf).state === 'counted', 'an empty check counts nothing and still says nothing is open')
   let threw = false; try { pairCheck(d9.row(mc.pk), d9.row(mc.pk), d9.ctx) } catch { threw = true }
   check(threw, 'a key is never paired with itself')
+}
+
+// ── The board's view: one key gives the work, the other does it ─────────────────────────────────
+{
+  const views = new Map([[mc.pk, readable([], [{ id: 'c1', name: 'waggle-test' }])], [pi.pk, readable([], [{ id: 'c1', name: 'waggle-test' }])]])
+  const h = await hive([piTasksMc], { views })
+  const v = reachView(h.row(pi.pk), h.row(mc.pk), h.ctx)
+  const gate = (lane, n) => v.lanes[lane].gates.find(l => l.gate === n)
+  check(v.lanes.work.title === 'Work in · Pi Dog → MC Claude' && v.lanes.answer.title === 'Answer out · MC Claude → Pi Dog', 'the lanes are Work in, giver to doer, and Answer out, doer to giver')
+  check(v.lanes.work.gates.map(l => l.gate).join() === '1,2,3' && v.lanes.answer.gates.map(l => l.gate).join() === '4,6,7,8', 'work in has three gates and answer out four, as on the board')
+  check(gate('work', 1).state === 'proven' && gate('work', 1).label === 'Pi Dog can give MC Claude work', 'the D9 pair: work in is Proven, labelled in plain words')
+  check(gate('answer', 7).state === 'closed' && gate('answer', 7).label === 'MC Claude may mention Pi Dog', 'and the mention back is Closed')
+  check(/^Not checked: an earlier step fails/.test(gate('answer', 8).says) && gate('answer', 8).state === 'not-read', 'a gate after a closed one says it was not checked, and stays Not read yet')
+  check(v.verdict.map(x => x.text).join(' ') === 'Nothing the page read stops work getting in. The answer can\u2019t come back by name.', "the verdict is the board's line, and never says work gets in")
+  check(v.fix?.kind === 'mention' && v.fix.agent === mc.pk && v.fix.giver === pi.pk && v.fix.button === 'Draft the change', 'the one fix is the mention approval, for the doer to mention the giver')
+  const same = pairCheck(h.row(mc.pk), h.row(pi.pk), h.ctx).directions[0]
+  check([...same.work, ...same.reach.filter(l => l.gate !== 5)].every(l => l.state === [...v.lanes.work.gates, ...v.lanes.answer.gates].find(x => x.gate === l.gate).state), "each lane's states are pairCheck's, one direction of it")
+  const back = reachView(h.row(mc.pk), h.row(pi.pk), h.ctx)
+  check(back.lanes.work.gates[0].state === 'closed' && back.fix?.kind === 'square' && /^Work can.t get in/.test(back.verdict[0].text), 'swapped: no approval the other way, so work can\u2019t get in and the fix is its square')
+  const toPerson = reachView(h.row(mc.pk), h.row(person.pk), h.ctx)
+  check(toPerson.lanes.work.gates.every(l => l.notDrawn) && !toPerson.verdict.some(x => /work/.test(x.text)), 'a person doing the work: no work-in gates are drawn, and the verdict says nothing about work')
+  check(allDrawn({ directions: [{ work: v.lanes.work.gates, reach: v.lanes.answer.gates }] }).every(l => !/\bopen\b|can reach/i.test(l.says)), 'no line says a gate is open')
 }
 
 if (!pass) { console.log('\nconsole_pair_check: FAIL'); process.exit(1) }
