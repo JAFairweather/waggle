@@ -13,6 +13,7 @@
 //      journalSend, markRelaySeen, markLatency and the dedup stores key on. The signed wrap's own
 //      id must be the mined one, or the work is a decoration on an event that never had it.
 
+import { performance } from 'node:perf_hooks'
 import { getPublicKey, generateSecretKey } from 'nostr-tools/pure'
 import { POW_CAP, powDifficulty, mineSync, mineAsync } from '../src/pow.mjs'
 import { powTargets } from '../src/pow_targets.mjs'
@@ -73,12 +74,15 @@ console.log('\n2. off the event loop, with the control that proves the measureme
     tags: [['p', 'b'.repeat(64)]], content: 'x'.repeat(3000) }
   const TARGET = 14   // heavy enough to take real time, far below the cap
 
+  // The longest stretch with no tick, start and end included, is what a stall is. A tick count is not:
+  // a lucky nonce finishes the mine before three ticks are due, with the loop never blocked.
   const countTicks = async (run) => {
-    let ticks = 0
-    const timer = setInterval(() => { ticks++ }, 5)
+    let ticks = 0, last = performance.now(), maxGap = 0
+    const timer = setInterval(() => { const at = performance.now(); maxGap = Math.max(maxGap, at - last); last = at; ticks++ }, 5)
     const result = await run()
     clearInterval(timer)
-    return { ticks, result }
+    maxGap = Math.max(maxGap, performance.now() - last)
+    return { ticks, maxGap: Math.round(maxGap), result }
   }
 
   // NEGATIVE CONTROL, and it runs FIRST. If the synchronous miner does not starve the timer, the
@@ -90,7 +94,7 @@ console.log('\n2. off the event loop, with the control that proves the measureme
 
   const async_ = await countTicks(async () => mineAsync(template, TARGET))
   ok('mining on a worker leaves the event loop free — the timer keeps firing throughout',
-    async_.result.mined && async_.ticks > 3, `${async_.ticks} ticks during ${async_.result.iterations} nonces`)
+    async_.result.mined && async_.maxGap < 100, `longest gap ${async_.maxGap}ms, ${async_.ticks} ticks during ${async_.result.iterations} nonces (on this thread: ${sync.maxGap}ms)`)
   ok('and the worker reaches at least the difficulty it was asked for',
     powDifficulty(async_.result.event.id) >= TARGET, `${powDifficulty(async_.result.event.id)} bits`)
   ok('while committing to what was ASKED, never to what was reached — a tag claiming difficulty an id lacks is worse than none',
