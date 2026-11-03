@@ -7,8 +7,9 @@
 //     name outside the manifest's rule, a self-grant or a bad key is refused, not drafted.
 //  2. The proposed name is the giver's profile name put into the rule, or nothing.
 //  3. The grant is read back with its name, and the page's own list of grants finds it.
-//  4. The flag clears only when the card lists the grant's own id: the giver being listed some
-//     other way is not proof, a card that can't be read leaves it pending, and a refusal says so.
+//  4. The flag clears only when a card no older than the grant lists the grant's own id on the
+//     giver's entry: the giver listed some other way, or the id under another key, is not proof; a
+//     card that can't be read leaves it pending, and a refusal says so.
 //  5. A name another key holds on the list is caught before signing.
 //  6. Only your own live grants on an entry are offered for withdrawal.
 //
@@ -68,13 +69,17 @@ const ended = readGrants([signed, finalizeEvent(draftRevoke({ grantId: signed.id
 check(mentionGrantsOf(ended, { owner: owner.pk, giver: giver.pk, agent: agent.pk, subjectOf: table.subjectOf }).length === 0, 'a withdrawn grant is no longer yours to wait on')
 
 // ── 4. The proof ─────────────────────────────────────────────────────────────────────────────────
-const view = (mention, refused = []) => ({ state: 'readable', view: { mention, refused, channels: [] } })
+const view = (mention, refused = [], signedAt = 1700000000) => ({ state: 'readable', signedAt, view: { mention, refused, channels: [] } })
 check(mentionStatus(view([]), []).state === 'none', 'no grant of yours: nothing to wait on')
 check(mentionStatus(view([]), mine).state === 'pending', 'signed, and the card does not list it yet: pending')
 check(mentionStatus({ state: 'cant-tell', why: 'not-opened' }, mine).state === 'pending', 'a card that cannot be read leaves it pending, never taken')
 const taken = mentionStatus(view([{ name: 'dead-rabbit', pubkey: giver.pk, source: 'grant', grants: [signed.id] }]), mine)
 check(taken.state === 'taken', "the card listing the grant's own id is the proof")
 check(!oneWay({ on: true, giver: giver.pk, agent: agent.pk, view: view([{ name: 'dead-rabbit', pubkey: giver.pk, source: 'grant', grants: [signed.id] }]) }), 'and with it the square is no longer one-way')
+const listed = [{ name: 'dead-rabbit', pubkey: giver.pk, source: 'grant', grants: [signed.id] }]
+check(mentionStatus(view([{ ...listed[0], pubkey: peer.pk }]), mine).state === 'pending', "the grant's id on another key's entry is not proof: it must sit on the giver's own entry")
+check(mentionStatus(view(listed, [], 1699999999), mine).state === 'pending', 'a card older than the grant leaves it pending, even with the id on it')
+check(mentionStatus(view(listed, [], 1700000000), mine).state === 'taken', 'a card signed in the same second as the grant counts')
 const otherId = 'f'.repeat(64)
 check(mentionStatus(view([{ name: 'dr', pubkey: giver.pk, source: 'grant', grants: [otherId] }]), mine).state === 'pending', 'the giver listed under some other grant is not proof that yours was taken')
 const refused = mentionStatus(view([], [{ grant: signed.id, reason: 'the name dead-rabbit is held by another key' }]), mine)
