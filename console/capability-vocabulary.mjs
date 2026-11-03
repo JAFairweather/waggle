@@ -57,6 +57,7 @@ export const CAP_SENTENCE = {
   'task-relay': '{grantee} may carry instructions addressed to {subject}',
   'shadow': '{grantee} may speak for {subject} when giving work',
   'mirror': "{subject} may mirror {grantee}'s public posts",
+  'mention': '{subject} may mention {grantee} by name',
 }
 
 // Render a capability as a sentence about two named parties. `grantee` and `subject` are already
@@ -85,6 +86,7 @@ export const CAP_LABEL = {
   'task-relay': 'Carry instructions addressed to the agent',
   'shadow': 'Speak for you when giving work',
   'mirror': 'Have their public posts mirrored',
+  'mention': 'Be mentioned by name by the agent',
 }
 // An unknown capability falls back to its raw protocol name rather than to a friendly phrase.
 // A cap this console has never heard of must LOOK unfamiliar — inventing readable prose for it
@@ -103,6 +105,7 @@ export const CAP_SUBJECT = {
   'task-relay': 'agent',
   'shadow': 'agent',
   'mirror': 'channel',
+  'mention': 'agent',
 }
 export const capSubject = (c) => CAP_SUBJECT[c] || 'unknown'
 
@@ -120,6 +123,7 @@ export const CAP_ENFORCER = {
   'task-relay': "the agent's runtime",
   'shadow': "the agent's runtime",
   'mirror': 'this bridge (authored by the participant, not by you)',
+  'mention': "the agent's runtime",
 }
 // Unknown caps get the cautious answer, not a confident one. Claiming "this bridge" for something
 // unrecognised would tell an owner their bridge is checking a thing it has never heard of.

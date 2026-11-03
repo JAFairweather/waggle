@@ -46,7 +46,8 @@ export function readGrants(events, { verify, now = Date.now() } = {}) {
     const grantee = String(tag(ev, 'p')?.[1] || '').toLowerCase(), cap = tag(ev, 'da-cap')?.[1], scope = tag(ev, 'da-scope')
     if (!HEX64.test(grantee) || !cap || !scope?.[1]) continue
     const state = revoked.has(`${ev.pubkey}|${ev.id}`) ? 'revoked' : grantExpired(ev, Math.floor(now / 1000)) ? 'expired' : 'live'
-    grants.push({ id: ev.id, grantor: ev.pubkey, grantee, cap, hash: scope[1], salt: scope[2] || '', at: ev.created_at, state, live: state === 'live' })
+    const name = cap === 'mention' && typeof tag(ev, 'name')?.[1] === 'string' ? tag(ev, 'name')[1] : null
+    grants.push({ id: ev.id, grantor: ev.pubkey, grantee, cap, hash: scope[1], salt: scope[2] || '', at: ev.created_at, state, live: state === 'live', ...(cap === 'mention' ? { name } : {}) })
   }
   grants.sort((a, b) => b.at - a.at)
   return { grants, events: [...seen.values()], rejected }

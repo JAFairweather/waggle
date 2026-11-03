@@ -70,6 +70,10 @@
   /* One way (#691): the giver can give it work, and it can't mention the giver back. A notch, never colour alone: the label says it too. */
   .sq.oneway{position:relative}.sq.oneway::after{content:"";position:absolute;top:-1.5px;right:-1.5px;width:11px;height:11px;background:var(--remove);border-top-right-radius:7px;clip-path:polygon(0 0,100% 0,100% 100%)}
   .legend .sq.oneway::after{width:8px;height:8px;border-top-right-radius:5px}
+  #one-way-pairs .pairline{margin:4px 0;display:flex;flex-wrap:wrap;gap:6px;align-items:baseline}
+  #mention-fix{margin:8px 0;padding:10px 12px;border:1px solid var(--line, #ccc);border-radius:8px;display:grid;gap:6px;max-width:34em}
+  #mention-fix input{font:inherit;padding:4px 6px;max-width:100%}
+  #fix-clash{color:var(--remove)}
   button.sq[aria-disabled="true"]:not(.self){cursor:help}
   button.sq:focus-visible{outline:2px solid var(--add);outline-offset:2px}
   .legend{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;font-size:13px;color:var(--dim);margin:0 0 12px}
@@ -153,6 +157,15 @@
       <tbody id="list"></tbody>
     </table></div>
     <p class="footnote" id="one-way" role="status"><span id="one-way-words"></span> <button id="mention-open" class="link" type="button" hidden>Open who each agent can mention</button> <span id="mention-status"></span></p>
+    <div id="one-way-pairs"></div>
+    <div id="mention-fix" role="group" aria-labelledby="fix-title" hidden>
+      <b id="fix-title"></b>
+      <label>Name it uses: <span class="npub">@</span><input id="fix-name" autocomplete="off" spellcheck="false" maxlength="32"></label>
+      <span id="fix-what"></span>
+      <span id="fix-clash" role="status"></span>
+      <span class="note" id="fix-public"></span>
+      <span><button id="fix-add" class="small" type="button">Add to changes</button> <button id="fix-cancel" class="small quiet" type="button">Cancel</button></span>
+    </div>
     <p class="footnote" id="folded" hidden></p>
     <p class="footnote" id="partial-note" hidden>* Not every relay answered in full, so an approval held only on one that did not may be missing.</p>
     <p class="footnote">Click a name for how it works, what it holds, and its last task.</p>
@@ -232,7 +245,7 @@ import { loadBridgeKey } from './bridge-key-store.mjs'
 import { validControlState, postingCounts, notAnswering, shortNpub } from './agent-roster.mjs'
 import { scopeHash } from './scope-hash.mjs'
 import { signFresh } from './guarded-signer.mjs'
-import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, describeChange, applyChange, relayHost } from './hive-change.mjs'
+import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, draftMention, mentionName, MENTION_NAME, describeChange, applyChange, relayHost } from './hive-change.mjs'
 import { gridOf, reachOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, BUZZ_D, buzzOf, draftBuzz, sameBuzz, buzzWords, isBuzz, day } from './hive-grid.mjs'
 import { whatIf } from './hive-what-if.mjs'
 import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-link.mjs'
@@ -243,7 +256,7 @@ import { HARNESSES, agentName, draftAddAgent, readBack, requestD, sendRequest, S
 import { HIVE_RELAY, readHiveTerms, sealInvite } from './hive-invite.mjs'
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
-import { sealedFor, openOwnerView, oneWay, oneWayLine, mentionLines } from './owner-view.mjs'
+import { sealedFor, openOwnerView, oneWay, oneWayLine, mentionLines, mentionGrantsOf, mentionStatus, nameClash, whatIf, PUBLIC_NAME, PENDING, ownGrantsOn } from './owner-view.mjs'
 import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK, RUNS_LOGO } from './hive-list.mjs'
 
 // The bridge publishes its roster to these relays and reads its commands from them.
@@ -321,6 +334,7 @@ const remembered = () => { try { const v = localStorage.getItem(OWNER_KEY); retu
 async function load({ owner: rememberedOwner = null } = {}) {
   const st = $('status'); st.className = 'status'; coverage.length = 0
   $('go').disabled = true
+  closeFix()
   try {
     let owner = rememberedOwner
     if (!owner) {
@@ -374,7 +388,7 @@ async function load({ owner: rememberedOwner = null } = {}) {
     const { rows, needs } = buildList({ owner, grantEvents, grants, table, cards, roster, bridge, profiles })
     const active = activeOf(activeRead, { owner, verify: verifyEvent })
     const buzz = buzzOf(activeRead, { owner, verify: verifyEvent })
-    hive = { owner, grants, table, rows, bridge, rosterState, active: active.keys, activeKnown: active.known, buzz, views: viewsOf(cards, owner) }
+    hive = { owner, grants, table, rows, bridge, rosterState, active: active.keys, activeKnown: active.known, buzz, views: viewsOf(cards, owner), profiles }
     const partial = {
       cards: !cardRead.full,
       // A row with no card is folded with the owner alone, so a card that went unread may name other grantors.
@@ -624,6 +638,7 @@ function draw(rows, needs, owner, partial, posting = null) {
     : b.signedAt ? `Set in Buzz Desktop, copied ${day(b.signedAt)}` : 'Set in Buzz Desktop: not copied yet (run tools/buzz-allow.mjs where Buzz runs)'
   drawLeftovers(owner, nameOf)
   $('partial-note').hidden = !partial.approvals
+  for (const pk of grid.mentions.keys()) fillMentions(pk)
   drawOneWay()
   $('list-panel').hidden = false
   drawBar()
@@ -829,7 +844,7 @@ function paint(key) {
   button.className = `sq ${state}${cell.buzz ? ' buzz' : cell.on && !cell.can ? ' theirs' : ''}${cell.unknown ? ' unknown' : ''}${flagged ? ' oneway' : ''}`
   button.textContent = state === 'add' ? '+' : state === 'remove' ? '–' : state === 'self' ? '·' : ''
   const label = (cell.self ? `${whom} itself` : state === 'add' ? `${who} will be able to give ${whom} work` : state === 'remove' ? `${who} will stop giving ${whom} work`
-    : `${who} ${cell.on ? 'can' : "can't"} give ${whom} work`) + (flagged ? `. One way: ${whom} can't mention ${grid.nameOf(giver.pubkey)} back` : '')
+    : `${who} ${cell.on ? 'can' : "can't"} give ${whom} work`) + (flagged ? `. One way: ${whom} can't mention ${grid.nameOf(giver.pubkey)} back; the fix is under the grid and in ${whom}'s row` : '')
   button.setAttribute('aria-label', label)
   button.title = cell.why ? `${label}. ${cell.why}` : label
   button.setAttribute('aria-disabled', String(!cell.can))
@@ -844,14 +859,81 @@ function summarize(pk) {
 function fillMentions(pk) {
   const dd = grid.mentions.get(pk)
   if (!dd) return
-  const { lines, unknown } = mentionLines(hive.views.get(pk), { nameOf: grid.nameOf, shortKey: shortNpub })
+  const v = hive.views.get(pk)
+  const { lines, unknown } = mentionLines(v, { nameOf: grid.nameOf, shortKey: shortNpub })
   dd.className = unknown ? 'unknown' : ''; dd.textContent = ''
-  for (const line of lines) dd.appendChild(el('div', null, line))
+  const entries = v?.state === 'readable' ? v.view.mention : [], refused = v?.state === 'readable' ? v.view.refused : []
+  const firstRefused = v?.state === 'readable' ? entries.length || 1 : Infinity
+  lines.forEach((line, i) => {
+    const div = dd.appendChild(el('div', null, line))
+    const own = i < entries.length ? ownGrantsOn(entries[i], hive.grants, hive.owner) : []
+    if (own.length) {
+      div.append(' ', action(`Withdraw your grant${own.length === 1 ? '' : 's'}`, () => propose(own.map(withdrawMention))))
+      if (entries[i].source === 'manifest') div.appendChild(el('span', 'note', ' The fleet host lists it too, so it stays.'))
+    }
+    const r = i >= firstRefused ? refused[i - firstRefused] : null
+    const mine = r && hive.grants.find(g => g.id === r.grant && g.grantor === hive.owner && g.live)
+    if (mine) div.append(' ', action('Withdraw it and sign another name', () => { propose([withdrawMention(mine)]); openFix(pk, mine.grantee) }))
+  })
+  for (const { row, giver } of flaggedPairs()) if (row.pubkey === pk) dd.appendChild(pairLine(giver.pubkey, pk))
+}
+// The fix (#691 step 4). A flagged pair says where your own mention grant stands, or offers one.
+const action = (text, onclick) => { const b = el('button', 'small quiet', text); b.type = 'button'; b.onclick = onclick; return b }
+const flaggedPairs = () => [...grid.cells.values()].filter(({ row, giver, cell }) => oneWay({ on: cell.on, giver: giver.pubkey, agent: row.pubkey, view: hive.views.get(row.pubkey) }))
+function withdrawMention(g) {
+  const agent = hive.table.subjectOf(g.hash)
+  return { key: `withdraw:${g.id}`, sign: '–', words: describeChange({ action: 'withdraw', grant: g, agent }, grid.nameOf), draft: () => [draftRevoke({ grantId: g.id })] }
+}
+function pairLine(giver, agent) {
+  const line = el('div', 'pairline')
+  line.appendChild(el('span', null, `${upper(grid.nameOf(giver))} → ${grid.nameOf(agent)}:`))
+  const st = mentionStatus(hive.views.get(agent), mentionGrantsOf(hive.grants, { owner: hive.owner, giver, agent, subjectOf: hive.table.subjectOf }))
+  if (st.state === 'pending') { line.appendChild(el('span', 'note', PENDING(grid.nameOf(agent)))); return line }
+  if (st.state === 'refused') line.appendChild(el('span', 'note', `Your grant was refused: ${st.refused[0].reason}.`))
+  line.appendChild(action(`Let ${grid.nameOf(agent)} mention ${grid.nameOf(giver)}…`, () => openFix(agent, giver)))
+  return line
+}
+let fixing = null
+function openFix(agent, giver) {
+  fixing = { agent, giver }
+  const p = hive.profiles.get(giver) || {}
+  $('fix-title').textContent = `Let ${grid.nameOf(agent)} mention ${grid.nameOf(giver)}`
+  $('fix-name').value = mentionName(p.name) || mentionName(p.display_name) || ''
+  $('fix-public').textContent = PUBLIC_NAME
+  $('mention-fix').hidden = false
+  checkFix()
+  $('mention-fix').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); $('fix-name').focus({ preventScroll: true })
+}
+function fixProblem() {
+  const { agent, giver } = fixing, name = $('fix-name').value.trim()
+  if (!MENTION_NAME.test(name)) return { name, why: 'The name must start with a letter or digit, and use only letters, digits, dots, dashes and underscores, 32 at most.' }
+  const clash = nameClash(hive.views.get(agent), name, giver)
+  if (clash) return { name, why: `@${clash.name} is already ${grid.nameOf(clash.pubkey)} on ${grid.nameOf(agent)}'s list, so ${grid.nameOf(agent)} would refuse this grant. Choose another name.` }
+  return { name, why: '' }
+}
+function checkFix() {
+  if (!fixing) return
+  const { name, why } = fixProblem()
+  $('fix-what').textContent = why && !MENTION_NAME.test(name) ? '' : whatIf({ agentName: upper(grid.nameOf(fixing.agent)), giverName: grid.nameOf(fixing.giver), name })
+  $('fix-clash').textContent = why
+  $('fix-add').disabled = !!why
+}
+const closeFix = () => { fixing = null; $('mention-fix').hidden = true }
+$('fix-name').oninput = checkFix
+$('fix-cancel').onclick = closeFix
+$('fix-add').onclick = () => {
+  if (!fixing) return
+  const { agent, giver } = fixing, { name, why } = fixProblem()
+  if (why) return checkFix()
+  propose([{ key: `mention:${agent}|${giver}`, sign: '+', words: `Let ${grid.nameOf(agent)} mention ${grid.nameOf(giver)} as @${name}`,
+    draft: async () => [await draftMention({ grantee: giver, agent, name, scopeHash })] }])
+  closeFix()
 }
 const openable = () => [...hive.views].filter(([, v]) => v.state === 'cant-tell' && v.event)
 function drawOneWay() {
-  const pairs = [...grid.cells.values()].filter(({ row, giver, cell }) => oneWay({ on: cell.on, giver: giver.pubkey, agent: row.pubkey, view: hive.views.get(row.pubkey) }))
-    .map(({ row, giver }) => ({ giver: giver.pubkey, agent: row.pubkey }))
+  const pairs = flaggedPairs().map(({ row, giver }) => ({ giver: giver.pubkey, agent: row.pubkey }))
+  const box = $('one-way-pairs'); box.textContent = ''
+  for (const p of pairs) box.appendChild(pairLine(p.giver, p.agent))
   const views = grid.columns.map(t => hive.views.get(t.pubkey)).filter(Boolean)
   const words = oneWayLine(pairs, { nameOf: pk => upper(grid.nameOf(pk)), unread: views.filter(v => v.state === 'cant-tell').length, readable: views.filter(v => v.state === 'readable').length })
   $('one-way-words').textContent = words

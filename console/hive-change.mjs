@@ -57,6 +57,27 @@ export async function draftPass({ grantee, channel, scopeHash, salt = freshSalt(
   return { kind: 440, created_at: now, tags: [['p', grantee], ['da-scope', await scopeHash(id, salt), salt], ['da-cap', 'admit']], content: '' }
 }
 
+// A mention grant (#691, docs/DESIGN_MENTION_RIGHTS.md): the agent may bring `grantee` in by
+// `name`. Its subject is the agent, hashed as a task grant's is; its `name` tag is public, and must
+// pass the manifest's name rule or the agent's fold drops it.
+export const MENTION_NAME = /^[a-z0-9][a-z0-9._-]{0,31}$/i
+export async function draftMention({ grantee, agent, name, scopeHash, salt = freshSalt(), now = nowSec() }) {
+  if (!HEX64.test(grantee || '')) throw new Error('The one to mention is not a public key.')
+  if (!HEX64.test(agent || '')) throw new Error('The agent is not a public key.')
+  if (grantee === agent) throw new Error('An agent never needs a grant to mention itself.')
+  if (!MENTION_NAME.test(name || '')) throw new Error('The name must start with a letter or digit and use only letters, digits, dots, dashes and underscores, 32 at most.')
+  if (!SALT.test(salt)) throw new Error('The salt must be 16 random bytes in hex.')
+  return { kind: 440, created_at: now, tags: [['p', grantee], ['da-scope', await scopeHash(agent, salt), salt], ['da-cap', 'mention'], ['name', name]], content: '' }
+}
+
+// A profile name put into the name rule: "Dead Rabbit" → "dead-rabbit". Null when nothing usable
+// is left, so the owner types one rather than the page inventing it.
+export function mentionName(profileName) {
+  const s = String(profileName || '').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-').replace(/-{2,}/g, '-').replace(/^[^a-z0-9]+/, '').slice(0, 32).replace(/[._-]+$/, '')
+  return MENTION_NAME.test(s) ? s : null
+}
+
 // Your live passes for `grantee`, and, once the channel id is known, the ones that cover it.
 export async function passesOf(grants, { grantee, owner, channel, scopeHash }) {
   const mine = grants.filter(g => g.live && g.grantee === grantee && g.grantor === owner && PASS_CAPS.includes(g.cap))
