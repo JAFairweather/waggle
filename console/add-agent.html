@@ -70,7 +70,7 @@
   details.about{margin:6px 0}details.about summary{cursor:pointer;color:var(--gold)}.doc{white-space:pre-wrap;max-height:320px;overflow:auto;margin-top:8px;font-size:13px;color:var(--dim)}
   .ticks{display:flex;flex-direction:column;gap:8px;margin:12px 0}.ticks label{display:flex;gap:9px;align-items:flex-start;font-size:14px}.ticks input{width:auto;margin-top:3px;accent-color:var(--gold)}
   .status{min-height:20px;margin-top:12px;color:var(--dim);font-size:13px}.status.err{color:var(--critical)}.status.ok{color:var(--good)}
-  #terms-line.err{color:var(--critical)}
+  #terms-line.err,#giver-gone{color:var(--critical)}
   [hidden]{display:none!important}
   @media (max-width:720px){nav.rail{flex-basis:100%}main.step{padding:22px 18px}.wrap{padding:20px 16px 48px}.top{padding:12px 16px}}
 </style>
@@ -160,6 +160,7 @@
       <p class="hint" id="giver-like-why" hidden></p>
       <div class="group-label" id="chosen-label"></div>
       <div class="chips" id="chips"></div>
+      <p class="hint err" id="giver-gone" hidden><span></span> <button type="button" class="quiet" id="giver-drop">Drop them</button></p>
       <div class="checklist" id="givers"></div>
       <p class="hint" id="giver-plan"></p>
       <div class="status" id="work-status" role="status"></div>
@@ -184,7 +185,7 @@ import { HARNESSES, agentName, draftAddAgent, sendRequest, SETUP_KIND, requestD 
 import { HIVE_RELAY, readHiveTerms, sealInvite } from './hive-invite.mjs'
 import { readCards, relayCoverage, GRANT_RELAYS, CARD_RELAYS, CARD_D, RUNS_LOGO, RUNS_ON, PLATFORMS, platformOf } from './hive-list.mjs'
 import { shortNpub } from './agent-roster.mjs'
-import { STEPS, NOT_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan } from './add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine } from './add-agent-flow.mjs'
 
 const $ = id => document.getElementById(id)
 // Everything shown here came from someone else's signature, so it reaches the DOM only as text.
@@ -214,7 +215,7 @@ const keep = () => { try { sessionStorage.setItem(SAVED, JSON.stringify(form)) }
 const form = { step: 1, name: '', harness: 'claude-code', like: '', agent: '', givers: null, sixth: null, ...saved }
 
 // What the page has read: whose hive, its agents, and the newest request for this agent.
-let owner = null, installed = [], profiles = new Map(), latest = null, joined = null, terms = null, fixed = null
+let owner = null, loaded = false, installed = [], profiles = new Map(), latest = null, joined = null, terms = null, fixed = null
 const done = { 1: false, 2: false, 3: false, 4: false, 5: false, 6: false, 7: false }
 
 const nameShown = () => form.name || 'the new agent'
@@ -333,6 +334,11 @@ function drawGivers() {
       : `Open the hive first in this tab; it reads who gives ${agentLabel(likeAgent)} work.`
   likeBtn.onclick = () => same && setGivers(same)
   $('giver-none').onclick = () => setGivers([])
+  const { kept, gone } = reconcileGivers((form.givers || []).filter(pk => pk !== form.agent), all), goneP = $('giver-gone')
+  goneP.hidden = !loaded || !gone.length
+  goneP.firstChild.textContent = goneLine(gone, shortNpub) || ''
+  $('giver-drop').textContent = gone.length === 1 ? 'Drop it' : 'Drop them'
+  $('giver-drop').onclick = () => setGivers(kept)
   $('chosen-label').textContent = pick.chips.length ? `Chosen to give it work (${pick.chips.length})` : 'Nobody chosen yet'
   drawPlan(pick.chips)
   const chips = $('chips'); chips.textContent = ''
@@ -393,8 +399,11 @@ function fields() {
   const others = othersThan(installed.map(a => ({ id: a.id, pubkey: a.pubkey })), { name, agent, owner, latest })
   const gap = changedFrom(latest, { harness: form.harness, like: $('like').value })
   if (gap) throw new Error(gap)
-  return { name, agent, harness: form.harness, like: $('like').value, installed: others,
-    givers: (form.givers || []).filter(pk => pk !== agent) }
+  if (!loaded) throw new Error('Still reading your agents. Try again in a moment.')
+  const givers = (form.givers || []).filter(pk => pk !== agent && pk !== form.agent)
+  const gone = goneLine(reconcileGivers(givers, choices()).gone, shortNpub)
+  if (gone) throw new Error(gone)
+  return { name, agent, harness: form.harness, like: $('like').value, installed: others, givers }
 }
 function checkName() {
   form.name = agentName($('name').value); form.like = $('like').value
@@ -504,7 +513,7 @@ async function start() {
       profiles.set(ev.pubkey, { at: ev.created_at, name: typeof p.name === 'string' ? p.name.slice(0, 64) : null, picture: typeof p.picture === 'string' && /^https:\/\/\S+$/.test(p.picture) ? p.picture.slice(0, 500) : null })
     } catch {}
   }
-  drawLike(); drawGivers()
+  loaded = true; drawLike(); drawGivers()
   if (form.name && form.like) done[1] = true
   if (form.agent) { done[2] = true; await readLatest() }
   drawRail()

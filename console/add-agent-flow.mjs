@@ -81,6 +81,19 @@ export function sameAs(handoff, { owner, like }, choices) {
   return handoff.givers[like].filter(pk => offered.has(pk))
 }
 
+// Chosen givers against the choices the page shows now. A key saved in this tab can drop out of
+// them (a newer hive read, another owner), and nothing hidden is ever signed: `gone` must be dropped,
+// or offered again, before any signature. `shortOf` names a key that no longer has a label.
+export function reconcileGivers(chosen, choices) {
+  const offered = new Set(choices.map(c => c.pubkey))
+  return { kept: chosen.filter(pk => offered.has(pk)), gone: chosen.filter(pk => !offered.has(pk)) }
+}
+export function goneLine(gone, shortOf) {
+  if (!gone.length) return null
+  const one = gone.length === 1
+  return `${one ? 'One' : gone.length} chosen earlier ${one ? "isn't" : "aren't"} in this hive's list now: ${gone.map(pk => shortOf(pk)).join(', ')}. Nothing is signed until you drop ${one ? 'it' : 'them'} in step 6, or open the hive again in this tab if ${one ? 'it belongs' : 'they belong'} there.`
+}
+
 // Who the hive grid draws, as it last read them in this tab: the people and Buzz agents that have no
 // agent card are givers too. Only this owner's hive, and only well-formed entries.
 const HEX64 = /^[0-9a-f]{64}$/
