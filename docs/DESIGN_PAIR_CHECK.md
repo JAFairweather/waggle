@@ -1,6 +1,8 @@
 # The pair check: can these two reach each other?
 
 Status: proposed, 2026-11-03 (#691, step 5 of [DESIGN_MENTION_RIGHTS.md](DESIGN_MENTION_RIGHTS.md)).
+**Superseded by [DESIGN_HIVE_CONSOLE.md](DESIGN_HIVE_CONSOLE.md) (#698):** the pair check becomes the
+square and its side panel. The logic below stays and feeds the square; the separate panel goes.
 It is the Claude Design board "Can these two reach each other?" (4).
 
 ## The problem
