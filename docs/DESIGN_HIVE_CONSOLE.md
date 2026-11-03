@@ -1,0 +1,196 @@
+# The hive console: one page, one grid
+
+Status: **design agreed, 2026-11-03 (#698, part of #613).** This is the single design the hive
+page is built to. The source is the Claude Design canvas "waggle hive console", which has four
+boards: the spec, the hive, the hive at 50 agents, and Add an agent. Where this doc and the canvas
+disagree, fix whichever is wrong in the same change, so they stay one spec.
+
+It supersedes [DESIGN_PAIR_CHECK.md](DESIGN_PAIR_CHECK.md) and the "What happens if" and
+mention-list parts of the hive page. [DESIGN_ADD_AN_AGENT.md](DESIGN_ADD_AN_AGENT.md) still
+describes how the fleet carries out the seven steps. Only its page layout changes, as set out
+under "Add an agent" below.
+
+## The goal
+
+The owner runs the whole hive from this page, signed in with their Bunker, without a command line
+(#613). The north star is a stranger on a fresh box: they install it, set up Buzz and a channel,
+name a server box and add agents, with nobody's help.
+
+The cold test: someone who didn't build the page answers "who can give Pi Dog work?" in under
+30 seconds.
+
+## Why it changed
+
+The page answered questions about two agents in three places: the "What happens if" panel, the
+"Can these two reach each other?" panel, and a mention-list section. Each had its own vocabulary,
+and none of them was the grid. A line such as "11 agents' lists can't be read, so they are not
+checked" told the owner nothing they could act on. The Add an agent giver picker was one tile per
+agent, which does not work at 50 agents. Hermes was missing from the harnesses.
+
+## Six rules the build must keep
+
+1. **The grid is the console.** A question about two agents is answered in their square. A
+   question about one agent is answered by clicking its name. There are no separate checker
+   panels.
+2. **Every square says what happens** when the row gives the column work, and only as far as
+   the page has read. Clicking a square gives the answer for both directions, up to three
+   reasons, and the one button that changes it.
+3. **Plain words.** No "sealed list", "gate", "grant", "admit", event kinds, relay names, or
+   counts the reader can't act on. An unknown is a "?" square with one sentence and one button.
+4. **Built for 50.** Search narrows the grid to one agent's row and column. Agents group by
+   where they run, and by channel once the page reads who is in each room (see "Where the groups
+   come from"). A group folds to one summary line. Every picker is a search with chips, never one
+   tile per agent.
+5. **Every harness the hive runs is offered**, Hermes included, from one list that nvoy and
+   waggle share.
+6. **Nothing changes until you sign.** Changes collect in one bar under the grid. One signature
+   sends them. A change is done only when the relays serve it back.
+
+## The square
+
+Read across a row to see what each column does when that row gives it work. Every square has
+exactly one of these five states (the copy mark is a ✓ that says where it came from), and each
+comes from something the page already reads.
+
+| Square | Means | Worked out from |
+|---|---|---|
+| ✓ | **Takes work from it.** | nvoy's fold of the approvals the column counts (`cellOf`) |
+| ✓ with a small "copy" mark | **Your copy says it takes work from it.** Buzz decides for this column, and the page reads your signed copy of Buzz's allow-list, not Buzz's own. | the copy (`cellOf`), which the pair check calls Claimed |
+| ! | **Takes the work, but can't answer back by name.** The row isn't on the column's @mention list, so the column can't bring the row back in. | approved, and the column's list is readable and leaves the row out (`oneWay`) |
+| blank | **Won't act on it.** Nobody has approved it. | not approved (`cellOf`) |
+| ? | **Not known yet.** One sentence says why, and one button finds out if that's possible. | the column publishes no settings, so its rules are assumed, not read; or Buzz decides and its list hasn't been copied here; or not every relay answered |
+| dashed + or – | **Your change**, not signed yet. It's in the bar. | the page's pending changes |
+
+A ✓ whose column keeps its @mention list private stays a ✓. Its panel says whether the column
+can answer back by name isn't known, and the Hidden from you card offers to show it.
+
+A ✓ the owner didn't approve, for example one Luke approved, says so in its reasons. Its button
+is disabled, because only Luke can withdraw it.
+
+**A square never claims more than it read.** Two things are not read yet, so no square draws
+them, and every square's panel says so in one line:
+
+- **Whether the post arrives.** That needs each room's member list and the server relay's list
+  of who may write. Until the page reads them, a blank square doesn't say whether the column hears
+  the row, and a ✓ doesn't say the work reaches it. Once they are read, the blank splits into
+  "hears it, won't act" and "doesn't hear it", and a ✓ whose post can't arrive gets its own
+  state, ⊘ "approved, but the post can't reach it". ⊘ is not "!": the two can both be true, and
+  ⊘ wins the square because an answer back doesn't matter if the work never arrives. The panel
+  lists both reasons.
+- **Whether it is connected right now.** That waits for the presence event (#690).
+
+### Clicking a square
+
+The side panel is headed "A → B" and shows:
+
+- **When A writes to B**: the square's answer in large type, then up to three reasons, each one
+  line:
+  - the approval: "You let A give B work", "Nobody has let A give B work", "Luke approved this,
+    not you", "Your copy of Buzz's list says B takes work from A. Buzz's own list isn't read.", or
+    "Your change, not signed yet";
+  - answering back: "B can @mention A back as @a", "A isn't on B's @mention list, so B can't
+    bring A back in by name", "B keeps who it can @mention private to you", or "B doesn't publish
+    its settings, so who it takes work from is assumed, not read";
+  - arriving: "Whether A's post reaches B isn't read yet: that needs each room's member list."
+- **One button**, which is Let A give B work, Stop it, Undo, or a disabled "Approved by Luke".
+  A square whose column keeps its list private also offers "Show who B can @mention".
+- **And back: when B writes to A**: the reverse square's answer in one line, with "Open that
+  square".
+- One line naming the source: "Answered by nvoy's own rules, the same ones B's listener runs."
+
+This is where "What happens if" and the pair check now live. Their logic stays
+(`hive-what-if.mjs`, `pair-check.mjs`, `owner-view.mjs`), but it feeds the square and its panel.
+They have no panels of their own.
+
+### Clicking a name
+
+The side panel gives that agent's answers and its last proof:
+
+- **Takes work from**, as chips;
+- **Gives work to**, as chips;
+- **Does without asking**: its autonomy profile in one line;
+- **Posts in**: its channels;
+- **Holds**: its key in your Bunker, which the page never sees;
+- **Last proof**: what was last read back, and when.
+
+## The page, top to bottom
+
+1. **Header**: waggle · your hive, a "Find an agent" search, "+ Add an agent" (a link to its own
+   page), and the owner's picture.
+2. **Needs you**: one card per thing, each with one button.
+   - **In progress**: an Add an agent run that stopped part way ("crystalclaude is waiting at step
+     2"), with Carry on.
+   - **Stopped**: an agent that took work and hasn't answered, with See it.
+   - **Hidden from you**: agents that keep who they can @mention private, so whether they can
+     answer back by name isn't known. The button is "Show it", and it says how many Bunker prompts that takes. This card
+     replaces the old open-the-lists button and the "Name it uses: @" row.
+   - **To tidy**: old approvals that no longer do anything, with Withdraw them.
+3. **Who works with whom**: the grid, in groups. Each group's header reads "Frontier lab
+   harnesses · 3 agents · 4 give work", and folds. A legend sits above it.
+4. **The changes bar**: shown once anything is pending. It reads "N changes, not signed yet",
+   lists each change in words ("+ A can give B work"), and has a disclosure, "The exact event your
+   Bunker will be asked to sign". Its buttons are "Sign it" or "Sign all N", and Undo all. After
+   signing it says "Signed, and read back from the relays: n of n", or how many relays didn't serve
+   it back.
+5. **Following**, and **About this hive**, as before.
+
+**Where the groups come from.** A channel group needs to know who is in the channel. Today that is
+only in each agent's private settings, which take a Bunker prompt to open. So until the page reads
+each room's member list from the relay, groups are by where each agent runs, as the grid draws
+them now, and every group header and picker says which grouping it uses. Moving to channel groups
+is a change in what the page reads, not in the layout.
+
+The "About this list" paragraph goes. Each square names its own source in one line.
+
+## At 50 agents
+
+- Typing in **Find an agent** narrows the grid to that agent's row and column, and dims the rest.
+  With exactly one match, its name panel opens.
+- Its column then reads "4 can give it work", with chips for those four. The rest fold into
+  counts, each with Show them: "1 of those 4 it can't answer back by name", "45 it won't act on".
+  Its row reads the same way, for example "48 won't act on it" and "1 not known yet".
+- With no search, the groups fold to one line each: "Third-party harnesses · 24 agents · 52 give
+  work". An open group keeps its names sticky, and its columns scroll.
+
+## Add an agent
+
+Add an agent is its own page (`add-agent.html`). The hive links to it, and it links back. It keeps
+the seven steps, three signatures and one "I agree" from
+[DESIGN_ADD_AN_AGENT.md](DESIGN_ADD_AN_AGENT.md), with these changes:
+
+- **Runs in** offers every harness on the shared list: Claude Code, Codex, OpenClaw, Pi, Grok Bot
+  and Hermes. Buzz is where agents talk, not a harness, so it isn't offered.
+- **Works like** includes DJ Codex (Hermes).
+- **Who can give it work** (step 6) is a search with chips. It has a "Same as {Works like}"
+  preset and a Nobody button, then a scrolling checklist in the same groups as the grid. Each group
+  shows a count, folds, and has "Tick all". There are no tiles.
+- Step 4 (the install on the agent's box, nvoy #294) and the step 7 checks are drawn as **not
+  built yet** until they are.
+
+## Build order
+
+Each step is its own PR, reviewed in #waggle-test and merged once approved.
+
+1. This doc.
+2. **Hermes and the Add an agent page.** Add `hermes` to waggle's harness list, and ask nvoy to
+   accept `hermes` in the setup request. Add an agent moves to its own page, with step 6 as
+   search and chips.
+3. **The square.** The grid draws the five states. Clicking a square or a name opens the side
+   panel. The "What happens if" panel, the pair-check panel, the mention-list section and "About
+   this list" all go.
+4. **Built for 50.** Find an agent focuses one row and column, groups fold, and the
+   focused column folds into counts.
+5. **Needs you.** Add the Hidden from you and Stopped cards.
+6. **Who is in each room.** Read each room's member list and the server relay's writer list. Then
+   groups become channels, the blank square splits into "hears it" and "doesn't hear it", and a ✓
+   whose post can't arrive becomes ⊘. This step needs its own design check first: which
+   relay serves each list, and what the page does when one doesn't answer.
+
+## Done when
+
+- The cold test passes with someone who didn't build the page.
+- Every two-agent question on the canvas is answered from a square, and no panel remains that
+  answers one.
+- A Hermes agent can be added from the page, and nvoy accepts its setup request.
+- What the page claims about the live hive is proven by reading the relays back. A green test
+  suite proves the page's logic, not the hive.
