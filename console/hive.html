@@ -794,10 +794,9 @@ function change(key) {
 
 // Built for 50 (#698): groups that fold, Find an agent, and one agent's row and column as counts.
 let folds = null, finding = null
-const kindAt = (t, g) => {
-  const key = cellKey(t, g)
-  return grid.cells.has(key) ? stateOf({ taker: t, giver: g, change: waiting.get(key) || null, ctx: squareCtx() }).kind : null
-}
+// Counts read the signed square; your unsigned change is told apart by changeAt.
+const kindAt = (t, g) => grid.cells.has(cellKey(t, g)) ? stateOf({ taker: t, giver: g, ctx: squareCtx() }).base : null
+const changeAt = (t, g) => waiting.get(cellKey(t, g)) || null
 function drawGroups() {
   if (!grid?.groups) return
   for (const g of grid.groups) {
@@ -842,7 +841,7 @@ function chip(pk) {
 // One agent's column (who gives it work) and row (whom it gives work): the ✓ list as chips that open
 // their squares, everything else as a count that opens.
 function focusView(pk) {
-  const f = focusOf(pk, { rows: grid.rows, columns: grid.columns, kindOf: kindAt })
+  const f = focusOf(pk, { rows: grid.rows, columns: grid.columns, kindOf: kindAt, changeOf: changeAt })
   const box = el('div', 'focus')
   if (!f) return box
   const lines = focusLines(f, { nameOf: grid.nameOf }), me = grid.rows.find(r => r.pubkey === pk), name = grid.nameOf(pk)
@@ -853,7 +852,7 @@ function focusView(pk) {
   const part = (title, l, inColumn) => {
     box.appendChild(el('h3', null, title))
     const head = box.appendChild(el('div', 'head'))
-    head.append(el('span', `sq ${l.chips.length ? 'work' : 'none'}`, l.chips.length ? GLYPH.work : ''), l.head)
+    head.append(el('span', `sq ${l.glyph}`, GLYPH[l.glyph]), l.head)
     const chips = (pks, into) => { for (const o of pks) { const key = square(o, inColumn), b = into.appendChild(chip(o)); if (grid.cells.has(key)) b.onclick = () => openSide({ kind: 'square', key }) } }
     if (l.chips.length) chips(l.chips, box.appendChild(el('div', 'chips')))
     for (const x of l.rest) {
