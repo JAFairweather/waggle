@@ -19,7 +19,8 @@ import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nos
 import * as nip44 from 'nostr-tools/nip44'
 import { readFileSync } from 'node:fs'
 import { HARNESSES, agentName, draftAddAgent, draftBind, readBack, requestD, sendRequest, sealedShape, SETUP_KIND } from '../console/hive-add-agent.mjs'
-import { STEPS, NOT_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, sameAs, handoffState, hiveChoices, othersThan, HANDOFF } from '../console/add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, HANDOFF } from '../console/add-agent-flow.mjs'
+import * as flow from '../console/add-agent-flow.mjs'
 import { HIVE_RELAY, INVITE_TTL_SECS, joinGate, readHiveTerms, sealInvite, termsFromRead } from '../console/hive-invite.mjs'
 
 const key = () => { const sk = generateSecretKey(); return { sk, pk: getPublicKey(sk) } }
@@ -249,6 +250,36 @@ check(othersThan(withSelf, { name: 'hr', agent: A.pk, owner: X.pk, latest: req5 
 check(othersThan(withSelf, { name: 'hr', agent: G.pk, owner: O.pk, latest: req5 }).length === withSelf.length, 'a request for another key proves nothing')
 check(typeof HANDOFF === 'string' && readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8').includes('sessionStorage.setItem(HANDOFF'), 'the hive writes the handoff Same as reads')
 check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')), 'and marks it short when an approval or key read was short')
+
+// A resumed request continues the first one: nvoy refuses a newer request whose harness or starting
+// agent changed, so the page refuses it before any signature and keeps step 1 as it was sent.
+{
+  const sent = { tags: [['d', 'nvoy-onboard/hr/add_agent'], ['harness', 'claude-code'], ['like', 'crystalclaude']] }
+  check(JSON.stringify(fixedBy(sent)) === JSON.stringify({ harness: 'claude-code', like: 'crystalclaude' }) && fixedBy(null) === null, 'the sent request fixes what it runs in and the agent it starts like')
+  check(changedFrom(sent, { harness: 'claude-code', like: 'crystalclaude' }) === null && changedFrom(null, { harness: 'hermes', like: 'x' }) === null, 'the same choice, or nothing sent yet, signs as before')
+  check(/^Its setup was already sent, so what it runs in can't change now\./.test(changedFrom(sent, { harness: 'hermes', like: 'crystalclaude' }) || ''), 'a changed harness is refused before signing')
+  check(/so the agent it starts like can't change now\./.test(changedFrom(sent, { harness: 'claude-code', like: 'mc-claude' }) || ''), 'a changed starting agent is refused too')
+  check(/what it runs in and the agent it starts like can't change now\. Put them back/.test(changedFrom(sent, { harness: 'hermes', like: 'mc-claude' }) || ''), 'and both, named together')
+  check(/const gap = changedFrom\(latest, \{ harness: form\.harness, like: \$\('like'\)\.value \}\)\n  if \(gap\) throw new Error\(gap\)/.test(page), 'every signature checks the continuation first')
+  check(/fixed = fixedBy\(latest\)\n  if \(fixed\) \{ form\.harness = fixed\.harness; form\.like = fixed\.like/.test(page) && /like\.disabled = !!fixed/.test(page) && /b\.disabled = !!fixed && id !== fixed\.harness/.test(page), 'and step 1 stays as the request fixed it')
+}
+
+// Step 6: the fleet changes only seat givers. Hive-only givers are outside it, and the page says so.
+{
+  const chips = [{ pubkey: 'a', label: 'You', isOwner: true }, { pubkey: 'b', label: 'MC Claude' }, { pubkey: 'c', label: 'Dennis', outside: true }]
+  check(JSON.stringify(giverPlan(chips).outside.map(c => c.label)) === '["Dennis"]', 'outside givers are those with no seat; you need no list')
+  check(/\.map\(c => \(\{ \.\.\.c, outside: true \}\)\)/.test(page), 'every hive-only giver is marked outside the fleet')
+  check(!/puts <span data-name><\/span> on each one's mention list/.test(page) && !/Can give it work \(/.test(page), "the page no longer says the signature puts it on everyone's list")
+  check(/the fleet runs nothing for/.test(page) && /That proves what you chose, not that each one can @mention/.test(page), 'it names who the fleet runs nothing for, and read-back is not the mention proof')
+}
+
+// Every function of the flow module the page calls is imported, so none is a ReferenceError at run time.
+{
+  const imported = new Set(page.match(/import \{([^}]+)\} from '\.\/add-agent-flow\.mjs'/)[1].split(',').map(x => x.trim()))
+  const used = Object.keys(flow).filter(k => typeof flow[k] === 'function' && new RegExp(`\\b${k}\\(`).test(page))
+  const missing = used.filter(k => !imported.has(k))
+  check(used.length > 5 && !missing.length, `every flow function the page calls is imported${missing.length ? `: missing ${missing.join(', ')}` : ''}`)
+}
 
 if (fails) { console.error(`\nconsole_hive_add_agent: ${fails} failing`); process.exit(1) }
 console.log('\nconsole_hive_add_agent: all passed')

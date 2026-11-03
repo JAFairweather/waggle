@@ -96,6 +96,7 @@
         <label class="field">Works like<select id="like" aria-label="Agent it starts like"><option value="">Reading your agents…</option></select></label></div>
       <div class="group-label">Runs in</div>
       <div class="pills" id="runs" role="group" aria-label="Runs in"></div>
+      <p class="hint" id="fixed-why" hidden></p>
       <p class="hint">"Works like" copies where it listens, where it posts, and its hourly limits. It does not copy who can give it work. You choose that in step 6.</p>
       <div class="actions"><button type="button" data-next>Next: make its key</button></div>
     </section>
@@ -160,7 +161,7 @@
       <div class="group-label" id="chosen-label"></div>
       <div class="chips" id="chips"></div>
       <div class="checklist" id="givers"></div>
-      <p class="hint">This signature puts <span data-name></span> on each one's mention list. The approval itself is a square on the <a href="hive.html">hive grid</a>, signed there once <span data-name></span> has its own column.</p>
+      <p class="hint" id="giver-plan"></p>
       <div class="status" id="work-status" role="status"></div>
       <div class="actions"><button type="button" id="work-go">Sign who can give it work</button><button type="button" class="quiet" data-next>Next: prove it works</button><button type="button" class="quiet" data-back>Back</button></div>
     </section>
@@ -183,7 +184,7 @@ import { HARNESSES, agentName, draftAddAgent, sendRequest, SETUP_KIND, requestD 
 import { HIVE_RELAY, readHiveTerms, sealInvite } from './hive-invite.mjs'
 import { readCards, relayCoverage, GRANT_RELAYS, CARD_RELAYS, CARD_D, RUNS_LOGO, RUNS_ON, PLATFORMS, platformOf } from './hive-list.mjs'
 import { shortNpub } from './agent-roster.mjs'
-import { STEPS, NOT_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, HANDOFF, sameAs } from './add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan } from './add-agent-flow.mjs'
 
 const $ = id => document.getElementById(id)
 // Everything shown here came from someone else's signature, so it reaches the DOM only as text.
@@ -213,7 +214,7 @@ const keep = () => { try { sessionStorage.setItem(SAVED, JSON.stringify(form)) }
 const form = { step: 1, name: '', harness: 'claude-code', like: '', agent: '', givers: null, sixth: null, ...saved }
 
 // What the page has read: whose hive, its agents, and the newest request for this agent.
-let owner = null, installed = [], profiles = new Map(), latest = null, joined = null, terms = null
+let owner = null, installed = [], profiles = new Map(), latest = null, joined = null, terms = null, fixed = null
 const done = { 1: false, 2: false, 3: false, 4: false, 5: false, 6: false, 7: false }
 
 const nameShown = () => form.name || 'the new agent'
@@ -279,8 +280,11 @@ function drawRuns() {
     const b = runs.appendChild(el('button')); b.type = 'button'; b.setAttribute('aria-pressed', String(id === form.harness))
     if (RUNS_LOGO[label]) { const logo = b.appendChild(el('img')); logo.src = RUNS_LOGO[label]; logo.alt = '' }
     b.append(document.createTextNode(label))
+    b.disabled = !!fixed && id !== fixed.harness
     b.onclick = () => { form.harness = id; keep(); for (const x of runs.children) x.setAttribute('aria-pressed', String(x === b)) }
   }
+  $('fixed-why').hidden = !fixed
+  $('fixed-why').textContent = fixed ? 'Its setup was already sent, so what it runs in and the agent it starts like stay as they were sent. To change them, add it under a new name.' : ''
 }
 const agentLabel = a => profiles.get(a.pubkey)?.name || a.id
 function drawLike() {
@@ -289,6 +293,7 @@ function drawLike() {
   for (const a of installed) { const o = like.appendChild(el('option', null, agentLabel(a))); o.value = a.id }
   if (installed.some(a => a.id === form.like)) like.value = form.like
   form.like = like.value
+  like.disabled = !!fixed
 }
 function face(pk, label) {
   const pic = profiles.get(pk)?.picture
@@ -304,7 +309,7 @@ function choices() {
   const mine = installed.map(a => ({ pubkey: a.pubkey, label: agentLabel(a), where: RUNS_ON[a.pubkey] || 'an agent of yours' }))
   const seen = new Set([owner, ...mine.map(c => c.pubkey)])
   return [{ pubkey: owner, label: 'You', where: 'Your Bunker', isOwner: true }, ...mine,
-    ...hiveChoices(handoff(), owner).filter(c => !seen.has(c.pubkey))]
+    ...hiveChoices(handoff(), owner).filter(c => !seen.has(c.pubkey)).map(c => ({ ...c, outside: true }))]
     .filter(c => c.pubkey && c.pubkey !== form.agent)
 }
 // Redrawing keeps keyboard focus on the same agent's box.
@@ -328,7 +333,8 @@ function drawGivers() {
       : `Open the hive first in this tab; it reads who gives ${agentLabel(likeAgent)} work.`
   likeBtn.onclick = () => same && setGivers(same)
   $('giver-none').onclick = () => setGivers([])
-  $('chosen-label').textContent = pick.chips.length ? `Can give it work (${pick.chips.length})` : 'Nobody can give it work yet'
+  $('chosen-label').textContent = pick.chips.length ? `Chosen to give it work (${pick.chips.length})` : 'Nobody chosen yet'
+  drawPlan(pick.chips)
   const chips = $('chips'); chips.textContent = ''
   for (const c of pick.chips) {
     const b = chips.appendChild(el('button')); b.type = 'button'; b.setAttribute('aria-label', `Remove ${c.label}`)
@@ -350,11 +356,19 @@ function drawGivers() {
     for (const r of g.rows) {
       const l = box.appendChild(el('label')), tick = l.appendChild(el('input')); tick.type = 'checkbox'; tick.checked = r.on; tick.dataset.pk = r.pubkey
       tick.onchange = () => setGivers(tick.checked ? [...(form.givers || []), r.pubkey] : (form.givers || []).filter(pk => pk !== r.pubkey))
-      l.append(face(r.pubkey, r.label), el('span', 'name', r.label), el('span', 'where', r.where))
+      l.append(face(r.pubkey, r.label), el('span', 'name', r.label), el('span', 'where', r.outside ? `${r.where} · no seat on your server box` : r.where))
     }
   }
 }
 $('giver-q').oninput = e => { giverQ = e.target.value; drawGivers() }
+// What the step 6 signature does, and what it leaves to you. Read back proves the request, not the lists.
+function drawPlan(chips) {
+  const n = nameShown(), { outside } = giverPlan(chips), line = $('giver-plan')
+  const parts = [`This signature asks the fleet to put ${n} on the @mention list of each chosen agent with a seat on your server box.`]
+  if (outside.length) parts.push(`${outside.map(c => c.label).join(', ')} ${outside.length > 1 ? 'have' : 'has'} no seat there, so the fleet runs nothing for ${outside.length > 1 ? 'them' : 'it'}: a Buzz agent's list is changed in Buzz Desktop.`)
+  parts.push(done[6] ? `Your request is read back from the relays. That proves what you chose, not that each one can @mention ${n} yet: its squares on the hive grid show that once ${n} has a column.` : `The approval itself is a square on the hive grid, signed there once ${n} has its own column.`)
+  line.textContent = parts.join(' ')
+}
 
 function showTerms(read) {
   const same = terms?.ok && read.ok && terms.version === read.version
@@ -377,6 +391,8 @@ function fields() {
   if (/^nsec1/i.test(pasted)) { $('key').value = ''; throw new Error('That is the private key. Clear it from your clipboard, and paste the npub instead.') }
   if (/^npub1/.test(pasted)) { const d = nip19.decode(pasted); if (d.type !== 'npub') throw new Error('That is not an npub.'); agent = d.data }
   const others = othersThan(installed.map(a => ({ id: a.id, pubkey: a.pubkey })), { name, agent, owner, latest })
+  const gap = changedFrom(latest, { harness: form.harness, like: $('like').value })
+  if (gap) throw new Error(gap)
   return { name, agent, harness: form.harness, like: $('like').value, installed: others,
     givers: (form.givers || []).filter(pk => pk !== agent) }
 }
@@ -398,6 +414,9 @@ async function readLatest() {
   latest = newestAdd(back.events, { owner, name: form.name, agent: form.agent, verify: verifyEvent })
   const steps = readBackSteps(latest, { sixth: form.sixth })
   done[3] = steps[3]; done[5] = steps[5]; done[6] = steps[6]
+  fixed = fixedBy(latest)
+  if (fixed) { form.harness = fixed.harness; form.like = fixed.like; keep(); drawRuns(); drawLike() }
+  if (form.step === 6) drawGivers()
   joined = joinOf(latest) || joined
   drawRail(); drawRows()
   return latest

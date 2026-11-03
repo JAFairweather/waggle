@@ -98,3 +98,23 @@ export function othersThan(installed, { name, agent, owner, latest }) {
   if (!latest || latest.pubkey !== owner || tagOf(latest, 'p') !== agent || tagOf(latest, 'd') !== requestD(name, 'add_agent')) return installed
   return installed.filter(e => !(e.id === name && e.pubkey === agent))
 }
+
+// A setup request is continued, never edited: nvoy refuses a newer request for the same agent whose
+// harness or starting agent differs from the one it is installing. What the newest request fixed, and
+// the refusal to show before a signature when the page's choice has drifted from it.
+export function fixedBy(latest) {
+  const harness = latest && tagOf(latest, 'harness'), like = latest && tagOf(latest, 'like')
+  return harness && like ? { harness, like } : null
+}
+export function changedFrom(latest, { harness, like }) {
+  const f = fixedBy(latest)
+  const what = f ? [f.harness !== harness && 'what it runs in', f.like !== like && 'the agent it starts like'].filter(Boolean) : []
+  return what.length ? `Its setup was already sent, so ${what.join(' and ')} can't change now. Put ${what.length > 1 ? 'them' : 'it'} back in step 1, or add it under a new name.` : null
+}
+
+// Step 6, as nvoy carries it out: the fleet adds the new agent to the @mention list of each chosen
+// giver with a seat on the server box. A giver with no agent card of yours has no seat, so the fleet
+// records the choice and runs nothing for it. You need no list.
+export function giverPlan(chips) {
+  return { outside: chips.filter(c => c.outside && !c.isOwner) }
+}
