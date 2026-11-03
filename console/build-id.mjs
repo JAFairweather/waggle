@@ -2,4 +2,4 @@
 //
 // The id of the console build this module graph belongs to. A page compares it against
 // console/VERSION.json, fetched with no-store, to detect a stale cached graph (#418).
-export const CONSOLE_BUILD_ID = 'ae9c9603c66fd91bbe7993da3bf665d9'
+export const CONSOLE_BUILD_ID = 'aaeff560b5e6a2059a565fd9699dace3'

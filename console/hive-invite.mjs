@@ -25,14 +25,17 @@ const HEX64 = /^[0-9a-f]{64}$/
 const text = value => (typeof value === 'string' ? value : '')
 
 // One /api/join-policy answer, read by the same rules as the agent's step. The one no-terms answer is
-// a 200 JSON object with no policy in it (the relay sends {}; policy null reads the same). Anything
-// else that is not terms with a version and a document to read is unread.
+// a 200 of exactly {}, which is what the relay sends, or exactly {policy: null}. Anything else that is
+// not terms with a version and a document to read is unread, an error object ({error: ...}) included.
 export function termsFromRead({ status, json } = {}) {
   if (status !== 200) return { ok: false, reason: `HTTP ${status}` }
   if (json === undefined) return { ok: false, reason: 'not JSON' }
   if (!json || typeof json !== 'object' || Array.isArray(json)) return { ok: false, reason: 'not a JSON object' }
+  const keys = Object.keys(json)
+  if (!keys.length || (keys.length === 1 && json.policy === null)) return { ok: true, version: 'none', age: false, terms: '', privacy: '' }
   const policy = json.policy
-  if (policy == null) return { ok: true, version: 'none', age: false, terms: '', privacy: '' }
+  if (policy === undefined) return { ok: false, reason: 'no policy field' }
+  if (policy === null) return { ok: false, reason: 'a null policy beside other fields' }
   if (typeof policy !== 'object' || Array.isArray(policy)) return { ok: false, reason: 'the policy is not an object' }
   // A policy with no version could not be agreed to: the agent would send "undefined" as the version.
   if (policy.version == null) return { ok: false, reason: 'the terms carry no version' }
