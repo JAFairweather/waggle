@@ -254,7 +254,7 @@ check(!/innerHTML\s*=(?!\s*'')/.test(page), 'hive.html writes signed text only t
   const page = readFileSync(join(ROOT, 'console', 'hive.html'), 'utf8')
   check((page.match(/copyButton\((agent|key), r, keyText, detail\)/g) || []).length === 2, 'each row copies its npub from its name and from its details')
   check(/clipboard\.writeText\(npub\(r\.pubkey\)\)/.test(page), 'the button copies the npub, not the hex key')
-  check(/catch \{[^}]*detail\.hidden = false[\s\S]{0,200}selectAllChildren\(keyText\)/.test(page), 'a refused clipboard opens the details with the npub selected, and claims no copy')
+  check(/catch \{[^}]*openSide\(\{ kind: 'name', pk: r\.pubkey \}\)[\s\S]{0,200}selectAllChildren\(keyText\)[\s\S]{0,40}said\('Select and copy'\)/.test(page), 'a refused clipboard opens its answers with the npub selected, and claims no copy')
 }
 
 if (!pass) { console.error('console_hive_list: FAILED'); process.exit(1) }

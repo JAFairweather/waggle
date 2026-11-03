@@ -72,14 +72,14 @@ ok('the Access tab forwards a link to the hive page unchanged, and resolves noth
   /if \(parseIntent\(location\.hash\)\) location\.replace\(`\/console\/hive\.html\$\{location\.hash\}`\)/.test(access) && !/resolveGrant|resolveRevoke|applyIntent/.test(access))
 const page = readFileSync(join(ROOT, 'console', 'hive.html'), 'utf8')
 const body = page.slice(page.indexOf('async function applyIntent('), page.indexOf('\n}\n', page.indexOf('async function applyIntent(')))
-ok('the hive page reads the link, and applies it once the hive is read and drawn', /let linkIntent = parseIntent\(location\.hash\)/.test(page) && /drawWhatIf\(rows, owner, nameOf, partial\)\n\s+applyIntent\(\{ owner, nameOf \}\)/.test(page))
+ok('the hive page reads the link, and applies it once the hive is read and drawn', /let linkIntent = parseIntent\(location\.hash\)/.test(page) && /drawBar\(\)\n[\s\S]{0,300}\n\s+applyIntent\(\{ owner, nameOf \}\)\n\}/.test(page))
 ok("applying a link waits for this owner's own read", /!hive \|\| hive\.owner !== owner/.test(body))
 ok('it resolves only against the keys and approvals the page read, and withdraws only your own', /known: rows\.map\(x => x\.pubkey\)/.test(body) && /grants\.filter\(g => g\.grantor === owner\)/.test(body))
 ok('it hands the resolver the signed-in owner and the bridge, so the subject rules apply on the page (#624)', /resolveGrant\(intent, \{ known: rows.*, owner, bridge: hive\.bridge \}\)/.test(body))
 ok('applying a link never signs: it only fills the confirm panel', body.length > 0 && /propose\(/.test(body) && !/signFresh|applyChange|change-go|\.signEvent|publish/.test(body))
 const agentBranch = body.slice(body.indexOf("intent.action === 'agent'"), body.indexOf('scrollIntoView'))
-ok("an agent link resolves against the rows read and opens that row, proposing nothing",
-  /resolvePrefix\(intent\.agent, rows\.map\(x => x\.pubkey\)\)/.test(agentBranch) && /openRow\(row\)/.test(agentBranch) && !/propose\(/.test(agentBranch)
+ok("an agent link resolves against the rows read and opens that agent's answers, proposing nothing",
+  /resolvePrefix\(intent\.agent, rows\.map\(x => x\.pubkey\)\)/.test(agentBranch) && /openSide\(\{ kind: 'name', pk: r\.value \}\)/.test(agentBranch) && !/propose\(/.test(agentBranch)
   && /d\.dataset\.pubkey = r\.pubkey/.test(page))
 const mod = readFileSync(join(ROOT, 'console', 'deep-link.mjs'), 'utf8')
 ok('the resolver imports nothing, so it cannot reach a signer', !/^import /m.test(mod))
