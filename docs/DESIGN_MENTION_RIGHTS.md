@@ -161,7 +161,8 @@ This is a page that takes two names and checks every gate in both directions:
   other side hears it.
 
 Each line names its source. It is the Claude Design board "Can these two reach each other?" (4).
-It is built after the flag, because it reads lists that are not on the page yet.
+It is built after the flag, because it reads lists that are not on the page yet. Its design is
+[DESIGN_PAIR_CHECK.md](DESIGN_PAIR_CHECK.md).
 
 ## Build order
 
