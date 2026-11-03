@@ -745,10 +745,10 @@ function checkPair(rows, owner, nameOf, partial) {
     fix.hidden = res.fix.kind === 'square' && !sq
   }
 }
-const MARK = { proven: '✓', claimed: '✓', closed: '✕', 'cant-tell': '?', 'not-read': '?' }
+const PAIR_MARK = { proven: '✓', claimed: '✓', closed: '✕', 'cant-tell': '?', 'not-read': '?' }
 function pairItem(l) {
   const li = el('li', l.state)
-  li.appendChild(el('span', `pc-mark ${l.state}`, MARK[l.state])).setAttribute('aria-hidden', 'true')
+  li.appendChild(el('span', `pc-mark ${l.state}`, PAIR_MARK[l.state])).setAttribute('aria-hidden', 'true')
   const body = li.appendChild(el('div', 'pc-body'))
   let said = upper(l.says)
   if (l.context?.cardSignedAt) said += ` Its card was last signed ${new Date(l.context.cardSignedAt * 1000).toLocaleString()}; that is not presence.`
