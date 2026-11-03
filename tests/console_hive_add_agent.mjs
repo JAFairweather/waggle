@@ -19,7 +19,7 @@ import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nos
 import * as nip44 from 'nostr-tools/nip44'
 import { readFileSync } from 'node:fs'
 import { HARNESSES, agentName, draftAddAgent, draftBind, readBack, requestD, sendRequest, sealedShape, SETUP_KIND } from '../console/hive-add-agent.mjs'
-import { STEPS, NOT_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, HANDOFF } from '../console/add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, HANDOFF } from '../console/add-agent-flow.mjs'
 import * as flow from '../console/add-agent-flow.mjs'
 import { HIVE_RELAY, INVITE_TTL_SECS, joinGate, readHiveTerms, sealInvite, termsFromRead } from '../console/hive-invite.mjs'
 
@@ -271,6 +271,27 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   check(/\.map\(c => \(\{ \.\.\.c, outside: true \}\)\)/.test(page), 'every hive-only giver is marked outside the fleet')
   check(!/puts <span data-name><\/span> on each one's mention list/.test(page) && !/Can give it work \(/.test(page), "the page no longer says the signature puts it on everyone's list")
   check(/the fleet runs nothing for/.test(page) && /That proves what you chose, not that each one can @mention/.test(page), 'it names who the fleet runs nothing for, and read-back is not the mention proof')
+}
+
+// A giver saved in this tab that the page no longer shows is never signed unseen.
+{
+  const groups = [{ id: 'all', label: 'All' }], groupOf = () => 'all'
+  const shown = h => [{ pubkey: O.pk, label: 'You', isOwner: true }, ...hiveChoices(h, O.pk)]
+  const chosen = [O.pk, P.pk, Bz.pk]
+  const before = reconcileGivers(chosen, shown(hiveHandoff))
+  check(!before.gone.length, 'every saved giver is still offered: nothing to drop')
+  const newer = { ...hiveHandoff, hive: hiveHandoff.hive.filter(c => c.pubkey !== Bz.pk) }
+  const after = reconcileGivers(chosen, shown(newer))
+  check(JSON.stringify(after.gone) === JSON.stringify([Bz.pk]) && JSON.stringify(after.kept) === JSON.stringify([O.pk, P.pk]), 'a newer hive read without Buzz Bee: its saved key is gone, the rest kept')
+  check(!pickerOf(shown(newer), { chosen, groups, groupOf }).chips.some(c => c.pubkey === Bz.pk), 'and it has no chip, which is why it must not be signed')
+  const other = reconcileGivers(chosen, shown({ ...hiveHandoff, owner: Bz.pk }))
+  check(JSON.stringify(other.gone) === JSON.stringify([P.pk, Bz.pk]), "another owner's hive read: givers from this one are gone")
+  check(goneLine([], k => k) === null && /^2 chosen earlier aren't in this hive's list now: p, b\. Nothing is signed until you drop them in step 6/.test(goneLine(['p', 'b'], k => k)), 'the page names them and how to clear them')
+  check(/^One chosen earlier isn't/.test(goneLine(['p'], k => k)), 'and one, in the singular')
+  check(goneLine(['p', 'b'], (k, head = 12) => `${k}:${head}`).includes('p:12, b:12'), 'each key is shortened alone, never with its index as the length')
+  check(/const gone = goneLine\(reconcileGivers\(givers, choices\(\)\)\.gone, shortNpub\)\n  if \(gone\) throw new Error\(gone\)/.test(page), 'every signature refuses while a saved giver is hidden')
+  check(/if \(!loaded\) throw new Error/.test(page), 'and none is checked before your agents are read')
+  check(/\$\('giver-drop'\)\.onclick = \(\) => setGivers\(kept\)/.test(page) && /id="giver-gone"/.test(page), 'step 6 shows them, with one button to drop them')
 }
 
 // Every function of the flow module the page calls is imported, so none is a ReferenceError at run time.
