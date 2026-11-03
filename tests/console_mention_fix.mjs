@@ -84,6 +84,7 @@ const otherId = 'f'.repeat(64)
 check(mentionStatus(view([{ name: 'dr', pubkey: giver.pk, source: 'grant', grants: [otherId] }]), mine).state === 'pending', 'the giver listed under some other grant is not proof that yours was taken')
 const refused = mentionStatus(view([], [{ grant: signed.id, reason: 'the name dead-rabbit is held by another key' }]), mine)
 check(refused.state === 'refused' && refused.refused[0].reason === 'the name dead-rabbit is held by another key', 'a refused grant says refused, with its reason')
+check(mentionStatus(view([], [{ grant: signed.id, reason: 'x' }], 1699999999), mine).state === 'pending', 'a refusal on a card older than the grant leaves it pending: that card cannot have read it')
 const second = { ...mine[0], id: 'e'.repeat(64) }
 check(mentionStatus(view([], [{ grant: signed.id, reason: 'x' }]), [mine[0], second]).state === 'pending', 'with a refused grant and a newer one signed, the newer one is pending')
 check(PENDING('Pi Dog') === "Signed, waiting for Pi Dog to take it. The flag clears when Pi Dog's card lists this approval.", 'pending says who it waits on and what clears it')

@@ -146,14 +146,15 @@ export const mentionGrantsOf = (grants, { owner, giver, agent, subjectOf }) =>
 
 export function mentionStatus(view, mine) {
   if (!mine.length) return { state: 'none' }
-  const ids = new Set(mine.map(g => g.id))
   if (view?.state !== 'readable') return { state: 'pending', grants: mine }
   // Proof is this grant's id on its own giver's entry, in a card no older than the grant. The same
-  // second counts; an older card cannot have read it, and an id under another key proves nothing.
+  // second counts; an older card cannot have read it, so neither its listing nor its refusal counts,
+  // and an id under another key proves nothing.
   const takes = (e, g) => e.pubkey === g.grantee && e.grants.includes(g.id) && view.signedAt >= g.at
   const taken = view.view.mention.find(e => mine.some(g => takes(e, g)))
   if (taken) return { state: 'taken', entry: taken }
-  const refused = view.view.refused.filter(r => ids.has(r.grant))
+  const read = new Set(mine.filter(g => view.signedAt >= g.at).map(g => g.id))
+  const refused = view.view.refused.filter(r => read.has(r.grant))
   const waiting = mine.filter(g => !refused.some(r => r.grant === g.id))
   return waiting.length ? { state: 'pending', grants: waiting } : { state: 'refused', refused }
 }
