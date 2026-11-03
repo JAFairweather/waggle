@@ -235,9 +235,10 @@ might fix it:
 | The Bunker prompt is declined or times out | "Not read: you didn't sign in to your room relay." | Read who is in each room |
 | The relay refuses the sign-in | "Your room relay wouldn't let you sign in, so who is in each room isn't read." | none |
 | A room the page lists sends no member list | That room's squares stay unread, and its group header says "who is in it isn't read". | Read again |
+| A room's member list comes back signed by any key but the relay's own | "A room's member list came back, but not signed by your room relay, so it isn't trusted." That room's squares stay unread, and its group header says "who is in it isn't read". | Read again |
 
-A room whose member list comes back signed by any key but the relay's own isn't read either. The
-page checks each list's signature against the relay's key.
+The page checks each list's signature against the relay's key, and a list that fails is never
+read as the room's members.
 
 ### Before the build
 
