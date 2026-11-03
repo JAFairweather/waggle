@@ -62,24 +62,32 @@
   table.grid tr.group .runs{margin-left:10px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--faint)}
   table.grid tr.detail td{padding:0 0 14px}
   .sq{display:inline-block;box-sizing:border-box;width:30px;height:30px;margin:0;padding:0;border-radius:7px;font:700 16px/1 var(--sans);background:transparent;border:1.5px solid var(--line);color:transparent;cursor:pointer;vertical-align:middle;text-align:center}
-  .sq.on{background:var(--gold);border-color:var(--gold)}.sq.on.theirs{opacity:.55}
-  .sq.on.buzz{background:radial-gradient(circle,var(--gold) 0 34%,transparent 38%);border:2px solid var(--gold)}.sq.unknown{border-style:dashed}
-  .sq.add{border:2px solid var(--add);color:var(--add)}
-  .sq.remove{background:var(--remove-ground);border:2px solid var(--remove);color:var(--remove)}
-  .sq.self{border-color:transparent;color:var(--faint);cursor:default}
-  /* One way (#691): the giver can give it work, and it can't mention the giver back. A notch, never colour alone: the label says it too. */
-  .sq.oneway{position:relative}.sq.oneway::after{content:"";position:absolute;top:-1.5px;right:-1.5px;width:11px;height:11px;background:var(--remove);border-top-right-radius:7px;clip-path:polygon(0 0,100% 0,100% 100%)}
-  .legend .sq.oneway::after{width:8px;height:8px;border-top-right-radius:5px}
-  #one-way-pairs .pairline{margin:4px 0;display:flex;flex-wrap:wrap;gap:6px;align-items:baseline}
-  #mention-fix{margin:8px 0;padding:10px 12px;border:1px solid var(--line, #ccc);border-radius:8px;display:grid;gap:6px;max-width:34em}
-  #mention-fix input{font:inherit;padding:4px 6px;max-width:100%}
-  #pair-answer .pair-summary{margin:8px 0}
-  #pair-answer h3{font-size:14px;margin:14px 0 4px}#pair-answer h4{font-size:12.5px;color:var(--dim);font-weight:600;margin:8px 0 2px}
-  #pair-answer ol{list-style:none;margin:0;padding:0}#pair-answer li{margin:5px 0;padding-left:10px;border-left:3px solid var(--faint);overflow-wrap:anywhere}
-  #pair-answer li.proven{border-left-color:var(--good)}#pair-answer li.claimed{border-left-color:var(--gold)}#pair-answer li.closed{border-left-color:var(--critical)}#pair-answer li.cant-tell{border-left-color:var(--warn)}
-  #pair-answer li.not-drawn{color:var(--faint)}#pair-answer .pc-state{font-weight:600;margin-right:6px}#pair-answer .pc-source{display:block;color:var(--faint);font-size:12px}
-  #fix-clash{color:var(--remove)}
-  button.sq[aria-disabled="true"]:not(.self){cursor:help}
+  /* The square (#698): five states, each with its own glyph, so colour is never the only signal. */
+  .sq{position:relative;color:var(--text)}
+  .sq.work{background:var(--gold);border-color:var(--gold);color:var(--ground)}
+  .sq.copy{border:2px solid var(--gold);color:var(--gold)}.sq.copy::after{content:"copy";position:absolute;left:0;right:0;bottom:-1px;font:700 7px/1 var(--sans);letter-spacing:.02em;color:var(--gold)}
+  .sq.blocked{border:2px solid var(--warn);color:var(--warn)}
+  .sq.unknown{border-style:dashed;color:var(--faint)}
+  .sq.add{border:2px dashed var(--add);color:var(--add)}
+  .sq.remove{background:var(--remove-ground);border:2px dashed var(--remove);color:var(--remove)}
+  .sq.self,.sq.person{border-color:transparent;color:var(--faint)}
+  .sq.open{outline:2px solid var(--text);outline-offset:2px}
+  .legend .sq.copy::after{content:none}
+  /* The side panel: beside the grid on a wide screen, under it on a narrow one. */
+  .hive-body{display:grid;gap:18px;align-items:start}.hive-body>.grid-wrap{min-width:0;overflow-x:auto}
+  @media (min-width:1000px){.hive-body.has-side{grid-template-columns:minmax(0,1fr) 340px}#side{position:sticky;top:calc(16px + env(safe-area-inset-top,0px));max-height:calc(100vh - 32px);overflow:auto}}
+  #side{border:1px solid var(--line);border-radius:12px;background:var(--ground);padding:14px 16px 16px;min-width:0}
+  #side .side-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+  #side .kicker{font:600 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+  #side h2{margin:4px 0 10px;font:700 18px/1.3 var(--sans);letter-spacing:-.01em;text-transform:none;color:var(--text);outline:0;overflow-wrap:anywhere}
+  #side .close{background:none;border:0;color:var(--dim);font-size:20px;line-height:1;padding:2px 4px;margin:0;cursor:pointer}
+  #side .answer{display:flex;gap:10px;align-items:center;font-size:17px;font-weight:650;margin:0 0 6px}
+  #side .answer .sq{flex:none;cursor:default}
+  #side .acts{margin:0 0 8px;color:var(--dim);font-size:14px}
+  #side ul.reasons{margin:8px 0;padding-left:1.1em;font-size:14px;display:grid;gap:5px}
+  #side .back{margin:14px 0 0;padding-top:10px;border-top:1px solid var(--line);font-size:14px}
+  #side .source{margin:10px 0 0;font-size:12.5px;color:var(--faint)}
+  #side dl.answers{grid-template-columns:1fr;margin:0}#side dl.answers dd{margin-bottom:6px}
   button.sq:focus-visible{outline:2px solid var(--add);outline-offset:2px}
   .legend{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;font-size:13px;color:var(--dim);margin:0 0 12px}
   .legend>span{display:inline-flex;align-items:center;gap:7px}
@@ -89,7 +97,6 @@
     .grid-wrap{overflow:auto;max-height:calc(100vh - 120px)}table.grid tbody th.agent{position:sticky;left:0;z-index:1;background:var(--panel)}table.grid thead th.corner{left:0;z-index:2}}
   .grid-wrap.wide{overflow:auto;max-height:calc(100vh - 120px)}.grid-wrap.wide table.grid tbody th.agent{position:sticky;left:0;z-index:1;background:var(--panel)}.grid-wrap.wide table.grid thead th.corner{left:0;z-index:2}
   button.who{background:none;border:0;border-radius:0;padding:0;margin:0;color:var(--text);font:inherit;font-weight:700;cursor:pointer;text-align:left}
-  button.who::before{content:"▸ ";color:var(--faint)}button.who[aria-expanded="true"]::before{content:"▾ "}
   button.link{background:none;border:0;padding:0;margin:0;color:var(--gold);font:inherit;font-weight:650;cursor:pointer;text-decoration:underline}
   .footnote{font-size:12.5px;color:var(--dim);margin:10px 0 0}
   details.about{margin-top:12px;font-size:13px;color:var(--dim)}details.about summary{cursor:pointer}details.about .coverage{margin:8px 0}
@@ -105,9 +112,6 @@
   .liveline .what{font-weight:650;flex:0 0 190px}.liveline .why{color:var(--dim);flex:1 1 220px}
   /* The changes waiting for a signature sit in a bar that stays in view while the grid scrolls. */
   #change-bar[hidden]{display:none}
-  /* Why a square cannot change, said where the eye is rather than under the grid. */
-  #why{position:fixed;z-index:3;top:calc(14px + env(safe-area-inset-top,0px));left:50%;transform:translateX(-50%);width:max-content;max-width:min(560px,calc(100% - 32px));margin:0;background:var(--text);color:var(--ground);border-radius:10px;padding:10px 14px;box-shadow:0 8px 24px rgba(0,0,0,.3);font-size:14px}
-  #why:empty{display:none}
   #change-bar{position:sticky;bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:2;margin:18px auto 0;max-width:880px;background:var(--text);color:var(--ground);border-radius:14px;padding:14px 18px;box-shadow:0 12px 32px rgba(0,0,0,.35);display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center}
   #change-bar .words{flex:1 1 340px;min-width:0}
   #change-bar .title{font-weight:700;font-size:16px}
@@ -124,53 +128,40 @@
   #following-list{margin:4px 0 12px}.follow-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}.follow-row:last-child{border-bottom:0}
   .follow-row .avatar{display:inline-block;width:26px;height:26px;border-radius:50%;object-fit:cover;background:var(--line);flex:none}.follow-row .who-name{flex:1;min-width:0;overflow-wrap:anywhere}.follow-row button{margin:0}
   #follow-target{flex:1;min-width:0;max-width:440px;background:var(--ground);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:7px 10px;font:13px var(--mono)}
-  #what-if-answer ul{margin:6px 0 0;padding-left:1.2em;color:var(--dim);font-size:12.5px}
-  #what-if-answer .result{color:var(--dim)}
   @media (max-width:560px){dl.answers{grid-template-columns:1fr;margin-left:0}dl.answers dd{margin-bottom:6px}}
 </style>
 </head>
 <body><main class="wide">
   <header class="hive-head"><div class="brand"><span class="wordmark">waggle</span><span class="where">your hive</span></div><a id="add-open" class="button small" href="add-agent.html">Add an agent</a></header>
   <h1>Who can give work to whom</h1>
-  <p class="sub">Read across a row to see whom it can give work to; read down a column to see who can give that agent work. Click a square to change it. Nothing changes until you sign.</p>
+  <p class="sub">Read across a row to see whom it can give work to; read down a column to see who can give that agent work. Click a square to see what happens, and change it there. Nothing changes until you sign.</p>
   <div class="bar"><div id="status" class="status" role="status">Every identity in your hive, and who can give each one work.</div><button id="go">Read the hive</button></div>
   <div id="link-status" class="status" role="status"></div>
 
   <section class="panel" id="needs-panel" hidden><h2>Needs you <span class="hint">everything waiting on you, in one place</span></h2>
     <div class="need" id="leftovers" hidden><b>Approvals to tidy.</b> <span id="leftovers-words"></span><button id="leftovers-go" class="small quiet">Withdraw</button></div>
+    <div class="need" id="hidden-card" hidden><b>Hidden from you.</b> <span id="hidden-words"></span> <button id="hidden-go" class="small quiet" type="button">Show it</button> <span id="hidden-status" role="status"></span></div>
     <div id="needs"></div>
   </section>
 
   <section class="panel" id="list-panel" hidden>
-    <div class="legend">
-      <span><span class="sq on"></span>Can give it work</span>
-      <span><span class="sq on theirs"></span>Approved by someone else</span>
-      <span><span class="sq on buzz"></span><span id="buzz-note">Set in Buzz Desktop</span></span>
-      <span><span class="sq off"></span>Can't</span>
-      <span><span class="sq add">+</span>Will be added</span>
-      <span><span class="sq remove">–</span>Will be removed</span>
-      <span><span class="sq on oneway"></span>One way: it can't mention the giver back</span>
-      <span id="ask-note"></span>
-    </div>
+    <div class="legend" id="legend"></div>
+    <p class="footnote" id="ask-note"></p>
+    <div class="hive-body" id="hive-body">
     <div class="grid-wrap"><table class="grid">
       <thead><tr id="grid-runs"></tr><tr id="grid-head"></tr></thead>
       <tbody id="list"></tbody>
     </table></div>
-    <p class="footnote" id="one-way" role="status"><span id="one-way-words"></span> <button id="mention-open" class="link" type="button" hidden>Open who each agent can mention</button> <span id="mention-status"></span></p>
-    <div id="one-way-pairs"></div>
-    <div id="mention-fix" role="group" aria-labelledby="fix-title" hidden>
-      <b id="fix-title"></b>
-      <label>Name it uses: <span class="npub">@</span><input id="fix-name" autocomplete="off" spellcheck="false" maxlength="32"></label>
-      <span id="fix-what"></span>
-      <span id="fix-clash" role="status"></span>
-      <span class="note" id="fix-public"></span>
-      <span><button id="fix-add" class="small" type="button">Add to changes</button> <button id="fix-cancel" class="small quiet" type="button">Cancel</button></span>
+    <aside id="side" aria-labelledby="side-title" hidden>
+      <div class="side-top"><span class="kicker" id="side-kicker"></span><button class="close" id="side-close" type="button" aria-label="Close">×</button></div>
+      <h2 id="side-title" tabindex="-1"></h2>
+      <div id="side-body"></div>
+    </aside>
     </div>
     <p class="footnote" id="folded" hidden></p>
     <p class="footnote" id="partial-note" hidden>* Not every relay answered in full, so an approval held only on one that did not may be missing.</p>
-    <p class="footnote">Click a name for how it works, what it holds, and its last task.</p>
-    <details class="about"><summary>About this list</summary>
-      <p>Approvals come from the relays that hold them, configuration from each agent's own signed card, and names from profiles. Where a source does not say, the page says <em>not reported</em>. Reading asks your signer only for your public key. Whom each agent can mention is sealed to you on its card, and is opened only when you press Open: one request to your signer per agent, stopping at the first it refuses. A change is shown in plain words and as the exact event before your signer is asked, and is called done only once the relays serve it back.</p>
+    <p class="footnote">Click a square for what happens when its row gives its column work, both ways. Click a name for that agent's answers.</p>
+    <details class="about"><summary>What this page reads</summary>
       <div id="coverage" class="coverage" hidden></div>
       <p id="talk"></p>
       <p id="not-read"></p>
@@ -184,28 +175,6 @@
     <div id="following-status" class="status" role="status"></div>
   </section>
 
-  <section class="panel" id="what-if-panel" hidden><h2>What happens if</h2>
-    <p class="note">Pick who writes, to which agent, and where. The answer is the decision nvoy's own code makes on the approvals read above, the same code the agent's broker runs. Work that waggle carries in for someone takes a different path and is not checked here.</p>
-    <div class="ask">
-      <select id="what-if-author" aria-label="Who writes"></select><span>mentions</span>
-      <select id="what-if-agent" aria-label="Which agent"></select>
-      <select id="what-if-where" aria-label="Where"><option value="channel">in a channel</option><option value="dm">in a DM</option></select>
-      <button id="what-if-go" class="small">Check</button>
-    </div>
-    <div id="what-if-answer" role="status"></div>
-  </section>
-
-  <section class="panel" id="pair-panel" hidden><h2>Can these two reach each other? <span class="hint">every gate, both ways</span></h2>
-    <p class="note">Pick two keys. Each line says what this page could see, and where it read it. A gate the page has no source for says Not read yet, and never counts toward a yes. Nothing here is sent or signed.</p>
-    <div class="ask">
-      <select id="pair-a" aria-label="First key"></select><span>and</span>
-      <select id="pair-b" aria-label="Second key"></select>
-      <button id="pair-go" class="small">Check</button>
-    </div>
-    <div id="pair-answer" role="status"></div>
-  </section>
-
-  <div id="why" role="status"></div>
   <div id="change-bar" role="region" aria-label="Changes waiting for your signature" hidden>
     <div class="words">
       <div class="title" id="change-title"></div>
@@ -228,10 +197,9 @@ import { loadBridgeKey } from './bridge-key-store.mjs'
 import { validControlState, postingCounts, notAnswering, shortNpub } from './agent-roster.mjs'
 import { scopeHash } from './scope-hash.mjs'
 import { signFresh } from './guarded-signer.mjs'
-import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, draftMention, mentionName, MENTION_NAME, describeChange, applyChange, relayHost } from './hive-change.mjs'
-import { agentsOf, gridOf, reachOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, BUZZ_D, buzzOf, draftBuzz, sameBuzz, buzzWords, isBuzz, day } from './hive-grid.mjs'
-import { whatIf } from './hive-what-if.mjs'
-import { pairCheck, STATES } from './pair-check.mjs'
+import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, describeChange, applyChange, relayHost } from './hive-change.mjs'
+import { agentsOf, gridOf, reachOf, cellOf, cellKey, toggle, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, BUZZ_D, buzzOf, draftBuzz, sameBuzz, buzzWords, isBuzz, day } from './hive-grid.mjs'
+import { squareOf as stateOf, panelOf, backOf, GLYPH, ANSWER, LEGEND } from './hive-square.mjs'
 import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { BRIDGE_RELAYS } from './hive-bridge.mjs'
 import { HANDOFF } from './add-agent-flow.mjs'
@@ -239,7 +207,7 @@ import { controlStateFresh, newestFreshControlState } from './control-state-fres
 import { followsOf, writerKey, draftFollow, applyFollow } from './hive-following.mjs'
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
-import { viewsFor, openOwnerView, oneWay, oneWayLine, mentionLines, mentionGrantsOf, mentionStatus, nameClash, mentionWhatIf, PUBLIC_NAME, PENDING, ownGrantsOn } from './owner-view.mjs'
+import { viewsFor, openOwnerView, mentionLines, ownGrantsOn } from './owner-view.mjs'
 import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK, RUNS_LOGO } from './hive-list.mjs'
 
 // The bridge publishes its roster to these relays and reads its commands from them.
@@ -309,7 +277,6 @@ const remembered = () => { try { const v = localStorage.getItem(OWNER_KEY); retu
 async function load({ owner: rememberedOwner = null } = {}) {
   const st = $('status'); st.className = 'status'; coverage.length = 0
   $('go').disabled = true
-  closeFix()
   try {
     let owner = rememberedOwner
     if (!owner) {
@@ -475,7 +442,9 @@ function draw(rows, needs, owner, partial, posting = null) {
   const breakable = name => name.split(/(?<=[a-z])(?=[A-Z])|(?<=[- ])/).flatMap((w, i) => i ? [el('wbr'), w] : [w])
   for (const t of columns) {
     const th = head.appendChild(el('th', quiet.includes(t) ? 'taker more' : 'taker')); th.scope = 'col'
-    th.append(face(t.picture), ...breakable(rowName(t)))
+    th.appendChild(face(t.picture))
+    const name = th.appendChild(el('button', 'who')); name.type = 'button'; name.append(...breakable(rowName(t)))
+    name.onclick = () => openSide({ kind: 'name', pk: t.pubkey })
   }
   // Above the names, what each runs on (#668).
   const runs = $('grid-runs'); runs.textContent = ''
@@ -489,16 +458,15 @@ function draw(rows, needs, owner, partial, posting = null) {
   runs.appendChild(el('th', 'runtime'))
   const posts = head.appendChild(el('th', 'posts', 'Posts / hour')); posts.scope = 'col'
   posts.title = 'Posts in the last hour, against the hourly limit for new messages'
-  grid = { cells: new Map(), summaries: new Map(), boxes: new Map(), mentions: new Map(), nameOf, owner, columns, head: [...head.children], active: activeNow(rows, hive.active) }
+  grid = { cells: new Map(), summaries: new Map(), boxes: new Map(), mentions: new Map(), details: new Map(), nameOf, owner, columns, partial, head: [...head.children], active: activeNow(rows, hive.active) }
   waiting = new Map(); extras = new Map(); drafted = new Map(); ticks = new Map()
-  $('why').textContent = ''
   const list = $('list'); list.textContent = ''
   const section = (label, runs, inGroup, cls) => {
     const tr = el('tr', `group${cls ? ` ${cls}` : ''}`), th = tr.appendChild(el('th', null, label)); th.colSpan = width; th.scope = 'colgroup'
     if (runs) th.appendChild(el('span', 'runs', runs))
-    const pairs = inGroup.map(r => rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting, width }))
-    for (const [d] of pairs) if (cls) d.classList.add(cls)
-    list.append(tr, ...pairs.flat())
+    const drawn = inGroup.map(r => rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting }))
+    if (cls) for (const d of drawn) d.classList.add(cls)
+    list.append(tr, ...drawn)
   }
   for (const { platform, rows: inGroup } of lines) section(platform.label, platform.runs, inGroup)
   if (quiet.length) section(hive.active ? 'Not active' : 'Everyone else', hive.active ? 'you set these aside' : 'gives no work, takes none, and runs nowhere this page knows', quiet, 'more')
@@ -509,7 +477,6 @@ function draw(rows, needs, owner, partial, posting = null) {
     const show = more.appendChild(el('button', 'link', 'Show them')); show.type = 'button'
     show.onclick = () => {
       const all = table.classList.toggle('all'); table.parentElement.classList.toggle('wide', all)
-      if (!all) for (const d of list.querySelectorAll('tr.more:not(.group)')) { d.nextElementSibling.hidden = true; d.querySelector('button.who').setAttribute('aria-expanded', 'false') }
       show.textContent = all ? 'Hide them' : 'Show them'
     }
   }
@@ -517,88 +484,16 @@ function draw(rows, needs, owner, partial, posting = null) {
   $('ask-note').textContent = free.length
     ? `${free.map(r => `${rowName(r)} acts without asking on work from ${r.answers.act.withoutAsking.map(nameOf).join(', ')}`).join('; ')}. Everyone else asks first.`
     : partial.approvals ? `Every agent here asks before acting, ${PARTIAL}.` : 'Every agent here asks before acting.'
-  const b = hive.buzz
-  $('buzz-note').textContent = !b.known ? 'Set in Buzz Desktop: unknown until every relay answers'
-    : b.signedAt ? `Set in Buzz Desktop, copied ${day(b.signedAt)}` : 'Set in Buzz Desktop: not copied yet (run tools/buzz-allow.mjs where Buzz runs)'
+  drawLegend(hive.buzz)
   drawLeftovers(owner, nameOf)
   $('partial-note').hidden = !partial.approvals
   for (const pk of grid.mentions.keys()) fillMentions(pk)
-  drawOneWay()
+  drawHidden()
   $('list-panel').hidden = false
   drawBar()
-  drawPair(rows, owner, nameOf, partial)
-  drawWhatIf(rows, owner, nameOf, partial)
+  // A read again keeps the panel on the same square or name, if the grid still draws it.
+  if (side) side.kind === 'square' ? grid.cells.has(side.key) ? drawSide() : closeSide() : grid.details.has(side.pk) ? drawSide() : closeSide()
   applyIntent({ owner, nameOf })
-}
-
-// "What happens if": any identity writing to any agent, in a channel or a DM, answered by nvoy's
-// nativeGrant over the same fold the row shows.
-function drawWhatIf(rows, owner, nameOf, partial) {
-  const fill = (sel, list) => {
-    const keep = sel.value; sel.textContent = ''
-    for (const r of list) { const o = el('option', '', nameOf(r.pubkey)); o.value = r.pubkey; sel.appendChild(o) }
-    if (list.some(r => r.pubkey === keep)) sel.value = keep
-  }
-  fill($('what-if-author'), rows)
-  fill($('what-if-agent'), rows.filter(r => r.pubkey !== owner && !r.isBridge))
-  $('what-if-answer').textContent = ''
-  $('what-if-go').onclick = () => {
-    const row = rows.find(r => r.pubkey === $('what-if-agent').value)
-    if (!row) return
-    const a = whatIf({ author: $('what-if-author').value, row, dm: $('what-if-where').value === 'dm', owner, nameOf })
-    const caveats = [...a.caveats, ...(partial.approvals ? ['Not every relay answered in full, so an approval or a withdrawal held only there is not counted in this answer.'] : [])]
-    const box = $('what-if-answer'); box.textContent = ''
-    box.appendChild(el('div', `result ${a.work ? 'ok' : ''}`, a.text))
-    if (caveats.length) { const ul = el('ul'); for (const c of caveats) ul.appendChild(el('li', '', c)); box.appendChild(ul) }
-  }
-  $('what-if-panel').hidden = false
-}
-
-// Can these two reach each other? (#691 step 5, docs/DESIGN_PAIR_CHECK.md). Every line comes from
-// pair-check.mjs over what this read already holds; the page adds no query and signs nothing.
-function drawPair(rows, owner, nameOf, partial) {
-  const list = rows.filter(r => !r.isBridge)
-  for (const sel of [$('pair-a'), $('pair-b')]) {
-    const keep = sel.value; sel.textContent = ''
-    for (const r of list) { const o = el('option', '', upper(nameOf(r.pubkey))); o.value = r.pubkey; sel.appendChild(o) }
-    if (list.some(r => r.pubkey === keep)) sel.value = keep
-  }
-  if (!$('pair-b').value || $('pair-b').value === $('pair-a').value) $('pair-b').value = list.find(r => r.pubkey !== $('pair-a').value)?.pubkey || ''
-  $('pair-answer').textContent = ''
-  $('pair-go').onclick = () => checkPair(rows, owner, nameOf, partial)
-  $('pair-panel').hidden = false
-  if (location.hash === '#pair') $('pair-panel').scrollIntoView({ block: 'start' })
-}
-function checkPair(rows, owner, nameOf, partial) {
-  const box = $('pair-answer'); box.textContent = ''
-  const [a, b] = [$('pair-a').value, $('pair-b').value].map(pk => rows.find(r => r.pubkey === pk))
-  if (!a || !b) return
-  if (a === b) return box.appendChild(el('div', 'result err', 'Pick two different keys.'))
-  const res = pairCheck(a, b, { owner, nameOf, grants: hive.grants, subjectOf: hive.table.subjectOf, views: hive.views, buzz: hive.buzz, partial })
-  box.appendChild(el('div', `result pair-summary ${res.summary.state === 'closed' ? 'err' : ''}`, upper(res.summary.text)))
-  for (const d of res.directions) {
-    const [from, to] = [upper(nameOf(d.from)), nameOf(d.to)]
-    box.appendChild(el('h3', null, `${from} → ${to}`))
-    for (const [head, lines] of [[`Work in: ${upper(to)} gives ${nameOf(d.from)} work`, d.work], [`Bringing someone in: ${from} brings ${to} in`, d.reach]]) {
-      box.appendChild(el('h4', null, head))
-      const ol = box.appendChild(el('ol'))
-      for (const l of lines) ol.appendChild(pairItem(l, d))
-    }
-  }
-}
-function pairItem(l, d) {
-  if (l.notDrawn) { const li = el('li', 'not-drawn'); li.append(el('strong', null, `${l.title}: `), l.notDrawn); return li }
-  const li = el('li', l.state)
-  li.append(el('span', 'pc-state', STATES[l.state]), el('strong', null, `${l.title}. `), upper(l.says))
-  if (l.context?.cardSignedAt) li.append(` Its card was last signed ${new Date(l.context.cardSignedAt * 1000).toLocaleString()}; that is not presence.`)
-  if (l.see === 'reverse-approval') li.append(' The other direction\u2019s Approval line is the closest related proof.')
-  li.appendChild(el('span', 'pc-source', `From ${l.source}.`))
-  if (l.fix === 'mention') li.appendChild(action(`Let ${grid.nameOf(d.from)} mention ${grid.nameOf(d.to)}…`, () => openFix(d.from, d.to)))
-  if (l.fix === 'square') {
-    const sq = grid.cells.get(cellKey({ pubkey: d.from }, { pubkey: d.to }))
-    if (sq) li.appendChild(action('Show its square on the grid', () => { sq.button.scrollIntoView({ behavior: 'smooth', block: 'center' }); sq.button.focus({ preventScroll: true }) }))
-  }
-  return li
 }
 
 // A link naming an approval to give or withdraw, or one agent's row to open, from the beeswarm page
@@ -635,9 +530,10 @@ async function applyIntent({ owner, nameOf }) {
     const r = resolvePrefix(intent.agent, rows.map(x => x.pubkey))
     if (!r.value) return refuse(r.why)
     const row = [...$('list').children].find(d => d.dataset.pubkey === r.value)
-    if (!row) return refuse('that key has no row in the grid')
+    if (!row || !grid.details.has(r.value)) return refuse('that key has no row in the grid')
     st.className = 'status'; st.textContent = ''
-    openRow(row)
+    row.hidden = false
+    openSide({ kind: 'name', pk: r.value })
     return row.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
   if (intent.action === 'revoke') {
@@ -652,9 +548,9 @@ async function applyIntent({ owner, nameOf }) {
   if (approvalsOf(grants, { subject: r.on, grantee: r.to, caps: [cap], subjectOf: table.subjectOf }).some(g => g.grantor === owner))
     return refuse(`${nameOf(r.to)} already holds this from you`)
   st.className = 'status'; st.textContent = ''
-  // Work an agent asks before acting on is a square: the link fills it as a click would.
+  // Work an agent asks before acting on is a square: the link fills it as its button would, and opens it.
   const key = cellKey({ pubkey: r.on }, { pubkey: r.to }), square = grid.cells.get(key)
-  if (cap === 'task' && square?.cell.can && !square.cell.on) { click(key); return square.button.scrollIntoView({ behavior: 'smooth', block: 'center' }) }
+  if (cap === 'task' && square?.cell.can && !square.cell.on) { change(key); openSide({ kind: 'square', key }); return square.button.scrollIntoView({ behavior: 'smooth', block: 'center' }) }
   try {
     const template = await draftGrant({ grantee: r.to, agent: r.on, cap, scopeHash })
     propose([{ key: `give:${r.on}:${r.to}:${cap}`, sign: '+', words: describeChange({ action: 'give', grantee: r.to, agent: r.on, cap }, nameOf), draft: () => [template] }])
@@ -662,8 +558,7 @@ async function applyIntent({ owner, nameOf }) {
 }
 
 const STAGE = { tools: 'Has tools on nave', grants: 'Has approvals, no tools yet', key: 'A key with no tools yet' }
-// One agent's line of the grid, and the detail line under it that its name opens.
-const openRow = row => { row.hidden = false; const b = row.querySelector('button.who'); if (b.getAttribute('aria-expanded') !== 'true') b.click() }
+// One agent's line of the grid. Its name opens its answers in the side panel.
 // The photo from the key's own signed profile, as on the Following page; https only, no referrer.
 function face(picture) {
   const f = el(picture ? 'img' : 'span', 'avatar')
@@ -679,21 +574,21 @@ function copyButton(into, r, keyText, detail) {
   b.onclick = async () => {
     const said = t => { b.textContent = t; setTimeout(() => { b.textContent = 'Copy npub' }, 1600) }
     try { await navigator.clipboard.writeText(npub(r.pubkey)); said('Copied') } catch {
-      detail.hidden = false; detail.previousElementSibling?.querySelector('button.who')?.setAttribute('aria-expanded', 'true')
+      if (!detail.isConnected) openSide({ kind: 'name', pk: r.pubkey })
       getSelection().selectAllChildren(keyText); said('Select and copy')
     }
   }
 }
-function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting, width }) {
+function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting }) {
   const d = el('tr')
   d.dataset.pubkey = r.pubkey
-  const detail = el('tr', 'detail'); detail.hidden = true
-  const cell = detail.appendChild(el('td')); cell.colSpan = width
+  // Its answers, shown in the side panel when its name is clicked.
+  const detail = el('div', 'detail')
   const agent = d.appendChild(el('th', 'agent')); agent.scope = 'row'
   agent.appendChild(face(r.picture))
   const who = agent.appendChild(el('button', 'who', rowName(r)))
-  who.type = 'button'; who.setAttribute('aria-expanded', 'false')
-  who.onclick = () => { const open = detail.hidden; detail.hidden = !open; who.setAttribute('aria-expanded', String(open)) }
+  who.type = 'button'; who.setAttribute('aria-controls', 'side')
+  who.onclick = () => openSide({ kind: 'name', pk: r.pubkey })
   // Whether the owner keeps it on the grid (#666). Ticking waits for a signature like a square does.
   if (!r.isOwner && !r.isBridge) {
     const tick = agent.appendChild(el('label', 'tick')), box = tick.appendChild(el('input'))
@@ -713,7 +608,8 @@ function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting, wid
     const b = d.appendChild(el('td', quiet.includes(t) ? 'cell more' : 'cell')).appendChild(el('button', 'sq')); b.type = 'button'
     grid.cells.set(key, { row: t, giver: r, cell: cellOf(t, r, { owner, grants: hive.grants, subjectOf: hive.table.subjectOf, buzz: hive.buzz }), button: b })
     paint(key)
-    b.onclick = () => click(key)
+    b.setAttribute('aria-controls', 'side')
+    b.onclick = () => openSide({ kind: 'square', key })
     // Pointing at a square lights its row's name and its column's name, so the pair it joins is plain.
     b.onpointerenter = b.onfocus = () => { agent.classList.add('hot'); grid.head[i + 1].classList.add('hot') }
     b.onpointerleave = b.onblur = () => { agent.classList.remove('hot'); grid.head[i + 1].classList.remove('hot') }
@@ -753,10 +649,6 @@ function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting, wid
       item(term, partial.cards ? `No agent card, ${PARTIAL}.` : 'No agent card, so not reported.', true)
     if (hive.views.has(r.pubkey)) { grid.mentions.set(r.pubkey, item('Who it can mention · shown to you only', '')); fillMentions(r.pubkey) }
   }
-  const pair = item('Can it reach someone', 'Every gate between it and one other key, both ways.')
-  const pairWith = el('button', 'small quiet', 'Check with…'); pairWith.type = 'button'
-  pairWith.onclick = () => { $('pair-a').value = r.pubkey; if ($('pair-b').value === r.pubkey) $('pair-b').value = ''; $('pair-answer').textContent = ''; $('pair-panel').scrollIntoView({ behavior: 'smooth', block: 'start' }); $('pair-b').focus({ preventScroll: true }) }
-  pair.appendChild(el('div')).appendChild(pairWith)
   const found = item('Can it be found', 'Not checked here yet. Check reads its published name back cold from the public relays.')
   const look = el('button', 'small quiet', 'Check'); look.type = 'button'
   const out = el('div', 'liveness')
@@ -764,8 +656,9 @@ function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting, wid
   found.appendChild(el('div')).appendChild(look); found.appendChild(out)
   dl.appendChild(el('dt', null, 'Key'))
   const key = dl.appendChild(el('dd', 'npub')); key.appendChild(keyText); copyButton(key, r, keyText, detail)
-  cell.appendChild(dl)
-  return [d, detail]
+  detail.appendChild(dl)
+  grid.details.set(r.pubkey, detail)
+  return d
 }
 
 // What the grid drew, so a click can find its square, and the changes waiting for a signature: one
@@ -774,17 +667,12 @@ let grid = null, waiting = new Map(), extras = new Map(), drafted = new Map(), t
 // "you" opens a sentence as "You"; every other name keeps its own case (waggle is always lowercase).
 const upper = s => s.startsWith('you') ? `Y${s.slice(1)}` : s
 function paint(key) {
-  const { row, giver, cell, button } = grid.cells.get(key)
-  const state = squareOf(cell, waiting.get(key))
-  const who = upper(grid.nameOf(giver.pubkey)), whom = grid.nameOf(row.pubkey)
-  const flagged = oneWay({ on: cell.on, giver: giver.pubkey, agent: row.pubkey, view: hive.views.get(row.pubkey) })
-  button.className = `sq ${state}${cell.buzz ? ' buzz' : cell.on && !cell.can ? ' theirs' : ''}${cell.unknown ? ' unknown' : ''}${flagged ? ' oneway' : ''}`
-  button.textContent = state === 'add' ? '+' : state === 'remove' ? '–' : state === 'self' ? '·' : ''
-  const label = (cell.self ? `${whom} itself` : state === 'add' ? `${who} will be able to give ${whom} work` : state === 'remove' ? `${who} will stop giving ${whom} work`
-    : `${who} ${cell.on ? 'can' : "can't"} give ${whom} work`) + (flagged ? `. One way: ${whom} can't mention ${grid.nameOf(giver.pubkey)} back; the fix is under the grid and in ${whom}'s row` : '')
-  button.setAttribute('aria-label', label)
-  button.title = cell.why ? `${label}. ${cell.why}` : label
-  button.setAttribute('aria-disabled', String(!cell.can))
+  const { row, giver, button } = grid.cells.get(key)
+  const sq = stateOf({ taker: row, giver, change: waiting.get(key) || null, ctx: squareCtx() })
+  button.className = `sq ${sq.kind}${side?.kind === 'square' && side.key === key ? ' open' : ''}`
+  button.textContent = GLYPH[sq.kind]
+  const label = `${upper(grid.nameOf(giver.pubkey))} → ${grid.nameOf(row.pubkey)}: ${ANSWER[sq.kind]}`
+  button.setAttribute('aria-label', label); button.title = label
 }
 function summarize(pk) {
   const { reach, line, partial } = grid.summaries.get(pk)
@@ -792,7 +680,7 @@ function summarize(pk) {
   for (const [key, action] of waiting) if (grid.cells.get(key).giver.pubkey === pk) count += action === 'add' ? 1 : -1
   line.textContent = summaryOf(count, partial)
 }
-// "Who it can mention" in a row's detail, and the one-way line under the grid (#691).
+// "Who it can mention" in an agent's answers (#691).
 function fillMentions(pk) {
   const dd = grid.mentions.get(pk)
   if (!dd) return
@@ -810,78 +698,18 @@ function fillMentions(pk) {
     }
     const r = i >= firstRefused ? refused[i - firstRefused] : null
     const mine = r && hive.grants.find(g => g.id === r.grant && g.grantor === hive.owner && g.live)
-    if (mine) div.append(' ', action('Withdraw it and sign another name', () => { propose([withdrawMention(mine)]); openFix(pk, mine.grantee) }))
+    if (mine) div.append(' ', action('Withdraw it', () => propose([withdrawMention(mine)])))
   })
-  for (const { row, giver } of flaggedPairs()) if (row.pubkey === pk) dd.appendChild(pairLine(giver.pubkey, pk))
 }
-// The fix (#691 step 4). A flagged pair says where your own mention grant stands, or offers one.
 const action = (text, onclick) => { const b = el('button', 'small quiet', text); b.type = 'button'; b.onclick = onclick; return b }
-const flaggedPairs = () => [...grid.cells.values()].filter(({ row, giver, cell }) => oneWay({ on: cell.on, giver: giver.pubkey, agent: row.pubkey, view: hive.views.get(row.pubkey) }))
 function withdrawMention(g) {
   const agent = hive.table.subjectOf(g.hash)
   return { key: `withdraw:${g.id}`, sign: '–', words: describeChange({ action: 'withdraw', grant: g, agent }, grid.nameOf), draft: () => [draftRevoke({ grantId: g.id })] }
 }
-function pairLine(giver, agent) {
-  const line = el('div', 'pairline')
-  line.appendChild(el('span', null, `${upper(grid.nameOf(giver))} → ${grid.nameOf(agent)}:`))
-  const st = mentionStatus(hive.views.get(agent), mentionGrantsOf(hive.grants, { owner: hive.owner, giver, agent, subjectOf: hive.table.subjectOf }))
-  if (st.state === 'pending') { line.appendChild(el('span', 'note', PENDING(grid.nameOf(agent)))); return line }
-  if (st.state === 'refused') line.appendChild(el('span', 'note', `Your approval was refused: ${st.refused[0].reason}.`))
-  line.appendChild(action(`Let ${grid.nameOf(agent)} mention ${grid.nameOf(giver)}…`, () => openFix(agent, giver)))
-  return line
-}
-let fixing = null
-function openFix(agent, giver) {
-  fixing = { agent, giver }
-  const p = hive.profiles.get(giver) || {}
-  $('fix-title').textContent = `Let ${grid.nameOf(agent)} mention ${grid.nameOf(giver)}`
-  $('fix-name').value = mentionName(p.name) || mentionName(p.display_name) || ''
-  $('fix-public').textContent = PUBLIC_NAME
-  $('mention-fix').hidden = false
-  checkFix()
-  $('mention-fix').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); $('fix-name').focus({ preventScroll: true })
-}
-function fixProblem() {
-  const { agent, giver } = fixing, name = $('fix-name').value.trim()
-  if (!MENTION_NAME.test(name)) return { name, why: 'The name must start with a letter or digit, and use only letters, digits, dots, dashes and underscores, 32 at most.' }
-  const clash = nameClash(hive.views.get(agent), name, giver)
-  if (clash) return { name, why: `@${clash.name} is already ${grid.nameOf(clash.pubkey)} on ${grid.nameOf(agent)}'s list, so ${grid.nameOf(agent)} would refuse it. Choose another name.` }
-  return { name, why: '' }
-}
-function checkFix() {
-  if (!fixing) return
-  const { name, why } = fixProblem()
-  $('fix-what').textContent = why && !MENTION_NAME.test(name) ? '' : mentionWhatIf({ agentName: upper(grid.nameOf(fixing.agent)), giverName: grid.nameOf(fixing.giver), name })
-  $('fix-clash').textContent = why
-  $('fix-add').disabled = !!why
-}
-const closeFix = () => { fixing = null; $('mention-fix').hidden = true }
-$('fix-name').oninput = checkFix
-$('fix-cancel').onclick = closeFix
-$('fix-add').onclick = () => {
-  if (!fixing) return
-  const { agent, giver } = fixing, { name, why } = fixProblem()
-  if (why) return checkFix()
-  propose([{ key: `mention:${agent}|${giver}`, sign: '+', words: `Let ${grid.nameOf(agent)} mention ${grid.nameOf(giver)} as @${name}`,
-    draft: async () => [await draftMention({ grantee: giver, agent, name, scopeHash })] }])
-  closeFix()
-}
 const openable = () => [...hive.views].filter(([, v]) => v.state === 'cant-tell' && v.event)
-function drawOneWay() {
-  const pairs = flaggedPairs().map(({ row, giver }) => ({ giver: giver.pubkey, agent: row.pubkey }))
-  const box = $('one-way-pairs'); box.textContent = ''
-  for (const p of pairs) box.appendChild(pairLine(p.giver, p.agent))
-  const views = grid.columns.map(t => hive.views.get(t.pubkey)).filter(Boolean)
-  const words = oneWayLine(pairs, { nameOf: pk => upper(grid.nameOf(pk)), unread: views.filter(v => v.state === 'cant-tell').length, readable: views.filter(v => v.state === 'readable').length })
-  $('one-way-words').textContent = words
-  const todo = openable().length
-  $('mention-open').hidden = !todo
-  $('mention-open').textContent = `Open who they can mention (${todo} sealed list${todo === 1 ? '' : 's'})`
-  $('one-way').hidden = !words && !todo
-}
 // One request to the owner's signer per sealed list, in turn, and none after the first it refuses.
 async function openViews() {
-  const h = hive, todo = openable(), st = $('mention-status'), go = $('mention-open')
+  const h = hive, todo = openable(), st = $('hidden-status'), go = $('hidden-go')
   if (!todo.length) return
   const mark = why => { for (const [pk] of todo) if (h.views.get(pk).state !== 'readable') h.views.set(pk, { state: 'cant-tell', why, event: h.views.get(pk).event }) }
   go.disabled = true; st.textContent = 'Asking your signer…'
@@ -900,21 +728,92 @@ async function openViews() {
       h.views.set(pk, r.state === 'cant-tell' && r.why === 'decrypt-failed' ? { ...r, event: v.event } : r)
     }
   } finally {
-    go.disabled = false; st.textContent = ''
-    if (hive === h) { for (const key of grid.cells.keys()) paint(key); for (const pk of grid.mentions.keys()) fillMentions(pk); drawOneWay() }
+    go.disabled = false
+    const left = todo.filter(([pk]) => h.views.get(pk).state !== 'readable')
+    st.textContent = left.length ? `${todo.length - left.length} of ${todo.length} shown: ${NOT_SHOWN[h.views.get(left[0][0]).why] || "one couldn't be read"}.` : ''
+    if (hive === h) { for (const key of grid.cells.keys()) paint(key); for (const pk of grid.mentions.keys()) fillMentions(pk); drawHidden(); drawSide() }
   }
 }
-$('mention-open').onclick = () => openViews()
-function click(key) {
-  const { row, giver, cell } = grid.cells.get(key)
-  const why = $('why')
-  clearTimeout(click.hide)
-  why.textContent = cell.can || cell.self ? '' : `${upper(grid.nameOf(giver.pubkey))} and ${grid.nameOf(row.pubkey)}: ${cell.why}`
-  if (why.textContent) click.hide = setTimeout(() => { why.textContent = '' }, 7000)
-  if (!cell.can) return
+$('hidden-go').onclick = () => openViews()
+const NOT_SHOWN = { 'no-signer': "you aren't signed in", 'cannot-decrypt': "your sign-in method can't open them", 'other-signer': "you're signed in as a different key from this hive", 'decrypt-failed': 'your Bunker said no', 'not-asked': 'your Bunker said no' }
+// Agents that keep who they can @mention private to you (#698, Needs you). One Bunker prompt each.
+function drawHidden() {
+  const n = openable().length, them = n === 1 ? 'it' : 'they'
+  $('hidden-card').hidden = !n
+  if (n) $('hidden-words').textContent = `${n} agent${n === 1 ? ' keeps' : 's keep'} who ${them} can @mention private to you, so whether ${them} can answer back by name isn't known. Showing it takes ${n} Bunker prompt${n === 1 ? '' : 's'}.`
+  $('needs-panel').hidden = !n && $('leftovers').hidden && !$('needs').childElementCount
+}
+// The legend, from the same words the squares use.
+function drawLegend(buzz) {
+  const box = $('legend'); box.textContent = ''
+  for (const [kind, words] of LEGEND) {
+    const item = box.appendChild(el('span')); item.append(el('span', `sq ${kind}`, GLYPH[kind]), words)
+    if (kind === 'copy') item.appendChild(el('span', 'hint', !buzz.known ? '(not every relay returned it)' : buzz.signedAt ? `(copied ${day(buzz.signedAt)})` : '(not copied yet)'))
+  }
+}
+// The panel's one button: give, stop, or undo the change waiting on this square.
+function change(key) {
+  const { giver, cell } = grid.cells.get(key)
+  if (!cell.can && !waiting.has(key)) return
   waiting = toggle(waiting, key, cell)
   drafted.delete(key)
-  paint(key); summarize(giver.pubkey); drawBar()
+  paint(key); summarize(giver.pubkey); drawBar(); drawSide()
+}
+
+// The side panel (#698): a square's answer both ways, or one agent's answers. The grid is the console.
+let side = null
+const squareCtx = () => ({ owner: hive.owner, nameOf: grid.nameOf, grants: hive.grants, subjectOf: hive.table.subjectOf, views: hive.views, buzz: hive.buzz, partial: grid.partial })
+function openSide(next) {
+  // Moving within the panel keeps the square or name it was first opened from, for Close to return to.
+  const was = side
+  side = { ...next, from: was?.from || document.activeElement }
+  if (was?.kind === 'square' && grid.cells.has(was.key)) paint(was.key)
+  drawSide()
+  $('side').hidden = false; $('hive-body').classList.add('has-side')
+  $('side-title').focus({ preventScroll: true })
+  if (!matchMedia('(min-width:1000px)').matches) $('side').scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
+function closeSide() {
+  const was = side
+  side = null
+  $('side').hidden = true; $('hive-body').classList.remove('has-side')
+  if (was?.kind === 'square' && grid?.cells.has(was.key)) paint(was.key)
+  if (was?.from?.isConnected) was.from.focus({ preventScroll: true })
+}
+$('side-close').onclick = closeSide
+$('side').addEventListener('keydown', e => { if (e.key === 'Escape') closeSide() })
+function drawSide() {
+  if (!side || !grid) return
+  const body = $('side-body'); body.textContent = ''
+  if (side.kind === 'name') {
+    const r = hive.rows.find(x => x.pubkey === side.pk)
+    $('side-kicker').textContent = 'Its answers'
+    $('side-title').textContent = r ? upper(rowName(r)) : shortNpub(side.pk)
+    body.appendChild(grid.details.get(side.pk))
+    return
+  }
+  const { row, giver, cell } = grid.cells.get(side.key)
+  paint(side.key)
+  const ctx = squareCtx(), p = panelOf({ taker: row, giver, cell, change: waiting.get(side.key) || null, ctx })
+  const a = grid.nameOf(giver.pubkey), b = grid.nameOf(row.pubkey)
+  $('side-kicker').textContent = p.sq.kind === 'self' ? 'One agent' : `When ${a} ${a === 'you' ? 'write' : 'writes'} to ${b}`
+  $('side-title').textContent = p.title
+  const answer = body.appendChild(el('p', 'answer')); answer.append(el('span', `sq ${p.sq.kind}`, GLYPH[p.sq.kind]), p.answer)
+  if (p.acts) body.appendChild(el('p', 'acts', p.acts))
+  if (p.reasons.length) { const ul = body.appendChild(el('ul', 'reasons')); for (const line of p.reasons) ul.appendChild(el('li', null, line)) }
+  if (p.button) {
+    const go = body.appendChild(el('button', p.button.disabled ? 'small quiet' : 'small', p.button.label)); go.type = 'button'
+    go.disabled = !!p.button.disabled
+    go.onclick = () => change(side.key)
+  }
+  if (p.showPrivate) { const show = body.appendChild(el('button', 'small quiet', `Show who ${b} can @mention`)); show.type = 'button'; show.onclick = () => openViews() }
+  if (p.sq.kind !== 'self') {
+    const back = cellKey(giver, row), rev = grid.cells.get(back)
+    const line = body.appendChild(el('p', 'back'))
+    line.append(el('strong', null, `And back: when ${b} ${b === 'you' ? 'write' : 'writes'} to ${a}. `), backOf(rev ? stateOf({ taker: giver, giver: row, change: waiting.get(back) || null, ctx }) : null, { taker: row, giver, ctx }))
+    if (rev) { const open = line.appendChild(el('button', 'link', 'Open that square')); open.type = 'button'; open.onclick = () => { openSide({ kind: 'square', key: back }); rev.button.scrollIntoView({ block: 'nearest', inline: 'nearest' }) } }
+  }
+  if (p.source) body.appendChild(el('p', 'source', p.source))
 }
 
 // Whether anything can address it: a cold read-back of its kind:0, beside what the bridge's list
@@ -940,7 +839,7 @@ async function checkFound(r, button, out) {
 function drawLeftovers(owner, nameOf) {
   const old = leftovers(hive.grants, { owner })
   $('leftovers').hidden = !old.length
-  $('needs-panel').hidden = !old.length && !$('needs').childElementCount
+  $('needs-panel').hidden = !old.length && !$('needs').childElementCount && $('hidden-card').hidden
   $('leftovers-words').textContent = `${old.length} old approval${old.length === 1 ? '' : 's'} from the channel pass and waggle carrying no longer count: nothing reads them since waggle stopped carrying work. Withdraw ${old.length === 1 ? 'it' : 'them'} so the list is clean.`
   const whose = pk => pk === owner ? 'your' : `${nameOf(pk)}'s`
   $('leftovers-go').onclick = () => propose(old.map(g => ({ key: `withdraw:${g.id}`, sign: '–',
@@ -997,6 +896,7 @@ $('change-cancel').onclick = () => {
     const keys = [...waiting.keys()]
     waiting = new Map(); extras = new Map(); drafted = new Map()
     for (const key of keys) { paint(key); summarize(grid.cells.get(key).giver.pubkey) }
+    drawSide()
     for (const pk of ticks.keys()) grid.boxes.get(pk).checked = grid.active.has(pk)
     ticks = new Map()
   }

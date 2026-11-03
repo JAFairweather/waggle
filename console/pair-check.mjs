@@ -128,6 +128,15 @@ export function summaryOf(directions, nameOf) {
   return { state: 'counted', text: `No gate the page could read is closed. ${n('proven')} proven, ${n('claimed')} claimed, ${n('not-read')} not read yet.` }
 }
 
+// One square of the hive grid (#698): may the giver give the taker work (gate 1), and can the taker
+// mention the giver back (gate 7), both read from the taker's side as its listener reads them.
+export function gatesFor(taker, giver, ctx) {
+  if (taker.pubkey === giver.pubkey) throw new Error('A square is two different keys.')
+  const A = { pubkey: taker.pubkey, row: taker, kind: kindOf(taker, ctx.buzz) }
+  const B = { pubkey: giver.pubkey, row: giver, kind: kindOf(giver, ctx.buzz) }
+  return { kind: A.kind, approval: approval(A, B, ctx), mention: mentionRight(A, B, ctx) }
+}
+
 // Both directions for a pair of rows. `ctx`: owner, nameOf, grants (readGrants), subjectOf, views
 // (pubkey → owner view), buzz (buzzOf), partial ({ approvals }).
 export function pairCheck(rowA, rowB, ctx) {

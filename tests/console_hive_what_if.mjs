@@ -103,8 +103,10 @@ check(!/[0-9a-f]{64}/.test(allText), 'no answer carries a key or an id in hex')
 
 // ── 4. The page ──────────────────────────────────────────────────────────────────────────────────
 const page = readFileSync(join(ROOT, 'console/hive.html'), 'utf8')
-check(page.includes("from './hive-what-if.mjs'") && /whatIf\(\{/.test(page), 'hive.html answers "what happens if" through hive-what-if.mjs')
-check(/id="what-if-panel"/.test(page) && /What happens if/.test(page), 'and offers it in its own panel')
+// #698: the answer lives in the square's side panel, worked out here; the page has no panel of its own for it.
+const square = readFileSync(join(ROOT, 'console/hive-square.mjs'), 'utf8')
+check(square.includes("from './hive-what-if.mjs'") && /whatIf\(\{/.test(square) && page.includes("from './hive-square.mjs'"), 'the square\'s panel answers "what happens if" through hive-what-if.mjs')
+check(!/id="what-if-panel"/.test(page) && !/What happens if/.test(page), 'and the page has no separate panel for it')
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
 process.exit(pass ? 0 : 1)
