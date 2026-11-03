@@ -19,7 +19,7 @@
   .note{font-size:13px;color:var(--dim)}
   .hive-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:14px;margin:0 0 22px}
   .hive-head .brand{display:flex;align-items:baseline;gap:10px}.hive-head .wordmark{font:700 20px var(--sans);letter-spacing:-.01em}.hive-head .where{color:var(--dim);font-size:14px}
-  .hive-head button{margin:0}
+  .hive-head button{margin:0}.hive-head a.button{border-radius:6px;background:var(--accent);color:#160e03;padding:7px 13px;font-weight:700;font-size:13px;text-decoration:none}
   .panel h2 .hint{text-transform:none;letter-spacing:0;font:400 12px var(--sans);color:var(--faint);margin-left:6px}
   .hive-foot{border-top:1px solid var(--line);margin-top:34px;padding-top:14px;font-size:13px;color:var(--dim)}.hive-foot p{margin:4px 0}
   .coverage{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px 16px;font-size:13px}
@@ -121,11 +121,6 @@
   .result{font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;border-left:3px solid var(--faint);padding:4px 0 4px 10px;margin:8px 0}
   .result.ok{border-left-color:var(--good)}.result.err{border-left-color:var(--critical)}
   .ask{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px}.ask button{margin:0}
-  #add-panel label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--dim)}#add-panel input,#add-panel select{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--ground);color:var(--text)}
-  .add-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:10px 0}.add-runs{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 10px}
-  .add-runs button{display:inline-flex;align-items:center;gap:6px}.add-runs button[aria-pressed=true]{outline:2px solid var(--text)}.add-runs img{width:16px;height:16px;border-radius:3px}
-  #add-givers{display:flex;flex-wrap:wrap;gap:6px 14px;margin:6px 0 12px}#add-givers label{flex-direction:row;align-items:center;gap:6px;color:var(--text)}#add-givers .avatar{display:inline-block;width:22px;height:22px;border-radius:50%;object-fit:cover;background:var(--line);flex:none}#add-next{margin:8px 0 0 18px}
-  #add-ticks{display:flex;flex-direction:column;gap:6px;margin:6px 0}#add-ticks label{flex-direction:row;align-items:center;gap:8px;color:var(--text)}#add-terms.err{color:var(--critical)}#add-panel .doc{white-space:pre-wrap;max-height:320px;overflow:auto;margin-top:8px}
   #following-list{margin:4px 0 12px}.follow-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}.follow-row:last-child{border-bottom:0}
   .follow-row .avatar{display:inline-block;width:26px;height:26px;border-radius:50%;object-fit:cover;background:var(--line);flex:none}.follow-row .who-name{flex:1;min-width:0;overflow-wrap:anywhere}.follow-row button{margin:0}
   #follow-target{flex:1;min-width:0;max-width:440px;background:var(--ground);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:7px 10px;font:13px var(--mono)}
@@ -135,7 +130,7 @@
 </style>
 </head>
 <body><main class="wide">
-  <header class="hive-head"><div class="brand"><span class="wordmark">waggle</span><span class="where">your hive</span></div><button id="add-open" class="small">Add an agent</button></header>
+  <header class="hive-head"><div class="brand"><span class="wordmark">waggle</span><span class="where">your hive</span></div><a id="add-open" class="button small" href="add-agent.html">Add an agent</a></header>
   <h1>Who can give work to whom</h1>
   <p class="sub">Read across a row to see whom it can give work to; read down a column to see who can give that agent work. Click a square to change it. Nothing changes until you sign.</p>
   <div class="bar"><div id="status" class="status" role="status">Every identity in your hive, and who can give each one work.</div><button id="go">Read the hive</button></div>
@@ -189,33 +184,6 @@
     <div id="following-status" class="status" role="status"></div>
   </section>
 
-  <section class="panel" id="add-panel" hidden><h2>Add an agent</h2>
-    <p class="note">Every secret stays in your Bunker. This page only sees public keys and your signature.</p>
-    <div class="add-row">
-      <label>Name<input id="add-name" placeholder="hr" spellcheck="false" autocomplete="off"></label>
-      <label>Works like<select id="add-like" aria-label="Agent it starts like"></select></label>
-    </div>
-    <div class="note">Runs in</div>
-    <div class="add-runs" id="add-runs" role="group" aria-label="Runs in"></div>
-    <label>Its key<input id="add-key" placeholder="npub1…" spellcheck="false" autocomplete="off"></label>
-    <p class="note">Make the key in your Bunker (Keys › Derive from seed words › Generate random › Derive &amp; Import), then paste its npub here.</p>
-    <div class="note">Who will give it work</div>
-    <div id="add-givers"></div>
-    <p class="note">This lets them mention it. The approval itself is a tick on the grid above, once it has started.</p>
-    <div class="note">Joining the hive</div>
-    <p id="add-terms" class="note">Reading the hive's terms…</p>
-    <details id="add-terms-read" class="about" hidden><summary>Terms of service</summary><div id="add-terms-text" class="doc"></div></details>
-    <details id="add-privacy-read" class="about" hidden><summary>Privacy notice</summary><div id="add-privacy-text" class="doc"></div></details>
-    <div id="add-ticks">
-      <label id="add-agree-row" hidden><input type="checkbox" id="add-agree"> I have read the documents above and agree to the hive's terms</label>
-      <label id="add-age-row" hidden><input type="checkbox" id="add-age"> I confirm the age requirement</label>
-    </div>
-    <p class="note">Signing makes a single-use invite with your key and seals it to the agent's key in your Bunker. Only the agent can open it; this page never shows or keeps it.</p>
-    <button id="add-go">Sign the setup request</button>
-    <div id="add-status" class="status" role="status"></div>
-    <ol id="add-next" class="note" hidden></ol>
-  </section>
-
   <section class="panel" id="what-if-panel" hidden><h2>What happens if</h2>
     <p class="note">Pick who writes, to which agent, and where. The answer is the decision nvoy's own code makes on the approvals read above, the same code the agent's broker runs. Work that waggle carries in for someone takes a different path and is not checked here.</p>
     <div class="ask">
@@ -266,10 +234,9 @@ import { whatIf } from './hive-what-if.mjs'
 import { pairCheck, STATES } from './pair-check.mjs'
 import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { BRIDGE_RELAYS } from './hive-bridge.mjs'
+import { HANDOFF } from './add-agent-flow.mjs'
 import { controlStateFresh, newestFreshControlState } from './control-state-freshness.mjs'
 import { followsOf, writerKey, draftFollow, applyFollow } from './hive-following.mjs'
-import { HARNESSES, agentName, draftAddAgent, readBack, requestD, sendRequest, SETUP_KIND } from './hive-add-agent.mjs'
-import { HIVE_RELAY, readHiveTerms, sealInvite } from './hive-invite.mjs'
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
 import { viewsFor, openOwnerView, oneWay, oneWayLine, mentionLines, mentionGrantsOf, mentionStatus, nameClash, mentionWhatIf, PUBLIC_NAME, PENDING, ownGrantsOn } from './owner-view.mjs'
@@ -406,8 +373,9 @@ async function load({ owner: rememberedOwner = null } = {}) {
     }
     drawCoverage()
     draw(rows, needs, owner, partial, posting)
+    // Add an agent's "Same as …" reads who gives each agent work from here, in this tab. Public keys only.
+    try { sessionStorage.setItem(HANDOFF, JSON.stringify({ owner, givers: Object.fromEntries(rows.filter(r => r.answers?.work).map(r => [r.pubkey, r.answers.work.givers.map(g => g.pubkey)])) })) } catch { /* private mode: the button says to open the hive */ }
     drawFollowing(rosterState, profiles, bridge)
-    drawAdd(rows, owner)
     st.className = 'status ok'
     st.textContent = `Read ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${rows.length} identities · ${partial.approvals || partial.keys || partial.active ? 'not every relay answered in full' : 'every relay answered'}${partial.active ? ', so the Active ticks are locked and the Buzz columns unknown until a full read' : ''}${posting ? ` · posts counted by the bridge at ${new Date(posting.at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : bridge ? '' : ' · no bridge key saved, so no post counts: paste it on Config'}`
     $('go').textContent = 'Read again'
@@ -466,98 +434,6 @@ $('follow-go').onclick = () => {
   try { pk = writerKey($('follow-target').value, nip19.decode) } catch (e) { fs.className = 'status err'; fs.textContent = e.message; return }
   if (followsOf(hive?.rosterState).includes(pk)) { fs.className = 'status'; fs.textContent = 'The hive already follows them.'; return }
   changeFollow(pk, true)
-}
-
-// ── Add an agent (#649, nvoy #289): one signed setup request the fleet's nvoy-onboard carries out. ──
-let addHarness = 'claude-code'
-// Who gives the new agent work: You, until the owner changes it. A later hive read keeps their choice, even none.
-let addGivers = null
-// The terms as last shown. The owner agrees to this version; a different one at signing is read again.
-let addTerms = null
-function showTerms(terms) {
-  const sameAsShown = addTerms?.ok && terms.ok && addTerms.version === terms.version
-  addTerms = terms
-  const host = HIVE_RELAY.replace(/^[a-z]+:\/\//i, '').split('/')[0]
-  const line = $('add-terms'), agree = $('add-agree'), age = $('add-age')
-  if (!sameAsShown) { agree.checked = false; age.checked = false }
-  $('add-agree-row').hidden = !(terms.ok && terms.version !== 'none')
-  $('add-age-row').hidden = !(terms.ok && terms.age)
-  for (const doc of ['terms', 'privacy']) {
-    $(`add-${doc}-read`).hidden = !(terms.ok && terms[doc])
-    $(`add-${doc}-text`).textContent = terms.ok ? terms[doc] : ''
-  }
-  if (!terms.ok) { line.className = 'note err'; line.textContent = `Can't read the terms of the hive at ${host} (${terms.reason}). Nothing can be signed until they are read; read the hive again.`; return }
-  line.className = 'note'
-  line.textContent = terms.version === 'none' ? `The hive at ${host} has no terms to agree to.`
-    : `The hive at ${host} serves terms version ${terms.version.slice(0, 12)}${terms.age ? ', and asks you to confirm the age requirement' : ''}.`
-}
-function drawAdd(rows, owner) {
-  readHiveTerms().then(showTerms)
-  $('add-panel').hidden = false
-  const installed = rows.filter(r => r.card?.instance)
-  const like = $('add-like'), was = like.value; like.textContent = ''
-  for (const r of installed) { const o = like.appendChild(el('option', null, rowName(r))); o.value = r.card.instance }
-  if (was) like.value = was
-  const runs = $('add-runs'); runs.textContent = ''
-  for (const [id, label] of HARNESSES) {
-    const b = runs.appendChild(el('button', 'small quiet')); b.type = 'button'; b.setAttribute('aria-pressed', String(id === addHarness))
-    if (RUNS_LOGO[label]) { const logo = b.appendChild(el('img')); logo.src = RUNS_LOGO[label]; logo.alt = '' }
-    b.append(document.createTextNode(label))
-    b.onclick = () => { addHarness = id; for (const x of runs.children) x.setAttribute('aria-pressed', String(x === b)) }
-  }
-  if (!addGivers) addGivers = new Set([owner])
-  const givers = $('add-givers'); givers.textContent = ''
-  for (const r of [{ pubkey: owner, you: true }, ...installed]) {
-    const l = givers.appendChild(el('label')), box = l.appendChild(el('input')); box.type = 'checkbox'; box.value = r.pubkey
-    box.checked = addGivers.has(r.pubkey)
-    box.onchange = () => { if (box.checked) addGivers.add(r.pubkey); else addGivers.delete(r.pubkey) }
-    if (!r.you) l.append(face(r.picture))
-    l.append(document.createTextNode(r.you ? 'You' : rowName(r)))
-  }
-}
-
-$('add-go').onclick = async () => {
-  const st = $('add-status'), next = $('add-next'), go = $('add-go'); st.className = 'status'; next.hidden = true
-  let template, name, draftFields
-  try {
-    name = agentName($('add-name').value)
-    const pasted = $('add-key').value.trim()
-    let agent = pasted
-    if (/^npub1/.test(pasted)) { const d = nip19.decode(pasted); if (d.type !== 'npub') throw new Error('That is not an npub.'); agent = d.data }
-    else if (/^nsec1/i.test(pasted)) { $('add-key').value = ''; throw new Error('That is the private key. Clear it from your clipboard, and paste the npub instead.') }
-    const installed = hive.rows.filter(r => r.card?.instance).map(r => ({ id: r.card.instance, pubkey: r.pubkey }))
-    draftFields = { name, agent, harness: addHarness, like: $('add-like').value, installed,
-      givers: [...document.querySelectorAll('#add-givers input:checked')].map(x => x.value) }
-    // Drafted once without the invite, so a form mistake is caught before anything is minted.
-    template = draftAddAgent(draftFields)
-  } catch (e) { st.className = 'status err'; st.textContent = e.message; return }
-  go.disabled = true
-  try {
-    // The terms again, as the agent will read them: a version that changed since it was shown is shown, not signed.
-    const shown = addTerms, terms = await readHiveTerms()
-    showTerms(terms)
-    if (terms.ok && shown?.ok && shown.version !== terms.version) throw new Error('The hive\'s terms changed while this page was open. Read them, tick again, then sign.')
-    const signer = await consoleSigner()
-    // Mint, seal, then sign: a failure at any step publishes nothing.
-    const join = await sealInvite({ agent: template.tags.find(t => t[0] === 'p')[1], terms,
-      agreed: $('add-agree').checked, ageConfirmed: !$('add-age-row').hidden && $('add-age').checked,
-      signer, sign: t => signFresh(t, signer), onStep: step => { st.textContent = `Invite: ${step}…` } })
-    template = draftAddAgent({ ...draftFields, join })
-    const sent = await sendRequest(template, { sign: t => signFresh(t, signer), owner: hive.owner, verify: verifyEvent,
-      connect: url => new WebSocket(url), relays: GRANT_RELAYS, onStep: step => { st.textContent = `Setup request: ${step}…` } })
-    // Read it back cold, as the fleet will.
-    const back = await read(GRANT_RELAYS, { kinds: [SETUP_KIND], authors: [hive.owner], '#d': [requestD(name, 'add_agent')], limit: 4 })
-    const seen = readBack(back.events, sent.signed, { owner: hive.owner, verify: verifyEvent })
-    st.className = seen ? 'status ok' : 'status'
-    st.textContent = `${sent.text} ${seen ? 'Read back from the relays.' : 'Not read back yet; read the hive again in a minute.'}`
-    next.textContent = ''
-    for (const line of [`The operator runs nvoy-onboard run ${name} on the fleet. It prints a nostrconnect:// link, and the agent claims its invite there itself.`,
-      'Paste that link into your Bunker and approve it.', `The install line on its box comes next; the operator then runs nvoy-onboard run ${name} again to start it.`])
-      next.append(el('li', null, line))
-    next.hidden = false
-  } catch (e) {
-    st.className = 'status err'; st.textContent = e.message || String(e)
-  } finally { go.disabled = false }
 }
 
 // One name per identity, everywhere on the page (#654): an unnamed voice row is "Your voice".
@@ -1169,12 +1045,6 @@ $('change-go').onclick = async () => {
 }
 
 $('go').onclick = () => load()
-// Add an agent needs the hive read first: its givers are the hive's own agents.
-$('add-open').onclick = async () => {
-  if ($('go').disabled) return
-  if ($('add-panel').hidden) await load()
-  if (!$('add-panel').hidden) { $('add-panel').scrollIntoView({ behavior: 'smooth', block: 'start' }); $('add-name').focus({ preventScroll: true }) }
-}
 if (remembered()) load({ owner: remembered() })
 else if (linkIntent) $('link-status').textContent += ' Press Read the hive.'
 </script>

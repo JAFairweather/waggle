@@ -10,13 +10,16 @@
 //     and the join tags pass nvoy's own rules or are refused before signing.
 //  7. Mint, then seal, then sign: a failure at any step makes nothing further, and the invite code
 //     never appears unsealed in a tag, a message, or the page.
+//  8. The seven-step page (add-agent-flow.mjs): three signatures, each a newer add_agent for the same
+//     agent; a step is done only from the newest request read back, valid and by the owner.
 //
 //   node tests/console_hive_add_agent.mjs
 
 import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
 import * as nip44 from 'nostr-tools/nip44'
 import { readFileSync } from 'node:fs'
-import { agentName, draftAddAgent, draftBind, readBack, requestD, sendRequest, sealedShape, SETUP_KIND } from '../console/hive-add-agent.mjs'
+import { HARNESSES, agentName, draftAddAgent, draftBind, readBack, requestD, sendRequest, sealedShape, SETUP_KIND } from '../console/hive-add-agent.mjs'
+import { STEPS, NOT_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, sameAs, HANDOFF } from '../console/add-agent-flow.mjs'
 import { HIVE_RELAY, INVITE_TTL_SECS, joinGate, readHiveTerms, sealInvite, termsFromRead } from '../console/hive-invite.mjs'
 
 const key = () => { const sk = generateSecretKey(); return { sk, pk: getPublicKey(sk) } }
@@ -168,15 +171,64 @@ check(!error.includes(CODE) && /\[invite\]/.test(error), 'a refusal that echoes 
 w = world({ encrypt: async (pk, text) => text }); error = await caught(() => ask(w))
 check(/not a sealed message/.test(error) && !error.includes(CODE), 'a signer that hands the code back plain: refused, nothing sent')
 
-// The page: mint and seal before the one signature that publishes, and the code never reaches it.
-const page = readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
-const go = page.slice(page.indexOf("$('add-go').onclick"), page.indexOf('// One name per identity'))
-check(go.indexOf('await sealInvite(') > 0 && go.indexOf('await sealInvite(') < go.indexOf('await sendRequest(template'), 'the page seals before it asks for the publishing signature')
-check(go.indexOf('draftAddAgent(draftFields)') < go.indexOf('await sealInvite('), 'a form mistake is caught before anything is minted')
-check(!/\.code\b|mintInvite/.test(go), 'the page never handles the code: only the sealed invite comes back to it')
-check(!/loadRelayUrl|relayUrl:/.test(go) && !/loadRelayUrl/.test(page), 'the page does not mint at a relay the Access page last probed')
-check(page.indexOf('id="add-privacy-read"') > 0 && page.indexOf('id="add-terms-read"') < page.indexOf('id="add-ticks"') && page.indexOf('id="add-privacy-read"') < page.indexOf('id="add-ticks"'), 'both documents are shown above the tick')
-check(/<input type="checkbox" id="add-agree">/.test(page) && /<input type="checkbox" id="add-age">/.test(page) && !/id="add-(agree|age)"[^>]*checked/.test(page), 'two ticks, neither ticked for the owner')
+// The page: mint and seal before the signature that publishes, and the code never reaches it.
+const page = readFileSync(new URL('../console/add-agent.html', import.meta.url), 'utf8')
+const send = page.slice(page.indexOf('async function send('), page.indexOf("$('tools-go').onclick"))
+const join = page.slice(page.indexOf("$('join-go').onclick"), page.indexOf("$('work-go').onclick"))
+check(send.indexOf('draftAddAgent({ ...f, join: joined || undefined })') > 0 && send.indexOf('draftAddAgent({ ...f, join: joined || undefined })') < send.indexOf('await build('), 'a form mistake is caught before anything is minted')
+check(send.indexOf('await build(') > 0 && send.indexOf('await build(') < send.indexOf('await sendRequest(template'), 'the invite is made before the publishing signature is asked for')
+check(join.indexOf('await sealInvite(') > 0 && join.indexOf('await sealInvite(') < join.indexOf('return draftAddAgent({ ...f, join })'), 'the page seals before it drafts the request that carries the invite')
+check(!/\.code\b|mintInvite/.test(page), 'the page never handles the code: only the sealed invite comes back to it')
+check(!/loadRelayUrl|relayUrl:/.test(page), 'the page does not mint at a relay the Access page last probed')
+check(page.indexOf('id="privacy-read"') > 0 && page.indexOf('id="terms-read"') < page.indexOf('id="ticks"') && page.indexOf('id="privacy-read"') < page.indexOf('id="ticks"'), 'both documents are shown above the tick')
+check(/<input type="checkbox" id="agree">/.test(page) && /<input type="checkbox" id="age">/.test(page) && !/id="(agree|age)"[^>]*checked/.test(page), 'two ticks, neither ticked for the owner')
+check(!/sessionStorage\.setItem\([^)]*joined|localStorage\.setItem\([^)]*join/.test(page) && !/invite/.test(page.slice(page.indexOf('const form = {'), page.indexOf('\n', page.indexOf('const form = {')))), 'the sealed invite is never kept in the browser: it is read back from the request')
+const hive = readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
+check(/<a id="add-open" class="button small" href="add-agent.html">/.test(hive) && !/id="add-panel"/.test(hive), 'Add an agent is its own page, opened from the hive page')
+
+// The seven steps: three signatures, each a newer add_agent carrying everything chosen so far.
+check(STEPS.map(s => s.label).join('|') === 'Name it|Make its key|Set up its tools|Start it on its box|Join the hive|Who can give it work|Prove it works', 'the rail has the seven steps of the design, in its order')
+check(Object.keys(NOT_BUILT).join() === '4,7', 'the two steps the page cannot do yet say so, and nothing else does')
+const sealedJoin = { invite: nip44.encrypt('code', nip44.getConversationKey(O.sk, A.pk)), policy: 'v1', age: 'confirmed' }
+const flowFields = { name: 'hr', agent: A.pk, harness: 'claude-code', like: 'crystalclaude', installed }
+const atT = (t, extra = {}) => finalizeEvent(draftAddAgent({ ...flowFields, ...extra, now: t }), O.sk)
+const req3 = atT(100, { givers: [O.pk] }), req5 = atT(200, { givers: [O.pk], join: sealedJoin }), req6 = atT(300, { givers: [O.pk, G.pk], join: sealedJoin })
+const flowOpts = { owner: O.pk, name: 'hr', agent: A.pk, verify: verifyEvent }
+check(newestAdd([req3, req6, req5], flowOpts)?.id === req6.id, 'the newest request wins, as the fleet resolves it')
+check(newestAdd([finalizeEvent(draftAddAgent({ ...flowFields, now: 400 }), X.sk), req3], flowOpts)?.id === req3.id, 'a request signed by anyone else is not the owner\'s')
+check(newestAdd([{ ...req6, tags: req6.tags.filter(t => t[0] !== 'giver') }, req3], flowOpts)?.id === req3.id, 'an edited request fails its signature and does not count')
+check(newestAdd([finalizeEvent(draftAddAgent({ ...flowFields, agent: G.pk, installed: [], now: 500 }), O.sk)], flowOpts) === null, 'a request for another key under this name is not this agent\'s')
+check(joinOf(req3) === null && JSON.stringify(joinOf(req5)) === JSON.stringify(sealedJoin), 'the invite is read back sealed, exactly as signed, and absent before step 5')
+check(draftAddAgent({ ...flowFields, join: joinOf(req5) }).tags.some(t => t[0] === 'invite' && t[1] === sealedJoin.invite), 'the invite read back drafts again, so step 6 keeps it')
+let flowSteps = readBackSteps(req3)
+check(flowSteps[3] && !flowSteps[5] && !flowSteps[6], 'after step 3: tools asked for, no invite yet')
+flowSteps = readBackSteps(req6)
+check(flowSteps[3] && flowSteps[5] && !flowSteps[6] && flowSteps.givers.join() === [O.pk, G.pk].join(), 'givers alone do not make step 6 done')
+check(readBackSteps(req6, { sixth: req6.id })[6] && !readBackSteps(req5, { sixth: req6.id })[6], 'step 6 is done only when the newest request is the one sent from step 6')
+check(!readBackSteps(null)[3], 'nothing read back: nothing done')
+
+// ── 9. Step 6 is a search with chips, built for 50 (#698) ─────────────────────────────────────────
+check(HARNESSES.some(([id, label]) => id === 'hermes' && label === 'Hermes'), 'Hermes is offered in Runs in')
+check(!HARNESSES.some(([id]) => id === 'buzz'), 'Buzz is where agents talk, not a harness')
+const pickGroups = [{ id: 'you', label: 'You' }, { id: 'lab', label: 'Frontier lab harnesses' }, { id: 'other', label: 'Everyone else' }]
+const many = [{ pubkey: 'o', label: 'You', where: 'Your Bunker' }]
+for (let i = 0; i < 50; i++) many.push({ pubkey: `k${i}`, label: `Agent ${i}`, where: i % 2 ? 'Codex' : 'Hermes' })
+const groupOf = c => c.pubkey === 'o' ? 'you' : c.where === 'Codex' ? 'lab' : 'other'
+let pick = pickerOf(many, { chosen: ['o', 'k1'], groups: pickGroups, groupOf })
+check(pick.groups.map(g => g.n).join() === '1,25,25' && pick.groups.every(g => g.open), 'every group is shown, open, with its count')
+check(pick.chips.map(c => c.pubkey).join() === 'o,k1' && pick.groups[1].picked === 1 && pick.groups[1].rows.find(r => r.pubkey === 'k1').on, 'ticked agents show as chips and stay ticked in their group')
+pick = pickerOf(many, { chosen: [], folded: { lab: true }, groups: pickGroups, groupOf })
+check(!pick.groups[1].open && pick.groups[2].open, 'a folded group stays folded without a search')
+pick = pickerOf(many, { chosen: [], q: 'hermes', folded: { other: true }, groups: pickGroups, groupOf })
+check(pick.groups.length === 1 && pick.groups[0].id === 'other' && pick.groups[0].open && pick.groups[0].rows.length === 25, 'a search shows only matching groups, opened even if folded')
+pick = pickerOf(many, { chosen: [], q: 'Agent 7', groups: pickGroups, groupOf })
+check(pick.groups[0].rows.map(r => r.pubkey).join() === 'k7', 'a search matches by name')
+check(pickerOf(many, { q: 'nobody-by-this-name', groups: pickGroups, groupOf }).none, 'a search with no match says so')
+const handoff = { owner: 'o', givers: { mc: ['o', 'k3', 'gone'] } }
+check(sameAs(handoff, { owner: 'o', like: 'mc' }, many).join() === 'o,k3', 'Same as copies the agent\'s givers, only those still offered')
+check(sameAs(handoff, { owner: 'x', like: 'mc' }, many) === null, 'another owner\'s hive is not copied')
+check(sameAs(null, { owner: 'o', like: 'mc' }, many) === null && sameAs(handoff, { owner: 'o', like: 'pi' }, many) === null, 'nothing read from the hive: Same as is off')
+check(typeof HANDOFF === 'string' && readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8').includes('sessionStorage.setItem(HANDOFF'), 'the hive writes the handoff Same as reads')
 
 if (fails) { console.error(`\nconsole_hive_add_agent: ${fails} failing`); process.exit(1) }
 console.log('\nconsole_hive_add_agent: all passed')
