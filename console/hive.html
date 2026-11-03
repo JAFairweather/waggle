@@ -107,6 +107,10 @@
   .result{font:12px/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;border-left:3px solid var(--faint);padding:4px 0 4px 10px;margin:8px 0}
   .result.ok{border-left-color:var(--good)}.result.err{border-left-color:var(--critical)}
   .ask{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px}.ask button{margin:0}
+  #add-panel label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--dim)}#add-panel input,#add-panel select{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--ground);color:var(--text)}
+  .add-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:10px 0}.add-runs{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 10px}
+  .add-runs button{display:inline-flex;align-items:center;gap:6px}.add-runs button[aria-pressed=true]{outline:2px solid var(--text)}.add-runs img{width:16px;height:16px;border-radius:3px}
+  #add-givers{display:flex;flex-wrap:wrap;gap:6px 14px;margin:6px 0 12px}#add-givers label{flex-direction:row;align-items:center;gap:6px;color:var(--text)}#add-next{margin:8px 0 0 18px}
   #following-list{margin:4px 0 12px}.follow-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}.follow-row:last-child{border-bottom:0}
   .follow-row .avatar{display:inline-block;width:26px;height:26px;border-radius:50%;object-fit:cover;background:var(--line);flex:none}.follow-row .who-name{flex:1;min-width:0;overflow-wrap:anywhere}.follow-row button{margin:0}
   #follow-target{flex:1;min-width:0;max-width:440px;background:var(--ground);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:7px 10px;font:13px var(--mono)}
@@ -154,6 +158,24 @@
     <div id="following-status" class="status" role="status"></div>
   </section>
 
+  <section class="panel" id="add-panel" hidden><h2>Add an agent</h2>
+    <p class="note">Every secret stays in your Bunker. This page only sees public keys and your signature.</p>
+    <div class="add-row">
+      <label>Name<input id="add-name" placeholder="hr" spellcheck="false" autocomplete="off"></label>
+      <label>Works like<select id="add-like" aria-label="Agent it starts like"></select></label>
+    </div>
+    <div class="note">Runs in</div>
+    <div class="add-runs" id="add-runs" role="group" aria-label="Runs in"></div>
+    <label>Its key<input id="add-key" placeholder="npub1…" spellcheck="false" autocomplete="off"></label>
+    <p class="note">Make the key in your Bunker (Keys › Derive from seed words › Generate random › Derive &amp; Import), then paste its npub here.</p>
+    <div class="note">Who will give it work</div>
+    <div id="add-givers"></div>
+    <p class="note">This lets them mention it. The approval itself is a tick on the grid above, once it has started.</p>
+    <button id="add-go">Sign the setup request</button>
+    <div id="add-status" class="status" role="status"></div>
+    <ol id="add-next" class="note" hidden></ol>
+  </section>
+
   <section class="panel" id="leftovers-panel" hidden><h2>Old approvals</h2>
     <p id="leftovers-words" class="note"></p><button id="leftovers-go" class="small quiet">Withdraw them</button>
   </section>
@@ -197,6 +219,7 @@ import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-
 import { BRIDGE_RELAYS } from './hive-bridge.mjs'
 import { controlStateFresh } from './control-state-freshness.mjs'
 import { followsOf, writerKey, draftFollow, applyFollow } from './hive-following.mjs'
+import { HARNESSES, agentName, draftAddAgent, requestD, sendRequest, SETUP_KIND } from './hive-add-agent.mjs'
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
 import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK, RUNS_LOGO } from './hive-list.mjs'
@@ -325,6 +348,7 @@ async function load({ owner: rememberedOwner = null } = {}) {
     drawCoverage()
     draw(rows, needs, owner, partial, posting)
     drawFollowing(rosterState, profiles, bridge)
+    drawAdd(rows, owner)
     st.className = 'status ok'
     st.textContent = `Read ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${rows.length} identities · ${partial.approvals || partial.keys || partial.active ? 'not every relay answered in full' : 'every relay answered'}${partial.active ? ', so the Active ticks are locked and the Buzz columns unknown until a full read' : ''}${posting ? ` · posts counted by the bridge at ${new Date(posting.at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : bridge ? '' : ' · no bridge key saved, so no post counts: paste it on Config'}`
     $('go').textContent = 'Read again'
@@ -383,6 +407,63 @@ $('follow-go').onclick = () => {
   try { pk = writerKey($('follow-target').value, nip19.decode) } catch (e) { fs.className = 'status err'; fs.textContent = e.message; return }
   if (followsOf(hive?.rosterState).includes(pk)) { fs.className = 'status'; fs.textContent = 'The hive already follows them.'; return }
   changeFollow(pk, true)
+}
+
+// ── Add an agent (#649, nvoy #289): one signed setup request the fleet's nvoy-onboard carries out. ──
+let addHarness = 'claude-code'
+function drawAdd(rows, owner) {
+  $('add-panel').hidden = false
+  const installed = rows.filter(r => r.card?.instance)
+  const like = $('add-like'), was = like.value; like.textContent = ''
+  for (const r of installed) { const o = like.appendChild(el('option', null, rowName(r))); o.value = r.card.instance }
+  if (was) like.value = was
+  const runs = $('add-runs'); runs.textContent = ''
+  for (const [id, label] of HARNESSES) {
+    const b = runs.appendChild(el('button', 'small quiet')); b.type = 'button'; b.setAttribute('aria-pressed', String(id === addHarness))
+    if (RUNS_LOGO[label]) { const logo = b.appendChild(el('img')); logo.src = RUNS_LOGO[label]; logo.alt = '' }
+    b.append(document.createTextNode(label))
+    b.onclick = () => { addHarness = id; for (const x of runs.children) x.setAttribute('aria-pressed', String(x === b)) }
+  }
+  const givers = $('add-givers'), ticked = new Set([...givers.querySelectorAll('input:checked')].map(x => x.value)); givers.textContent = ''
+  for (const r of [{ pubkey: owner, you: true }, ...installed]) {
+    const l = givers.appendChild(el('label')), box = l.appendChild(el('input')); box.type = 'checkbox'; box.value = r.pubkey
+    box.checked = ticked.size ? ticked.has(r.pubkey) : !!r.you
+    if (!r.you) l.append(face(r.picture))
+    l.append(document.createTextNode(r.you ? 'You' : rowName(r)))
+  }
+}
+
+$('add-go').onclick = async () => {
+  const st = $('add-status'), next = $('add-next'), go = $('add-go'); st.className = 'status'; next.hidden = true
+  let template, name
+  try {
+    name = agentName($('add-name').value)
+    const pasted = $('add-key').value.trim()
+    let agent = pasted
+    if (/^npub1/.test(pasted)) { const d = nip19.decode(pasted); if (d.type !== 'npub') throw new Error('That is not an npub.'); agent = d.data }
+    else if (/^nsec1/i.test(pasted)) { $('add-key').value = ''; throw new Error('That is the private key. Clear it from your clipboard, and paste the npub instead.') }
+    const installed = hive.rows.filter(r => r.card?.instance).map(r => ({ id: r.card.instance, pubkey: r.pubkey }))
+    template = draftAddAgent({ name, agent, harness: addHarness, like: $('add-like').value, installed,
+      givers: [...document.querySelectorAll('#add-givers input:checked')].map(x => x.value) })
+  } catch (e) { st.className = 'status err'; st.textContent = e.message; return }
+  go.disabled = true
+  try {
+    const signer = await consoleSigner()
+    const sent = await sendRequest(template, { sign: t => signFresh(t, signer), owner: hive.owner, verify: verifyEvent,
+      connect: url => new WebSocket(url), relays: GRANT_RELAYS, onStep: step => { st.textContent = `Setup request: ${step}…` } })
+    // Read it back cold, as the fleet will.
+    const back = await read(GRANT_RELAYS, { kinds: [SETUP_KIND], authors: [hive.owner], '#d': [requestD(name, 'add_agent')], limit: 4 })
+    const seen = back.events.some(e => e.id === sent.signed.id)
+    st.className = seen ? 'status ok' : 'status'
+    st.textContent = `${sent.text} ${seen ? 'Read back from the relays.' : 'Not read back yet; read the hive again in a minute.'}`
+    next.textContent = ''
+    for (const line of [`The operator runs nvoy-onboard run ${name} on the fleet. It prints a nostrconnect:// link.`,
+      'Paste that link into your Bunker and approve it.', `The install line on its box comes next; the operator then runs nvoy-onboard run ${name} again to start it.`])
+      next.append(el('li', null, line))
+    next.hidden = false
+  } catch (e) {
+    st.className = 'status err'; st.textContent = e.message || String(e)
+  } finally { go.disabled = false }
 }
 
 // One name per identity, everywhere on the page (#654): an unnamed voice row is "Your voice".
