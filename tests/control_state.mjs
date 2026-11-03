@@ -611,8 +611,11 @@ for (const [i, channel] of [taskChannel, secondTaskChannel].entries()) {
 t('#404 both spaced routes remove cleanly, leaving the config as it was found',
   JSON.parse(readFileSync(CFG, 'utf8')).public.task_routes.length === 0)
 
-const followingPage = readFileSync(new URL('../console/following.html', import.meta.url), 'utf8')
-t('the Following console signs only the narrow watchlist command, never a bridge config request', /\['d','waggle-watchlist'\]/.test(followingPage) && /JSON\.stringify\(\{v:1,action,target\}\)/.test(followingPage) && !/fetch\([^)]*config\.json/.test(followingPage))
+// Following lives on the hive page since #613 retired following.html: hive.html drives it,
+// hive-following.mjs drafts and applies the command.
+const hivePage = readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
+const followingPage = readFileSync(new URL('../console/hive-following.mjs', import.meta.url), 'utf8')
+t('the hive page signs only the narrow watchlist command for Following, never a bridge config request', /WATCHLIST_D = 'waggle-watchlist'/.test(followingPage) && /\['d', WATCHLIST_D\]/.test(followingPage) && /JSON\.stringify\(\{ v: 1, action: follow \? 'mirror' : 'unmirror', target \}\)/.test(followingPage) && !/fetch\([^)]*config\.json/.test(followingPage + hivePage))
 
 const configPage = readFileSync(new URL('../console/config.html', import.meta.url), 'utf8')
 const taskRoutesPage = readFileSync(new URL('../console/task-routes.mjs', import.meta.url), 'utf8')
@@ -623,14 +626,14 @@ const routingScript = readFileSync(new URL('../console/routing.mjs', import.meta
 const confirmedSignerPage = readFileSync(new URL('../console/confirmed-fresh-signer.mjs', import.meta.url), 'utf8')
 t('the Config console closes the entire signed state and renders only fresh verified public operations', /config-operations\.mjs/.test(configPage) && /verifyEvent/.test(operationsPage) && /exact\(state, \['v', 'observed_at', 'hive', 'bridge', 'publishing', 'follows', 'operations'\]\)/.test(operationsPage) && /exact\(state\.hive, \['id', 'name', 'handle'\]\)/.test(operationsPage) && /state\.follows\.every/.test(operationsPage) && /newestFreshControlState/.test(operationsPage) && /Verified signed state from/.test(operationsPage) && /Aggregate counts only/.test(operationsPage) && !/fetch\([^)]*config\.json/.test(operationsPage) && !/\/config\.json/.test(operationsPage))
 t('every owner-control surface restores the shared signer session instead of selecting ambient NIP-07 directly',
-  /consoleSigner/.test(followingPage) && /confirmedFreshSigner/.test(configPage) &&
+  /consoleSigner/.test(hivePage) && /confirmedFreshSigner/.test(configPage) &&
   /consoleSigner/.test(confirmedSignerPage) && /consoleSigner/.test(taskRoutesPage) &&
-  !/nip07Signer/.test(followingPage) && !/nip07Signer/.test(configPage))
+  !/nip07Signer/.test(hivePage + followingPage) && !/nip07Signer/.test(configPage))
 t('all four control-state readers select from the same forward-skew and staleness contract',
-  /newestFreshControlState/.test(followingPage) && /newestFreshControlState/.test(configPage) &&
+  /newestFreshControlState\(states\)/.test(hivePage) && /newestFreshControlState/.test(configPage) &&
   /newestFreshControlState/.test(taskRoutesPage) && /newestFreshControlState/.test(operationsPage))
 t('every public owner-control signer rechecks freshness immediately before opening its signer',
-  /requireFreshControlState\(activeState\).*consoleSigner/s.test(followingPage) &&
+  /requireFreshControlState\(before\).*await sign\(template\)/s.test(followingPage) &&
   /confirmedFreshSigner\(live/.test(configPage) &&
   /confirmFn\(prompt\).*requireFreshControlState\(state, now\(\)\).*signerFactory\(\)/s.test(confirmedSignerPage))
 const accessPage = readFileSync(new URL('../console/index.html', import.meta.url), 'utf8')
@@ -780,11 +783,10 @@ t('#389 every state has an owner-facing label and a carrying answer',
     offenders.length === 0)
   if (offenders.length) console.log(`     restated in: ${offenders.join(', ')}`)
 }
-t('#389 the two console pages that verify signed state read the shared list',
-  [ '../console/routing.mjs', '../console/following.html' ].every(f =>
-    /CONSENT_STATES\.includes\(f\.consent\)/.test(readFileSync(new URL(f, import.meta.url), 'utf8'))))
-t('#389 the Following page names grandfathered as a CARRY, not as a pending consent',
-  /carried, with no consent record/i.test(readFileSync(new URL('../console/following.html', import.meta.url), 'utf8')))
+t('#389 the console page that verifies consent in signed state reads the shared list',
+  /CONSENT_STATES\.includes\(f\.consent\)/.test(readFileSync(new URL('../console/routing.mjs', import.meta.url), 'utf8')))
+t('#389 grandfathered is labelled as a CARRY, not as a pending consent',
+  /carried, no consent/i.test(CONSENT_LABEL.grandfathered) && CONSENT_IS_CARRYING.grandfathered === true)
 t('#389 config-operations accepts the vocabulary from the shared list, not a restated one',
   /CONSENT_STATES\.includes\(follow\.consent\)/.test(readFileSync(new URL('../console/config-operations.mjs', import.meta.url), 'utf8')) &&
   !/'pending', 'asked', 'active', 'revoked'/.test(readFileSync(new URL('../console/config-operations.mjs', import.meta.url), 'utf8')))
@@ -849,14 +851,16 @@ const { askBudget } = await import('../src/bridge.mjs')
 
 // The two things #331 says the surface must not get wrong, on screen before the button.
 {
-  const followingPage = readFileSync(new URL('../console/following.html', import.meta.url), 'utf8')
+  // Following asked for consent until #649 took the followed lane out of the gate. An ask now only
+  // follows a held reply, so no page has an ask button; the warning went with the button. If one
+  // returns, it needs that warning in front of it again.
+  const retiredFollowing = readFileSync(new URL('../console/following.html', import.meta.url), 'utf8')
   const opsModule = readFileSync(new URL('../console/config-operations.mjs', import.meta.url), 'utf8')
-  const askIdx = followingPage.indexOf('asks each writer once, ever')
-  const btnIdx = followingPage.indexOf('id="mirror"')
-  t('#331 "asked once, ever" appears BEFORE the ask button, not after it',
-    askIdx > 0 && btnIdx > 0 && askIdx < btnIdx)
-  t('#331 …and says silence is the answer, so a non-response is not read as a failed send',
-    /silence is a no/i.test(followingPage) && /not a failed send/i.test(followingPage))
+  const hiveHtml = readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
+  t('#331 the retired Following page has no ask button left to warn about',
+    !/id="mirror"/.test(retiredFollowing) && /http-equiv="refresh"[^>]*\/console\/hive\.html/.test(retiredFollowing))
+  t('#331 …and the hive page\'s Follow does not promise a consent invitation',
+    /id="follow-go"/.test(hiveHtml) && !/request consent|consent is then invited/i.test(hiveHtml))
   t('#331 the remaining ask budget is rendered, not only the cap',
     /consent_asks\.remaining/.test(opsModule) && /Consent asks left this hour/.test(opsModule))
   t('#331 …and names a cap refusal as a refusal rather than a failure',
