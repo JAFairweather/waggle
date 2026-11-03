@@ -22,7 +22,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { nip19 } from 'nostr-tools'
-import { STATUSES, STATUS_LABEL, statusLabel, validAgent, rosterAgents, postingCounts, notAnswering, NOT_ANSWERING_SECS, shortNpub, agentOptionText }
+import { STATUSES, STATUS_LABEL, statusLabel, validAgent, rosterAgents, postingCounts, notAnswering, NOT_ANSWERING_SECS, stoppedAgents, stoppedLine, shortNpub, agentOptionText }
   from '../console/agent-roster.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -416,6 +416,27 @@ check(!/loaded for a different bridge/.test(status()),
   const page = readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
   check(/const stalled = own \? null : notAnswering\(posting, r\.pubkey\)/.test(page) && /'stalled', `Not answering: \$\{stalled\.count\} mention/.test(page),
     'the hive row says Not answering, with the count, for an agent that is not answering')
+}
+
+// Needs you's Stopped card (#698): the same verdict, as one card per agent, longest wait first.
+{
+  const A = 'a'.repeat(64), B = 'b'.repeat(64), O = 'f'.repeat(64), D = 'd'.repeat(64), at = 1800000000
+  const got = postingCounts({ observed_at: at, posting: { window_secs: 3600, agents: [
+    { pubkey: A, posts: 0, waiting: 1, waiting_since: at - 40 * 60 },
+    { pubkey: B, posts: 0, waiting: 3, waiting_since: at - 5 * 3600 },
+    { pubkey: O, posts: 0, waiting: 9, waiting_since: at - 9 * 3600 },
+    { pubkey: D, posts: 1, waiting: 2, waiting_since: at - 60 }] } })
+  const rows = [{ pubkey: O }, { pubkey: A }, { pubkey: B }, { pubkey: D }]
+  const cards = stoppedAgents(rows, got, O)
+  check(cards.map(c => c.pubkey).join() === [B, A].join(), 'one card per agent not answering, longest wait first; never for you, never under 30 minutes')
+  check(stoppedAgents(rows, null, O).length === 0, 'no fresh bridge tally, no card')
+  check(stoppedAgents([{ pubkey: O }], got, O).length === 0, 'and only for agents the hive draws')
+  check(stoppedLine({ name: 'Pi Dog', count: 1, since: at - 40 * 60, at }) === "Pi Dog was @mentioned 40 minutes ago and hasn't posted since. Whether it is connected right now isn't read.", 'one mention, in minutes, and connection not claimed')
+  check(stoppedLine({ name: 'MC Claude', count: 3, since: at - 5 * 3600, at }) === "MC Claude was @mentioned 5 hours ago and hasn't posted since (3 mentions waiting). Whether it is connected right now isn't read.", 'several, in hours')
+  check(/3 days ago/.test(stoppedLine({ name: 'x', count: 1, since: at - 3 * 86400, at })), 'and days, past two of them')
+  const page = readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
+  check(/for \(const x of stoppedAgents\(rows, posting, owner\)\)/.test(page) && /el\('b', null, 'Stopped\. '\)/.test(page) && /'See it'/.test(page), 'Needs you draws a Stopped card with one button, See it')
+  check(/b\.onclick = \(\) => \{ \$\('find'\)\.value = name; finding = x\.pubkey; dimToFocus\(\); openSide\(\{ kind: 'name', pk: x\.pubkey \}\) \}/.test(page), 'See it finds the agent: its row and column, and its name panel')
 }
 
 console.log(`\n${pass ? 'ALL PASS' : 'FAILURES ABOVE'}`)
