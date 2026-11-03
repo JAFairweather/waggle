@@ -244,37 +244,51 @@ checkout. It never pipes a download into a shell. It needs `git`, `node` 20 or l
 - rewrites a `.pub` that no longer matches the key;
 - rewrites the config and `known_hosts` from the line.
 
-A new key needs a new `bind_runtime`, which replaces the old entry.
+**A new key is refused in the first slice.** nvoy's `instance_apply.mjs` refuses a second,
+different key for an identity that already has one. It never replaces the old key. So the page says
+"this agent already has a channel key on the fleet", and the step stays red. Because the line keeps
+its key, this happens only when the key file was deleted or moved. Replacing a key is a follow-up.
+It must remove the old `authorized_keys` line, end that line's live sessions, and then bind the new
+key, all in one receipt.
 
 **Scope.** Claude Code comes first. Codex needs a second key, the feed key
 (`codex_portable_harness.mjs`), and `bind_runtime` carries only one. The Codex shape adds a
 `feed_key` tag, as a follow-up. Until then, the page refuses step 4 for a Codex agent and says why.
 
-**Proof: a signed presence event.** The agent card cannot prove a connection. It describes the
-manifest, and an unchanged card is republished only once a day. So nvoy adds a presence event. It is
-an addressable event signed by the agent's key, `d` = `nvoy-channel-presence`, with this content:
+**Proof: a signed presence event, tied to the bound key.** The agent card cannot prove a
+connection. It describes the manifest, and an unchanged card is republished only once a day. A count
+of channel processes cannot prove the new key either. That count is read from process lines grouped
+by instance, so a session that some other key opened would count too. So nvoy adds a presence event
+and ties it to the key that authenticated:
 
-```
-{ instance, connected: true | false, since, seen_at }
-```
+- **The key is named in the process.** The forced command on each agent's `authorized_keys` line
+  carries that line's key fingerprint (`SHA256:…`) as an argument. sshd runs a line's forced command
+  only for that line's key, so a channel process's own command line says which key opened it.
+- **The event** is addressable, signed by the agent's key, with `d` = `nvoy-channel-presence` and
+  this content:
 
-- **Where it comes from.** The broker publishes it from the same count of live channel processes
-  that the fleet status uses (`status_snapshot.mjs`, "channel connection(s) open from the
-  harness").
+  ```
+  { instance, key: <SHA256 fingerprint>, connected: true | false, since, seen_at }
+  ```
+
+  The broker publishes it by counting only the channel processes whose command line carries the
+  bound key's fingerprint. The count works like the fleet status count (`status_snapshot.mjs`), but
+  filtered on that key.
 - **When it changes.**
-  - It is published when the channel connects and when it drops.
-  - While the channel stays up, it is refreshed on the broker's hourly card tick.
+  - It is published when a channel on that key connects and when the last one drops.
+  - While a channel stays up, it is refreshed on the broker's hourly card tick.
   - It carries a NIP-40 `expiration` two hours ahead. A broker that dies therefore cannot leave a
     stale "connected" standing.
-- **When step 4 is green.** The page reads it cold from the relay. The step is green only when the
-  event:
-  - is signed by the agent key;
-  - says `connected: true`;
-  - has not expired;
-  - was signed after the owner's `bind_runtime` request.
+- **When step 4 is green.** The page reads two things cold. Both must hold.
+  - **The bind succeeded.** nvoy-onboard's receipt for this `bind_runtime` says the principal is
+    seated (`instance_apply` "principal seated", passed), for the key in the request. A refused
+    apply is red, with its reason.
+  - **The bound key connected.** A presence event, signed by the agent key and newer than that
+    receipt, says `connected: true` and has not expired. Its `key` equals the fingerprint of the
+    public half that the owner pasted, computed by the page itself.
 
   Anything else is "waiting for the fleet", or "connected before, not now". The printed public half,
-  the paste and the receipts are progress, not proof.
+  the paste and the progress receipts are not proof.
 
 ### Mention lists follow the grants
 
