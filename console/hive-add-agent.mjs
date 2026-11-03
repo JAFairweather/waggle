@@ -17,8 +17,30 @@ const NAME = /^[a-z0-9][a-z0-9._-]{1,63}$/
 const HEX64 = /^[0-9a-f]{64}$/
 const ROOM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SSH_PUBLIC = /^(ssh-ed25519|ecdsa-sha2-nistp256)\s+([A-Za-z0-9+/]+={0,2})(?:\s+\S.*)?$/
+// The join tags, checked by nvoy-onboard's own rules (onboard_request.mjs) so a request the fleet
+// would refuse is never put in front of the owner's signer.
+export const POLICY = /^[A-Za-z0-9._:-]{1,64}$/
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/
 
 export const requestD = (name, op) => `nvoy-onboard/${name}/${op}`
+
+// A NIP-44 v2 payload: version byte 2, a 32-byte nonce, at least 34 padded bytes, a 32-byte MAC.
+export function sealedShape(value) {
+  const text = String(value || '')
+  if (!BASE64.test(text) || text.length < 132 || text.length > 87472) return false
+  const bytes = globalThis.atob(text)
+  return bytes.length >= 99 && bytes.charCodeAt(0) === 2
+}
+
+// The hive invite, sealed to the agent; the terms version the owner agreed to (or none); the age
+// confirmation exactly as ticked.
+function joinTags({ invite = '', policy = '', age } = {}) {
+  if (!invite) throw new Error('The request needs the hive invite.')
+  if (!sealedShape(invite)) throw new Error('The invite must be sealed to the agent, never plain.')
+  if (!POLICY.test(policy)) throw new Error('The request needs the terms version you agreed to, or none.')
+  if (age !== undefined && age !== 'confirmed') throw new Error('The age confirmation is confirmed, or absent.')
+  return [['invite', invite], ['policy', policy], ...(age ? [['age', age]] : [])]
+}
 
 // The name the owner types, as the fleet will use it: lower case, no spaces.
 export function agentName(text) {
@@ -37,16 +59,18 @@ function common({ name, agent, harness, like, installed = [] }) {
   return n
 }
 
-// add_agent: who it is, what it runs in, whom it starts like, who may give it work, and its rooms.
-export function draftAddAgent({ name, agent, harness, like, givers = [], rooms = [], installed = [], now = Math.floor(Date.now() / 1000) }) {
+// add_agent: who it is, what it runs in, whom it starts like, who may give it work, its rooms, and
+// (when `join` is given) how it joins the hive.
+export function draftAddAgent({ name, agent, harness, like, givers = [], rooms = [], join, installed = [], now = Math.floor(Date.now() / 1000) }) {
   const n = common({ name, agent, harness, like, installed })
   const g = [...new Set(givers)]
   if (g.some(pk => !HEX64.test(pk))) throw new Error('A giver is not a public key.')
   if (g.includes(agent)) throw new Error('An agent does not give itself work.')
   const r = [...new Set(rooms.map(room => String(room).toLowerCase()))]
   if (r.some(room => !ROOM.test(room))) throw new Error('A room is not a Buzz room id.')
+  const j = join === undefined ? [] : joinTags(join)
   return { kind: SETUP_KIND, created_at: now, content: '', tags: [['d', requestD(n, 'add_agent')], ['op', 'add_agent'], ['p', agent],
-    ['harness', harness], ['like', like], ...g.map(pk => ['giver', pk]), ...r.map(room => ['room', room])] }
+    ['harness', harness], ['like', like], ...g.map(pk => ['giver', pk]), ...r.map(room => ['room', room]), ...j] }
 }
 
 // bind_runtime: the channel key the install line made on the agent's box. Public half only.
