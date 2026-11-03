@@ -42,10 +42,14 @@ read may have a 441 the page missed, and an absence may be a 440 it missed. Eith
 A gate that is **Not read yet** is never shown as open, and never counted toward a yes. The summary at
 the top says how far the page could see, not that the pair works:
 
-- "Every gate the page can read is open. 4 are not read yet: …", or
-- "Closed at *Approval*: Pi Dog has no approval to give MC Claude work."
+- "Closed at *Approval*: Pi Dog has no approval to give MC Claude work.", or
+- "Can't tell at *Approval*: one withdrawal relay did not answer.", or
+- "No gate the page could read is closed. 2 proven, 3 claimed, 6 not read yet."
 
 The first **Closed** line decides the summary. Otherwise the first **Can't tell** line does.
+Otherwise the summary counts each state and never says the pair, or any gate, is open: a
+**Claimed** gate is a statement, not an observation, so it is counted on its own and never folded
+into **Proven**.
 
 **Not drawn is not a state.** A gate that does not exist for a kind of key is left out, and one
 sentence in its place says why, for example "A person takes no work through the page". It never
@@ -64,11 +68,13 @@ is read there, under B's name, not here.
    runs (`answersFor`, hive-list.mjs), so the line shows the same answer as the square.
    - **Proven**, quoting the grant's short id and its grantor, when every grant and withdrawal relay
      answered.
-   - **Claimed**, for a Buzz agent, since the page reads your copy of the allow-list, not Buzz
-     Desktop's own.
+   - **Claimed**, for a Buzz agent whose allow-list copy lists B, since the page reads your copy
+     of the list, not Buzz Desktop's own.
    - **Closed**, when a full read finds no grant, or finds the grant revoked or expired. It names which.
    - **Can't tell**, when the read was partial, when the allow-list copy is missing or partial, or
      when the scope hash did not resolve to a known key.
+   - **Can't tell**, too, for a Buzz agent whose full allow-list copy does not list B. The copy is
+     not Buzz Desktop's live list, so the absence is never **Closed**.
    - The fix is the square's existing work toggle.
 2. **Taken.** Does the agent's broker count that grant? Today the card lists the **grantors** whose
    grants the broker counts, but not which grant ids it took.
@@ -183,5 +189,9 @@ also asserted in `tests/console_pair_check.mjs` with synthetic keys.
 9. **An agent and a person** *(suite)*. With A an agent and B a person, the A→B direction draws every
    line. The B→A direction draws no work-in lines and no mention-right line, each replaced by its
    sentence. Every drawn line has a state.
-10. **A Buzz agent** *(suite)*. Line 1 reads **Claimed** from the allow-list copy, never **Proven**.
-    Every other line for it reads **Not read yet**.
+10. **A Buzz agent** *(suite)*. Line 1 reads **Claimed** when the allow-list copy lists B, and
+    **Can't tell** when a full copy does not; never **Proven** or **Closed**. Every other line for it
+    reads **Not read yet**.
+11. **Claimed is not open** *(suite)*. With Claimed and Not read yet lines and no Closed or Can't tell,
+    the summary counts each state ("No gate the page could read is closed. 0 proven, 2 claimed, …")
+    and nowhere says the pair or a gate is open.
