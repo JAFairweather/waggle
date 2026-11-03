@@ -45,10 +45,11 @@ function approval(A, B, ctx) {
   }
   const source = `the approval relays, counted as ${an}'s card says`
   if (ctx.partial?.approvals) return line(1, 'cant-tell', `Not every approval or withdrawal relay answered in full, so an approval for ${bn}, or a withdrawal of one, may be missing.`, source)
+  // With no card the row folds under your key alone, so a grant there names no grantor the agent counts.
+  if (!A.row.card) return line(1, 'cant-tell', `${an} has published no agent card, so the page can't tell whose approvals it counts.`, source)
   const caps = A.row.answers?.fold?.get(B.pubkey)
   const g = caps && TASK.map(c => caps.get(c)).find(Boolean)
   if (g) return line(1, 'proven', `${bn} may give ${an} work, by approval ${short(g.grantId)} signed by ${ctx.nameOf(g.grantor)}.`, source, { fix: 'square', grant: g })
-  if (!A.row.card) return line(1, 'cant-tell', `${an} has published no agent card, so the page can't tell whose approvals it counts.`, source)
   const ended = A.row.answers?.ended?.get(B.pubkey)
   return line(1, 'closed', ended ? `${bn}'s approval to give ${an} work was ${ended}.` : `${bn} has no approval to give ${an} work.`, source, { fix: 'square' })
 }
@@ -61,9 +62,9 @@ function taken(A, B, first, ctx) {
   const card = A.row.card, source = `${an}'s card`
   if (!card) return line(2, 'cant-tell', `${an} has published no agent card.`, source)
   if (first.state === 'proven') return line(2, 'claimed', `${an}'s card counts approvals signed by ${ctx.nameOf(first.grant.grantor)}, but does not list which approvals it took.`, source)
+  if (first.state === 'cant-tell') return line(2, 'cant-tell', 'It depends on the approval above, which the page could not read in full.', source)
   const uncounted = ctx.grants.find(g => g.live && TASK.includes(g.cap) && g.grantee === B.pubkey && ctx.subjectOf(g.hash) === A.pubkey && !card.grantors.includes(g.grantor))
   if (uncounted) { const x = ctx.nameOf(uncounted.grantor); return line(2, 'closed', `An approval for ${bn} signed by ${x} exists, but ${an}'s card does not count approvals signed by ${x}.`, source) }
-  if (first.state === 'cant-tell') return line(2, 'cant-tell', 'It depends on the approval above, which the page could not read in full.', source)
   return line(2, 'closed', `There is no approval from ${bn} for ${an} to take.`, source)
 }
 

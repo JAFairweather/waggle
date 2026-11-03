@@ -16,7 +16,7 @@
 
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools'
 import { pairCheck, kindOf, summaryOf, STATES } from '../console/pair-check.mjs'
-import { readGrants, scopeTable, answersFor } from '../console/hive-list.mjs'
+import { readGrants, scopeTable, answersFor, PLATFORMS } from '../console/hive-list.mjs'
 import { draftRevoke } from '../console/hive-change.mjs'
 import { scopeHash } from '../console/scope-hash.mjs'
 
@@ -86,6 +86,22 @@ const allDrawn = res => res.directions.flatMap(d => [...d.work, ...d.reach]).fil
   const o = pairCheck(other.row(pi.pk), other.row(mc.pk), other.ctx)
   check(lineOf(o, pi.pk, 1).state === 'closed' && lineOf(o, pi.pk, 2).state === 'closed' && /does not count approvals signed by/.test(lineOf(o, pi.pk, 2).says),
     "an approval by a grantor the card doesn't name: no approval counted, and taken says whose approvals it skips")
+  const op = await hive([strangerTasksPi], { partial: true, views })
+  const q = pairCheck(op.row(pi.pk), op.row(mc.pk), op.ctx)
+  check(lineOf(q, pi.pk, 1).state === 'cant-tell' && lineOf(q, pi.pk, 2).state === 'cant-tell',
+    "a partial read with an uncounted approval in sight: Taken is Can't tell, never Closed, since a missing approval may be one the card counts")
+
+  // A recognised agent with no card: its row folds under your key, so your grant must not read as counted.
+  const lab = PLATFORMS.find(x => x.id === 'lab').keys[0]
+  const labGrant = await grant(owner, pi.pk, lab, 'task', 1700000002)
+  const { grants: lg } = readGrants([labGrant], { verify: verifyEvent })
+  const lt = await scopeTable([owner.pk, pi.pk, lab], lg, scopeHash)
+  const labRow = { pubkey: lab }, piRow = { pubkey: pi.pk, card: { pubkey: pi.pk, grantors: [owner.pk], signedAt: 1700000100, may_post: { channels: 1 } } }
+  for (const r of [labRow, piRow]) r.answers = answersFor(r, { owner: owner.pk, grantEvents: [labGrant], table: lt })
+  const c = pairCheck(labRow, piRow, { owner: owner.pk, nameOf, grants: lg, subjectOf: lt.subjectOf, views: new Map(), buzz: null, partial: { approvals: false } })
+  check(c.kinds[lab] === 'agent' && labRow.answers.fold.get(pi.pk), 'a lab key with no card is an agent, and its row folds your grant')
+  check(lineOf(c, lab, 1).state === 'cant-tell' && /no agent card/.test(lineOf(c, lab, 1).says) && lineOf(c, lab, 2).state === 'cant-tell',
+    "but with no card to name its grantors, Approval and Taken are Can't tell, never Proven")
 }
 
 // ── 2. No source, no yes ─────────────────────────────────────────────────────────────────────────
