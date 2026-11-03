@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>waggle — add an agent</title>
+<meta name="description" content="Add an agent to the hive in seven steps: name it, make its key in your Bunker, and sign three times. Every secret stays in your Bunker.">
+<script type="importmap">{ "imports": { "nostr-tools": "./vendor/nostr-tools.mjs", "nostr-tools/pure": "./vendor/nostr-tools.mjs", "nostr-tools/pool": "./vendor/nostr-tools-pool.mjs", "nostr-tools/nip46": "./vendor/nostr-tools-nip46.mjs" } }</script>
+<style>
+  :root{--ground:#0b0906;--panel:#14100a;--line:#2a2317;--text:#f4efe4;--dim:#9c927f;--faint:#6f6555;--gold:#e2c079;--accent:#cf8a2e;--good:#8fae6a;--warn:#d9a648;--critical:#c0705a;--warn-ground:#2a2010;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+  @media (prefers-color-scheme:light){:root{--ground:#f5f0e4;--panel:#fffdf7;--line:#ddd2ba;--text:#241d12;--dim:#6f6553;--faint:#8a7f66;--gold:#8a5a14;--accent:#8a5a14;--good:#4f7a34;--warn:#9a6a12;--critical:#a2482f;--warn-ground:#fbf0d8}}
+  *{box-sizing:border-box} body{margin:0;background:var(--ground);color:var(--text);font:15px/1.5 var(--sans)} a{color:var(--gold)}
+  button,.button{border:0;border-radius:6px;background:var(--accent);color:#160e03;padding:10px 15px;font:700 14px var(--sans);cursor:pointer;text-decoration:none;display:inline-block}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.quiet{background:none;color:var(--text);border:1px solid var(--line);font-weight:600}
+  .top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding:14px 20px}
+  .crumbs{display:flex;align-items:baseline;gap:10px;font-size:15px}.crumbs .wordmark{font:700 20px var(--sans);letter-spacing:-.01em}.crumbs .sep{color:var(--faint)}.crumbs a{color:var(--dim);text-decoration:none}.crumbs b{font-weight:650}
+  #who{font-size:13px;color:var(--dim)}
+  .wrap{display:flex;gap:28px;align-items:flex-start;max-width:1180px;margin:0 auto;padding:28px 20px 64px;flex-wrap:wrap}
+  nav.rail{flex:0 0 250px;display:flex;flex-direction:column;gap:14px}
+  .rail .caption{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);padding:0 10px}
+  .rail ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+  .rail li button{all:unset;box-sizing:border-box;display:flex;gap:10px;align-items:flex-start;width:100%;padding:9px 10px;border-radius:8px;cursor:pointer}
+  .rail li button[aria-current=step]{background:var(--panel);box-shadow:0 0 0 1px var(--line)}
+  .rail .dot{flex:none;width:22px;height:22px;border-radius:50%;border:1.5px solid var(--faint);display:grid;place-items:center;font:600 11px var(--sans);color:var(--dim)}
+  .rail [aria-current=step] .dot{background:var(--text);border-color:var(--text);color:var(--ground)}
+  .rail .done .dot{background:var(--good);border-color:var(--good);color:var(--ground)}
+  .rail .later .dot{border-style:dashed}
+  .rail .label{display:block;font-weight:600;font-size:14px}.rail .sub{display:block;font-size:12px;color:var(--dim)}
+  .rail .note{font-size:12.5px;color:var(--dim);padding:0 10px;margin:4px 0 0}
+  .rail .part{border:1px solid var(--line);border-radius:8px;padding:11px 14px;font-size:12.5px;color:var(--dim)}.rail .part b{display:block;color:var(--text);font-weight:600;margin-bottom:3px}
+  main.step{flex:1 1 520px;min-width:0;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:30px 34px}
+  main h1{font:700 28px/1.2 var(--sans);letter-spacing:-.01em;margin:0 0 8px;text-wrap:balance}
+  main .intro{color:var(--dim);max-width:66ch;margin:0 0 22px}
+  .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px 20px;margin:0 0 18px}
+  label.field{display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:600;color:var(--dim)}
+  input,select{font:inherit;font-weight:400;padding:9px 11px;border:1px solid var(--line);border-radius:7px;background:var(--ground);color:var(--text);width:100%}
+  .group-label{font-size:13px;font-weight:600;color:var(--dim);margin:0 0 6px}
+  .pills{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 18px}
+  .pills button{display:inline-flex;align-items:center;gap:7px;background:var(--ground);color:var(--text);border:1px solid var(--line);border-radius:999px;padding:8px 14px;font-weight:600}
+  .pills button[aria-pressed=true]{border-color:var(--text);box-shadow:0 0 0 1px var(--text)}
+  .pills img{width:16px;height:16px;border-radius:3px}
+  .hint{font-size:13px;color:var(--dim);max-width:70ch;margin:0 0 18px}
+  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}
+  ol.boxes{list-style:none;margin:0 0 6px;padding:0;display:flex;flex-direction:column;gap:12px}
+  ol.boxes>li{display:flex;gap:14px;border:1px solid var(--line);border-radius:9px;padding:16px 18px}
+  ol.boxes>li.careful{background:var(--warn-ground);border-color:var(--warn)}
+  ol.boxes .n{flex:none;font:700 14px var(--sans);color:var(--gold)}
+  ol.boxes p{margin:0}ol.boxes .small{font-size:13px;color:var(--dim);margin-top:4px}
+  code{font:13px var(--mono)}
+  ol.rows{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius:9px}
+  ol.rows li{display:flex;gap:12px;align-items:flex-start;padding:12px 16px;border-top:1px solid var(--line)}ol.rows li:first-child{border-top:0}
+  ol.rows .mark{flex:none;width:20px;height:20px;border-radius:50%;border:1.5px dashed var(--faint);display:grid;place-items:center;font-size:11px;color:var(--faint);margin-top:1px}
+  ol.rows li.ok .mark{border:0;background:var(--good);color:var(--ground)}
+  ol.rows .what{flex:1}ol.rows .what b{display:block;font-weight:600;font-size:14px}ol.rows .what span{font-size:13px;color:var(--dim)}
+  ol.rows .state{font-size:12px;color:var(--faint);white-space:nowrap}ol.rows li.ok .state{color:var(--good)}
+  .later-box{border:1px dashed var(--line);border-radius:9px;padding:14px 16px;color:var(--dim);font-size:14px;margin:0 0 14px}
+  .pick-bar{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}.pick-bar input{flex:1 1 240px;width:auto}.pick-bar button{flex:none}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;min-height:32px;margin:0 0 14px}
+  .chips button{display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 4px;border:1px solid var(--text);border-radius:999px;background:var(--ground);color:var(--text);font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+  .chips .avatar{width:22px;height:22px;font-size:11px}.chips .x{color:var(--dim);font-weight:400}
+  .checklist{border:1px solid var(--line);border-radius:9px;max-height:360px;overflow-y:auto;margin:0 0 14px}
+  .checklist .head{position:sticky;top:0;z-index:1;display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(--ground);border-bottom:1px solid var(--line);font-size:13px}
+  .checklist .head button{border:0;background:none;padding:0;font:inherit;font-weight:700;color:var(--text);cursor:pointer}
+  .checklist .head .count{color:var(--dim)}.checklist .head .all{margin-left:auto;font-weight:600;color:var(--gold)}
+  .checklist label{display:flex;gap:10px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line);cursor:pointer}
+  .checklist input{width:auto;accent-color:var(--gold)}
+  .checklist .name{font-weight:600;font-size:14px}.checklist .where{margin-left:auto;font-size:12px;color:var(--dim)}
+  .avatar{flex:none;width:28px;height:28px;border-radius:50%;object-fit:cover;background:var(--line);display:inline-grid;place-items:center;font-size:12px;font-weight:700;color:var(--dim)}
+  details.about{margin:6px 0}details.about summary{cursor:pointer;color:var(--gold)}.doc{white-space:pre-wrap;max-height:320px;overflow:auto;margin-top:8px;font-size:13px;color:var(--dim)}
+  .ticks{display:flex;flex-direction:column;gap:8px;margin:12px 0}.ticks label{display:flex;gap:9px;align-items:flex-start;font-size:14px}.ticks input{width:auto;margin-top:3px;accent-color:var(--gold)}
+  .status{min-height:20px;margin-top:12px;color:var(--dim);font-size:13px}.status.err{color:var(--critical)}.status.ok{color:var(--good)}
+  #terms-line.err,#giver-gone{color:var(--critical)}
+  [hidden]{display:none!important}
+  @media (max-width:720px){nav.rail{flex-basis:100%}main.step{padding:22px 18px}.wrap{padding:20px 16px 48px}.top{padding:12px 16px}}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="crumbs"><span class="wordmark">waggle</span><span class="sep">/</span><a href="hive.html">hive</a><span class="sep">/</span><b>Add an agent</b></div>
+  <span id="who">Not signed in yet</span>
+</header>
+<div class="wrap">
+  <nav class="rail" aria-label="Steps">
+    <div class="caption" id="caption">New agent · step 1 of 7</div>
+    <ol id="rail"></ol>
+    <p class="note">Every secret stays in your Bunker. This page only ever sees public keys and your signatures.</p>
+    <div class="part"><b>Your part, start to finish</b>Make the key, paste its npub, approve one link in your Bunker · three signatures · one "I agree". The server does everything else.</div>
+  </nav>
+
+  <main class="step">
+    <section data-step="1">
+      <h1>Who is the new agent?</h1>
+      <p class="intro">Give it a name and say what it runs in. It starts out working like an agent you already have, and you can change anything later.</p>
+      <div class="fields"><label class="field">Name<input id="name" placeholder="crystalclaude" spellcheck="false" autocomplete="off"></label>
+        <label class="field">Works like<select id="like" aria-label="Agent it starts like"><option value="">Reading your agents…</option></select></label></div>
+      <div class="group-label">Runs in</div>
+      <div class="pills" id="runs" role="group" aria-label="Runs in"></div>
+      <p class="hint" id="fixed-why" hidden></p>
+      <p class="hint">"Works like" copies where it listens, where it posts, and its hourly limits. It does not copy who can give it work. You choose that in step 6.</p>
+      <div class="actions"><button type="button" data-next>Next: make its key</button></div>
+    </section>
+
+    <section data-step="2" hidden>
+      <h1>Make <span data-name></span>'s key in your Bunker</h1>
+      <p class="intro">The key is made inside your Bunker and stays there. You do this part in the Bunker's own window, then paste the public half here.</p>
+      <ol class="boxes">
+        <li><span class="n">1</span><p>In your Bunker, open <b>Keys</b>, then <b>Derive from seed words</b>, and press <b>Generate random</b>.</p></li>
+        <li class="careful"><span class="n">2</span><div><p><b>Save the words in Bitwarden</b>, in the <code>nostr-recovery</code> folder, before you go on.</p><p class="small">They are the only way to get this key back. Your Bunker shows them once.</p></div></li>
+        <li><span class="n">3</span><p>Name it <b data-name></b> and press <b>Derive &amp; Import</b>.</p></li>
+        <li><span class="n">4</span><div style="flex:1"><p>Copy the new key's <b>npub</b> and paste it here.</p>
+          <label class="field" style="margin-top:10px">Its npub<input id="key" placeholder="npub1…" spellcheck="false" autocomplete="off"></label></div></li>
+      </ol>
+      <p class="hint">The link that lets the server ask your Bunker to sign for <span data-name></span> comes in step 3, once the server has set up its tools.</p>
+      <div class="status" id="key-status" role="status"></div>
+      <div class="actions"><button type="button" data-next>Next: set up its tools</button><button type="button" class="quiet" data-back>Back</button></div>
+    </section>
+
+    <section data-step="3" hidden>
+      <h1>Set up <span data-name></span>'s tools on the server</h1>
+      <p class="intro">One signature asks the server to build <span data-name></span> its own listener, post box and private line, and to let it onto the server's relay.</p>
+      <ol class="rows" id="tool-rows"></ol>
+      <p class="hint" style="margin-top:14px">While this installs, the server re-checks every agent's tools. The others may pause for a few seconds; their work waits and isn't lost.</p>
+      <ol class="boxes"><li><span class="n">→</span><div><p>When the server sets it up, it prints a <code>nostrconnect://</code> link. On the <b data-name></b> key in your Bunker, choose <b>Connect app</b>, paste it, and approve. It lets the server ask your Bunker to sign <span data-name></span>'s posts, logins and room joins, and nothing else.</p>
+        <p class="small">This page does not show the link yet; the operator passes it on. Your Bunker asks you before it accepts.</p></div></li></ol>
+      <div class="status" id="tools-status" role="status"></div>
+      <div class="actions"><button type="button" id="tools-go">Sign and set up</button><button type="button" class="quiet" data-next>Next: start it on its box</button><button type="button" class="quiet" data-back>Back</button></div>
+    </section>
+
+    <section data-step="4" hidden>
+      <h1>Start <span data-name></span> on its box</h1>
+      <p class="intro">This starts it on its own box as <span data-name></span>, makes the key for its private line right there, and keeps it running after a restart.</p>
+      <div class="later-box" id="box-later"></div>
+      <div class="actions"><button type="button" data-next>Next: let it into the hive</button><button type="button" class="quiet" data-back>Back</button></div>
+    </section>
+
+    <section data-step="5" hidden>
+      <h1>Let <span data-name></span> into the hive</h1>
+      <p class="intro">Your Buzz community only lets members in. You make a one-use invite and agree to the community's terms for <span data-name></span>; it then joins with its own key.</p>
+      <div class="group-label">The community's terms</div>
+      <p class="hint">Joining means agreeing to them. That's a promise made in your name, so it's yours to make.</p>
+      <p id="terms-line" class="hint">Reading the hive's terms…</p>
+      <details id="terms-read" class="about" hidden><summary>Read the terms</summary><div id="terms-text" class="doc"></div></details>
+      <details id="privacy-read" class="about" hidden><summary>Privacy</summary><div id="privacy-text" class="doc"></div></details>
+      <div class="ticks" id="ticks">
+        <label id="agree-row" hidden><input type="checkbox" id="agree"> <span>I've read them and agree for <span data-name></span>.</span></label>
+        <label id="age-row" hidden><input type="checkbox" id="age"> <span>I confirm the age requirement they ask for.</span></label>
+      </div>
+      <p class="hint">Rooms: add <span data-name></span> to rooms from Buzz for now. Picking them here comes later.</p>
+      <ol class="rows" id="join-rows"></ol>
+      <p class="hint" style="margin-top:14px">Signing makes a single-use invite with your key and seals it to the agent's key in your Bunker. Only the agent can open it; this page never shows or keeps it.</p>
+      <div class="status" id="join-status" role="status"></div>
+      <div class="actions"><button type="button" id="join-go">Sign the invite and join</button><button type="button" class="quiet" data-next>Next: who can give it work</button><button type="button" class="quiet" data-back>Back</button></div>
+    </section>
+
+    <section data-step="6" hidden>
+      <h1>Who can give <span data-name></span> work?</h1>
+      <p class="intro">Search for who it takes work from, or start from the agent it works like. It won't act on what anyone you leave out says.</p>
+      <div class="pick-bar"><input id="giver-q" type="search" placeholder="Search by name or where it runs" aria-label="Search agents" autocomplete="off"><button type="button" class="quiet" id="giver-like">Same as the agent it works like</button><button type="button" class="quiet" id="giver-none">Nobody</button></div>
+      <p class="hint" id="giver-like-why" hidden></p>
+      <div class="group-label" id="chosen-label"></div>
+      <div class="chips" id="chips"></div>
+      <p class="hint err" id="giver-gone" hidden><span></span> <button type="button" class="quiet" id="giver-drop">Drop them</button></p>
+      <div class="checklist" id="givers"></div>
+      <p class="hint" id="giver-plan"></p>
+      <div class="status" id="work-status" role="status"></div>
+      <div class="actions"><button type="button" id="work-go">Sign who can give it work</button><button type="button" class="quiet" data-next>Next: prove it works</button><button type="button" class="quiet" data-back>Back</button></div>
+    </section>
+
+    <section data-step="7" hidden>
+      <h1>Prove <span data-name></span> works</h1>
+      <p class="intro">Two checks, both read back from the relay, never taken on trust: <span data-name></span> says hello in #waggle-test, then an agent gives it a small job, and the answer has to come back signed by <span data-name></span>'s own key.</p>
+      <ol class="rows" id="proof-rows"></ol>
+      <div class="later-box" id="proof-later" style="margin-top:14px"></div>
+      <div class="actions"><a class="button" href="hive.html">Open the hive</a><button type="button" class="quiet" id="restart">Start over</button><button type="button" class="quiet" data-back>Back</button></div>
+    </section>
+  </main>
+</div>
+
+<script type="module">
+import { verifyEvent, nip19 } from 'nostr-tools'
+import { consoleSigner } from './signer-session.mjs'
+import { signFresh } from './guarded-signer.mjs'
+import { HARNESSES, agentName, draftAddAgent, sendRequest, SETUP_KIND, requestD } from './hive-add-agent.mjs'
+import { HIVE_RELAY, readHiveTerms, sealInvite } from './hive-invite.mjs'
+import { readCards, relayCoverage, GRANT_RELAYS, CARD_RELAYS, CARD_D, RUNS_LOGO, RUNS_ON, PLATFORMS, platformOf } from './hive-list.mjs'
+import { shortNpub } from './agent-roster.mjs'
+import { STEPS, NOT_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine } from './add-agent-flow.mjs'
+
+const $ = id => document.getElementById(id)
+// Everything shown here came from someone else's signature, so it reaches the DOM only as text.
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n }
+
+function query(url, filter) {
+  return new Promise(resolve => {
+    let ws, done = false; const out = []
+    const end = state => { if (done) return; done = true; try { ws.close() } catch {} resolve({ url, state, out }) }
+    const cut = () => end(out.length ? 'partial' : 'none')
+    try { ws = new WebSocket(url) } catch { return end('none') }
+    const t = setTimeout(cut, 9000)
+    ws.onopen = () => ws.send(JSON.stringify(['REQ', 'add', filter]))
+    ws.onmessage = e => { try { const m = JSON.parse(e.data); if (m[0] === 'EVENT') out.push(m[2]); if (m[0] === 'EOSE') { clearTimeout(t); end('complete') } } catch {} }
+    ws.onerror = () => { clearTimeout(t); cut() }
+  })
+}
+async function read(relays, filter) {
+  const results = await Promise.all(relays.map(u => query(u, filter)))
+  return { events: results.flatMap(r => r.out), ...relayCoverage(results.map(r => r.state)) }
+}
+
+// The form, kept for this tab only, so a reload mid-way does not lose it. Public fields only.
+const SAVED = 'waggle-add-agent'
+const saved = (() => { try { return JSON.parse(sessionStorage.getItem(SAVED) || '{}') } catch { return {} } })()
+const keep = () => { try { sessionStorage.setItem(SAVED, JSON.stringify(form)) } catch { /* private mode: the form lives until reload */ } }
+const form = { step: 1, name: '', harness: 'claude-code', like: '', agent: '', givers: null, sixth: null, ...saved }
+
+// What the page has read: whose hive, its agents, and the newest request for this agent.
+let owner = null, loaded = false, installed = [], profiles = new Map(), latest = null, joined = null, terms = null, fixed = null
+const done = { 1: false, 2: false, 3: false, 4: false, 5: false, 6: false, 7: false }
+
+const nameShown = () => form.name || 'the new agent'
+function drawNames() { for (const n of document.querySelectorAll('[data-name]')) n.textContent = nameShown() }
+
+function drawRail() {
+  $('caption').textContent = `${form.name || 'New agent'} · step ${form.step} of 7`
+  const rail = $('rail'); rail.textContent = ''
+  for (const s of STEPS) {
+    const li = rail.appendChild(el('li', done[s.n] ? 'done' : NOT_BUILT[s.n] ? 'later' : ''))
+    const b = li.appendChild(el('button')); b.type = 'button'
+    if (s.n === form.step) b.setAttribute('aria-current', 'step')
+    b.append(el('span', 'dot', done[s.n] ? '✓' : String(s.n)))
+    const t = b.appendChild(el('span')); t.append(el('span', 'label', s.label), el('span', 'sub', NOT_BUILT[s.n] ? 'not built yet' : s.sub))
+    b.onclick = () => go(s.n)
+  }
+}
+function go(n) {
+  form.step = n; keep()
+  for (const s of document.querySelectorAll('main.step > section')) s.hidden = Number(s.dataset.step) !== n
+  drawRail(); drawNames()
+  if (n === 6) drawGivers()
+  if (n === 5 && !terms) readHiveTerms().then(showTerms)
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+function rows(box, list) {
+  box.textContent = ''
+  for (const [label, sub, ok, state] of list) {
+    const li = box.appendChild(el('li', ok ? 'ok' : ''))
+    li.append(el('span', 'mark', ok ? '✓' : ''))
+    const w = li.appendChild(el('span', 'what')); w.append(el('b', null, label), el('span', null, sub))
+    li.append(el('span', 'state', state || (ok ? 'Read back' : 'Not read by this page yet')))
+  }
+}
+function drawRows() {
+  const n = nameShown()
+  rows($('tool-rows'), [
+    ['Your setup request', 'signed by you, read back cold from the relays', done[3]],
+    ['Its own space on the server', 'a user and ports no other agent shares'],
+    ['Its signing connection', 'your Bunker answers as ' + n, false],
+    ['Its listener and post box', 'hears #waggle-test, posts as ' + n],
+    ['Allowed on the server\'s relay', 'so its profile and card can publish'],
+    ['Its agent card', 'seen on the card relays, naming you as its owner'],
+  ])
+  rows($('join-rows'), [
+    ['Invite made', 'one use, signed by you, sealed to ' + n + ', never shown on screen', done[5], done[5] ? 'In the request' : ''],
+    ['In the hive', n + ' claimed it with its own key, and the community accepted its login'],
+  ])
+  rows($('proof-rows'), [
+    ['It said hello', n + ' posted in #waggle-test through its own tools'],
+    ['Read back from the relay', 'the post is there, signed by ' + n + "'s own key"],
+    ['Taken as work', 'an agent asked it something, and its listener admitted it'],
+    ['Answer back', n + ' replied in the thread, read back the same way'],
+  ])
+  $('box-later').textContent = NOT_BUILT[4]
+  $('proof-later').textContent = NOT_BUILT[7]
+}
+
+function drawRuns() {
+  const runs = $('runs'); runs.textContent = ''
+  for (const [id, label] of HARNESSES) {
+    const b = runs.appendChild(el('button')); b.type = 'button'; b.setAttribute('aria-pressed', String(id === form.harness))
+    if (RUNS_LOGO[label]) { const logo = b.appendChild(el('img')); logo.src = RUNS_LOGO[label]; logo.alt = '' }
+    b.append(document.createTextNode(label))
+    b.disabled = !!fixed && id !== fixed.harness
+    b.onclick = () => { form.harness = id; keep(); for (const x of runs.children) x.setAttribute('aria-pressed', String(x === b)) }
+  }
+  $('fixed-why').hidden = !fixed
+  $('fixed-why').textContent = fixed ? 'Its setup was already sent, so what it runs in and the agent it starts like stay as they were sent. To change them, add it under a new name.' : ''
+}
+const agentLabel = a => profiles.get(a.pubkey)?.name || a.id
+function drawLike() {
+  const like = $('like'); like.textContent = ''
+  if (!installed.length) { const o = like.appendChild(el('option', null, owner ? 'No agents of yours on the card relays' : 'Sign in to read your agents')); o.value = ''; return }
+  for (const a of installed) { const o = like.appendChild(el('option', null, agentLabel(a))); o.value = a.id }
+  if (installed.some(a => a.id === form.like)) like.value = form.like
+  form.like = like.value
+  like.disabled = !!fixed
+}
+function face(pk, label) {
+  const pic = profiles.get(pk)?.picture
+  if (!pic) return el('span', 'avatar', (label || '?')[0].toUpperCase())
+  const f = el('img', 'avatar'); f.src = pic; f.alt = ''; f.loading = 'lazy'; f.referrerPolicy = 'no-referrer'
+  f.onerror = () => f.replaceWith(el('span', 'avatar', (label || '?')[0].toUpperCase()))
+  return f
+}
+// Step 6: a search, the chosen as chips, and the hive grid's groups, so it works at 50 agents.
+let giverQ = '', folded = {}
+const handoff = () => { try { return JSON.parse(sessionStorage.getItem(HANDOFF) || 'null') } catch { return null } }
+function choices() {
+  const mine = installed.map(a => ({ pubkey: a.pubkey, label: agentLabel(a), where: RUNS_ON[a.pubkey] || 'an agent of yours' }))
+  const seen = new Set([owner, ...mine.map(c => c.pubkey)])
+  return [{ pubkey: owner, label: 'You', where: 'Your Bunker', isOwner: true }, ...mine,
+    ...hiveChoices(handoff(), owner).filter(c => !seen.has(c.pubkey)).map(c => ({ ...c, outside: true }))]
+    .filter(c => c.pubkey && c.pubkey !== form.agent)
+}
+// Redrawing keeps keyboard focus on the same agent's box.
+function setGivers(list) {
+  const pk = document.activeElement?.dataset?.pk
+  form.givers = [...new Set(list)]; keep(); drawGivers()
+  if (pk) $('givers').querySelector(`input[data-pk="${pk}"]`)?.focus()
+}
+function drawGivers() {
+  if (!form.givers && owner) form.givers = [owner]
+  const all = choices(), likeAgent = installed.find(a => a.id === form.like)
+  const pick = pickerOf(all, { chosen: form.givers || [], q: giverQ, folded, groups: PLATFORMS, groupOf: platformOf })
+  const same = sameAs(handoff(), { owner, like: likeAgent?.pubkey }, all)
+  const likeBtn = $('giver-like'), why = $('giver-like-why')
+  likeBtn.textContent = likeAgent ? `Same as ${agentLabel(likeAgent)}` : 'Same as the agent it works like'
+  likeBtn.disabled = !same
+  why.hidden = !!same
+  const read = handoffState(handoff(), owner)
+  why.textContent = !likeAgent ? 'Pick the agent it works like in step 1.'
+    : read === 'partial' ? `The hive's last read didn't hear from every relay in full, so someone who gives ${agentLabel(likeAgent)} work may be missing. Read the hive again, then come back.`
+      : `Open the hive first in this tab; it reads who gives ${agentLabel(likeAgent)} work.`
+  likeBtn.onclick = () => same && setGivers(same)
+  $('giver-none').onclick = () => setGivers([])
+  const { kept, gone } = reconcileGivers((form.givers || []).filter(pk => pk !== form.agent), all), goneP = $('giver-gone')
+  goneP.hidden = !loaded || !gone.length
+  goneP.firstChild.textContent = goneLine(gone, shortNpub) || ''
+  $('giver-drop').textContent = gone.length === 1 ? 'Drop it' : 'Drop them'
+  $('giver-drop').onclick = () => setGivers(kept)
+  $('chosen-label').textContent = pick.chips.length ? `Chosen to give it work (${pick.chips.length})` : 'Nobody chosen yet'
+  drawPlan(pick.chips)
+  const chips = $('chips'); chips.textContent = ''
+  for (const c of pick.chips) {
+    const b = chips.appendChild(el('button')); b.type = 'button'; b.setAttribute('aria-label', `Remove ${c.label}`)
+    b.append(face(c.pubkey, c.label), document.createTextNode(c.label), el('span', 'x', '×'))
+    b.onclick = () => setGivers(form.givers.filter(pk => pk !== c.pubkey))
+  }
+  const box = $('givers'); box.textContent = ''
+  if (pick.none) box.append(el('p', 'hint', `No agent matches "${giverQ.trim()}".`))
+  for (const g of pick.groups) {
+    const head = box.appendChild(el('div', 'head')), fold = head.appendChild(el('button', null, `${g.open ? '▾' : '▸'} ${g.label}`))
+    fold.type = 'button'; fold.setAttribute('aria-expanded', String(g.open))
+    fold.onclick = () => { folded = { ...folded, [g.id]: !folded[g.id] }; drawGivers() }
+    head.append(el('span', 'count', `${g.n} · ${g.picked} chosen`))
+    if (g.open && g.rows.some(r => !r.on)) {
+      const all = head.appendChild(el('button', 'all', `Tick all ${g.rows.length}`)); all.type = 'button'
+      all.onclick = () => setGivers([...(form.givers || []), ...g.rows.map(r => r.pubkey)])
+    }
+    if (!g.open) continue
+    for (const r of g.rows) {
+      const l = box.appendChild(el('label')), tick = l.appendChild(el('input')); tick.type = 'checkbox'; tick.checked = r.on; tick.dataset.pk = r.pubkey
+      tick.onchange = () => setGivers(tick.checked ? [...(form.givers || []), r.pubkey] : (form.givers || []).filter(pk => pk !== r.pubkey))
+      l.append(face(r.pubkey, r.label), el('span', 'name', r.label), el('span', 'where', r.outside ? `${r.where} · no seat on your server box` : r.where))
+    }
+  }
+}
+$('giver-q').oninput = e => { giverQ = e.target.value; drawGivers() }
+// What the step 6 signature does, and what it leaves to you. Read back proves the request, not the lists.
+function drawPlan(chips) {
+  const n = nameShown(), { outside } = giverPlan(chips), line = $('giver-plan')
+  const parts = [`This signature asks the fleet to put ${n} on the @mention list of each chosen agent with a seat on your server box.`]
+  if (outside.length) parts.push(`${outside.map(c => c.label).join(', ')} ${outside.length > 1 ? 'have' : 'has'} no seat there, so the fleet runs nothing for ${outside.length > 1 ? 'them' : 'it'}: a Buzz agent's list is changed in Buzz Desktop.`)
+  parts.push(done[6] ? `Your request is read back from the relays. That proves what you chose, not that each one can @mention ${n} yet: its squares on the hive grid show that once ${n} has a column.` : `The approval itself is a square on the hive grid, signed there once ${n} has its own column.`)
+  line.textContent = parts.join(' ')
+}
+
+function showTerms(read) {
+  const same = terms?.ok && read.ok && terms.version === read.version
+  terms = read
+  if (!same) { $('agree').checked = false; $('age').checked = false }
+  $('agree-row').hidden = !(read.ok && read.version !== 'none')
+  $('age-row').hidden = !(read.ok && read.age)
+  for (const doc of ['terms', 'privacy']) { $(`${doc}-read`).hidden = !(read.ok && read[doc]); $(`${doc}-text`).textContent = read.ok ? read[doc] : '' }
+  const host = HIVE_RELAY.replace(/^[a-z]+:\/\//i, '').split('/')[0], line = $('terms-line')
+  if (!read.ok) { line.className = 'hint err'; line.textContent = `Can't read the terms of the hive at ${host} (${read.reason}). Nothing can be signed until they are read; come back to this step to read them again.`; return }
+  line.className = 'hint'
+  line.textContent = read.version === 'none' ? `The hive at ${host} has no terms to agree to.` : `The hive at ${host} serves terms version ${read.version.slice(0, 12)}${read.age ? ', and asks you to confirm the age requirement' : ''}.`
+}
+
+// Step 1 and 2 are checked here; nothing is signed or sent.
+function fields() {
+  const name = agentName($('name').value)
+  const pasted = $('key').value.trim()
+  let agent = pasted
+  if (/^nsec1/i.test(pasted)) { $('key').value = ''; throw new Error('That is the private key. Clear it from your clipboard, and paste the npub instead.') }
+  if (/^npub1/.test(pasted)) { const d = nip19.decode(pasted); if (d.type !== 'npub') throw new Error('That is not an npub.'); agent = d.data }
+  const others = othersThan(installed.map(a => ({ id: a.id, pubkey: a.pubkey })), { name, agent, owner, latest })
+  const gap = changedFrom(latest, { harness: form.harness, like: $('like').value })
+  if (gap) throw new Error(gap)
+  if (!loaded) throw new Error('Still reading your agents. Try again in a moment.')
+  const givers = (form.givers || []).filter(pk => pk !== agent && pk !== form.agent)
+  const gone = goneLine(reconcileGivers(givers, choices()).gone, shortNpub)
+  if (gone) throw new Error(gone)
+  return { name, agent, harness: form.harness, like: $('like').value, installed: others, givers }
+}
+function checkName() {
+  form.name = agentName($('name').value); form.like = $('like').value
+  if (!form.like) throw new Error('Pick an agent for it to start like.')
+  keep(); done[1] = true
+}
+function checkKey() {
+  // A draft with no invite runs every check the fleet would, before anything is signed.
+  const f = fields(); draftAddAgent(f)
+  form.agent = f.agent; keep(); done[2] = true
+}
+
+// Read back the newest add_agent for this agent: what the fleet will act on.
+async function readLatest() {
+  if (!owner || !form.name || !form.agent) return
+  const back = await read(GRANT_RELAYS, { kinds: [SETUP_KIND], authors: [owner], '#d': [requestD(form.name, 'add_agent')], limit: 8 })
+  latest = newestAdd(back.events, { owner, name: form.name, agent: form.agent, verify: verifyEvent })
+  const steps = readBackSteps(latest, { sixth: form.sixth })
+  done[3] = steps[3]; done[5] = steps[5]; done[6] = steps[6]
+  fixed = fixedBy(latest)
+  if (fixed) { form.harness = fixed.harness; form.like = fixed.like; keep(); drawRuns(); drawLike() }
+  if (form.step === 6) drawGivers()
+  joined = joinOf(latest) || joined
+  drawRail(); drawRows()
+  return latest
+}
+
+// Each signature re-sends everything chosen so far, as a newer request for the same agent.
+async function send(statusId, buttonId, build, after) {
+  const st = $(statusId), b = $(buttonId); st.className = 'status'
+  let f
+  try { f = fields(); draftAddAgent({ ...f, join: joined || undefined }) } catch (e) { st.className = 'status err'; st.textContent = e.message; return }
+  b.disabled = true
+  try {
+    const signer = await consoleSigner()
+    const me = String(await signer.getPublicKey()).toLowerCase()
+    if (owner && me !== owner) throw new Error('Your signer is a different key from the hive this page read. Nothing was signed.')
+    owner = me
+    const template = await build(f, signer, st)
+    const sent = await sendRequest(template, { sign: t => signFresh(t, signer), owner, verify: verifyEvent,
+      connect: url => new WebSocket(url), relays: GRANT_RELAYS, onStep: step => { st.textContent = `Your request: ${step}…` } })
+    after?.(sent.signed)
+    st.textContent = `${sent.text} Reading it back…`
+    const back = await readLatest()
+    const seen = back?.id === sent.signed.id
+    st.className = seen ? 'status ok' : 'status'
+    st.textContent = `${sent.text} ${seen ? 'Read back from the relays.' : 'Not read back yet; open this step again in a minute.'}`
+  } catch (e) {
+    st.className = 'status err'; st.textContent = e.message || String(e)
+  } finally { b.disabled = false }
+}
+
+$('tools-go').onclick = () => send('tools-status', 'tools-go', f => draftAddAgent({ ...f, join: joined || undefined }))
+$('join-go').onclick = () => {
+  if (!$('agree-row').hidden && !$('agree').checked) { $('join-status').className = 'status err'; $('join-status').textContent = 'Tick "I agree" first.'; return }
+  return send('join-status', 'join-go', async (f, signer, st) => {
+    // A form mistake is caught before anything is minted: draftAddAgent(f) ran in send().
+    // The terms again, as the agent will read them: a version that changed since it was shown is shown, not signed.
+    const shown = terms, now = await readHiveTerms()
+    showTerms(now)
+    if (now.ok && shown?.ok && shown.version !== now.version) throw new Error('The hive\'s terms changed while this page was open. Read them, tick again, then sign.')
+    // Mint, seal, then sign: a failure at any step publishes nothing.
+    const join = await sealInvite({ agent: f.agent, terms: now, agreed: $('agree').checked, ageConfirmed: !$('age-row').hidden && $('age').checked,
+      signer, sign: t => signFresh(t, signer), onStep: step => { st.textContent = `Invite: ${step}…` } })
+    joined = join
+    return draftAddAgent({ ...f, join })
+  })
+}
+$('work-go').onclick = () => {
+  if (!joined) { $('work-status').className = 'status'; $('work-status').textContent = 'Step 5 is not signed yet, so this request carries no invite. Sign step 5 after; it keeps these ticks.' }
+  return send('work-status', 'work-go', f => draftAddAgent({ ...f, join: joined || undefined }), signed => { form.sixth = signed.id; keep() })
+}
+
+for (const b of document.querySelectorAll('[data-back]')) b.onclick = () => go(Math.max(1, form.step - 1))
+for (const b of document.querySelectorAll('[data-next]')) b.onclick = async () => {
+  const sec = b.closest('section'), st = sec.querySelector('.status')
+  try {
+    if (form.step === 1) checkName()
+    if (form.step === 2) { checkKey(); await readLatest() }
+  } catch (e) {
+    if (st) { st.className = 'status err'; st.textContent = e.message } else { const s = sec.appendChild(el('div', 'status err', e.message)); s.setAttribute('role', 'status'); setTimeout(() => s.remove(), 6000) }
+    return
+  }
+  go(Math.min(7, form.step + 1))
+}
+$('restart').onclick = () => { try { sessionStorage.removeItem(SAVED) } catch {} location.reload() }
+$('name').oninput = () => { form.name = $('name').value.trim().toLowerCase(); drawNames(); drawRail() }
+
+// The hive this page adds to: the remembered owner, else the signer's public key.
+const OWNER_KEY = 'waggle-hive-owner'
+async function start() {
+  $('name').value = form.name; $('key').value = form.agent ? nip19.npubEncode(form.agent) : ''
+  drawRuns(); drawRows(); go(form.step)
+  try { const v = localStorage.getItem(OWNER_KEY); owner = /^[0-9a-f]{64}$/.test(v || '') ? v : null } catch {}
+  if (!owner) {
+    try { owner = String(await (await consoleSigner()).getPublicKey()).toLowerCase(); try { localStorage.setItem(OWNER_KEY, owner) } catch {} }
+    catch { $('who').textContent = 'Sign in from the hive page first'; drawLike(); return }
+  }
+  $('who').textContent = `Adding to the hive of ${shortNpub(owner)}`
+  const cards = readCards((await read(CARD_RELAYS, { kinds: [30078], '#d': [CARD_D], limit: 500 })).events, { owner, verify: verifyEvent })
+  installed = [...cards.values()].filter(c => c.instance).map(c => ({ id: c.instance, pubkey: c.pubkey, harness: c.harness }))
+  const names = await read(CARD_RELAYS, { kinds: [0], authors: installed.map(a => a.pubkey), limit: installed.length * 3 + 1 })
+  for (const ev of names.events) {
+    try {
+      if (ev.kind !== 0 || !verifyEvent(ev) || (profiles.get(ev.pubkey)?.at || 0) >= ev.created_at) continue
+      const p = JSON.parse(ev.content)
+      profiles.set(ev.pubkey, { at: ev.created_at, name: typeof p.name === 'string' ? p.name.slice(0, 64) : null, picture: typeof p.picture === 'string' && /^https:\/\/\S+$/.test(p.picture) ? p.picture.slice(0, 500) : null })
+    } catch {}
+  }
+  loaded = true; drawLike(); drawGivers()
+  if (form.name && form.like) done[1] = true
+  if (form.agent) { done[2] = true; await readLatest() }
+  drawRail()
+}
+start()
+</script>
+<script type="module" src="./staleness-guard.mjs"></script>
+</body>
+</html>

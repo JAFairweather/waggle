@@ -1,0 +1,133 @@
+// add-agent-flow.mjs — the seven steps of the "Add an agent" page (#649, docs/DESIGN_ADD_AN_AGENT.md).
+//
+// The owner signs three times: the tools (step 3), the hive invite (step 5) and who gives it work
+// (step 6). Each is a newer add_agent request for the same agent, so each carries everything chosen
+// so far; nvoy-onboard continues the install when the identity fields match, and its join step waits,
+// "pending", until a request carries the invite. A step is done only when the page has read its
+// request back cold from the relays, never because a relay said OK.
+
+import { SETUP_KIND, requestD } from './hive-add-agent.mjs'
+
+export const STEPS = Object.freeze([
+  { n: 1, label: 'Name it', sub: 'who it is and where it runs' },
+  { n: 2, label: 'Make its key', sub: 'in your Bunker' },
+  { n: 3, label: 'Set up its tools', sub: 'on the server, one signature' },
+  { n: 4, label: 'Start it on its box', sub: 'one line on its box' },
+  { n: 5, label: 'Join the hive', sub: 'you agree, it joins itself' },
+  { n: 6, label: 'Who can give it work', sub: 'one signature' },
+  { n: 7, label: 'Prove it works', sub: 'read back from the relay' },
+])
+
+// Steps the page cannot carry out yet, and what each waits on. Shown as such, never as done.
+export const NOT_BUILT = Object.freeze({
+  4: 'The install line is not built yet (nvoy #294). Until it is, the operator starts it on its box.',
+  7: 'The checks are not built yet. Until they are, look for its hello in #waggle-test.',
+})
+
+const tagOf = (ev, k) => ev.tags.find(t => t[0] === k)?.[1]
+
+// The newest add_agent for this name, signed by the owner, valid, and naming this agent.
+export function newestAdd(events, { owner, name, agent, verify }) {
+  const d = requestD(name, 'add_agent')
+  return (events || []).filter(ev => {
+    if (ev?.kind !== SETUP_KIND || ev.pubkey !== owner || tagOf(ev, 'd') !== d || tagOf(ev, 'p') !== agent) return false
+    // A plain copy, so a verification nostr-tools cached on an object that was edited since cannot vouch for it.
+    try { return verify(JSON.parse(JSON.stringify(ev))) === true } catch { return false }
+  }).sort((a, b) => b.created_at - a.created_at || (a.id < b.id ? 1 : -1))[0] || null
+}
+
+// How the agent joins, as the request already holds it: the sealed invite, never the code.
+export function joinOf(ev) {
+  const invite = ev && tagOf(ev, 'invite')
+  if (!invite) return null
+  const age = tagOf(ev, 'age')
+  return { invite, policy: tagOf(ev, 'policy') || '', ...(age ? { age } : {}) }
+}
+
+// What the newest request read back proves. Step 6 is done only when that newest request is the
+// one the page sent from step 6 (`sixth`, its id): a giver list alone does not say the owner chose it.
+export function readBackSteps(ev, { sixth = null } = {}) {
+  if (!ev) return { 3: false, 5: false, 6: false, givers: [] }
+  const givers = ev.tags.filter(t => t[0] === 'giver').map(t => t[1])
+  return { 3: true, 5: !!joinOf(ev), 6: !!sixth && ev.id === sixth, givers }
+}
+
+// Step 6 picks from the hive grid's own groups, so it reads the same at 8 agents or 50: a search,
+// the chosen as chips, and groups that fold, each with a count. `groups` and `groupOf` come from
+// the page, so this stays free of the hive's lists.
+export function pickerOf(choices, { chosen = [], q = '', folded = {}, groups, groupOf }) {
+  const query = q.trim().toLowerCase(), on = new Set(chosen)
+  const hit = c => !query || `${c.label} ${c.where}`.toLowerCase().includes(query)
+  const shown = groups.map(g => {
+    const all = choices.filter(c => groupOf(c) === g.id)
+    const rows = all.filter(hit).map(c => ({ ...c, on: on.has(c.pubkey) }))
+    return { id: g.id, label: g.label, n: all.length, picked: all.filter(c => on.has(c.pubkey)).length, open: query ? rows.length > 0 : !folded[g.id], rows }
+  }).filter(g => g.n && (!query || g.rows.length))
+  return { groups: shown, chips: choices.filter(c => on.has(c.pubkey)), none: !!query && !shown.length }
+}
+
+// "Same as {Works like}": who gives that agent work, as the hive last read it in this tab. Public
+// keys only. Unknown (null) unless that read was of this owner's hive, was read in full, and names
+// the agent: a short read can leave a giver out, and copying it would sign the shorter list.
+export const HANDOFF = 'waggle-hive-givers'
+export function handoffState(handoff, owner) {
+  if (!handoff || !owner) return 'none'
+  if (handoff.owner !== owner) return 'other-owner'
+  return handoff.complete === true ? 'full' : 'partial'
+}
+export function sameAs(handoff, { owner, like }, choices) {
+  if (handoffState(handoff, owner) !== 'full' || !like || !Array.isArray(handoff.givers?.[like])) return null
+  const offered = new Set(choices.map(c => c.pubkey))
+  return handoff.givers[like].filter(pk => offered.has(pk))
+}
+
+// Chosen givers against the choices the page shows now. A key saved in this tab can drop out of
+// them (a newer hive read, another owner), and nothing hidden is ever signed: `gone` must be dropped,
+// or offered again, before any signature. `shortOf` names a key that no longer has a label.
+export function reconcileGivers(chosen, choices) {
+  const offered = new Set(choices.map(c => c.pubkey))
+  return { kept: chosen.filter(pk => offered.has(pk)), gone: chosen.filter(pk => !offered.has(pk)) }
+}
+export function goneLine(gone, shortOf) {
+  if (!gone.length) return null
+  const one = gone.length === 1
+  return `${one ? 'One' : gone.length} chosen earlier ${one ? "isn't" : "aren't"} in this hive's list now: ${gone.map(pk => shortOf(pk)).join(', ')}. Nothing is signed until you drop ${one ? 'it' : 'them'} in step 6, or open the hive again in this tab if ${one ? 'it belongs' : 'they belong'} there.`
+}
+
+// Who the hive grid draws, as it last read them in this tab: the people and Buzz agents that have no
+// agent card are givers too. Only this owner's hive, and only well-formed entries.
+const HEX64 = /^[0-9a-f]{64}$/
+export function hiveChoices(handoff, owner) {
+  if (handoffState(handoff, owner) === 'none' || handoff.owner !== owner || !Array.isArray(handoff.hive)) return []
+  return handoff.hive.filter(c => HEX64.test(c?.pubkey || '') && c.pubkey !== owner && typeof c.label === 'string')
+    .map(c => ({ pubkey: c.pubkey, label: c.label.slice(0, 64), where: typeof c.where === 'string' ? c.where.slice(0, 80) : 'in your hive' }))
+}
+
+// A reload part way through: the agent this page is adding has published its card since, so it is in
+// `installed` under the same name and key. That one entry is not a duplicate when this owner's own
+// setup request for that name and key was read back (`latest`, from newestAdd). Any other entry with
+// the name or the key still is.
+export function othersThan(installed, { name, agent, owner, latest }) {
+  if (!latest || latest.pubkey !== owner || tagOf(latest, 'p') !== agent || tagOf(latest, 'd') !== requestD(name, 'add_agent')) return installed
+  return installed.filter(e => !(e.id === name && e.pubkey === agent))
+}
+
+// A setup request is continued, never edited: nvoy refuses a newer request for the same agent whose
+// harness or starting agent differs from the one it is installing. What the newest request fixed, and
+// the refusal to show before a signature when the page's choice has drifted from it.
+export function fixedBy(latest) {
+  const harness = latest && tagOf(latest, 'harness'), like = latest && tagOf(latest, 'like')
+  return harness && like ? { harness, like } : null
+}
+export function changedFrom(latest, { harness, like }) {
+  const f = fixedBy(latest)
+  const what = f ? [f.harness !== harness && 'what it runs in', f.like !== like && 'the agent it starts like'].filter(Boolean) : []
+  return what.length ? `Its setup was already sent, so ${what.join(' and ')} can't change now. Put ${what.length > 1 ? 'them' : 'it'} back in step 1, or add it under a new name.` : null
+}
+
+// Step 6, as nvoy carries it out: the fleet adds the new agent to the @mention list of each chosen
+// giver with a seat on the server box. A giver with no agent card of yours has no seat, so the fleet
+// records the choice and runs nothing for it. You need no list.
+export function giverPlan(chips) {
+  return { outside: chips.filter(c => c.outside && !c.isOwner) }
+}
