@@ -60,6 +60,20 @@
   table.grid tr.group th{padding:16px 0 6px;text-align:left;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--gold);border-bottom:1px solid var(--line)}
   table.grid tr.group:first-child th{padding-top:6px}
   table.grid tr.group .runs{margin-left:10px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--faint)}
+  table.grid tr.group button.fold{all:unset;cursor:pointer;color:inherit;font:inherit;letter-spacing:inherit;text-transform:inherit}table.grid tr.group button.fold:focus-visible{outline:2px solid var(--add);outline-offset:2px}
+  table.grid tr.group .sum{margin-left:10px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--dim)}
+  table.grid tr.folded{display:none}
+  table.grid td.dim .sq{opacity:.22}table.grid th.focus,table.grid tbody th.agent.focus{box-shadow:inset 0 -3px 0 var(--gold)}
+  .hive-head .find{display:flex;align-items:center;gap:8px;flex:1;max-width:360px;font-size:13px;color:var(--dim)}
+  .hive-head .find input{flex:1;min-width:0;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:7px 10px;font:14px var(--sans)}
+  #find-status{margin:-12px 0 16px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}#find-status:empty{display:none}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 10px}
+  .chip{display:inline-flex;align-items:center;gap:6px;min-height:30px;padding:0 10px 0 3px;border-radius:15px;background:var(--ground);border:1px solid var(--line);color:var(--text);font:600 13px var(--sans);cursor:pointer;margin:0}
+  .chip .avatar{width:22px;height:22px;border-radius:50%;object-fit:cover;background:var(--line);display:inline-block}
+  #side .focus{border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:12px}
+  #side .focus h3{font:600 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin:10px 0 4px}
+  #side .focus .head{display:flex;gap:8px;align-items:center;font-weight:650;margin:2px 0}
+  #side .focus .rest{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:14px;margin:4px 0}#side .focus .rest button.link{margin:0}
   table.grid tr.detail td{padding:0 0 14px}
   .sq{display:inline-block;box-sizing:border-box;width:30px;height:30px;margin:0;padding:0;border-radius:7px;font:700 16px/1 var(--sans);background:transparent;border:1.5px solid var(--line);color:transparent;cursor:pointer;vertical-align:middle;text-align:center}
   /* The square (#698): five states, each with its own glyph, so colour is never the only signal. */
@@ -132,11 +146,12 @@
 </style>
 </head>
 <body><main class="wide">
-  <header class="hive-head"><div class="brand"><span class="wordmark">waggle</span><span class="where">your hive</span></div><a id="add-open" class="button small" href="add-agent.html">Add an agent</a></header>
+  <header class="hive-head"><div class="brand"><span class="wordmark">waggle</span><span class="where">your hive</span></div><label class="find">Find an agent<input id="find" type="search" placeholder="Name or key" autocomplete="off" spellcheck="false" aria-describedby="find-status"></label><a id="add-open" class="button small" href="add-agent.html">Add an agent</a></header>
   <h1>Who can give work to whom</h1>
   <p class="sub">Read across a row to see whom it can give work to; read down a column to see who can give that agent work. Click a square to see what happens, and change it there. Nothing changes until you sign.</p>
   <div class="bar"><div id="status" class="status" role="status">Every identity in your hive, and who can give each one work.</div><button id="go">Read the hive</button></div>
   <div id="link-status" class="status" role="status"></div>
+  <div id="find-status" class="status" role="status"></div>
 
   <section class="panel" id="needs-panel" hidden><h2>Needs you <span class="hint">everything waiting on you, in one place</span></h2>
     <div class="need" id="leftovers" hidden><b>Approvals to tidy.</b> <span id="leftovers-words"></span><button id="leftovers-go" class="small quiet">Withdraw</button></div>
@@ -200,6 +215,7 @@ import { signFresh } from './guarded-signer.mjs'
 import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, describeChange, applyChange, relayHost } from './hive-change.mjs'
 import { agentsOf, gridOf, reachOf, cellOf, cellKey, toggle, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, BUZZ_D, buzzOf, draftBuzz, sameBuzz, buzzWords, isBuzz, day } from './hive-grid.mjs'
 import { squareOf as stateOf, panelOf, backOf, GLYPH, ANSWER, LEGEND, listsToOpen } from './hive-square.mjs'
+import { findAgents, focusOf, focusLines, groupLine, foldedAtStart } from './hive-focus.mjs'
 import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { BRIDGE_RELAYS } from './hive-bridge.mjs'
 import { HANDOFF } from './add-agent-flow.mjs'
@@ -464,11 +480,21 @@ function draw(rows, needs, owner, partial, posting = null) {
   grid = { cells: new Map(), summaries: new Map(), boxes: new Map(), mentions: new Map(), details: new Map(), nameOf, owner, columns, partial, head: [...head.children], active: activeNow(rows, hive.active) }
   waiting = new Map(); extras = new Map(); drafted = new Map(); ticks = new Map()
   const list = $('list'); list.textContent = ''
+  grid.rows = [...lines.flatMap(l => l.rows), ...quiet]; grid.groups = []
+  if (!folds) folds = new Map()
+  const start = foldedAtStart(lines.reduce((n, l) => n + l.rows.length, 0))
   const section = (label, runs, inGroup, cls) => {
-    const tr = el('tr', `group${cls ? ` ${cls}` : ''}`), th = tr.appendChild(el('th', null, label)); th.colSpan = width; th.scope = 'colgroup'
-    if (runs) th.appendChild(el('span', 'runs', runs))
+    const tr = el('tr', `group${cls ? ` ${cls}` : ''}`), th = tr.appendChild(el('th')); th.colSpan = width; th.scope = 'colgroup'
     const drawn = inGroup.map(r => rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting }))
-    if (cls) for (const d of drawn) d.classList.add(cls)
+    if (cls) { th.append(label); for (const d of drawn) d.classList.add(cls) } else {
+      // A group folds to one line: its name, how many agents, and how many squares give work (#698).
+      const fold = th.appendChild(el('button', 'fold')); fold.type = 'button'
+      if (!folds.has(label)) folds.set(label, start)
+      fold.onclick = () => { folds.set(label, !folds.get(label)); drawGroups() }
+      grid.groups.push({ label, fold, sum: el('span', 'sum'), rows: inGroup, trs: drawn })
+    }
+    if (runs) th.appendChild(el('span', 'runs', runs))
+    if (!cls) th.appendChild(grid.groups.at(-1).sum)
     list.append(tr, ...drawn)
   }
   for (const { platform, rows: inGroup } of lines) section(platform.label, platform.runs, inGroup)
@@ -487,6 +513,7 @@ function draw(rows, needs, owner, partial, posting = null) {
   $('ask-note').textContent = free.length
     ? `${free.map(r => `${rowName(r)} acts without asking on work from ${r.answers.act.withoutAsking.map(nameOf).join(', ')}`).join('; ')}. Everyone else asks first.`
     : partial.approvals ? `Every agent here asks before acting, ${PARTIAL}.` : 'Every agent here asks before acting.'
+  drawGroups()
   drawLegend(hive.buzz)
   drawLeftovers(owner, nameOf)
   $('partial-note').hidden = !partial.approvals
@@ -496,6 +523,7 @@ function draw(rows, needs, owner, partial, posting = null) {
   drawBar()
   // A read again keeps the panel on the same square or name, if the grid still draws it.
   if (side) side.kind === 'square' ? grid.cells.has(side.key) ? drawSide() : closeSide() : grid.details.has(side.pk) ? drawSide() : closeSide()
+  applyFind({ open: false })
   applyIntent({ owner, nameOf })
 }
 
@@ -761,20 +789,96 @@ function change(key) {
   if (!cell.can && !waiting.has(key)) return
   waiting = toggle(waiting, key, cell)
   drafted.delete(key)
-  paint(key); summarize(giver.pubkey); drawBar(); drawSide()
+  paint(key); summarize(giver.pubkey); drawBar(); drawSide(); drawGroups()
+}
+
+// Built for 50 (#698): groups that fold, Find an agent, and one agent's row and column as counts.
+let folds = null, finding = null
+// Counts read the signed square; your unsigned change is told apart by changeAt.
+const kindAt = (t, g) => grid.cells.has(cellKey(t, g)) ? stateOf({ taker: t, giver: g, ctx: squareCtx() }).base : null
+const changeAt = (t, g) => waiting.get(cellKey(t, g)) || null
+function drawGroups() {
+  if (!grid?.groups) return
+  for (const g of grid.groups) {
+    const shut = folds.get(g.label)
+    g.fold.textContent = `${shut ? '▸' : '▾'} ${g.label}`; g.fold.setAttribute('aria-expanded', String(!shut))
+    g.sum.textContent = groupLine('', g.rows, { columns: grid.columns, kindOf: kindAt }).replace(/^ · /, '')
+    // A folded group still shows the agent Find an agent is on: the search narrows to its row.
+    for (const tr of g.trs) tr.classList.toggle('folded', !!shut && tr.dataset.pubkey !== finding)
+  }
+}
+// Typing narrows the grid to one agent's row and column; the rest dims. One match opens its name.
+function applyFind({ open = true } = {}) {
+  if (!grid?.rows) return
+  const q = $('find').value, st = $('find-status'); st.textContent = ''
+  const found = findAgents(grid.rows, q, grid.nameOf)
+  if (found.length === 1) finding = found[0].pubkey
+  else if (!q.trim() || !found.some(r => r.pubkey === finding)) finding = null
+  if (q.trim() && !found.length) st.textContent = `No agent matches "${q.trim()}".`
+  if (found.length > 1) {
+    st.append(`${found.length} agents match:`)
+    for (const r of found.slice(0, 12)) {
+      const b = st.appendChild(chip(r.pubkey)); b.onclick = () => { finding = r.pubkey; dimToFocus(); openSide({ kind: 'name', pk: r.pubkey }) }
+    }
+    if (found.length > 12) st.append(`and ${found.length - 12} more. Type more of the name.`)
+  }
+  dimToFocus()
+  if (open && found.length === 1) openSide({ kind: 'name', pk: finding }, { focus: false })
+}
+function dimToFocus() {
+  drawGroups()
+  for (const { row, giver, button } of grid.cells.values()) button.parentElement.classList.toggle('dim', !!finding && row.pubkey !== finding && giver.pubkey !== finding)
+  grid.columns.forEach((t, i) => grid.head[i + 1].classList.toggle('focus', t.pubkey === finding))
+  for (const tr of $('list').children) tr.querySelector('th.agent')?.classList.toggle('focus', tr.dataset.pubkey === finding)
+}
+$('find').oninput = () => applyFind()
+$('find').onkeydown = e => { if (e.key === 'Escape') { $('find').value = ''; applyFind() } }
+function chip(pk) {
+  const r = grid.rows.find(x => x.pubkey === pk), b = el('button', 'chip'); b.type = 'button'
+  b.append(face(r?.picture), upper(grid.nameOf(pk)))
+  return b
+}
+// One agent's column (who gives it work) and row (whom it gives work): the ✓ list as chips that open
+// their squares, everything else as a count that opens.
+function focusView(pk) {
+  const f = focusOf(pk, { rows: grid.rows, columns: grid.columns, kindOf: kindAt, changeOf: changeAt })
+  const box = el('div', 'focus')
+  if (!f) return box
+  const lines = focusLines(f, { nameOf: grid.nameOf }), me = grid.rows.find(r => r.pubkey === pk), name = grid.nameOf(pk)
+  const square = (other, inColumn) => {
+    const o = grid.rows.find(r => r.pubkey === other) || grid.columns.find(t => t.pubkey === other)
+    return inColumn ? cellKey(grid.columns.find(t => t.pubkey === pk), o) : cellKey(o, me)
+  }
+  const part = (title, l, inColumn) => {
+    box.appendChild(el('h3', null, title))
+    const head = box.appendChild(el('div', 'head'))
+    head.append(el('span', `sq ${l.glyph}`, GLYPH[l.glyph]), l.head)
+    const chips = (pks, into) => { for (const o of pks) { const key = square(o, inColumn), b = into.appendChild(chip(o)); if (grid.cells.has(key)) b.onclick = () => openSide({ kind: 'square', key }) } }
+    if (l.chips.length) chips(l.chips, box.appendChild(el('div', 'chips')))
+    for (const x of l.rest) {
+      const line = box.appendChild(el('div', 'rest'))
+      line.append(el('span', `sq ${x.kind}`, GLYPH[x.kind]), x.text)
+      const show = line.appendChild(el('button', 'link', 'Show them')); show.type = 'button'
+      const names = box.appendChild(el('div', 'chips')); names.hidden = true
+      show.onclick = () => { if (!names.childElementCount) chips(x.pks, names); names.hidden = !names.hidden; show.textContent = names.hidden ? 'Show them' : 'Hide them' }
+    }
+  }
+  if (lines.column.chips.length || lines.column.rest.length || !f.column) part(`Its column: when others write to ${name}`, lines.column, true)
+  part(`Its row: when ${upper(name)} ${name === 'you' ? 'write' : 'writes'} to others`, lines.row, false)
+  return box
 }
 
 // The side panel (#698): a square's answer both ways, or one agent's answers. The grid is the console.
 let side = null
 const squareCtx = () => ({ owner: hive.owner, nameOf: grid.nameOf, grants: hive.grants, subjectOf: hive.table.subjectOf, views: hive.views, buzz: hive.buzz, partial: grid.partial })
-function openSide(next) {
+function openSide(next, { focus = true } = {}) {
   // Moving within the panel keeps the square or name it was first opened from, for Close to return to.
   const was = side
   side = { ...next, from: was?.from || document.activeElement }
   if (was?.kind === 'square' && grid.cells.has(was.key)) paint(was.key)
   drawSide()
   $('side').hidden = false; $('hive-body').classList.add('has-side')
-  $('side-title').focus({ preventScroll: true })
+  if (focus) $('side-title').focus({ preventScroll: true })
   if (!matchMedia('(min-width:1000px)').matches) $('side').scrollIntoView({ behavior: 'smooth', block: 'nearest' })
 }
 function closeSide() {
@@ -793,7 +897,7 @@ function drawSide() {
     const r = hive.rows.find(x => x.pubkey === side.pk)
     $('side-kicker').textContent = 'Its answers'
     $('side-title').textContent = r ? upper(rowName(r)) : shortNpub(side.pk)
-    body.appendChild(grid.details.get(side.pk))
+    body.append(focusView(side.pk), grid.details.get(side.pk))
     return
   }
   const { row, giver, cell } = grid.cells.get(side.key)
