@@ -804,7 +804,8 @@ function drawGroups() {
     const shut = folds.get(g.label)
     g.fold.textContent = `${shut ? '▸' : '▾'} ${g.label}`; g.fold.setAttribute('aria-expanded', String(!shut))
     g.sum.textContent = groupLine('', g.rows, { columns: grid.columns, kindOf: kindAt }).replace(/^ · /, '')
-    for (const tr of g.trs) tr.classList.toggle('folded', !!shut)
+    // A folded group still shows the agent Find an agent is on: the search narrows to its row.
+    for (const tr of g.trs) tr.classList.toggle('folded', !!shut && tr.dataset.pubkey !== finding)
   }
 }
 // Typing narrows the grid to one agent's row and column; the rest dims. One match opens its name.
@@ -816,7 +817,7 @@ function applyFind({ open = true } = {}) {
   else if (!q.trim() || !found.some(r => r.pubkey === finding)) finding = null
   if (q.trim() && !found.length) st.textContent = `No agent matches "${q.trim()}".`
   if (found.length > 1) {
-    st.append(`${found.length} match:`)
+    st.append(`${found.length} agents match:`)
     for (const r of found.slice(0, 12)) {
       const b = st.appendChild(chip(r.pubkey)); b.onclick = () => { finding = r.pubkey; dimToFocus(); openSide({ kind: 'name', pk: r.pubkey }) }
     }
@@ -826,6 +827,7 @@ function applyFind({ open = true } = {}) {
   if (open && found.length === 1) openSide({ kind: 'name', pk: finding }, { focus: false })
 }
 function dimToFocus() {
+  drawGroups()
   for (const { row, giver, button } of grid.cells.values()) button.parentElement.classList.toggle('dim', !!finding && row.pubkey !== finding && giver.pubkey !== finding)
   grid.columns.forEach((t, i) => grid.head[i + 1].classList.toggle('focus', t.pubkey === finding))
   for (const tr of $('list').children) tr.querySelector('th.agent')?.classList.toggle('focus', tr.dataset.pubkey === finding)
