@@ -132,10 +132,11 @@ export function notAnswering(posting, pubkey, afterSecs = NOT_ANSWERING_SECS) {
 
 // Needs you's Stopped card (#698, build step 5): each agent not answering, longest wait first. Read
 // from the bridge's own tally, so "answered" means any post of its in a channel the bridge reads, and
-// whether it is connected is not read at all. No tally (a stale or short state) is no card.
+// whether it is connected is not read at all. No tally (a stale or short state) is no card. The
+// bridge's own key is never a card: the grid draws no row for it.
 export function stoppedAgents(rows, posting, owner) {
   if (!posting) return []
-  return rows.filter(r => r.pubkey !== owner).map(r => ({ pubkey: r.pubkey, w: notAnswering(posting, r.pubkey) }))
+  return rows.filter(r => r.pubkey !== owner && !r.isBridge).map(r => ({ pubkey: r.pubkey, w: notAnswering(posting, r.pubkey) }))
     .filter(x => x.w).map(({ pubkey, w }) => ({ pubkey, count: w.count, since: w.since })).sort((a, b) => a.since - b.since)
 }
 const ago = secs => secs < 90 * 60 ? `${Math.max(1, Math.round(secs / 60))} minutes` : secs < 48 * 3600 ? `${Math.round(secs / 3600)} hours` : `${Math.round(secs / 86400)} days`

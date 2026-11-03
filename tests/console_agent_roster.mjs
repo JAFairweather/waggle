@@ -431,6 +431,7 @@ check(!/loaded for a different bridge/.test(status()),
   check(cards.map(c => c.pubkey).join() === [B, A].join(), 'one card per agent not answering, longest wait first; never for you, never under 30 minutes')
   check(stoppedAgents(rows, null, O).length === 0, 'no fresh bridge tally, no card')
   check(stoppedAgents([{ pubkey: O }], got, O).length === 0, 'and only for agents the hive draws')
+  check(stoppedAgents([{ pubkey: O }, { pubkey: A, isBridge: true }, { pubkey: B }], got, O).map(x => x.pubkey).join() === B, "and never for the bridge's own key, which the grid draws no row for")
   check(stoppedLine({ name: 'Pi Dog', count: 1, since: at - 40 * 60, at }) === "Pi Dog was @mentioned 40 minutes ago and hasn't posted since. Whether it is connected right now isn't read.", 'one mention, in minutes, and connection not claimed')
   check(stoppedLine({ name: 'MC Claude', count: 3, since: at - 5 * 3600, at }) === "MC Claude was @mentioned 5 hours ago and hasn't posted since (3 mentions waiting). Whether it is connected right now isn't read.", 'several, in hours')
   check(/3 days ago/.test(stoppedLine({ name: 'x', count: 1, since: at - 3 * 86400, at })), 'and days, past two of them')
