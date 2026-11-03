@@ -32,12 +32,14 @@ agent, which does not work at 50 agents. Hermes was missing from the harnesses.
 1. **The grid is the console.** A question about two agents is answered in their square. A
    question about one agent is answered by clicking its name. There are no separate checker
    panels.
-2. **Every square says what happens** when the row writes to the column. Clicking a square
-   gives the answer for both directions, up to three reasons, and the one button that changes it.
+2. **Every square says what happens** when the row gives the column work, and only as far as
+   the page has read. Clicking a square gives the answer for both directions, up to three
+   reasons, and the one button that changes it.
 3. **Plain words.** No "sealed list", "gate", "grant", "admit", event kinds, relay names, or
    counts the reader can't act on. An unknown is a "?" square with one sentence and one button.
 4. **Built for 50.** Search narrows the grid to one agent's row and column. Agents group by
-   channel, and a group folds to one summary line. Every picker is a search with chips, never one
+   where they run, and by channel once the page reads who is in each room (see "Where the groups
+   come from"). A group folds to one summary line. Every picker is a search with chips, never one
    tile per agent.
 5. **Every harness the hive runs is offered**, Hermes included, from one list that nvoy and
    waggle share.
@@ -46,23 +48,31 @@ agent, which does not work at 50 agents. Hermes was missing from the harnesses.
 
 ## The square
 
-Read across a row to see what happens when that agent writes to each column. Every square has
-exactly one of these states.
+Read across a row to see what each column does when that row gives it work. Every square has
+exactly one of these states, and each comes from something the page already reads.
 
 | Square | Means | Worked out from |
 |---|---|---|
-| ✓ | **Does the work.** It is approved, and the post reaches it. | nvoy's fold of the approvals the column counts (`cellOf`), and the writer can @mention the column |
-| blue ring | **Hears it, won't act.** The post reaches it, but it isn't approved to act on it. | not approved, and they share a channel the column listens on |
-| blank | **Doesn't hear it.** The post never reaches it. | no shared channel, or the column's listener drops it |
-| ! | **Approved, but never arrives.** The square says why, for example that the column is missing from the writer's @mention list. | approved, but one-way (`oneWay`) |
-| ? | **Not known yet.** One sentence says why, and one button finds out if that's possible. | the writer keeps its @mention list private and the owner hasn't opened it, the column publishes no card, or not every relay answered |
+| ✓ | **Takes work from it.** | nvoy's fold of the approvals the column counts, or its Buzz allow-list (`cellOf`) |
+| ! | **Takes the work, but can't answer back by name.** The row isn't on the column's @mention list, so the column can't bring the row back in. | approved, and the column's list is readable and leaves the row out (`oneWay`) |
+| blank | **Won't act on it.** Nobody has approved it. They can still talk. | not approved (`cellOf`) |
+| ? | **Not known yet.** One sentence says why, and one button finds out if that's possible. | the column publishes no settings, so its rules are assumed, not read; or Buzz decides and its list hasn't been copied here; or not every relay answered |
 | dashed + or – | **Your change**, not signed yet. It's in the bar. | the page's pending changes |
+
+A ✓ whose column keeps its @mention list private stays a ✓. Its panel says whether the column
+can answer back by name isn't known, and the Hidden from you card offers to show it.
 
 A ✓ the owner didn't approve, for example one Luke approved, says so in its reasons. Its button
 is disabled, because only Luke can withdraw it.
 
-A square never claims more than it read. "Is it connected right now" is not drawn until the
-presence event exists (#690).
+**A square never claims more than it read.** Two things are not read yet, so no square draws
+them, and every square's panel says so in one line:
+
+- **Whether the post arrives.** That needs each room's member list and the server relay's list
+  of who may write. Until the page reads them, a blank square doesn't say whether the column hears
+  the row, and a ✓ doesn't say the work reaches it. Once they are read, the blank splits into
+  "hears it, won't act" and "doesn't hear it", and a ✓ whose post can't arrive becomes a "!".
+- **Whether it is connected right now.** That waits for the presence event (#690).
 
 ### Clicking a square
 
@@ -72,11 +82,12 @@ The side panel is headed "A → B" and shows:
   line:
   - the approval: "You let A give B work", "Nobody has let A give B work", "Luke approved this,
     not you", or "Your change, not signed yet";
-  - the channel: "Both are in #waggle-test", or the channel they don't share;
-  - the @mention: "A can @mention B as @b", "B isn't on A's @mention list", "A keeps who it can
-    @mention private", or "B doesn't publish its settings".
+  - answering back: "B can @mention A back as @a", "A isn't on B's @mention list, so B can't
+    bring A back in by name", "B keeps who it can @mention private to you", or "B doesn't publish
+    its settings, so who it takes work from is assumed, not read";
+  - arriving: "Whether A's post reaches B isn't read yet: that needs each room's member list."
 - **One button**, which is Let A give B work, Stop it, Undo, or a disabled "Approved by Luke".
-  A "?" square that the owner can open also offers "Show who A can @mention".
+  A square whose column keeps its list private also offers "Show who B can @mention".
 - **And back: when B writes to A**: the reverse square's answer in one line, with "Open that
   square".
 - One line naming the source: "Answered by nvoy's own rules, the same ones B's listener runs."
@@ -104,12 +115,12 @@ The side panel gives that agent's answers and its last proof:
    - **In progress**: an Add an agent run that stopped part way ("crystalclaude is waiting at step
      2"), with Carry on.
    - **Stopped**: an agent that took work and hasn't answered, with See it.
-   - **Hidden from you**: agents that keep who they can @mention private, so their squares show
-     "?". The button is "Show it", and it says how many Bunker prompts that takes. This card
+   - **Hidden from you**: agents that keep who they can @mention private, so whether they can
+     answer back by name isn't known. The button is "Show it", and it says how many Bunker prompts that takes. This card
      replaces the old open-the-lists button and the "Name it uses: @" row.
    - **To tidy**: old approvals that no longer do anything, with Withdraw them.
-3. **Who works with whom**: the grid, grouped by channel. Each group's header reads "#waggle-test ·
-   9 in this channel · 12 give work", and folds. A legend sits above it.
+3. **Who works with whom**: the grid, in groups. Each group's header reads "Frontier lab
+   harnesses · 3 agents · 4 give work", and folds. A legend sits above it.
 4. **The changes bar**: shown once anything is pending. It reads "N changes, not signed yet",
    lists each change in words ("+ A can give B work"), and has a disclosure, "The exact event your
    Bunker will be asked to sign". Its buttons are "Sign it" or "Sign all N", and Undo all. After
@@ -130,10 +141,10 @@ The "About this list" paragraph goes. Each square names its own source in one li
 - Typing in **Find an agent** narrows the grid to that agent's row and column, and dims the rest.
   With exactly one match, its name panel opens.
 - Its column then reads "4 can give it work", with chips for those four. The rest fold into
-  counts, each with Show them: "41 hear it but won't act", "3 don't hear it", "1 not known yet".
-  Its row reads the same way.
-- With no search, the channel groups fold to one line each: "#waggle · 24 agents · 52 give work".
-  An open group keeps its names sticky, and its columns scroll.
+  counts, each with Show them: "1 of those 4 it can't answer back by name", "45 it won't act on".
+  Its row reads the same way, for example "48 won't act on it" and "1 not known yet".
+- With no search, the groups fold to one line each: "Third-party harnesses · 24 agents · 52 give
+  work". An open group keeps its names sticky, and its columns scroll.
 
 ## Add an agent
 
@@ -161,9 +172,13 @@ Each step is its own PR, reviewed in #waggle-test and merged once approved.
 3. **The square.** The grid draws the six states. Clicking a square or a name opens the side
    panel. The "What happens if" panel, the pair-check panel, the mention-list section and "About
    this list" all go.
-4. **Built for 50.** Find an agent focuses one row and column, channel groups fold, and the
+4. **Built for 50.** Find an agent focuses one row and column, groups fold, and the
    focused column folds into counts.
 5. **Needs you.** Add the Hidden from you and Stopped cards.
+6. **Who is in each room.** Read each room's member list and the server relay's writer list. Then
+   groups become channels, the blank square splits into "hears it" and "doesn't hear it", and a ✓
+   whose post can't arrive becomes a "!". This step needs its own design check first: which
+   relay serves each list, and what the page does when one doesn't answer.
 
 ## Done when
 
