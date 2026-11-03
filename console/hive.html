@@ -113,7 +113,7 @@
   .add-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:10px 0}.add-runs{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 10px}
   .add-runs button{display:inline-flex;align-items:center;gap:6px}.add-runs button[aria-pressed=true]{outline:2px solid var(--text)}.add-runs img{width:16px;height:16px;border-radius:3px}
   #add-givers{display:flex;flex-wrap:wrap;gap:6px 14px;margin:6px 0 12px}#add-givers label{flex-direction:row;align-items:center;gap:6px;color:var(--text)}#add-givers .avatar{display:inline-block;width:22px;height:22px;border-radius:50%;object-fit:cover;background:var(--line);flex:none}#add-next{margin:8px 0 0 18px}
-  #add-ticks{display:flex;flex-direction:column;gap:6px;margin:6px 0}#add-ticks label{flex-direction:row;align-items:center;gap:8px;color:var(--text)}#add-terms.err{color:var(--critical)}#add-terms-text{white-space:pre-wrap;max-height:320px;overflow:auto;margin-top:8px}
+  #add-ticks{display:flex;flex-direction:column;gap:6px;margin:6px 0}#add-ticks label{flex-direction:row;align-items:center;gap:8px;color:var(--text)}#add-terms.err{color:var(--critical)}#add-panel .doc{white-space:pre-wrap;max-height:320px;overflow:auto;margin-top:8px}
   #following-list{margin:4px 0 12px}.follow-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}.follow-row:last-child{border-bottom:0}
   .follow-row .avatar{display:inline-block;width:26px;height:26px;border-radius:50%;object-fit:cover;background:var(--line);flex:none}.follow-row .who-name{flex:1;min-width:0;overflow-wrap:anywhere}.follow-row button{margin:0}
   #follow-target{flex:1;min-width:0;max-width:440px;background:var(--ground);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:7px 10px;font:13px var(--mono)}
@@ -181,11 +181,12 @@
     <p class="note">This lets them mention it. The approval itself is a tick on the grid above, once it has started.</p>
     <div class="note">Joining the hive</div>
     <p id="add-terms" class="note">Reading the hive's terms…</p>
+    <details id="add-terms-read" class="about" hidden><summary>Terms of service</summary><div id="add-terms-text" class="doc"></div></details>
+    <details id="add-privacy-read" class="about" hidden><summary>Privacy notice</summary><div id="add-privacy-text" class="doc"></div></details>
     <div id="add-ticks">
-      <label id="add-agree-row" hidden><input type="checkbox" id="add-agree"> I agree to the hive's terms</label>
+      <label id="add-agree-row" hidden><input type="checkbox" id="add-agree"> I have read the documents above and agree to the hive's terms</label>
       <label id="add-age-row" hidden><input type="checkbox" id="add-age"> I confirm the age requirement</label>
     </div>
-    <details id="add-terms-read" class="about" hidden><summary>Read the terms</summary><div id="add-terms-text"></div></details>
     <p class="note">Signing makes a single-use invite with your key and seals it to the agent's key in your Bunker. Only the agent can open it; this page never shows or keeps it.</p>
     <button id="add-go">Sign the setup request</button>
     <div id="add-status" class="status" role="status"></div>
@@ -235,7 +236,6 @@ import { controlStateFresh, newestFreshControlState } from './control-state-fres
 import { followsOf, writerKey, draftFollow, applyFollow } from './hive-following.mjs'
 import { HARNESSES, agentName, draftAddAgent, readBack, requestD, sendRequest, SETUP_KIND } from './hive-add-agent.mjs'
 import { HIVE_RELAY, readHiveTerms, sealInvite } from './hive-invite.mjs'
-import { loadRelayUrl } from './relay-reach.mjs'
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
 import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK, RUNS_LOGO } from './hive-list.mjs'
@@ -434,24 +434,25 @@ let addHarness = 'claude-code'
 let addGivers = null
 // The terms as last shown. The owner agrees to this version; a different one at signing is read again.
 let addTerms = null
-const hiveRelay = () => loadRelayUrl() || HIVE_RELAY
 function showTerms(terms) {
   const sameAsShown = addTerms?.ok && terms.ok && addTerms.version === terms.version
   addTerms = terms
-  const host = hiveRelay().replace(/^[a-z]+:\/\//i, '').split('/')[0]
+  const host = HIVE_RELAY.replace(/^[a-z]+:\/\//i, '').split('/')[0]
   const line = $('add-terms'), agree = $('add-agree'), age = $('add-age')
   if (!sameAsShown) { agree.checked = false; age.checked = false }
   $('add-agree-row').hidden = !(terms.ok && terms.version !== 'none')
   $('add-age-row').hidden = !(terms.ok && terms.age)
-  $('add-terms-read').hidden = !(terms.ok && terms.text)
-  $('add-terms-text').textContent = terms.ok ? terms.text : ''
+  for (const doc of ['terms', 'privacy']) {
+    $(`add-${doc}-read`).hidden = !(terms.ok && terms[doc])
+    $(`add-${doc}-text`).textContent = terms.ok ? terms[doc] : ''
+  }
   if (!terms.ok) { line.className = 'note err'; line.textContent = `Can't read the terms of the hive at ${host} (${terms.reason}). Nothing can be signed until they are read; read the hive again.`; return }
   line.className = 'note'
   line.textContent = terms.version === 'none' ? `The hive at ${host} has no terms to agree to.`
     : `The hive at ${host} serves terms version ${terms.version.slice(0, 12)}${terms.age ? ', and asks you to confirm the age requirement' : ''}.`
 }
 function drawAdd(rows, owner) {
-  readHiveTerms({ relayUrl: hiveRelay() }).then(showTerms)
+  readHiveTerms().then(showTerms)
   $('add-panel').hidden = false
   const installed = rows.filter(r => r.card?.instance)
   const like = $('add-like'), was = like.value; like.textContent = ''
@@ -493,12 +494,12 @@ $('add-go').onclick = async () => {
   go.disabled = true
   try {
     // The terms again, as the agent will read them: a version that changed since it was shown is shown, not signed.
-    const shown = addTerms, terms = await readHiveTerms({ relayUrl: hiveRelay() })
+    const shown = addTerms, terms = await readHiveTerms()
     showTerms(terms)
     if (terms.ok && shown?.ok && shown.version !== terms.version) throw new Error('The hive\'s terms changed while this page was open. Read them, tick again, then sign.')
     const signer = await consoleSigner()
     // Mint, seal, then sign: a failure at any step publishes nothing.
-    const join = await sealInvite({ relayUrl: hiveRelay(), agent: template.tags.find(t => t[0] === 'p')[1], terms,
+    const join = await sealInvite({ agent: template.tags.find(t => t[0] === 'p')[1], terms,
       agreed: $('add-agree').checked, ageConfirmed: !$('add-age-row').hidden && $('add-age').checked,
       signer, sign: t => signFresh(t, signer), onStep: step => { st.textContent = `Invite: ${step}…` } })
     template = draftAddAgent({ ...draftFields, join })

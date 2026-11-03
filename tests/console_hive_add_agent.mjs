@@ -99,15 +99,23 @@ check(throws(() => draftAddAgent({ ...base, join: { invite: sealed, policy: V, a
 check(throws(() => draftAddAgent({ ...base, join: {} }), /needs the hive invite/), 'a join with no invite')
 
 const T = terms => termsFromRead(terms)
-const live = T({ status: 200, json: { policy: { version: V, age_attestation_required: true, terms_markdown: 'Be kind.' } } })
-check(live.ok && live.version === V && live.age === true && live.text === 'Be kind.', 'terms served: their version, whether they ask for age, their text')
-check(JSON.stringify(T({ status: 200, json: { policy: null } })) === JSON.stringify({ ok: true, version: 'none', age: false, text: '' }), 'policy null is "no terms"')
-check(!T({ status: 404, json: {} }).ok, 'a 404 is unread, never "none" (the agent reads it the same way)')
-check(!T({ status: 200, json: undefined }).ok && !T({ status: 200, json: {} }).ok && !T({ status: 200, json: null }).ok, 'not JSON, or no policy field, is unread')
-check(!T({ status: 200, json: { policy: { age_attestation_required: false } } }).ok, 'terms with no version cannot be agreed to')
+const live = T({ status: 200, json: { policy: { version: V, age_attestation_required: true, terms_markdown: 'Be kind.', privacy_markdown: 'We keep little.' } } })
+check(live.ok && live.version === V && live.age === true && live.terms === 'Be kind.' && live.privacy === 'We keep little.', 'terms served: their version, whether they ask for age, and both documents')
+const privacyOnly = T({ status: 200, json: { policy: { version: '2', privacy_markdown: 'We keep little.' } } })
+check(privacyOnly.ok && privacyOnly.terms === '' && privacyOnly.privacy === 'We keep little.', 'a privacy-only policy shows its one document')
+check(!T({ status: 200, json: { policy: { version: '2' } } }).ok, 'terms with no document to read are not agreed to')
+const NONE = JSON.stringify({ ok: true, version: 'none', age: false, terms: '', privacy: '' })
+check(JSON.stringify(T({ status: 200, json: {} })) === NONE, 'the relay\'s no-terms answer, 200 {}, is "no terms"')
+check(JSON.stringify(T({ status: 200, json: { policy: null } })) === NONE, 'policy null reads the same')
+check(!T({ status: 404, json: {} }).ok, 'a 404 is unread, never "none"')
+check(!T({ status: 200, json: undefined }).ok && !T({ status: 200, json: null }).ok && !T({ status: 200, json: [] }).ok, 'not JSON, null, or not an object is unread')
+check(!T({ status: 200, json: { policy: 'v1' } }).ok && !T({ status: 200, json: { policy: [] } }).ok, 'a policy that is not an object is unread')
+check(!T({ status: 200, json: { policy: { age_attestation_required: false, terms_markdown: 'x' } } }).ok, 'terms with no version cannot be agreed to')
 let asked = ''
 const termsBack = await readHiveTerms({ relayUrl: 'wss://hive.example', fetchImpl: async url => { asked = url; return { status: 200, json: async () => ({ policy: null }) } } })
 check(asked === 'https://hive.example/api/join-policy' && termsBack.version === 'none', 'read over https from the relay\'s wss address')
+await readHiveTerms({ fetchImpl: async url => { asked = url; return { status: 200, json: async () => ({}) } } })
+check(asked === 'https://nave.communities.buzz.xyz/api/join-policy', 'by default, from the hive relay')
 const down = await readHiveTerms({ relayUrl: 'wss://hive.example', fetchImpl: async () => { throw new TypeError('Failed to fetch') } })
 check(!down.ok && /could not complete the request to hive\.example/.test(down.reason), 'a relay that does not answer is unread')
 const html = await readHiveTerms({ relayUrl: 'wss://hive.example', fetchImpl: async () => ({ status: 200, json: async () => { throw new SyntaxError('Unexpected token <') } }) })
@@ -117,7 +125,7 @@ check(HIVE_RELAY === 'wss://nave.communities.buzz.xyz' && INVITE_TTL_SECS === 60
 check(!joinGate(down).ok && /Can't read the hive's terms/.test(joinGate(down).reason), 'unread terms: nothing is made')
 check(/agree/.test(joinGate(live, { ageConfirmed: true }).reason), 'terms not agreed: nothing is made')
 check(/age requirement/.test(joinGate(live, { agreed: true }).reason), 'age asked and not confirmed: nothing is made')
-check(joinGate(live, { agreed: true, ageConfirmed: true }).ok && joinGate(T({ status: 200, json: { policy: null } })).ok, 'agreed and confirmed, or no terms at all')
+check(joinGate(live, { agreed: true, ageConfirmed: true }).ok && joinGate(T({ status: 200, json: {} })).ok, 'agreed and confirmed, or no terms at all')
 
 // ── 7. Mint, then seal ──────────────────────────────────────────────────────────────────────────
 function world({ mintFails = '', encrypt } = {}) {
@@ -126,17 +134,19 @@ function world({ mintFails = '', encrypt } = {}) {
   w.signer = { nip44Encrypt: encrypt || (async (pk, text) => { w.log.push('seal'); return seal(text, pk) }) }
   return w
 }
-const ask = (w, extra = {}) => sealInvite({ relayUrl: HIVE_RELAY, agent: A.pk, terms: live, agreed: true, ageConfirmed: true,
+const ask = (w, extra = {}) => sealInvite({ agent: A.pk, terms: live, agreed: true, ageConfirmed: true,
   signer: w.signer, sign: async () => { throw new Error('mint is stubbed') }, mint: w.mint, ...extra })
 const caught = async f => { try { await f(); return '' } catch (e) { return e.message } }
 
 let w = world(), got = await ask(w)
 check(JSON.stringify(w.log) === JSON.stringify(['mint', 'seal']), 'minted first, then sealed')
 check(w.minted.maxUses === 1 && w.minted.ttlSecs === INVITE_TTL_SECS && w.minted.relayUrl === HIVE_RELAY, 'single use, for 7 days, at the hive')
+w = world(); await ask(w, { relayUrl: 'wss://elsewhere.example' })
+check(w.minted.relayUrl === HIVE_RELAY, 'minted only at the hive the agent claims at, whatever else is passed')
 check(got.policy === V && got.age === 'confirmed' && nip44.decrypt(got.invite, nip44.getConversationKey(A.sk, O.pk)) === CODE, 'the agent\'s key opens it to the code')
 check(!JSON.stringify(got).includes(CODE), 'the code is not in anything returned')
 check(!JSON.stringify(draftAddAgent({ ...base, join: got })).includes(CODE), 'the code is not in the draft')
-check((await ask(world(), { ageConfirmed: false, terms: T({ status: 200, json: { policy: { version: '3' } } }) })).age === undefined, 'age not ticked: no age tag')
+check((await ask(world(), { ageConfirmed: false, terms: T({ status: 200, json: { policy: { version: '3', terms_markdown: 'x' } } }) })).age === undefined, 'age not ticked: no age tag')
 
 w = world(); error = await caught(() => ask(w, { agreed: false }))
 check(/agree/.test(error) && w.log.length === 0, 'not agreed: nothing minted')
@@ -160,6 +170,8 @@ const go = page.slice(page.indexOf("$('add-go').onclick"), page.indexOf('// One 
 check(go.indexOf('await sealInvite(') > 0 && go.indexOf('await sealInvite(') < go.indexOf('await sendRequest(template'), 'the page seals before it asks for the publishing signature')
 check(go.indexOf('draftAddAgent(draftFields)') < go.indexOf('await sealInvite('), 'a form mistake is caught before anything is minted')
 check(!/\.code\b|mintInvite/.test(go), 'the page never handles the code: only the sealed invite comes back to it')
+check(!/loadRelayUrl|relayUrl:/.test(go) && !/loadRelayUrl/.test(page), 'the page does not mint at a relay the Access page last probed')
+check(page.indexOf('id="add-privacy-read"') > 0 && page.indexOf('id="add-terms-read"') < page.indexOf('id="add-ticks"') && page.indexOf('id="add-privacy-read"') < page.indexOf('id="add-ticks"'), 'both documents are shown above the tick')
 check(/<input type="checkbox" id="add-agree">/.test(page) && /<input type="checkbox" id="add-age">/.test(page) && !/id="add-(agree|age)"[^>]*checked/.test(page), 'two ticks, neither ticked for the owner')
 
 if (fails) { console.error(`\nconsole_hive_add_agent: ${fails} failing`); process.exit(1) }

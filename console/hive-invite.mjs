@@ -8,6 +8,9 @@
 // The terms are read as the agent's own step reads them (nvoy-onboard readTerms), because the agent
 // claims only while the hive serves the version the owner agreed to. Unreadable is "can't tell",
 // never "none". Agreeing and confirming age are the owner's ticks, passed exactly as ticked.
+//
+// The invite is minted only at HIVE_RELAY, the relay the agent will claim it at. A relay the Access
+// page last probed is not used: an invite minted anywhere else could never be claimed.
 
 import { mintInvite, reachFailure } from './admission-client.mjs'
 import { expectedUrl } from './nip98.mjs'
@@ -19,19 +22,27 @@ export const HIVE_RELAY = 'wss://nave.communities.buzz.xyz'
 export const INVITE_TTL_SECS = 7 * 24 * 3600
 const HEX64 = /^[0-9a-f]{64}$/
 
-// One /api/join-policy answer, read by the same rules as the agent's step.
+const text = value => (typeof value === 'string' ? value : '')
+
+// One /api/join-policy answer, read by the same rules as the agent's step. The one no-terms answer is
+// a 200 JSON object with no policy in it (the relay sends {}; policy null reads the same). Anything
+// else that is not terms with a version and a document to read is unread.
 export function termsFromRead({ status, json } = {}) {
   if (status !== 200) return { ok: false, reason: `HTTP ${status}` }
   if (json === undefined) return { ok: false, reason: 'not JSON' }
-  if (!json || typeof json !== 'object' || !('policy' in json)) return { ok: false, reason: 'no policy field' }
-  if (json.policy == null) return { ok: true, version: 'none', age: false, text: '' }
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return { ok: false, reason: 'not a JSON object' }
+  const policy = json.policy
+  if (policy == null) return { ok: true, version: 'none', age: false, terms: '', privacy: '' }
+  if (typeof policy !== 'object' || Array.isArray(policy)) return { ok: false, reason: 'the policy is not an object' }
   // A policy with no version could not be agreed to: the agent would send "undefined" as the version.
-  if (json.policy.version == null) return { ok: false, reason: 'the terms carry no version' }
-  return { ok: true, version: String(json.policy.version), age: json.policy.age_attestation_required === true,
-    text: typeof json.policy.terms_markdown === 'string' ? json.policy.terms_markdown : '' }
+  if (policy.version == null) return { ok: false, reason: 'the terms carry no version' }
+  // The version covers both documents, so the owner is shown both; terms with nothing to read are not agreed to.
+  const terms = text(policy.terms_markdown), privacy = text(policy.privacy_markdown)
+  if (!terms && !privacy) return { ok: false, reason: 'the terms carry no document to read' }
+  return { ok: true, version: String(policy.version), age: policy.age_attestation_required === true, terms, privacy }
 }
 
-export async function readHiveTerms({ relayUrl, fetchImpl = globalThis.fetch }) {
+export async function readHiveTerms({ relayUrl = HIVE_RELAY, fetchImpl = globalThis.fetch } = {}) {
   let res
   try { res = await fetchImpl(expectedUrl(relayUrl, '/api/join-policy'), { method: 'GET', headers: { accept: 'application/json' } }) }
   catch (e) { return { ok: false, reason: reachFailure(relayUrl, e) } }
@@ -50,14 +61,14 @@ export function joinGate(terms, { agreed = false, ageConfirmed = false } = {}) {
 
 const scrub = (text, code) => String(text || '').split(code).join('[invite]')
 
-// Mint, then seal. Returns the join tags' values for draftAddAgent; the code itself never leaves.
-export async function sealInvite({ relayUrl, agent, terms, agreed, ageConfirmed, signer, sign, mint = mintInvite, fetchImpl, now, onStep = () => {} }) {
+// Mint at the hive, then seal. Returns the join tags' values for draftAddAgent; the code never leaves.
+export async function sealInvite({ agent, terms, agreed, ageConfirmed, signer, sign, mint = mintInvite, fetchImpl, now, onStep = () => {} }) {
   const gate = joinGate(terms, { agreed, ageConfirmed })
   if (!gate.ok) throw new Error(gate.reason)
   if (!HEX64.test(agent || '')) throw new Error('That is not the agent\'s public key.')
   if (typeof signer?.nip44Encrypt !== 'function') throw new Error('This signer cannot seal (NIP-44). Sign in with your Bunker. Nothing was made.')
   onStep('making a single-use invite')
-  const minted = await mint({ relayUrl, sign, ttlSecs: INVITE_TTL_SECS, maxUses: 1, fetchImpl, now })
+  const minted = await mint({ relayUrl: HIVE_RELAY, sign, ttlSecs: INVITE_TTL_SECS, maxUses: 1, fetchImpl, now })
   if (!minted?.ok) throw new Error(`The hive did not make an invite: ${minted?.reason || 'no answer'}`)
   const code = String(minted.code)
   onStep('sealing it to the agent\'s key')
