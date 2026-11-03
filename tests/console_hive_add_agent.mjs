@@ -19,7 +19,8 @@ import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nos
 import * as nip44 from 'nostr-tools/nip44'
 import { readFileSync } from 'node:fs'
 import { HARNESSES, agentName, draftAddAgent, draftBind, readBack, requestD, sendRequest, sealedShape, SETUP_KIND } from '../console/hive-add-agent.mjs'
-import { STEPS, NOT_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, sameAs, HANDOFF } from '../console/add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, HANDOFF } from '../console/add-agent-flow.mjs'
+import * as flow from '../console/add-agent-flow.mjs'
 import { HIVE_RELAY, INVITE_TTL_SECS, joinGate, readHiveTerms, sealInvite, termsFromRead } from '../console/hive-invite.mjs'
 
 const key = () => { const sk = generateSecretKey(); return { sk, pk: getPublicKey(sk) } }
@@ -224,11 +225,61 @@ check(pick.groups.length === 1 && pick.groups[0].id === 'other' && pick.groups[0
 pick = pickerOf(many, { chosen: [], q: 'Agent 7', groups: pickGroups, groupOf })
 check(pick.groups[0].rows.map(r => r.pubkey).join() === 'k7', 'a search matches by name')
 check(pickerOf(many, { q: 'nobody-by-this-name', groups: pickGroups, groupOf }).none, 'a search with no match says so')
-const handoff = { owner: 'o', givers: { mc: ['o', 'k3', 'gone'] } }
+const handoff = { owner: 'o', complete: true, givers: { mc: ['o', 'k3', 'gone'] } }
 check(sameAs(handoff, { owner: 'o', like: 'mc' }, many).join() === 'o,k3', 'Same as copies the agent\'s givers, only those still offered')
 check(sameAs(handoff, { owner: 'x', like: 'mc' }, many) === null, 'another owner\'s hive is not copied')
 check(sameAs(null, { owner: 'o', like: 'mc' }, many) === null && sameAs(handoff, { owner: 'o', like: 'pi' }, many) === null, 'nothing read from the hive: Same as is off')
+check(handoffState({ ...handoff, complete: false }, 'o') === 'partial' && sameAs({ ...handoff, complete: false }, { owner: 'o', like: 'mc' }, many) === null, 'a short read of the hive: Same as is off, so a shorter giver list is never signed')
+check(sameAs({ owner: 'o', givers: handoff.givers }, { owner: 'o', like: 'mc' }, many) === null, 'a handoff that does not say it was read in full counts as short')
+
+// The picker offers everyone the hive grid draws, not only agents with cards.
+const P = key(), Bz = key()
+const hiveHandoff = { owner: O.pk, complete: true, givers: {}, hive: [{ pubkey: P.pk, label: 'Dennis', where: 'in your hive' }, { pubkey: Bz.pk, label: 'Buzz Bee', where: 'Buzz' }, { pubkey: O.pk, label: 'You' }, { pubkey: 'not-a-key', label: 'x' }] }
+check(hiveChoices(hiveHandoff, O.pk).map(c => c.label).join() === 'Dennis,Buzz Bee', "people and Buzz agents with no card are offered; the owner and malformed entries aren't")
+check(hiveChoices(hiveHandoff, X.pk).length === 0 && hiveChoices(null, O.pk).length === 0, "another owner's hive, or none read: nothing extra is offered")
+check(hiveChoices({ ...hiveHandoff, complete: false }, O.pk).length === 2, 'a short read still offers who it did read: offering a giver signs nothing')
+
+// A reload part way through: the new agent's own card is not a duplicate of itself.
+const withSelf = [...installed, { id: 'hr', pubkey: A.pk }]
+check((() => { try { draftAddAgent({ ...flowFields, installed: withSelf }); return false } catch (e) { return /already/.test(e.message) } })(), 'without its read-back request, the same name and key is a duplicate')
+const resumed = othersThan(withSelf, { name: 'hr', agent: A.pk, owner: O.pk, latest: req5 })
+check(resumed.length === installed.length && draftAddAgent({ ...flowFields, installed: resumed }).kind === SETUP_KIND, "with this owner's request for that name and key read back, the page carries on")
+check(othersThan([...installed, { id: 'hr', pubkey: G.pk }], { name: 'hr', agent: A.pk, owner: O.pk, latest: req5 }).length === installed.length + 1, 'another key under the same name is still a duplicate')
+check(othersThan([...installed, { id: 'other', pubkey: A.pk }], { name: 'hr', agent: A.pk, owner: O.pk, latest: req5 }).length === installed.length + 1, 'the same key under another name is still a duplicate')
+check(othersThan(withSelf, { name: 'hr', agent: A.pk, owner: X.pk, latest: req5 }).length === withSelf.length, "a request signed by someone else proves nothing")
+check(othersThan(withSelf, { name: 'hr', agent: G.pk, owner: O.pk, latest: req5 }).length === withSelf.length, 'a request for another key proves nothing')
 check(typeof HANDOFF === 'string' && readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8').includes('sessionStorage.setItem(HANDOFF'), 'the hive writes the handoff Same as reads')
+check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')), 'and marks it short when an approval or key read was short')
+
+// A resumed request continues the first one: nvoy refuses a newer request whose harness or starting
+// agent changed, so the page refuses it before any signature and keeps step 1 as it was sent.
+{
+  const sent = { tags: [['d', 'nvoy-onboard/hr/add_agent'], ['harness', 'claude-code'], ['like', 'crystalclaude']] }
+  check(JSON.stringify(fixedBy(sent)) === JSON.stringify({ harness: 'claude-code', like: 'crystalclaude' }) && fixedBy(null) === null, 'the sent request fixes what it runs in and the agent it starts like')
+  check(changedFrom(sent, { harness: 'claude-code', like: 'crystalclaude' }) === null && changedFrom(null, { harness: 'hermes', like: 'x' }) === null, 'the same choice, or nothing sent yet, signs as before')
+  check(/^Its setup was already sent, so what it runs in can't change now\./.test(changedFrom(sent, { harness: 'hermes', like: 'crystalclaude' }) || ''), 'a changed harness is refused before signing')
+  check(/so the agent it starts like can't change now\./.test(changedFrom(sent, { harness: 'claude-code', like: 'mc-claude' }) || ''), 'a changed starting agent is refused too')
+  check(/what it runs in and the agent it starts like can't change now\. Put them back/.test(changedFrom(sent, { harness: 'hermes', like: 'mc-claude' }) || ''), 'and both, named together')
+  check(/const gap = changedFrom\(latest, \{ harness: form\.harness, like: \$\('like'\)\.value \}\)\n  if \(gap\) throw new Error\(gap\)/.test(page), 'every signature checks the continuation first')
+  check(/fixed = fixedBy\(latest\)\n  if \(fixed\) \{ form\.harness = fixed\.harness; form\.like = fixed\.like/.test(page) && /like\.disabled = !!fixed/.test(page) && /b\.disabled = !!fixed && id !== fixed\.harness/.test(page), 'and step 1 stays as the request fixed it')
+}
+
+// Step 6: the fleet changes only seat givers. Hive-only givers are outside it, and the page says so.
+{
+  const chips = [{ pubkey: 'a', label: 'You', isOwner: true }, { pubkey: 'b', label: 'MC Claude' }, { pubkey: 'c', label: 'Dennis', outside: true }]
+  check(JSON.stringify(giverPlan(chips).outside.map(c => c.label)) === '["Dennis"]', 'outside givers are those with no seat; you need no list')
+  check(/\.map\(c => \(\{ \.\.\.c, outside: true \}\)\)/.test(page), 'every hive-only giver is marked outside the fleet')
+  check(!/puts <span data-name><\/span> on each one's mention list/.test(page) && !/Can give it work \(/.test(page), "the page no longer says the signature puts it on everyone's list")
+  check(/the fleet runs nothing for/.test(page) && /That proves what you chose, not that each one can @mention/.test(page), 'it names who the fleet runs nothing for, and read-back is not the mention proof')
+}
+
+// Every function of the flow module the page calls is imported, so none is a ReferenceError at run time.
+{
+  const imported = new Set(page.match(/import \{([^}]+)\} from '\.\/add-agent-flow\.mjs'/)[1].split(',').map(x => x.trim()))
+  const used = Object.keys(flow).filter(k => typeof flow[k] === 'function' && new RegExp(`\\b${k}\\(`).test(page))
+  const missing = used.filter(k => !imported.has(k))
+  check(used.length > 5 && !missing.length, `every flow function the page calls is imported${missing.length ? `: missing ${missing.join(', ')}` : ''}`)
+}
 
 if (fails) { console.error(`\nconsole_hive_add_agent: ${fails} failing`); process.exit(1) }
 console.log('\nconsole_hive_add_agent: all passed')
