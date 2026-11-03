@@ -96,7 +96,7 @@ for (const cap of sentenced) {
     `"${cap}" names BOTH parties — a template mentioning one has picked a direction the reader cannot check`)
   check(typeof CAP_SUBJECT[cap] === 'string' && ['channel', 'agent'].includes(CAP_SUBJECT[cap]),
     `"${cap}" says whether its subject is a channel or an agent`)
-  check(['door', 'orders'].includes(PLANE[cap]), `"${cap}" belongs to a named plane`)
+  check(['door', 'orders', 'reach'].includes(PLANE[cap]) && !!PLANE_COPY[PLANE[cap]], `"${cap}" belongs to a named plane`)
 }
 
 // The exact strings. Written out in full on purpose: this is the regression barrier, and a future

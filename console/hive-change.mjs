@@ -64,7 +64,7 @@ export const MENTION_NAME = /^[a-z0-9][a-z0-9._-]{0,31}$/i
 export async function draftMention({ grantee, agent, name, scopeHash, salt = freshSalt(), now = nowSec() }) {
   if (!HEX64.test(grantee || '')) throw new Error('The one to mention is not a public key.')
   if (!HEX64.test(agent || '')) throw new Error('The agent is not a public key.')
-  if (grantee === agent) throw new Error('An agent never needs a grant to mention itself.')
+  if (grantee === agent) throw new Error('An agent never needs leave to mention itself.')
   if (!MENTION_NAME.test(name || '')) throw new Error('The name must start with a letter or digit and use only letters, digits, dots, dashes and underscores, 32 at most.')
   if (!SALT.test(salt)) throw new Error('The salt must be 16 random bytes in hex.')
   return { kind: 440, created_at: now, tags: [['p', grantee], ['da-scope', await scopeHash(agent, salt), salt], ['da-cap', 'mention'], ['name', name]], content: '' }

@@ -142,6 +142,7 @@ export const PLANE = {
   'task-relay': 'orders',
   'shadow': 'orders',
   'mirror': 'door',
+  'mention': 'reach',
 }
 export const PLANE_COPY = {
   door: {
@@ -155,6 +156,14 @@ export const PLANE_COPY = {
     question: 'Who may tell this agent what to do?',
     enforcedBy: "the agent's own runtime",
     caution: 'This bridge does not check it. If that runtime is not reading what you signed, nothing here is enforced.',
+  },
+  // Whom an agent may bring in by name (#691). Not orders: it lets the agent start a conversation,
+  // and gives no one any say over it.
+  reach: {
+    title: 'Bringing someone in',
+    question: 'Whom may this agent mention by name?',
+    enforcedBy: "the agent's own runtime",
+    caution: 'This bridge does not check it. The agent uses it only once its own card lists your approval.',
   },
 }
 export const capPlane = (c) => PLANE[c] || 'unknown'

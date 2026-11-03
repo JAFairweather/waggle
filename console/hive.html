@@ -246,7 +246,7 @@ import { validControlState, postingCounts, notAnswering, shortNpub } from './age
 import { scopeHash } from './scope-hash.mjs'
 import { signFresh } from './guarded-signer.mjs'
 import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, draftMention, mentionName, MENTION_NAME, describeChange, applyChange, relayHost } from './hive-change.mjs'
-import { gridOf, reachOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, BUZZ_D, buzzOf, draftBuzz, sameBuzz, buzzWords, isBuzz, day } from './hive-grid.mjs'
+import { agentsOf, gridOf, reachOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, BUZZ_D, buzzOf, draftBuzz, sameBuzz, buzzWords, isBuzz, day } from './hive-grid.mjs'
 import { whatIf } from './hive-what-if.mjs'
 import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { BRIDGE_RELAYS } from './hive-bridge.mjs'
@@ -256,7 +256,7 @@ import { HARNESSES, agentName, draftAddAgent, readBack, requestD, sendRequest, S
 import { HIVE_RELAY, readHiveTerms, sealInvite } from './hive-invite.mjs'
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
-import { sealedFor, openOwnerView, oneWay, oneWayLine, mentionLines, mentionGrantsOf, mentionStatus, nameClash, whatIf, PUBLIC_NAME, PENDING, ownGrantsOn } from './owner-view.mjs'
+import { viewsFor, openOwnerView, oneWay, oneWayLine, mentionLines, mentionGrantsOf, mentionStatus, nameClash, mentionWhatIf, PUBLIC_NAME, PENDING, ownGrantsOn } from './owner-view.mjs'
 import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK, RUNS_LOGO } from './hive-list.mjs'
 
 // The bridge publishes its roster to these relays and reads its commands from them.
@@ -315,14 +315,6 @@ const npub = pk => { try { return nip19.npubEncode(pk) } catch { return pk } }
 // owner presses Open. A list opened once is kept for that exact card event, so reading again asks
 // the signer only about cards that changed.
 const opened = new Map()
-function viewsOf(cards, owner) {
-  const views = new Map()
-  for (const [pk, card] of cards) {
-    const s = sealedFor(card.event, { owner, agent: pk, verify: verifyEvent })
-    views.set(pk, s.state !== 'sealed' ? s : opened.get(`${owner}|${s.eventId}`) || { state: 'cant-tell', why: 'not-opened', event: card.event })
-  }
-  return views
-}
 // What the last read saw, for drafting changes against: the owner, the grants and their scopes.
 let hive = null
 
@@ -388,7 +380,7 @@ async function load({ owner: rememberedOwner = null } = {}) {
     const { rows, needs } = buildList({ owner, grantEvents, grants, table, cards, roster, bridge, profiles })
     const active = activeOf(activeRead, { owner, verify: verifyEvent })
     const buzz = buzzOf(activeRead, { owner, verify: verifyEvent })
-    hive = { owner, grants, table, rows, bridge, rosterState, active: active.keys, activeKnown: active.known, buzz, views: viewsOf(cards, owner), profiles }
+    hive = { owner, grants, table, rows, bridge, rosterState, active: active.keys, activeKnown: active.known, buzz, views: viewsFor({ cards, takers: agentsOf(rows).groups.flatMap(g => g.rows.map(r => r.pubkey)), owner, verify: verifyEvent, opened }), profiles }
     const partial = {
       cards: !cardRead.full,
       // A row with no card is folded with the owner alone, so a card that went unread may name other grantors.
@@ -819,6 +811,7 @@ function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting, wid
   } else {
     for (const term of ['Where it can post', 'What it holds', 'How it works', 'Proof it works'])
       item(term, partial.cards ? `No agent card, ${PARTIAL}.` : 'No agent card, so not reported.', true)
+    if (hive.views.has(r.pubkey)) { grid.mentions.set(r.pubkey, item('Who it can mention · shown to you only', '')); fillMentions(r.pubkey) }
   }
   const found = item('Can it be found', 'Not checked here yet. Check reads its published name back cold from the public relays.')
   const look = el('button', 'small quiet', 'Check'); look.type = 'button'
@@ -868,7 +861,7 @@ function fillMentions(pk) {
     const div = dd.appendChild(el('div', null, line))
     const own = i < entries.length ? ownGrantsOn(entries[i], hive.grants, hive.owner) : []
     if (own.length) {
-      div.append(' ', action(`Withdraw your grant${own.length === 1 ? '' : 's'}`, () => propose(own.map(withdrawMention))))
+      div.append(' ', action(`Withdraw your approval${own.length === 1 ? '' : 's'}`, () => propose(own.map(withdrawMention))))
       if (entries[i].source === 'manifest') div.appendChild(el('span', 'note', ' The fleet host lists it too, so it stays.'))
     }
     const r = i >= firstRefused ? refused[i - firstRefused] : null
@@ -889,7 +882,7 @@ function pairLine(giver, agent) {
   line.appendChild(el('span', null, `${upper(grid.nameOf(giver))} → ${grid.nameOf(agent)}:`))
   const st = mentionStatus(hive.views.get(agent), mentionGrantsOf(hive.grants, { owner: hive.owner, giver, agent, subjectOf: hive.table.subjectOf }))
   if (st.state === 'pending') { line.appendChild(el('span', 'note', PENDING(grid.nameOf(agent)))); return line }
-  if (st.state === 'refused') line.appendChild(el('span', 'note', `Your grant was refused: ${st.refused[0].reason}.`))
+  if (st.state === 'refused') line.appendChild(el('span', 'note', `Your approval was refused: ${st.refused[0].reason}.`))
   line.appendChild(action(`Let ${grid.nameOf(agent)} mention ${grid.nameOf(giver)}…`, () => openFix(agent, giver)))
   return line
 }
@@ -908,13 +901,13 @@ function fixProblem() {
   const { agent, giver } = fixing, name = $('fix-name').value.trim()
   if (!MENTION_NAME.test(name)) return { name, why: 'The name must start with a letter or digit, and use only letters, digits, dots, dashes and underscores, 32 at most.' }
   const clash = nameClash(hive.views.get(agent), name, giver)
-  if (clash) return { name, why: `@${clash.name} is already ${grid.nameOf(clash.pubkey)} on ${grid.nameOf(agent)}'s list, so ${grid.nameOf(agent)} would refuse this grant. Choose another name.` }
+  if (clash) return { name, why: `@${clash.name} is already ${grid.nameOf(clash.pubkey)} on ${grid.nameOf(agent)}'s list, so ${grid.nameOf(agent)} would refuse it. Choose another name.` }
   return { name, why: '' }
 }
 function checkFix() {
   if (!fixing) return
   const { name, why } = fixProblem()
-  $('fix-what').textContent = why && !MENTION_NAME.test(name) ? '' : whatIf({ agentName: upper(grid.nameOf(fixing.agent)), giverName: grid.nameOf(fixing.giver), name })
+  $('fix-what').textContent = why && !MENTION_NAME.test(name) ? '' : mentionWhatIf({ agentName: upper(grid.nameOf(fixing.agent)), giverName: grid.nameOf(fixing.giver), name })
   $('fix-clash').textContent = why
   $('fix-add').disabled = !!why
 }

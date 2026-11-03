@@ -19,7 +19,7 @@
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools'
 import { draftMention, mentionName, MENTION_NAME, draftRevoke, describeChange } from '../console/hive-change.mjs'
 import { readGrants, scopeTable } from '../console/hive-list.mjs'
-import { mentionGrantsOf, mentionStatus, nameClash, whatIf, ownGrantsOn, PENDING, oneWay } from '../console/owner-view.mjs'
+import { mentionGrantsOf, mentionStatus, nameClash, mentionWhatIf, ownGrantsOn, PENDING, oneWay } from '../console/owner-view.mjs'
 import { scopeHash } from '../console/scope-hash.mjs'
 import { describeGrant } from '../console/capability-vocabulary.mjs'
 
@@ -81,14 +81,14 @@ const refused = mentionStatus(view([], [{ grant: signed.id, reason: 'the name de
 check(refused.state === 'refused' && refused.refused[0].reason === 'the name dead-rabbit is held by another key', 'a refused grant says refused, with its reason')
 const second = { ...mine[0], id: 'e'.repeat(64) }
 check(mentionStatus(view([], [{ grant: signed.id, reason: 'x' }]), [mine[0], second]).state === 'pending', 'with a refused grant and a newer one signed, the newer one is pending')
-check(PENDING('Pi Dog') === "Signed, waiting for Pi Dog to take it. The flag clears when Pi Dog's card lists this grant.", 'pending says who it waits on and what clears it')
+check(PENDING('Pi Dog') === "Signed, waiting for Pi Dog to take it. The flag clears when Pi Dog's card lists this approval.", 'pending says who it waits on and what clears it')
 
 // ── 5. A clashing name, before signing ──────────────────────────────────────────────────────────
 const list = view([{ name: 'Peer', pubkey: peer.pk, source: 'manifest', grants: [] }, { name: null, pubkey: owner.pk, source: 'manifest', grants: [] }])
 check(nameClash(list, 'peer', giver.pk)?.pubkey === peer.pk, "a name another key holds is caught, case-folded as nvoy compares it")
 check(nameClash(list, 'peer', peer.pk) === null, "the key's own name is no clash")
 check(nameClash(list, 'dead-rabbit', giver.pk) === null && nameClash({ state: 'cant-tell' }, 'peer', giver.pk) === null, 'a free name, or an unreadable list, finds no clash')
-check(whatIf({ agentName: 'Pi Dog', giverName: 'you', name: 'dead-rabbit' }) === 'Pi Dog will be able to mention you as @dead-rabbit.', "the what-if line is the design's sentence")
+check(mentionWhatIf({ agentName: 'Pi Dog', giverName: 'you', name: 'dead-rabbit' }) === 'Pi Dog will be able to mention you as @dead-rabbit.', "the what-if line is the design's sentence")
 
 // ── 6. Withdrawing ───────────────────────────────────────────────────────────────────────────────
 const entry = { name: 'dead-rabbit', pubkey: giver.pk, source: 'grant', grants: [signed.id, byOther.id] }
