@@ -93,8 +93,8 @@ automatic once three agents have gone through cleanly.**
 `instance-pair` prints a `nostrconnect://` link that the owner approves in the Bunker. That link
 carries a one-time secret, so it must not appear in a public event or in chat. In phase A the
 operator hands it to the owner as today. In phase B the fleet seals it to the owner's key (NIP-44)
-and the page opens it for them with one click. **Open:** whether Bunker46 accepts a pasted
-`nostrconnect://` link on the phone the owner uses, or only a scanned code.
+and the page opens it for them with one click. Bunker46 on the owner's phone accepts a pasted
+`nostrconnect://` link (confirmed 2026-11-02), so no scanned code is needed.
 
 The connection asks for these signing kinds from the start: posts, reactions, deletes, chat, seals,
 room joins (9021), relay logins and app data. Adding and removing other people from a room (9000,
