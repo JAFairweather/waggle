@@ -70,13 +70,14 @@ is disabled, because only Luke can withdraw it.
 **A square never claims more than it read.** Two things are not read yet, so no square draws
 them, and every square's panel says so in one line:
 
-- **Whether the post arrives.** That needs each room's member list and the server relay's list
-  of who may write. Until the page reads them, a blank square doesn't say whether the column hears
-  the row, and a ✓ doesn't say the work reaches it. Once they are read, the blank splits into
-  "hears it, won't act" and "doesn't hear it", and a ✓ whose post can't arrive gets its own
-  state, ⊘ "approved, but the post can't reach it". ⊘ is not "!": the two can both be true, and
-  ⊘ wins the square because an answer back doesn't matter if the work never arrives. The panel
-  lists both reasons.
+- **Whether the post arrives.** That needs each room's member list. Until the page reads it, a
+  blank square doesn't say whether the column hears the row, and a ✓ doesn't say the work reaches
+  it. Once it is read, the blank splits into "hears it, won't act" and "not in any room you can
+  see with it". Rooms the owner isn't in can't be read, so a flat "doesn't hear it" is never
+  drawn (see "Who is in each room"). A ✓ whose post can't arrive would get its own state, ⊘
+  "approved, but the post can't reach it", but only once the page has a read that proves a post
+  is refused. ⊘ is not "!": the two can both be true, and ⊘ wins the square because an answer
+  back doesn't matter if the work never arrives. The panel lists both reasons.
 - **Whether it is connected right now.** That waits for the presence event (#690).
 
 ### Clicking a square
@@ -167,6 +168,98 @@ the seven steps, three signatures and one "I agree" from
 - Step 4 (the install on the agent's box, nvoy #294) and the step 7 checks are drawn as **not
   built yet** until they are.
 
+## Who is in each room (the step 6 design check)
+
+Step 6 needs a list the page doesn't read today: who is in each room. This section says where it
+comes from, what reading it costs, what it can and can't prove, and what the page does when it
+doesn't answer. It was checked against Buzz's relay source
+(at `dafe31bf`) and has not been probed against the deployed relay. The first build
+PR starts with that probe (see "Before the build").
+
+### Where each list comes from
+
+It comes from the community relay that Buzz runs, the one the rooms live on. The public relays
+don't carry it.
+
+| List | What the relay serves | Who may read it |
+|---|---|---|
+| Who is in a room | The relay signs one member list per room (kind 39002). It names every member, agents included, with a role. The relay rewrites it whenever membership changes. | Anyone signed in to the relay, with leave to read messages, who is in that room. For an open room, anyone signed in with that leave. Private rooms and DMs are members only. |
+| The room's name and admins | Kinds 39000 and 39001, on the same terms. | The same as above. |
+
+The owner's own sign-in carries leave to read messages. So one sign-in reads these for every
+room the owner is in, and every open room.
+
+**The relay's own member list is not a list of who may post, so the page doesn't use it.** The
+relay also publishes its direct members (kind 13534). But an agent that isn't on that list may
+still sign in and post when its owner vouches for it, and that owner is a member. So a key's
+absence from the list proves nothing about whether its posts arrive. Nothing in step 6 is drawn
+from it.
+
+### What it costs
+
+Signing in to the relay is one Bunker prompt, and it lasts as long as the connection. The page
+doesn't do this on load. Needs you gets a card for it:
+
+> **Who is in each room isn't read.** Reading it takes one Bunker prompt. [Read who is in each room]
+
+After that one prompt, the page reads the lists, closes the connection, and stamps the read with
+its time, for example "Rooms read 6:20 PM". "Read again" costs another prompt. The page doesn't
+keep the connection open, so nothing else asks for a signature behind the owner's back.
+
+### What a list can and can't prove
+
+- **"Hears it" can be proven.** When A and B are both in a room the page read, B hears A there.
+  The panel names the room.
+- **"Doesn't hear it" can't be proven from the owner's side.** A and B may share a private room
+  the owner isn't in, and the relay sends no sign of rooms the owner can't read. So the blank
+  square splits into "hears it, won't act" and "**not in any room you can see** with it", never
+  a flat "doesn't hear it". The panel says: "Rooms you aren't in aren't read."
+- **⊘ "approved, but the post can't reach it" isn't drawn in step 6.** Nothing the page can read
+  proves a post is refused. Sharing no visible room proves nothing, and neither does a key being
+  absent from the relay's member list. ⊘ waits for a read that does: a refusal the sender saw,
+  for example.
+- **Only rooms on this relay count.** An nvoy agent that listens on public relays, not in a
+  Buzz room, keeps today's line, "Whether A's post reaches B isn't read yet". Its squares don't
+  split.
+
+### When a list doesn't answer
+
+A list that doesn't answer leaves its squares exactly as they are today. The page never reads
+"no answer" as "nobody is in the room". Each case is one line in Needs you, with the button that
+might fix it:
+
+| What happened | What the page says | Button |
+|---|---|---|
+| The page doesn't know the room relay's address | "Who is in each room isn't read: this page doesn't know your room relay yet." | Add it on Config |
+| No connection, or no answer within 10 seconds | "Your room relay didn't answer, so who is in each room isn't read." | Read again |
+| The Bunker prompt is declined or times out | "Not read: you didn't sign in to your room relay." | Read who is in each room |
+| The relay refuses the sign-in | "Your room relay wouldn't let you sign in, so who is in each room isn't read." | none |
+| A room the page lists sends no member list | That room's squares stay unread, and its group header says "who is in it isn't read". | Read again |
+| A room's member list comes back signed by any key but the relay's own | "A room's member list came back, but not signed by your room relay, so it isn't trusted." That room's squares stay unread, and its group header says "who is in it isn't read". | Read again |
+
+The page checks each list's signature against the relay's key, and a list that fails is never
+read as the room's members.
+
+### Before the build
+
+Three things need a live answer before the first PR is written, from a probe run as the owner:
+
+1. **Whether the deployed relay refuses by `#h` as the source does.** Asked with
+   `{"kinds":[39002],"#d":[room]}`, a room the reader can't see is dropped, and the reply ends
+   normally, which looks the same as an empty room. Asked with `#h`, Buzz's source matches the
+   room the list is stored under, and a room the reader can't see gets an explicit refusal:
+   "restricted: not a channel member". So the page asks by `#h`. The probe confirms the deployed
+   relay behaves the same way. If it doesn't, the page falls back to `#d`, and reads a missing
+   list as "not read", never as "empty".
+2. **What the deployed relay does with a key that isn't a member** (its
+   `BUZZ_REQUIRE_RELAY_MEMBERSHIP` setting). This decides whether "refuses the sign-in" can
+   happen to the owner at all.
+3. **Where the page learns the relay's key** to check those signatures: from the relay's NIP-11
+   document if it states one, and otherwise from the owner's Config next to the address.
+
+The relay's address comes from the owner's Config, as other operational details do. It is never
+written into this repository.
+
 ## Build order
 
 Each step is its own PR, reviewed in #waggle-test and merged once approved.
@@ -181,10 +274,10 @@ Each step is its own PR, reviewed in #waggle-test and merged once approved.
 4. **Built for 50.** Find an agent focuses one row and column, groups fold, and the
    focused column folds into counts.
 5. **Needs you.** Add the Hidden from you and Stopped cards.
-6. **Who is in each room.** Read each room's member list and the server relay's writer list. Then
-   groups become channels, the blank square splits into "hears it" and "doesn't hear it", and a ✓
-   whose post can't arrive becomes ⊘. This step needs its own design check first: which
-   relay serves each list, and what the page does when one doesn't answer.
+6. **Who is in each room.** Read each room's member list. Then groups become channels, and the
+   blank square splits into "hears it, won't act" and "not in any room you can see with it". ⊘
+   waits for a read that proves a post is refused. The design check is "Who is in each room" above. Its
+   probe comes first.
 
 ## Done when
 
