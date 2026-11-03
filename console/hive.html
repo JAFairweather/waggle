@@ -67,6 +67,9 @@
   .sq.add{border:2px solid var(--add);color:var(--add)}
   .sq.remove{background:var(--remove-ground);border:2px solid var(--remove);color:var(--remove)}
   .sq.self{border-color:transparent;color:var(--faint);cursor:default}
+  /* One way (#691): the giver can give it work, and it can't mention the giver back. A notch, never colour alone: the label says it too. */
+  .sq.oneway{position:relative}.sq.oneway::after{content:"";position:absolute;top:-1.5px;right:-1.5px;width:11px;height:11px;background:var(--remove);border-top-right-radius:7px;clip-path:polygon(0 0,100% 0,100% 100%)}
+  .legend .sq.oneway::after{width:8px;height:8px;border-top-right-radius:5px}
   button.sq[aria-disabled="true"]:not(.self){cursor:help}
   button.sq:focus-visible{outline:2px solid var(--add);outline-offset:2px}
   .legend{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;font-size:13px;color:var(--dim);margin:0 0 12px}
@@ -142,17 +145,19 @@
       <span><span class="sq off"></span>Can't</span>
       <span><span class="sq add">+</span>Will be added</span>
       <span><span class="sq remove">–</span>Will be removed</span>
+      <span><span class="sq on oneway"></span>One way: it can't mention the giver back</span>
       <span id="ask-note"></span>
     </div>
     <div class="grid-wrap"><table class="grid">
       <thead><tr id="grid-runs"></tr><tr id="grid-head"></tr></thead>
       <tbody id="list"></tbody>
     </table></div>
+    <p class="footnote" id="one-way" role="status"><span id="one-way-words"></span> <button id="mention-open" class="link" type="button" hidden>Open who each agent can mention</button> <span id="mention-status"></span></p>
     <p class="footnote" id="folded" hidden></p>
     <p class="footnote" id="partial-note" hidden>* Not every relay answered in full, so an approval held only on one that did not may be missing.</p>
     <p class="footnote">Click a name for how it works, what it holds, and its last task.</p>
     <details class="about"><summary>About this list</summary>
-      <p>Approvals come from the relays that hold them, configuration from each agent's own signed card, and names from profiles. Where a source does not say, the page says <em>not reported</em>. Reading asks your signer only for your public key; a change is shown in plain words and as the exact event before your signer is asked, and is called done only once the relays serve it back.</p>
+      <p>Approvals come from the relays that hold them, configuration from each agent's own signed card, and names from profiles. Where a source does not say, the page says <em>not reported</em>. Reading asks your signer only for your public key. Whom each agent can mention is sealed to you on its card, and is opened only when you press Open: one request to your signer per agent, stopping at the first it refuses. A change is shown in plain words and as the exact event before your signer is asked, and is called done only once the relays serve it back.</p>
       <div id="coverage" class="coverage" hidden></div>
       <p id="talk"></p>
       <p id="not-read"></p>
@@ -238,6 +243,7 @@ import { HARNESSES, agentName, draftAddAgent, readBack, requestD, sendRequest, S
 import { HIVE_RELAY, readHiveTerms, sealInvite } from './hive-invite.mjs'
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
+import { sealedFor, openOwnerView, oneWay, oneWayLine, mentionLines } from './owner-view.mjs'
 import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK, RUNS_LOGO } from './hive-list.mjs'
 
 // The bridge publishes its roster to these relays and reads its commands from them.
@@ -292,6 +298,18 @@ function newestProfiles(events) {
 }
 
 const npub = pk => { try { return nip19.npubEncode(pk) } catch { return pk } }
+// Whom each agent can mention (#691): checked from its card on every read, but opened only when the
+// owner presses Open. A list opened once is kept for that exact card event, so reading again asks
+// the signer only about cards that changed.
+const opened = new Map()
+function viewsOf(cards, owner) {
+  const views = new Map()
+  for (const [pk, card] of cards) {
+    const s = sealedFor(card.event, { owner, agent: pk, verify: verifyEvent })
+    views.set(pk, s.state !== 'sealed' ? s : opened.get(`${owner}|${s.eventId}`) || { state: 'cant-tell', why: 'not-opened', event: card.event })
+  }
+  return views
+}
 // What the last read saw, for drafting changes against: the owner, the grants and their scopes.
 let hive = null
 
@@ -356,7 +374,7 @@ async function load({ owner: rememberedOwner = null } = {}) {
     const { rows, needs } = buildList({ owner, grantEvents, grants, table, cards, roster, bridge, profiles })
     const active = activeOf(activeRead, { owner, verify: verifyEvent })
     const buzz = buzzOf(activeRead, { owner, verify: verifyEvent })
-    hive = { owner, grants, table, rows, bridge, rosterState, active: active.keys, activeKnown: active.known, buzz }
+    hive = { owner, grants, table, rows, bridge, rosterState, active: active.keys, activeKnown: active.known, buzz, views: viewsOf(cards, owner) }
     const partial = {
       cards: !cardRead.full,
       // A row with no card is folded with the owner alone, so a card that went unread may name other grantors.
@@ -573,7 +591,7 @@ function draw(rows, needs, owner, partial, posting = null) {
   runs.appendChild(el('th', 'runtime'))
   const posts = head.appendChild(el('th', 'posts', 'Posts / hour')); posts.scope = 'col'
   posts.title = 'Posts in the last hour, against the hourly limit for new messages'
-  grid = { cells: new Map(), summaries: new Map(), boxes: new Map(), nameOf, owner, head: [...head.children], active: activeNow(rows, hive.active) }
+  grid = { cells: new Map(), summaries: new Map(), boxes: new Map(), mentions: new Map(), nameOf, owner, columns, head: [...head.children], active: activeNow(rows, hive.active) }
   waiting = new Map(); extras = new Map(); drafted = new Map(); ticks = new Map()
   $('why').textContent = ''
   const list = $('list'); list.textContent = ''
@@ -606,6 +624,7 @@ function draw(rows, needs, owner, partial, posting = null) {
     : b.signedAt ? `Set in Buzz Desktop, copied ${day(b.signedAt)}` : 'Set in Buzz Desktop: not copied yet (run tools/buzz-allow.mjs where Buzz runs)'
   drawLeftovers(owner, nameOf)
   $('partial-note').hidden = !partial.approvals
+  drawOneWay()
   $('list-panel').hidden = false
   drawBar()
   drawWhatIf(rows, owner, nameOf, partial)
@@ -777,6 +796,8 @@ function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting, wid
   item('What it may do without asking', `${free}${limits} Tool permissions are ${a.act.harness}.`)
   if (r.card) {
     item('Where it can post', p ? `It may start messages in ${p.channels} channel${p.channels === 1 ? '' : 's'}, at most ${p.per_hour} an hour, mentioning up to ${p.mentions} named participant${p.mentions === 1 ? '' : 's'}. Channel names are withheld from the public card.` : 'It may only reply; it may not start a message.')
+    grid.mentions.set(r.pubkey, item('Who it can mention · shown to you only', ''))
+    fillMentions(r.pubkey)
     item('What it holds', a.holds, true)
     item('How it works', `${a.how.runner ? `Runs a ${a.how.runner} harness` : 'No harness'}, build ${String(a.how.release).slice(0, 7)}, delivery ${a.how.delivery}. Its profile: ${a.how.profile}.`)
     item('Proof it works', `Card signed ${new Date(a.proof.cardSignedAt * 1000).toLocaleString()}. Last task: ${a.proof.lastTask}. Last reply: ${a.proof.lastReply}.`)
@@ -804,10 +825,11 @@ function paint(key) {
   const { row, giver, cell, button } = grid.cells.get(key)
   const state = squareOf(cell, waiting.get(key))
   const who = upper(grid.nameOf(giver.pubkey)), whom = grid.nameOf(row.pubkey)
-  button.className = `sq ${state}${cell.buzz ? ' buzz' : cell.on && !cell.can ? ' theirs' : ''}${cell.unknown ? ' unknown' : ''}`
+  const flagged = oneWay({ on: cell.on, giver: giver.pubkey, agent: row.pubkey, view: hive.views.get(row.pubkey) })
+  button.className = `sq ${state}${cell.buzz ? ' buzz' : cell.on && !cell.can ? ' theirs' : ''}${cell.unknown ? ' unknown' : ''}${flagged ? ' oneway' : ''}`
   button.textContent = state === 'add' ? '+' : state === 'remove' ? '–' : state === 'self' ? '·' : ''
-  const label = cell.self ? `${whom} itself` : state === 'add' ? `${who} will be able to give ${whom} work` : state === 'remove' ? `${who} will stop giving ${whom} work`
-    : `${who} ${cell.on ? 'can' : "can't"} give ${whom} work`
+  const label = (cell.self ? `${whom} itself` : state === 'add' ? `${who} will be able to give ${whom} work` : state === 'remove' ? `${who} will stop giving ${whom} work`
+    : `${who} ${cell.on ? 'can' : "can't"} give ${whom} work`) + (flagged ? `. One way: ${whom} can't mention ${grid.nameOf(giver.pubkey)} back` : '')
   button.setAttribute('aria-label', label)
   button.title = cell.why ? `${label}. ${cell.why}` : label
   button.setAttribute('aria-disabled', String(!cell.can))
@@ -818,6 +840,52 @@ function summarize(pk) {
   for (const [key, action] of waiting) if (grid.cells.get(key).giver.pubkey === pk) count += action === 'add' ? 1 : -1
   line.textContent = summaryOf(count, partial)
 }
+// "Who it can mention" in a row's detail, and the one-way line under the grid (#691).
+function fillMentions(pk) {
+  const dd = grid.mentions.get(pk)
+  if (!dd) return
+  const { lines, unknown } = mentionLines(hive.views.get(pk), { nameOf: grid.nameOf, shortKey: shortNpub })
+  dd.className = unknown ? 'unknown' : ''; dd.textContent = ''
+  for (const line of lines) dd.appendChild(el('div', null, line))
+}
+const openable = () => [...hive.views].filter(([, v]) => v.state === 'cant-tell' && v.event)
+function drawOneWay() {
+  const pairs = [...grid.cells.values()].filter(({ row, giver, cell }) => oneWay({ on: cell.on, giver: giver.pubkey, agent: row.pubkey, view: hive.views.get(row.pubkey) }))
+    .map(({ row, giver }) => ({ giver: giver.pubkey, agent: row.pubkey }))
+  const views = grid.columns.map(t => hive.views.get(t.pubkey)).filter(Boolean)
+  const words = oneWayLine(pairs, { nameOf: pk => upper(grid.nameOf(pk)), unread: views.filter(v => v.state === 'cant-tell').length, readable: views.filter(v => v.state === 'readable').length })
+  $('one-way-words').textContent = words
+  const todo = openable().length
+  $('mention-open').hidden = !todo
+  $('mention-open').textContent = `Open who they can mention (${todo} sealed list${todo === 1 ? '' : 's'})`
+  $('one-way').hidden = !words && !todo
+}
+// One request to the owner's signer per sealed list, in turn, and none after the first it refuses.
+async function openViews() {
+  const h = hive, todo = openable(), st = $('mention-status'), go = $('mention-open')
+  if (!todo.length) return
+  const mark = why => { for (const [pk] of todo) if (h.views.get(pk).state !== 'readable') h.views.set(pk, { state: 'cant-tell', why, event: h.views.get(pk).event }) }
+  go.disabled = true; st.textContent = 'Asking your signer…'
+  try {
+    let signer = null, me = null
+    try { signer = await consoleSigner(); me = String(await signer.getPublicKey()).toLowerCase() } catch { return mark('no-signer') }
+    if (typeof signer.nip44Decrypt !== 'function') return mark('cannot-decrypt')
+    if (me !== h.owner) return mark('other-signer')
+    let refused = false
+    for (const [i, [pk, v]] of todo.entries()) {
+      if (refused) { h.views.set(pk, { state: 'cant-tell', why: 'not-asked', event: v.event }); continue }
+      st.textContent = `Opening ${i + 1} of ${todo.length}: ${grid.nameOf(pk)}…`
+      const r = await openOwnerView(v.event, { owner: h.owner, agent: pk, verify: verifyEvent, decrypt: (by, sealed) => signer.nip44Decrypt(by, sealed) })
+      if (r.state === 'readable' || r.why === 'bad-shape') opened.set(`${h.owner}|${v.event.id}`, r)
+      refused = r.why === 'decrypt-failed'
+      h.views.set(pk, r.state === 'cant-tell' && r.why === 'decrypt-failed' ? { ...r, event: v.event } : r)
+    }
+  } finally {
+    go.disabled = false; st.textContent = ''
+    if (hive === h) { for (const key of grid.cells.keys()) paint(key); for (const pk of grid.mentions.keys()) fillMentions(pk); drawOneWay() }
+  }
+}
+$('mention-open').onclick = () => openViews()
 function click(key) {
   const { row, giver, cell } = grid.cells.get(key)
   const why = $('why')
