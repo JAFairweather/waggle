@@ -55,12 +55,13 @@ check. No state is kept between checks.
 1. **The manifest's entries come first,** in manifest order. They always win.
 2. **Then the live mention grants,** sorted by `created_at` and then by event id. Event ids are
    unique, so the order is total even when two grants share a timestamp or arrive out of order.
-3. **For each grant, in that order:**
-   - **The key is already listed.** The grant attaches its id to that entry. It never renames it:
+3. **For each grant, in that order,** checked in this order:
+   - **Its name is already held by another key.** The grant is refused, logged and listed under
+     `refused`. It is never counted as taken, and its id is never attached to any entry. A grant can
+     never redirect `@name` to a different key. The refusal belongs to that grant alone. A key that
+     holds no other entry stays unmentionable, even by hex. A key with its own valid entry keeps it.
+   - **Its key is already listed.** The grant attaches its id to that entry. It never renames it:
      a key has one name, the first it was given.
-   - **The name is already held by another key.** The grant is refused and logged, and its key
-     cannot be mentioned at all, not even by hex. A grant can never redirect `@name` to a
-     different key.
    - **Otherwise** it adds `{ name, pubkey, grants: [id] }`.
 
 Revoking the grant that gave a key its name leaves the next live grant for that key, in the same
@@ -146,9 +147,10 @@ A flagged square, or the row's "Add <G>", drafts one mention grant.
 - **The what-if line** reads "A will be able to mention G as @name".
 - **Signing.** You sign with your Bunker. The page then says "signed, waiting for A to take it".
 
-The flag clears only when a card from A, signed after your grant, lists the grant's own id on G's
-entry. Finding G already listed is not enough: the page proves that A took this exact grant. A card
-signed before the grant counts as pending, never as proof.
+The flag clears only when a card from A lists the grant's own id on G's entry. Finding G already
+listed is not enough: the page proves that A took this exact grant. The grant's id in a signed card
+is the proof, so a card signed in the same second as the grant counts. The page never requires a
+later timestamp. A card older than the grant counts as pending, never as proof.
 
 ### The pair check (later)
 
@@ -189,6 +191,9 @@ Each check can be made by an observer, from the outside:
 3. **After a 441 against that grant,** the refusal and the flag both come back.
 4. **A clashing grant.** A second grant that gives another key an existing name is listed under
    `refused`, and `@name` still resolves to the first key.
+   A key that is already listed under its own name, and then gets a later grant using another
+   key's name, is the same case. That grant is listed under `refused`, and its id is on no entry. The
+   key keeps its own entry.
 5. **A reply-only agent with a mention grant.** A reply that adds G is still refused with
    `NVOY_REPLY_MENTION_NOT_PERMITTED`. Its row shows no flag, and the page offers no fix.
 6. **An unreadable view.** A card whose `owner_view` is missing, or fails a check, shows no flags on
