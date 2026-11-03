@@ -200,12 +200,13 @@ export function answersFor(row, { owner, grantEvents, table }) {
   // nvoy's fold, with the grantors the agent itself attests to. Without a card the page can only
   // assume the owner, and the answer says so.
   const grantors = card ? card.grantors : [owner]
-  const { live } = foldGrantsWith(grantEvents, { me: row.pubkey, grantors, scopeHash: table.hashOf })
+  const { live, ended } = foldGrantsWith(grantEvents, { me: row.pubkey, grantors, scopeHash: table.hashOf })
   const givers = [...live].map(([pubkey, caps]) => ({ pubkey, caps: [...caps.keys()], voice: [...caps.values()].some(g => g.shadow) }))
     .filter(g => g.caps.some(c => c === 'task' || c === 'task+act'))
   const carriers = [...live].filter(([, caps]) => caps.has('task-relay')).map(([pubkey]) => pubkey)
   return {
     fold: live,
+    ended,
     work: { givers, carriers, grantorsFrom: card ? 'card' : 'assumed' },
     act: {
       withoutAsking: givers.filter(g => g.caps.includes('task+act')).map(g => g.pubkey),
