@@ -49,13 +49,15 @@ agent, which does not work at 50 agents. Hermes was missing from the harnesses.
 ## The square
 
 Read across a row to see what each column does when that row gives it work. Every square has
-exactly one of these states, and each comes from something the page already reads.
+exactly one of these five states (the copy mark is a ✓ that says where it came from), and each
+comes from something the page already reads.
 
 | Square | Means | Worked out from |
 |---|---|---|
-| ✓ | **Takes work from it.** | nvoy's fold of the approvals the column counts, or its Buzz allow-list (`cellOf`) |
+| ✓ | **Takes work from it.** | nvoy's fold of the approvals the column counts (`cellOf`) |
+| ✓ with a small "copy" mark | **Your copy says it takes work from it.** Buzz decides for this column, and the page reads your signed copy of Buzz's allow-list, not Buzz's own. | the copy (`cellOf`), which the pair check calls Claimed |
 | ! | **Takes the work, but can't answer back by name.** The row isn't on the column's @mention list, so the column can't bring the row back in. | approved, and the column's list is readable and leaves the row out (`oneWay`) |
-| blank | **Won't act on it.** Nobody has approved it. They can still talk. | not approved (`cellOf`) |
+| blank | **Won't act on it.** Nobody has approved it. | not approved (`cellOf`) |
 | ? | **Not known yet.** One sentence says why, and one button finds out if that's possible. | the column publishes no settings, so its rules are assumed, not read; or Buzz decides and its list hasn't been copied here; or not every relay answered |
 | dashed + or – | **Your change**, not signed yet. It's in the bar. | the page's pending changes |
 
@@ -71,7 +73,10 @@ them, and every square's panel says so in one line:
 - **Whether the post arrives.** That needs each room's member list and the server relay's list
   of who may write. Until the page reads them, a blank square doesn't say whether the column hears
   the row, and a ✓ doesn't say the work reaches it. Once they are read, the blank splits into
-  "hears it, won't act" and "doesn't hear it", and a ✓ whose post can't arrive becomes a "!".
+  "hears it, won't act" and "doesn't hear it", and a ✓ whose post can't arrive gets its own
+  state, ⊘ "approved, but the post can't reach it". ⊘ is not "!": the two can both be true, and
+  ⊘ wins the square because an answer back doesn't matter if the work never arrives. The panel
+  lists both reasons.
 - **Whether it is connected right now.** That waits for the presence event (#690).
 
 ### Clicking a square
@@ -81,7 +86,8 @@ The side panel is headed "A → B" and shows:
 - **When A writes to B**: the square's answer in large type, then up to three reasons, each one
   line:
   - the approval: "You let A give B work", "Nobody has let A give B work", "Luke approved this,
-    not you", or "Your change, not signed yet";
+    not you", "Your copy of Buzz's list says B takes work from A. Buzz's own list isn't read.", or
+    "Your change, not signed yet";
   - answering back: "B can @mention A back as @a", "A isn't on B's @mention list, so B can't
     bring A back in by name", "B keeps who it can @mention private to you", or "B doesn't publish
     its settings, so who it takes work from is assumed, not read";
@@ -169,7 +175,7 @@ Each step is its own PR, reviewed in #waggle-test and merged once approved.
 2. **Hermes and the Add an agent page.** Add `hermes` to waggle's harness list, and ask nvoy to
    accept `hermes` in the setup request. Add an agent moves to its own page, with step 6 as
    search and chips.
-3. **The square.** The grid draws the six states. Clicking a square or a name opens the side
+3. **The square.** The grid draws the five states. Clicking a square or a name opens the side
    panel. The "What happens if" panel, the pair-check panel, the mention-list section and "About
    this list" all go.
 4. **Built for 50.** Find an agent focuses one row and column, groups fold, and the
@@ -177,7 +183,7 @@ Each step is its own PR, reviewed in #waggle-test and merged once approved.
 5. **Needs you.** Add the Hidden from you and Stopped cards.
 6. **Who is in each room.** Read each room's member list and the server relay's writer list. Then
    groups become channels, the blank square splits into "hears it" and "doesn't hear it", and a ✓
-   whose post can't arrive becomes a "!". This step needs its own design check first: which
+   whose post can't arrive becomes ⊘. This step needs its own design check first: which
    relay serves each list, and what the page does when one doesn't answer.
 
 ## Done when
