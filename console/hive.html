@@ -240,7 +240,7 @@ import { followsOf, writerKey, draftFollow, applyFollow } from './hive-following
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
 import { viewsFor, openOwnerView, oneWay, oneWayLine, mentionLines, mentionGrantsOf, mentionStatus, nameClash, mentionWhatIf, PUBLIC_NAME, PENDING, ownGrantsOn } from './owner-view.mjs'
-import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK, RUNS_LOGO } from './hive-list.mjs'
+import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK, RUNS_LOGO, RUNS_ON } from './hive-list.mjs'
 
 // The bridge publishes its roster to these relays and reads its commands from them.
 const ROSTER_RELAYS = BRIDGE_RELAYS
@@ -374,7 +374,10 @@ async function load({ owner: rememberedOwner = null } = {}) {
     drawCoverage()
     draw(rows, needs, owner, partial, posting)
     // Add an agent's "Same as …" reads who gives each agent work from here, in this tab. Public keys only.
-    try { sessionStorage.setItem(HANDOFF, JSON.stringify({ owner, givers: Object.fromEntries(rows.filter(r => r.answers?.work).map(r => [r.pubkey, r.answers.work.givers.map(g => g.pubkey)])) })) } catch { /* private mode: the button says to open the hive */ }
+    // `complete` is false after a short read, so Same as stays off; `hive` is everyone the grid draws.
+    try { sessionStorage.setItem(HANDOFF, JSON.stringify({ owner, complete: !(partial.approvals || partial.keys),
+      hive: rows.filter(r => !r.isOwner).map(r => ({ pubkey: r.pubkey, label: rowName(r), where: RUNS_ON[r.pubkey] || (r.card ? 'an agent of yours' : 'in your hive') })),
+      givers: Object.fromEntries(rows.filter(r => r.answers?.work).map(r => [r.pubkey, r.answers.work.givers.map(g => g.pubkey)])) })) } catch { /* private mode: the button says to open the hive */ }
     drawFollowing(rosterState, profiles, bridge)
     st.className = 'status ok'
     st.textContent = `Read ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${rows.length} identities · ${partial.approvals || partial.keys || partial.active ? 'not every relay answered in full' : 'every relay answered'}${partial.active ? ', so the Active ticks are locked and the Buzz columns unknown until a full read' : ''}${posting ? ` · posts counted by the bridge at ${new Date(posting.at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : bridge ? '' : ' · no bridge key saved, so no post counts: paste it on Config'}`

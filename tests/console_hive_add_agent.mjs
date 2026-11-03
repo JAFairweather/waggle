@@ -19,7 +19,7 @@ import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nos
 import * as nip44 from 'nostr-tools/nip44'
 import { readFileSync } from 'node:fs'
 import { HARNESSES, agentName, draftAddAgent, draftBind, readBack, requestD, sendRequest, sealedShape, SETUP_KIND } from '../console/hive-add-agent.mjs'
-import { STEPS, NOT_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, sameAs, HANDOFF } from '../console/add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, sameAs, handoffState, hiveChoices, othersThan, HANDOFF } from '../console/add-agent-flow.mjs'
 import { HIVE_RELAY, INVITE_TTL_SECS, joinGate, readHiveTerms, sealInvite, termsFromRead } from '../console/hive-invite.mjs'
 
 const key = () => { const sk = generateSecretKey(); return { sk, pk: getPublicKey(sk) } }
@@ -224,11 +224,31 @@ check(pick.groups.length === 1 && pick.groups[0].id === 'other' && pick.groups[0
 pick = pickerOf(many, { chosen: [], q: 'Agent 7', groups: pickGroups, groupOf })
 check(pick.groups[0].rows.map(r => r.pubkey).join() === 'k7', 'a search matches by name')
 check(pickerOf(many, { q: 'nobody-by-this-name', groups: pickGroups, groupOf }).none, 'a search with no match says so')
-const handoff = { owner: 'o', givers: { mc: ['o', 'k3', 'gone'] } }
+const handoff = { owner: 'o', complete: true, givers: { mc: ['o', 'k3', 'gone'] } }
 check(sameAs(handoff, { owner: 'o', like: 'mc' }, many).join() === 'o,k3', 'Same as copies the agent\'s givers, only those still offered')
 check(sameAs(handoff, { owner: 'x', like: 'mc' }, many) === null, 'another owner\'s hive is not copied')
 check(sameAs(null, { owner: 'o', like: 'mc' }, many) === null && sameAs(handoff, { owner: 'o', like: 'pi' }, many) === null, 'nothing read from the hive: Same as is off')
+check(handoffState({ ...handoff, complete: false }, 'o') === 'partial' && sameAs({ ...handoff, complete: false }, { owner: 'o', like: 'mc' }, many) === null, 'a short read of the hive: Same as is off, so a shorter giver list is never signed')
+check(sameAs({ owner: 'o', givers: handoff.givers }, { owner: 'o', like: 'mc' }, many) === null, 'a handoff that does not say it was read in full counts as short')
+
+// The picker offers everyone the hive grid draws, not only agents with cards.
+const P = key(), Bz = key()
+const hiveHandoff = { owner: O.pk, complete: true, givers: {}, hive: [{ pubkey: P.pk, label: 'Dennis', where: 'in your hive' }, { pubkey: Bz.pk, label: 'Buzz Bee', where: 'Buzz' }, { pubkey: O.pk, label: 'You' }, { pubkey: 'not-a-key', label: 'x' }] }
+check(hiveChoices(hiveHandoff, O.pk).map(c => c.label).join() === 'Dennis,Buzz Bee', "people and Buzz agents with no card are offered; the owner and malformed entries aren't")
+check(hiveChoices(hiveHandoff, X.pk).length === 0 && hiveChoices(null, O.pk).length === 0, "another owner's hive, or none read: nothing extra is offered")
+check(hiveChoices({ ...hiveHandoff, complete: false }, O.pk).length === 2, 'a short read still offers who it did read: offering a giver signs nothing')
+
+// A reload part way through: the new agent's own card is not a duplicate of itself.
+const withSelf = [...installed, { id: 'hr', pubkey: A.pk }]
+check((() => { try { draftAddAgent({ ...flowFields, installed: withSelf }); return false } catch (e) { return /already/.test(e.message) } })(), 'without its read-back request, the same name and key is a duplicate')
+const resumed = othersThan(withSelf, { name: 'hr', agent: A.pk, owner: O.pk, latest: req5 })
+check(resumed.length === installed.length && draftAddAgent({ ...flowFields, installed: resumed }).kind === SETUP_KIND, "with this owner's request for that name and key read back, the page carries on")
+check(othersThan([...installed, { id: 'hr', pubkey: G.pk }], { name: 'hr', agent: A.pk, owner: O.pk, latest: req5 }).length === installed.length + 1, 'another key under the same name is still a duplicate')
+check(othersThan([...installed, { id: 'other', pubkey: A.pk }], { name: 'hr', agent: A.pk, owner: O.pk, latest: req5 }).length === installed.length + 1, 'the same key under another name is still a duplicate')
+check(othersThan(withSelf, { name: 'hr', agent: A.pk, owner: X.pk, latest: req5 }).length === withSelf.length, "a request signed by someone else proves nothing")
+check(othersThan(withSelf, { name: 'hr', agent: G.pk, owner: O.pk, latest: req5 }).length === withSelf.length, 'a request for another key proves nothing')
 check(typeof HANDOFF === 'string' && readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8').includes('sessionStorage.setItem(HANDOFF'), 'the hive writes the handoff Same as reads')
+check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')), 'and marks it short when an approval or key read was short')
 
 if (fails) { console.error(`\nconsole_hive_add_agent: ${fails} failing`); process.exit(1) }
 console.log('\nconsole_hive_add_agent: all passed')

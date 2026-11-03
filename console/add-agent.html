@@ -301,8 +301,10 @@ function face(pk, label) {
 let giverQ = '', folded = {}
 const handoff = () => { try { return JSON.parse(sessionStorage.getItem(HANDOFF) || 'null') } catch { return null } }
 function choices() {
-  return [{ pubkey: owner, label: 'You', where: 'Your Bunker', isOwner: true },
-    ...installed.map(a => ({ pubkey: a.pubkey, label: agentLabel(a), where: RUNS_ON[a.pubkey] || 'an agent of yours' }))]
+  const mine = installed.map(a => ({ pubkey: a.pubkey, label: agentLabel(a), where: RUNS_ON[a.pubkey] || 'an agent of yours' }))
+  const seen = new Set([owner, ...mine.map(c => c.pubkey)])
+  return [{ pubkey: owner, label: 'You', where: 'Your Bunker', isOwner: true }, ...mine,
+    ...hiveChoices(handoff(), owner).filter(c => !seen.has(c.pubkey))]
     .filter(c => c.pubkey && c.pubkey !== form.agent)
 }
 // Redrawing keeps keyboard focus on the same agent's box.
@@ -320,7 +322,10 @@ function drawGivers() {
   likeBtn.textContent = likeAgent ? `Same as ${agentLabel(likeAgent)}` : 'Same as the agent it works like'
   likeBtn.disabled = !same
   why.hidden = !!same
-  why.textContent = likeAgent ? `Open the hive first in this tab; it reads who gives ${agentLabel(likeAgent)} work.` : 'Pick the agent it works like in step 1.'
+  const read = handoffState(handoff(), owner)
+  why.textContent = !likeAgent ? 'Pick the agent it works like in step 1.'
+    : read === 'partial' ? `The hive's last read didn't hear from every relay in full, so someone who gives ${agentLabel(likeAgent)} work may be missing. Read the hive again, then come back.`
+      : `Open the hive first in this tab; it reads who gives ${agentLabel(likeAgent)} work.`
   likeBtn.onclick = () => same && setGivers(same)
   $('giver-none').onclick = () => setGivers([])
   $('chosen-label').textContent = pick.chips.length ? `Can give it work (${pick.chips.length})` : 'Nobody can give it work yet'
@@ -371,7 +376,8 @@ function fields() {
   let agent = pasted
   if (/^nsec1/i.test(pasted)) { $('key').value = ''; throw new Error('That is the private key. Clear it from your clipboard, and paste the npub instead.') }
   if (/^npub1/.test(pasted)) { const d = nip19.decode(pasted); if (d.type !== 'npub') throw new Error('That is not an npub.'); agent = d.data }
-  return { name, agent, harness: form.harness, like: $('like').value, installed: installed.map(a => ({ id: a.id, pubkey: a.pubkey })),
+  const others = othersThan(installed.map(a => ({ id: a.id, pubkey: a.pubkey })), { name, agent, owner, latest })
+  return { name, agent, harness: form.harness, like: $('like').value, installed: others,
     givers: (form.givers || []).filter(pk => pk !== agent) }
 }
 function checkName() {
