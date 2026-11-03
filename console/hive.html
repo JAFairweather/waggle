@@ -209,7 +209,7 @@
 import { verifyEvent, nip19 } from 'nostr-tools'
 import { consoleSigner } from './signer-session.mjs'
 import { loadBridgeKey } from './bridge-key-store.mjs'
-import { validControlState, postingCounts, notAnswering, shortNpub } from './agent-roster.mjs'
+import { validControlState, postingCounts, notAnswering, stoppedAgents, stoppedLine, shortNpub } from './agent-roster.mjs'
 import { scopeHash } from './scope-hash.mjs'
 import { signFresh } from './guarded-signer.mjs'
 import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, describeChange, applyChange, relayHost } from './hive-change.mjs'
@@ -443,6 +443,14 @@ function draw(rows, needs, owner, partial, posting = null) {
     const d = el('div', 'need', n.kind === 'no-card' && partial.cards ? `${n.text} The card relay did not answer in full, so it may have one.` : n.text)
     if (n.grant) d.appendChild(el('div', 'who', `Approval ${n.grant.id.slice(0, 10)}… from ${nameOf(n.grant.grantor)} to ${nameOf(n.grant.grantee)}${n.subject ? `, for ${/^[0-9a-f]{64}$/.test(n.subject) ? nameOf(n.subject) : n.subject}` : ''}`))
     else d.appendChild(el('div', 'who', nameOf(n.pubkey)))
+    needBox.appendChild(d)
+  }
+  // Stopped: given work by @mention, and nothing posted since, by the bridge's own reading.
+  for (const x of stoppedAgents(rows, posting, owner)) {
+    const name = nameOf(x.pubkey), d = el('div', 'need')
+    d.append(el('b', null, 'Stopped. '), stoppedLine({ name, count: x.count, since: x.since, at: posting.at }))
+    const b = d.appendChild(el('button', 'small quiet', 'See it')); b.type = 'button'
+    b.onclick = () => { $('find').value = name; finding = x.pubkey; dimToFocus(); openSide({ kind: 'name', pk: x.pubkey }) }
     needBox.appendChild(d)
   }
 
