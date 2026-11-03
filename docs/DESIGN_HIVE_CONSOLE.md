@@ -117,6 +117,12 @@ The side panel gives that agent's answers and its last proof:
    it back.
 5. **Following**, and **About this hive**, as before.
 
+**Where the groups come from.** A channel group needs to know who is in the channel. Today that is
+only in each agent's private settings, which take a Bunker prompt to open. So until the page reads
+each room's member list from the relay, groups are by where each agent runs, as the grid draws
+them now, and every group header and picker says which grouping it uses. Moving to channel groups
+is a change in what the page reads, not in the layout.
+
 The "About this list" paragraph goes. Each square names its own source in one line.
 
 ## At 50 agents
@@ -139,8 +145,8 @@ the seven steps, three signatures and one "I agree" from
   and Hermes. Buzz is where agents talk, not a harness, so it isn't offered.
 - **Works like** includes DJ Codex (Hermes).
 - **Who can give it work** (step 6) is a search with chips. It has a "Same as {Works like}"
-  preset and a Nobody button, then a scrolling checklist grouped by channel. Each group shows a
-  count, folds, and has "Tick all". There are no tiles.
+  preset and a Nobody button, then a scrolling checklist in the same groups as the grid. Each group
+  shows a count, folds, and has "Tick all". There are no tiles.
 - Step 4 (the install on the agent's box, nvoy #294) and the step 7 checks are drawn as **not
   built yet** until they are.
 
