@@ -20,9 +20,9 @@
 //   node tests/console_owner_view.mjs
 
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent, nip44 } from 'nostr-tools'
-import { sealedFor, viewShape, openOwnerView, oneWay, oneWayLine, mentionLines, REPLY_ONLY, WHY, CARD_KIND, CARD_D } from '../console/owner-view.mjs'
+import { sealedFor, viewsFor, viewShape, openOwnerView, oneWay, oneWayLine, mentionLines, REPLY_ONLY, WHY, CARD_KIND, CARD_D } from '../console/owner-view.mjs'
 import { readCards } from '../console/hive-list.mjs'
-import { cellOf } from '../console/hive-grid.mjs'
+import { cellOf, agentsOf } from '../console/hive-grid.mjs'
 
 let pass = true
 const check = (cond, label) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${label}`); if (!cond) pass = false }
@@ -201,6 +201,19 @@ check(mentionLines({ state: 'reply-only' }, { nameOf, shortKey }).lines[0] === R
 const unread = mentionLines({ state: 'cant-tell', why: 'no-view' }, { nameOf, shortKey })
 check(unread.unknown && unread.lines[0] === `Can't tell who it can mention: ${WHY['no-view']}.`, 'a list that can\'t be read says "can\'t tell who it can mention", and why')
 check(Object.keys(WHY).every(k => typeof WHY[k] === 'string' && WHY[k].length), 'every reason has words')
+
+// A taker with no card (#693 review): the grid shows it because it has work approvals, so it gets a
+// view, reads "can't tell", carries no flag, and is counted as a list that can't be read.
+const cardless = { pubkey: peer.pk, roles: [], card: null, answers: { work: { givers: [{ pubkey: owner.pk, caps: ['task'], voice: false }] } } }
+const shown = agentsOf([cardless]).groups.flatMap(g => g.rows.map(r => r.pubkey))
+check(shown.includes(peer.pk), 'a taker with work approvals and no card is on the chart')
+const noCard = viewsFor({ cards: new Map(), takers: shown, owner: owner.pk, verify: verifyEvent }).get(peer.pk)
+check(noCard?.state === 'cant-tell' && noCard.why === 'no-card', "it gets a view of its own: can't tell, because it has no card")
+check(mentionLines(noCard, { nameOf, shortKey }).lines[0] === `Can't tell who it can mention: ${WHY['no-card']}.`, "its row says can't tell who it can mention, and why")
+check(oneWay({ on: true, giver: owner.pk, agent: peer.pk, view: noCard }) === false, 'and none of its squares is flagged')
+check(oneWayLine([], { nameOf, unread: 1, readable: 0 }) === "1 agent's list can't be read, so it is not checked.", "a chart of cardless takers still says its lists can't be read")
+const kept = viewsFor({ cards: new Map([[peer.pk, { event: null }]]), takers: [peer.pk], owner: owner.pk, verify: verifyEvent }).get(peer.pk)
+check(kept.why === 'no-card', 'a card entry wins over the taker default, and an empty one is no card either')
 
 if (!pass) { console.log('\nconsole_owner_view: FAIL'); process.exit(1) }
 console.log('\nconsole_owner_view: ok')

@@ -56,6 +56,18 @@ export function sealedFor(event, { owner, agent, verify }) {
   return { state: 'sealed', by, sealed, eventId: event.id, signedAt: event.created_at }
 }
 
+// A view for every agent on the chart. A taker with no card reads "can't tell", and carries no flag,
+// as every list that can't be read does. `opened` keeps a list opened once for that exact card event.
+export function viewsFor({ cards, takers = [], owner, verify, opened = new Map() }) {
+  const views = new Map()
+  for (const [pk, card] of cards) {
+    const s = sealedFor(card.event, { owner, agent: pk, verify })
+    views.set(pk, s.state !== 'sealed' ? s : opened.get(`${owner}|${s.eventId}`) || { state: 'cant-tell', why: 'not-opened', event: card.event })
+  }
+  for (const pk of takers) if (!views.has(pk)) views.set(pk, cantTell('no-card'))
+  return views
+}
+
 // The plaintext, held to the form nvoy seals (agent_card.mjs ownerView): every field present, no
 // other field, and the merged list's own rules (one entry per key, one key per name, a refused
 // grant on no entry). Anything else is not a list this page can vouch for.
