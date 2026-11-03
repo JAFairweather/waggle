@@ -216,7 +216,7 @@
   </div>
   <footer class="hive-foot">
     <p><b>About this hive</b> · <a href="/console/config.html">Settings</a> · <a href="/console/setup.html">Set up a new hive</a></p>
-    <p class="note">Still on pages of their own while they move here: <a href="/console/">join requests</a>, <a href="/console/following.html">asking writers to be carried</a>, <a href="/console/routing.html">lanes and moderation</a> and <a href="/console/connect.html">connecting a remote agent</a>.</p>
+    <p class="note">Still on pages of their own while they move here: <a href="/console/">join requests</a>, <a href="/console/routing.html">lanes and moderation</a> and <a href="/console/connect.html">connecting a remote agent</a>.</p>
   </footer>
 </main>
 <script type="module">
@@ -231,7 +231,7 @@ import { gridOf, reachOf, cellOf, cellKey, toggle, squareOf, changeWords, summar
 import { whatIf } from './hive-what-if.mjs'
 import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { BRIDGE_RELAYS } from './hive-bridge.mjs'
-import { controlStateFresh } from './control-state-freshness.mjs'
+import { controlStateFresh, newestFreshControlState } from './control-state-freshness.mjs'
 import { followsOf, writerKey, draftFollow, applyFollow } from './hive-following.mjs'
 import { HARNESSES, agentName, draftAddAgent, readBack, requestD, sendRequest, SETUP_KIND } from './hive-add-agent.mjs'
 import { HIVE_RELAY, readHiveTerms, sealInvite } from './hive-invite.mjs'
@@ -324,7 +324,10 @@ async function load({ owner: rememberedOwner = null } = {}) {
     let roster = [], rosterState = null, posting = null
     if (rosterRead) {
       cover('the bridge roster', rosterRead)
-      rosterState = rosterStates(rosterRead.events, bridge)[0] || null
+      // The shared contract first, so a state dated ahead of this clock never hides a fresh one;
+      // failing that the newest, shown as out of date.
+      const states = rosterStates(rosterRead.events, bridge)
+      rosterState = newestFreshControlState(states) || states[0] || null
       roster = rosterState?.agents || []
       posting = controlStateFresh(rosterState?.observed_at) ? postingCounts(rosterState) : null
     }
@@ -378,7 +381,7 @@ function drawFollowing(state, profiles, bridge) {
   $('following-panel').hidden = false
   const list = $('following-list'); list.textContent = ''
   const live = !!bridge && !!state && controlStateFresh(state.observed_at)
-  const why = !bridge ? 'This browser does not know the waggle bridge key yet, so it cannot read or change who the hive follows.'
+  const why = !bridge ? 'This browser does not know the waggle bridge key yet, so it cannot read or change who the hive follows. Paste it on Config.'
     : !state ? 'The bridge has not published its state, so who the hive follows cannot be read.'
       : !live ? 'The bridge has not published its state for a while, so the list below may be out of date, and changes wait until it does.' : ''
   const follows = followsOf(state)
