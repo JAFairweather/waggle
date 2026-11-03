@@ -73,11 +73,29 @@
   #one-way-pairs .pairline{margin:4px 0;display:flex;flex-wrap:wrap;gap:6px;align-items:baseline}
   #mention-fix{margin:8px 0;padding:10px 12px;border:1px solid var(--line, #ccc);border-radius:8px;display:grid;gap:6px;max-width:34em}
   #mention-fix input{font:inherit;padding:4px 6px;max-width:100%}
-  #pair-answer .pair-summary{margin:8px 0}
-  #pair-answer h3{font-size:14px;margin:14px 0 4px}#pair-answer h4{font-size:12.5px;color:var(--dim);font-weight:600;margin:8px 0 2px}
-  #pair-answer ol{list-style:none;margin:0;padding:0}#pair-answer li{margin:5px 0;padding-left:10px;border-left:3px solid var(--faint);overflow-wrap:anywhere}
-  #pair-answer li.proven{border-left-color:var(--good)}#pair-answer li.claimed{border-left-color:var(--gold)}#pair-answer li.closed{border-left-color:var(--critical)}#pair-answer li.cant-tell{border-left-color:var(--warn)}
-  #pair-answer li.not-drawn{color:var(--faint)}#pair-answer .pc-state{font-weight:600;margin-right:6px}#pair-answer .pc-source{display:block;color:var(--faint);font-size:12px}
+  #pair-panel .pc-title{font:700 24px/1.2 var(--sans);margin:0 0 4px;text-wrap:balance}
+  #pair-panel form{display:flex;flex-wrap:wrap;gap:12px 14px;align-items:flex-end;margin:14px 0 18px}
+  #pair-panel label{display:flex;flex-direction:column;gap:5px;font-size:13px;font-weight:600;color:var(--dim)}
+  #pair-panel select{min-height:44px;padding:0 10px;border-radius:8px;border:1px solid var(--line);background:var(--ground);color:var(--text);font:500 15px var(--sans)}
+  #pair-swap{margin:0;min-width:44px;min-height:44px;padding:0;background:transparent;border:1px solid var(--line);color:var(--dim);font-size:18px}
+  #pair-verdict{margin:0 0 10px auto;font-size:15px;font-weight:600;color:var(--dim);max-width:44ch}#pair-verdict p{margin:0}#pair-verdict p.closed{color:var(--remove)}
+  #pair-lanes{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}
+  #pair-lanes section{flex:1 1 360px;min-width:0;border:1px solid var(--line);border-radius:10px;padding:16px 18px 6px;background:var(--ground)}
+  #pair-lanes h3{font-size:16px;margin:0 0 8px}
+  #pair-lanes ol{list-style:none;margin:0;padding:0}
+  #pair-lanes li{display:flex;gap:12px;align-items:flex-start;padding:11px 0;border-top:1px solid var(--line)}
+  #pair-lanes li.not-drawn{color:var(--faint);font-size:14px;display:block}
+  #pair-lanes .pc-mark{flex:none;width:26px;height:26px;border-radius:50%;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;font:700 13px var(--sans)}
+  #pair-lanes .pc-mark.proven{background:var(--add);color:var(--panel)}
+  #pair-lanes .pc-mark.claimed{border:2px solid var(--add);color:var(--add)}
+  #pair-lanes .pc-mark.closed{background:var(--remove);color:var(--panel)}
+  #pair-lanes .pc-mark.cant-tell{border:2px solid var(--warn);color:var(--warn)}
+  #pair-lanes .pc-mark.not-read{border:2px dashed var(--faint);color:var(--dim)}
+  #pair-lanes .pc-body{display:flex;flex-direction:column;gap:3px;min-width:0;overflow-wrap:anywhere}
+  #pair-lanes .pc-label{font-size:15px;font-weight:600}#pair-lanes .pc-said{font-size:14px;line-height:1.45;color:var(--dim)}
+  #pair-lanes .pc-source{font:400 12px/1.4 var(--mono);color:var(--faint)}
+  #pair-fix{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;justify-content:space-between;margin-top:16px;padding:14px 18px;border-radius:10px;background:var(--remove-ground)}
+  #pair-fix[hidden]{display:none}#pair-fix p{margin:0;font-size:15px;line-height:1.45;max-width:64ch}#pair-fix button{margin:0;min-height:44px}
   #fix-clash{color:var(--remove)}
   button.sq[aria-disabled="true"]:not(.self){cursor:help}
   button.sq:focus-visible{outline:2px solid var(--add);outline-offset:2px}
@@ -227,14 +245,16 @@
     <div id="what-if-answer" role="status"></div>
   </section>
 
-  <section class="panel" id="pair-panel" hidden><h2>Can these two reach each other? <span class="hint">every gate, both ways</span></h2>
-    <p class="note">Pick two keys. Each line says what this page could see, and where it read it. A gate the page has no source for says Not read yet, and never counts toward a yes. Nothing here is sent or signed.</p>
-    <div class="ask">
-      <select id="pair-a" aria-label="First key"></select><span>and</span>
-      <select id="pair-b" aria-label="Second key"></select>
-      <button id="pair-go" class="small">Check</button>
-    </div>
-    <div id="pair-answer" role="status"></div>
+  <section class="panel" id="pair-panel" hidden><h2>Pair check <span class="hint">what this page read, and nothing sent or signed</span></h2>
+    <p class="pc-title">Can these two reach each other?</p>
+    <form id="pair-form">
+      <label>Gives the work<select id="pair-a"></select></label>
+      <button type="button" id="pair-swap" aria-label="Swap who gives and who does the work" title="Swap">⇄</button>
+      <label>Does the work<select id="pair-b"></select></label>
+      <div id="pair-verdict" role="status"></div>
+    </form>
+    <div id="pair-lanes"></div>
+    <div id="pair-fix" hidden><p></p><button type="button"></button></div>
   </section>
 
   <div id="why" role="status"></div>
@@ -263,7 +283,7 @@ import { signFresh } from './guarded-signer.mjs'
 import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, draftMention, mentionName, MENTION_NAME, describeChange, applyChange, relayHost } from './hive-change.mjs'
 import { agentsOf, gridOf, reachOf, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, BUZZ_D, buzzOf, draftBuzz, sameBuzz, buzzWords, isBuzz, day } from './hive-grid.mjs'
 import { whatIf } from './hive-what-if.mjs'
-import { pairCheck, STATES } from './pair-check.mjs'
+import { reachView, STATES } from './pair-check.mjs'
 import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { BRIDGE_RELAYS } from './hive-bridge.mjs'
 import { controlStateFresh, newestFreshControlState } from './control-state-freshness.mjs'
@@ -687,41 +707,52 @@ function drawPair(rows, owner, nameOf, partial) {
     for (const r of list) { const o = el('option', '', upper(nameOf(r.pubkey))); o.value = r.pubkey; sel.appendChild(o) }
     if (list.some(r => r.pubkey === keep)) sel.value = keep
   }
-  if (!$('pair-b').value || $('pair-b').value === $('pair-a').value) $('pair-b').value = list.find(r => r.pubkey !== $('pair-a').value)?.pubkey || ''
-  $('pair-answer').textContent = ''
-  $('pair-go').onclick = () => checkPair(rows, owner, nameOf, partial)
+  if (!list.some(r => r.pubkey === $('pair-a').value)) $('pair-a').value = owner
+  if (!$('pair-b').value || $('pair-b').value === $('pair-a').value) $('pair-b').value = list.find(r => r.pubkey !== $('pair-a').value && r.card)?.pubkey || list.find(r => r.pubkey !== $('pair-a').value)?.pubkey || ''
+  const go = () => checkPair(rows, owner, nameOf, partial)
+  $('pair-a').onchange = $('pair-b').onchange = go
+  $('pair-swap').onclick = () => { const a = $('pair-a').value; $('pair-a').value = $('pair-b').value; $('pair-b').value = a; go() }
+  $('pair-form').onsubmit = e => { e.preventDefault(); go() }
   $('pair-panel').hidden = false
+  go()
   if (location.hash === '#pair') $('pair-panel').scrollIntoView({ block: 'start' })
 }
 function checkPair(rows, owner, nameOf, partial) {
-  const box = $('pair-answer'); box.textContent = ''
-  const [a, b] = [$('pair-a').value, $('pair-b').value].map(pk => rows.find(r => r.pubkey === pk))
-  if (!a || !b) return
-  if (a === b) return box.appendChild(el('div', 'result err', 'Pick two different keys.'))
-  const res = pairCheck(a, b, { owner, nameOf, grants: hive.grants, subjectOf: hive.table.subjectOf, views: hive.views, buzz: hive.buzz, partial })
-  box.appendChild(el('div', `result pair-summary ${res.summary.state === 'closed' ? 'err' : ''}`, upper(res.summary.text)))
-  for (const d of res.directions) {
-    const [from, to] = [upper(nameOf(d.from)), nameOf(d.to)]
-    box.appendChild(el('h3', null, `${from} → ${to}`))
-    for (const [head, lines] of [[`Work in: ${upper(to)} gives ${nameOf(d.from)} work`, d.work], [`Bringing someone in: ${from} brings ${to} in`, d.reach]]) {
-      box.appendChild(el('h4', null, head))
-      const ol = box.appendChild(el('ol'))
-      for (const l of lines) ol.appendChild(pairItem(l, d))
+  const [lanesBox, verdict, fix] = [$('pair-lanes'), $('pair-verdict'), $('pair-fix')]
+  lanesBox.textContent = ''; verdict.textContent = ''; fix.hidden = true
+  const [g, d] = [$('pair-a').value, $('pair-b').value].map(pk => rows.find(r => r.pubkey === pk))
+  if (!g || !d) return
+  if (g === d) { verdict.textContent = 'Pick two different keys.'; return }
+  const res = reachView(g, d, { owner, nameOf, grants: hive.grants, subjectOf: hive.table.subjectOf, views: hive.views, buzz: hive.buzz, partial })
+  for (const v of res.verdict) verdict.appendChild(el('p', v.state === 'closed' ? 'closed' : null, v.text))
+  for (const lane of [res.lanes.work, res.lanes.answer]) {
+    const sec = lanesBox.appendChild(el('section'))
+    sec.appendChild(el('h3', null, upper(lane.title)))
+    const ol = sec.appendChild(el('ol'))
+    const gone = new Set()
+    for (const l of lane.gates) {
+      if (l.notDrawn) { if (!gone.has(l.notDrawn)) ol.appendChild(el('li', 'not-drawn', l.notDrawn)); gone.add(l.notDrawn); continue }
+      ol.appendChild(pairItem(l))
     }
   }
-}
-function pairItem(l, d) {
-  if (l.notDrawn) { const li = el('li', 'not-drawn'); li.append(el('strong', null, `${l.title}: `), l.notDrawn); return li }
-  const li = el('li', l.state)
-  li.append(el('span', 'pc-state', STATES[l.state]), el('strong', null, `${l.title}. `), upper(l.says))
-  if (l.context?.cardSignedAt) li.append(` Its card was last signed ${new Date(l.context.cardSignedAt * 1000).toLocaleString()}; that is not presence.`)
-  if (l.see === 'reverse-approval') li.append(' The other direction\u2019s Approval line is the closest related proof.')
-  li.appendChild(el('span', 'pc-source', `From ${l.source}.`))
-  if (l.fix === 'mention') li.appendChild(action(`Let ${grid.nameOf(d.from)} mention ${grid.nameOf(d.to)}…`, () => openFix(d.from, d.to)))
-  if (l.fix === 'square') {
-    const sq = grid.cells.get(cellKey({ pubkey: d.from }, { pubkey: d.to }))
-    if (sq) li.appendChild(action('Show its square on the grid', () => { sq.button.scrollIntoView({ behavior: 'smooth', block: 'center' }); sq.button.focus({ preventScroll: true }) }))
+  if (res.fix) {
+    fix.querySelector('p').textContent = ''
+    fix.querySelector('p').append(el('strong', null, 'The fix: '), res.fix.text)
+    const b = fix.querySelector('button'); b.textContent = res.fix.button
+    const sq = res.fix.kind === 'square' && grid.cells.get(cellKey({ pubkey: res.fix.agent }, { pubkey: res.fix.giver }))
+    b.onclick = res.fix.kind === 'mention' ? () => openFix(res.fix.agent, res.fix.giver)
+      : () => { if (sq) { sq.button.scrollIntoView({ behavior: 'smooth', block: 'center' }); sq.button.focus({ preventScroll: true }) } }
+    fix.hidden = res.fix.kind === 'square' && !sq
   }
+}
+const MARK = { proven: '✓', claimed: '✓', closed: '✕', 'cant-tell': '?', 'not-read': '?' }
+function pairItem(l) {
+  const li = el('li', l.state)
+  li.appendChild(el('span', `pc-mark ${l.state}`, MARK[l.state])).setAttribute('aria-hidden', 'true')
+  const body = li.appendChild(el('div', 'pc-body'))
+  let said = upper(l.says)
+  if (l.context?.cardSignedAt) said += ` Its card was last signed ${new Date(l.context.cardSignedAt * 1000).toLocaleString()}; that is not presence.`
+  body.append(el('span', 'pc-label', l.label), el('span', 'pc-said', said), el('span', 'pc-source', `${STATES[l.state]} · ${l.source}`))
   return li
 }
 
@@ -877,9 +908,14 @@ function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting, wid
       item(term, partial.cards ? `No agent card, ${PARTIAL}.` : 'No agent card, so not reported.', true)
     if (hive.views.has(r.pubkey)) { grid.mentions.set(r.pubkey, item('Who it can mention · shown to you only', '')); fillMentions(r.pubkey) }
   }
-  const pair = item('Can it reach someone', 'Every gate between it and one other key, both ways.')
+  const pair = item('Can it reach someone', 'Whether one key can give it work, and whether its answer can come back by name.')
   const pairWith = el('button', 'small quiet', 'Check with…'); pairWith.type = 'button'
-  pairWith.onclick = () => { $('pair-a').value = r.pubkey; if ($('pair-b').value === r.pubkey) $('pair-b').value = ''; $('pair-answer').textContent = ''; $('pair-panel').scrollIntoView({ behavior: 'smooth', block: 'start' }); $('pair-b').focus({ preventScroll: true }) }
+  pairWith.onclick = () => {
+    $('pair-b').value = r.pubkey
+    if ($('pair-a').value === r.pubkey) $('pair-a').value = [...$('pair-a').options].find(o => o.value !== r.pubkey)?.value || ''
+    $('pair-b').dispatchEvent(new Event('change'))
+    $('pair-panel').scrollIntoView({ behavior: 'smooth', block: 'start' }); $('pair-a').focus({ preventScroll: true })
+  }
   pair.appendChild(el('div')).appendChild(pairWith)
   const found = item('Can it be found', 'Not checked here yet. Check reads its published name back cold from the public relays.')
   const look = el('button', 'small quiet', 'Check'); look.type = 'button'
