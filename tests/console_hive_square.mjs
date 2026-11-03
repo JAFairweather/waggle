@@ -10,13 +10,15 @@
 //  3. Every panel says the post's arrival and the agent's presence aren't read. No panel claims either.
 //  4. The panel's one button: Let / Stop it / Undo, and a disabled one naming who can change it.
 //  5. The words keep the spec's plain vocabulary.
+//  6. A square's "Show who B can @mention" opens only B's private list; Needs you's "Show it" opens all.
 //
 // Every key is synthetic.
 //
 //   node tests/console_hive_square.mjs
 
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools'
-import { squareOf, panelOf, backOf, ANSWER, GLYPH, LEGEND } from '../console/hive-square.mjs'
+import { readFileSync } from 'node:fs'
+import { panelOf, backOf, listsToOpen, ANSWER, GLYPH, LEGEND } from '../console/hive-square.mjs'
 import { cellOf } from '../console/hive-grid.mjs'
 import { readGrants, scopeTable, answersFor, PLATFORMS } from '../console/hive-list.mjs'
 import { scopeHash } from '../console/scope-hash.mjs'
@@ -138,6 +140,21 @@ const NOT_READ = /(post|your post) reaches .* isn't read yet: that needs each ro
   const back = h.square(pi.pk, mc.pk).sq
   check(backOf(back, { taker: h.row(mc.pk), giver: h.row(pi.pk), ctx: h.ctx }) === "MC Claude → Pi Dog: won't act on it.", 'and back: the reverse square in one line, named the way it runs')
   check(backOf(null, { taker: h.row(pi.pk), giver: h.row(owner.pk), ctx: h.ctx }) === 'Pi Dog → you: you take no work through this page.', 'and back, to a key with no column: says so')
+}
+
+// ── 6. One square opens one list ─────────────────────────────────────────────────────────────────
+{
+  const sealed = { state: 'cant-tell', why: 'not-opened', event: { id: 'e' } }
+  const views = new Map([[mc.pk, sealed], [pi.pk, { ...sealed, event: { id: 'f' } }], [luke.pk, readable([])]])
+  const h = await hive([piTasksMc], { views })
+  const p = h.square(mc.pk, pi.pk)
+  check(p.showPrivate, "MC Claude's square offers to show its private list")
+  const one = listsToOpen(views, mc.pk)
+  check(one.length === 1 && one[0][0] === mc.pk, "with two private lists, the square's button asks for MC Claude's alone")
+  check(listsToOpen(views).map(([pk]) => pk).sort().join() === [mc.pk, pi.pk].sort().join(), "Needs you's Show it asks for both, and never a readable one")
+  check(listsToOpen(views, luke.pk).length === 0, 'a square whose list is already read asks for nothing')
+  const page = readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
+  check(/show\.onclick = \(\) => openViews\(row\.pubkey\)/.test(page) && /\$\('hidden-go'\)\.onclick = \(\) => openViews\(\)/.test(page), "the page passes the square's taker, and Needs you passes no one")
 }
 
 if (!pass) { console.error('\nconsole_hive_square: FAILURES ABOVE'); process.exit(1) }

@@ -138,6 +138,12 @@ export function buttonOf(sq, { cell, change, a, b, ctx }) {
   return { label: give, disabled: true }
 }
 
+// The private lists to ask the signer to open: every one for Needs you's "Show it", and only the
+// taker's for a square's "Show who B can @mention".
+export function listsToOpen(views, only = null) {
+  return [...views].filter(([pk, v]) => v.state === 'cant-tell' && v.event && (!only || pk === only))
+}
+
 // "And back": the reverse square's answer in one line.
 export function backOf(rev, { taker, giver, ctx }) {
   const a = ctx.nameOf(taker.pubkey), b = ctx.nameOf(giver.pubkey)

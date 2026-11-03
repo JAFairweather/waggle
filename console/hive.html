@@ -214,7 +214,7 @@ import { scopeHash } from './scope-hash.mjs'
 import { signFresh } from './guarded-signer.mjs'
 import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, describeChange, applyChange, relayHost } from './hive-change.mjs'
 import { agentsOf, gridOf, reachOf, cellOf, cellKey, toggle, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, BUZZ_D, buzzOf, draftBuzz, sameBuzz, buzzWords, isBuzz, day } from './hive-grid.mjs'
-import { squareOf as stateOf, panelOf, backOf, GLYPH, ANSWER, LEGEND } from './hive-square.mjs'
+import { squareOf as stateOf, panelOf, backOf, GLYPH, ANSWER, LEGEND, listsToOpen } from './hive-square.mjs'
 import { findAgents, focusOf, focusLines, groupLine, foldedAtStart } from './hive-focus.mjs'
 import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { BRIDGE_RELAYS } from './hive-bridge.mjs'
@@ -737,10 +737,11 @@ function withdrawMention(g) {
   const agent = hive.table.subjectOf(g.hash)
   return { key: `withdraw:${g.id}`, sign: '–', words: describeChange({ action: 'withdraw', grant: g, agent }, grid.nameOf), draft: () => [draftRevoke({ grantId: g.id })] }
 }
-const openable = () => [...hive.views].filter(([, v]) => v.state === 'cant-tell' && v.event)
+const openable = () => listsToOpen(hive.views)
 // One request to the owner's signer per sealed list, in turn, and none after the first it refuses.
-async function openViews() {
-  const h = hive, todo = openable(), st = $('hidden-status'), go = $('hidden-go')
+// With `only`, just that agent's list: a square's button opens its taker's, never the rest.
+async function openViews(only = null) {
+  const h = hive, todo = listsToOpen(h.views, only), st = $('hidden-status'), go = $('hidden-go')
   if (!todo.length) return
   const mark = why => { for (const [pk] of todo) if (h.views.get(pk).state !== 'readable') h.views.set(pk, { state: 'cant-tell', why, event: h.views.get(pk).event }) }
   go.disabled = true; st.textContent = 'Asking your signer…'
@@ -912,7 +913,7 @@ function drawSide() {
     go.disabled = !!p.button.disabled
     go.onclick = () => change(side.key)
   }
-  if (p.showPrivate) { const show = body.appendChild(el('button', 'small quiet', `Show who ${b} can @mention`)); show.type = 'button'; show.onclick = () => openViews() }
+  if (p.showPrivate) { const show = body.appendChild(el('button', 'small quiet', `Show who ${b} can @mention`)); show.type = 'button'; show.onclick = () => openViews(row.pubkey) }
   if (p.sq.kind !== 'self') {
     const back = cellKey(giver, row), rev = grid.cells.get(back)
     const line = body.appendChild(el('p', 'back'))
