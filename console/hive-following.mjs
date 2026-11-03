@@ -8,7 +8,7 @@
 // "Done" is the bridge's next published state showing the change, read back cold. A relay's OK is
 // only "sent".
 
-import { requireFreshControlState } from './control-state-freshness.mjs'
+import { controlStateFresh, requireFreshControlState } from './control-state-freshness.mjs'
 import { sameAsDrafted, publishTo, relayHost } from './hive-change.mjs'
 
 export const WATCHLIST_D = 'waggle-watchlist'
@@ -41,10 +41,11 @@ export function draftFollow({ bridge, target, follow, now = Math.floor(Date.now(
 }
 
 // Done when a state newer than the one the change was drafted against shows it.
-export function followVerdict(template, before, after) {
+// Only a fresh state counts: one dated far ahead could otherwise read as "done" before the bridge has seen the change.
+export function followVerdict(template, before, after, now = Math.floor(Date.now() / 1000)) {
   const { action, target } = JSON.parse(template.content)
   const want = action === 'mirror'
-  const newer = after.filter(s => s.observed_at > before.observed_at)
+  const newer = after.filter(s => controlStateFresh(s?.observed_at, now) && s.observed_at > before.observed_at)
   const done = newer.some(s => followsOf(s).includes(target) === want)
   return { done, text: done ? (want ? 'Done. The hive now follows them.' : 'Done. The hive no longer follows them.')
     : newer.length ? 'Not done. The bridge published its state after the change, and it does not show it. It may have refused it.'

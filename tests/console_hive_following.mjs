@@ -93,6 +93,14 @@ check(await rejects(run(t, { sign: signAs(O), connect: relays({ [URLS[0]]: 'down
 }
 check(followVerdict(draftFollow({ bridge: B.pk, target: W.pk, follow: false }), state(now - 30, [W.pk]), [state(now, [])]).done === true, 'a stop is done when a newer state no longer lists them')
 check(/may have refused/.test(followVerdict(t, before, [state(now, [])]).text), 'a newer state without the change says the bridge may have refused it')
+{
+  const ahead = state(now + 3600, [W.pk])
+  check(followVerdict(t, before, [ahead], now).done === false && /Not shown yet/.test(followVerdict(t, before, [ahead], now).text), 'a far-future state alone is not done: it is outside the freshness rule')
+  check(followVerdict(t, before, [state(now, []), ahead], now).done === false, 'a fresh state without the change beside a far-future one with it: not done')
+  check(followVerdict(t, before, [ahead, state(now, [W.pk])], now).done === true, 'a fresh state with the change beside a far-future one: done')
+  const r = await run(t, { sign: signAs(O), connect: relays({}).connect, readStates: async () => [before, ahead] })
+  check(r.verdict.done === false && /Not shown yet/.test(r.text), 'the Follow flow does not report done from a far-future state')
+}
 check(followsOf({ follows: [{ pubkey: W.pk }, { pubkey: 'nope' }, { pubkey: W.pk }] }).join() === W.pk, 'the list keeps only real keys, once each')
 
 // ── 5. The page ─────────────────────────────────────────────────────────────────────────────────
