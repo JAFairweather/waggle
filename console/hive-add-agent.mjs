@@ -74,3 +74,11 @@ export async function sendRequest(template, { sign, owner, verify, connect, rela
   if (!accepted.length) throw new Error('No relay accepted the request. Nothing was sent to the fleet.')
   return { signed, accepted: accepted.length, text: `Sent. ${accepted.length} of ${relays.length} relays have it (${accepted.map(p => relayHost(p.url)).join(', ')}).` }
 }
+
+// The cold read-back counts only the very event that was sent, signed by the owner, with a valid signature.
+export function readBack(events, signed, { owner, verify }) {
+  return events.some(e => {
+    if (e?.id !== signed.id || e.pubkey !== owner || e.kind !== SETUP_KIND) return false
+    try { return verify(e) === true } catch { return false }
+  })
+}

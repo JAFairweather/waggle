@@ -219,7 +219,7 @@ import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-
 import { BRIDGE_RELAYS } from './hive-bridge.mjs'
 import { controlStateFresh } from './control-state-freshness.mjs'
 import { followsOf, writerKey, draftFollow, applyFollow } from './hive-following.mjs'
-import { HARNESSES, agentName, draftAddAgent, requestD, sendRequest, SETUP_KIND } from './hive-add-agent.mjs'
+import { HARNESSES, agentName, draftAddAgent, readBack, requestD, sendRequest, SETUP_KIND } from './hive-add-agent.mjs'
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
 import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK, RUNS_LOGO } from './hive-list.mjs'
@@ -411,6 +411,8 @@ $('follow-go').onclick = () => {
 
 // ── Add an agent (#649, nvoy #289): one signed setup request the fleet's nvoy-onboard carries out. ──
 let addHarness = 'claude-code'
+// Who gives the new agent work: You, until the owner changes it. A later hive read keeps their choice, even none.
+let addGivers = null
 function drawAdd(rows, owner) {
   $('add-panel').hidden = false
   const installed = rows.filter(r => r.card?.instance)
@@ -424,10 +426,12 @@ function drawAdd(rows, owner) {
     b.append(document.createTextNode(label))
     b.onclick = () => { addHarness = id; for (const x of runs.children) x.setAttribute('aria-pressed', String(x === b)) }
   }
-  const givers = $('add-givers'), ticked = new Set([...givers.querySelectorAll('input:checked')].map(x => x.value)); givers.textContent = ''
+  if (!addGivers) addGivers = new Set([owner])
+  const givers = $('add-givers'); givers.textContent = ''
   for (const r of [{ pubkey: owner, you: true }, ...installed]) {
     const l = givers.appendChild(el('label')), box = l.appendChild(el('input')); box.type = 'checkbox'; box.value = r.pubkey
-    box.checked = ticked.size ? ticked.has(r.pubkey) : !!r.you
+    box.checked = addGivers.has(r.pubkey)
+    box.onchange = () => { if (box.checked) addGivers.add(r.pubkey); else addGivers.delete(r.pubkey) }
     if (!r.you) l.append(face(r.picture))
     l.append(document.createTextNode(r.you ? 'You' : rowName(r)))
   }
@@ -453,7 +457,7 @@ $('add-go').onclick = async () => {
       connect: url => new WebSocket(url), relays: GRANT_RELAYS, onStep: step => { st.textContent = `Setup request: ${step}…` } })
     // Read it back cold, as the fleet will.
     const back = await read(GRANT_RELAYS, { kinds: [SETUP_KIND], authors: [hive.owner], '#d': [requestD(name, 'add_agent')], limit: 4 })
-    const seen = back.events.some(e => e.id === sent.signed.id)
+    const seen = readBack(back.events, sent.signed, { owner: hive.owner, verify: verifyEvent })
     st.className = seen ? 'status ok' : 'status'
     st.textContent = `${sent.text} ${seen ? 'Read back from the relays.' : 'Not read back yet; read the hive again in a minute.'}`
     next.textContent = ''

@@ -5,11 +5,12 @@
 //  3. bind_runtime carries the public channel key only; a private one never reaches a draft.
 //  4. Sending refuses an edited or foreign-key event before anything is published, and a relay OK
 //     is reported as "sent", never as done.
+//  5. The cold read-back counts only the sent event, by the owner, with a valid signature.
 //
 //   node tests/console_hive_add_agent.mjs
 
 import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
-import { agentName, draftAddAgent, draftBind, requestD, sendRequest, SETUP_KIND } from '../console/hive-add-agent.mjs'
+import { agentName, draftAddAgent, draftBind, readBack, requestD, sendRequest, SETUP_KIND } from '../console/hive-add-agent.mjs'
 
 const key = () => { const sk = generateSecretKey(); return { sk, pk: getPublicKey(sk) } }
 const O = key(), X = key(), A = key(), G = key()
@@ -53,15 +54,25 @@ const relays = ['wss://a.example', 'wss://b.example']
 const sockets = []
 const connect = url => { const ws = { url, sent: [], close() {}, send(data) { this.sent.push(JSON.parse(data)); const ev = this.sent[0][1]; setTimeout(() => this.onmessage({ data: JSON.stringify(['OK', ev.id, url.includes('a.'), url.includes('a.') ? '' : 'blocked']) }), 0) } }; sockets.push(ws); setTimeout(() => ws.onopen(), 0); return ws }
 const opts = { owner: O.pk, verify: verifyEvent, connect, relays, timeoutMs: 500 }
-const sent = await sendRequest(add, { ...opts, sign: async t => finalizeEvent(t, O.sk) })
+const sent = await sendRequest(add, { ...opts, sign: async t => finalizeEvent({ ...t }, O.sk) })
 check(sent.accepted === 1 && /^Sent\. 1 of 2 relays have it \(a\.example\)\.$/.test(sent.text), 'a relay OK is "sent", never "done"')
 let error = ''
 const before = sockets.length
 try { await sendRequest(add, { ...opts, sign: async t => finalizeEvent({ ...t, tags: [...t.tags, ['giver', X.pk]] }, O.sk) }) } catch (e) { error = e.message }
 check(/not the one shown/.test(error) && sockets.length === before, 'an edited event is refused, nothing published')
 error = ''
-try { await sendRequest(add, { ...opts, sign: async t => finalizeEvent(t, X.sk) }) } catch (e) { error = e.message }
+try { await sendRequest(add, { ...opts, sign: async t => finalizeEvent({ ...t }, X.sk) }) } catch (e) { error = e.message }
 check(/different key/.test(error) && sockets.length === before, 'a foreign signer is refused, nothing published')
+
+// ── 5. Reading it back ──────────────────────────────────────────────────────────────────────────
+// Relays hand back parsed JSON, so build each case from a fresh plain copy: verifyEvent caches its answer on the object.
+const mine = sent.signed, plain = () => JSON.parse(JSON.stringify(mine)), back = { owner: O.pk, verify: verifyEvent }
+check(readBack([plain()], mine, back), 'the sent event, read back, counts')
+check(!readBack([{ ...plain(), sig: '0'.repeat(128) }], mine, back), 'the same id with a bad signature does not count')
+check(!readBack([{ ...plain(), content: 'x' }], mine, back), 'the same id over edited content does not count')
+const foreign = JSON.parse(JSON.stringify(finalizeEvent({ kind: add.kind, created_at: add.created_at, tags: add.tags, content: '' }, X.sk)))
+check(!readBack([{ ...foreign, id: mine.id }], mine, back), 'a different signer under the same id does not count')
+check(!readBack([foreign], mine, back) && !readBack([], mine, back), 'another event, or nothing, does not count')
 
 if (fails) { console.error(`\nconsole_hive_add_agent: ${fails} failing`); process.exit(1) }
 console.log('\nconsole_hive_add_agent: all passed')
