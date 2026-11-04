@@ -73,7 +73,10 @@ them, and every square's panel says so in one line:
 - **Whether the post arrives.** That needs each room's member list. Until the page reads it, a
   blank square doesn't say whether the column hears the row, and a ✓ doesn't say the work reaches
   it. Once it is read, the blank splits into "hears it, won't act" and "not in any room you can
-  see with it". Rooms the owner isn't in can't be read, so a flat "doesn't hear it" is never
+  see with it". "Hears it" draws a ring on a pale blue ground, so it shows across the grid at a
+  glance; "not in any room you can see" stays the plain blank. So does a pair whose list
+  wasn't read or trusted, so the legend's blank keeps "won't act on it" and only the square's
+  panel says which. Rooms the owner isn't in can't be read, so a flat "doesn't hear it" is never
   drawn (see "Who is in each room"). A ✓ whose post can't arrive would get its own state, ⊘
   "approved, but the post can't reach it", but only once the page has a read that proves a post
   is refused. ⊘ is not "!": the two can both be true, and ⊘ wins the square because an answer
