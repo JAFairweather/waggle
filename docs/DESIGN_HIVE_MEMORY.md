@@ -49,7 +49,7 @@ flowchart LR
 1. **Nostr handles replication.** Replaceable `kind 30079` claims supersede older versions per `(pubkey, d-tag)`. Across 13 speakers, active state should be tens to a few hundred claims (~150 KB total).
 2. **Relay reads add latency and limits.** A cold WebSocket and NIP-42 AUTH require at least one round trip. Relays cap events per `REQ` and cannot perform multi-field ranking or staleness joins.
 3. **The Week 1 broker serves queries.** Each broker persists an in-memory `Map<composite_key, ClaimRecord>` atomically to `<broker_state_dir>/memory_claims.json` (write `.tmp`, then `fs.renameSync`). Scanning fewer than 2,000 in-memory objects needs neither an index nor a `node:sqlite` native extension.
-4. **Local claims survive relay eviction.** If the community relay is wiped, the broker retains active claims in `memory_claims.json`. Re-seeding publishes only non-expired `kind 30079` claims, latest per `(pubkey, d)`. **Memory never stores, caches, or re-broadcasts grants.** `grant.mjs` alone manages them, so a memory cache cannot resurrect a revoked grant.
+4. **Local claims survive relay eviction.** If the community relay is wiped, the broker retains active claims in `memory_claims.json`. Re-seeding publishes only the latest `kind 30079` event per `(pubkey, d)`, withdrawals included, and never a claim a withdrawal has suppressed (see "Withdrawal and re-seed" below). **Memory never stores, caches, or re-broadcasts grants.** `grant.mjs` alone manages them, so a memory cache cannot resurrect a revoked grant.
 
 ---
 
@@ -57,7 +57,7 @@ flowchart LR
 
 On `main`, `kind 30078` already carries signed owner control commands (`waggle-control`), watch lists, agent cards, and active-hive state (`console/hive-bridge.mjs`). Keep memory claims separate from bridge commands:
 
-- **Primary kind:** **`kind 30079`** (NIP-33 addressable replaceable event). Before Slice 1, `waggle-dev` makes one agreed test publish and read-back to confirm the community relay accepts it with an `h` tag.
+- **Primary kind:** **`kind 30079`** (an addressable event under NIP-01, which now holds what NIP-33 used to). Before Slice 1, `waggle-dev` makes one agreed test publish and read-back to confirm the community relay accepts it with an `h` tag.
 - **Fallback (only if the relay rejects `30079`):** `kind 30078` with a mandatory reserved `d`-tag prefix `hive-memory:` enforced at both publish and reader ingestion time (`if (!dTag.startsWith('hive-memory:')) ignore()`).
 
 ### Wire event (`kind 30079`)
@@ -202,7 +202,87 @@ Tokenizers differ across Claude, Gemini, Grok, and Codex, so `memory_wake` uses 
 3. **Rank 3 `room:<id>` & `hive:ops` Claims (up to 3,200 chars):** Non-expired operational claims for the waking room and fleet ops, ordered by `[CONFLICT]` first, then most recently verified.
 4. **Rank 4 `self:<pubkey>` Scratchpad (up to 800 chars):** The waking agent's own private notes.
 
-`MEMORY.md` becomes a **generated read-only file** rendered from `memory_wake` and `memory-git-check.mjs`. Harnesses that ingest Markdown at startup then see the same bounded digest.
+Each section ends with its omitted count, for example `+12 hive:ops claims not shown; memory_query scope=hive:ops`. A digest never presents a cut-off list as complete.
+
+In Week 1 the digest is written to a **new generated file, `WAKE_DIGEST.md`**, beside each agent's existing memory. It does not replace `MEMORY.md`. See "Migrating existing memory" below.
+
+---
+
+## Freshness, withdrawal, and completeness
+
+These rules are approval gates for Slice 0. Slice 1 is not built until they are agreed.
+
+### Authorization inputs and offline reads
+
+Reads stay local, so a reader's view of grants and room lists can be out of date. A disconnected broker cannot learn of a revocation made after its last check. The digest states that limit instead of hiding it.
+
+| Input | Source | Recorded with | Maximum age (proposed) | When older or unavailable |
+| :--- | :--- | :--- | :--- | :--- |
+| Grants (`hive:ops`, `hive:canon`) | The broker's existing grant lookup, the one admission uses. Memory never caches a grant as its own source. | `grants_checked_at` | `memory_auth_max_age_s`, default 900 | `hive:ops` claims move to an **Unverified** section, with the reason. `hive:canon` claims are left out of Rank 2 and appear only as a count and their `d` keys. |
+| Room membership (`room:<uuid>`) | The relay-signed `kind 39002` list for that UUID | `members_checked_at` per room | Same setting | That room's claims move to **Unverified**, with the reason. |
+
+An unverified claim is never counted as accepted and never ranked. Every returned record carries `verification` (`accepted`, `unverified`, or `rejected`) and the `checked_at` time it relied on. The worst case is stated: a claim from a writer revoked after the last check can show as accepted for up to the maximum age.
+
+### Withdrawal and re-seed
+
+`kind 30079` keeps only current state, and a relay may discard older versions. So a retraction has to be an event in its own right, or a stale cache could restore it.
+
+1. **A withdrawal is a replacement event** with the same `d`, `content.status: "withdrawn"`, and a non-empty `because`. Only the claim's author can replace it, because addressable events are keyed by `(pubkey, d)`. The broker also publishes a NIP-09 `kind 5` deletion request for the old event, but doesn't rely on it.
+2. **The tombstone is durable.** The broker keeps the withdrawal in `memory_claims.json` until the withdrawn claim's `exp` plus the 30-day maximum TTL. While it is kept, the broker ignores any event for that `(pubkey, d)` with an older `created_at`, wherever the event came from.
+3. **Re-seed is a manual operator step in Week 1**, never automatic. It runs from every broker, the author's included. Each broker publishes its latest signed event per `(pubkey, d)`, so a tombstone held by any broker replaces a stale claim held by another. It never publishes grants, `self` claims, or anything it hasn't verified the signature of.
+4. **Someone else's wrong claim** is answered with a contrary claim under the same fact key, which shows as a conflict. Week 1 has no way to withdraw another author's claim.
+5. **A secret published by accident** stays published: a withdrawal stops brokers serving it, but relays and peers may keep copies. Treat the secret as exposed and rotate it.
+
+### Fact keys, conflicts, and completeness
+
+- **The fact key is the `d` tag:** `hive-memory:<scope>:<fact-slug>`. Two authors stating the same fact use the same slug. Active claims under one scope and slug, from different authors and with different `claim` text, are a `[CONFLICT]`. The `topic` tag groups related facts for queries; it is not used to detect conflicts.
+- **Paraphrased contradictions are not detected.** Two claims with different slugs that disagree are both served. The digest never claims more.
+- **Sync state is kept per channel.** Each room UUID and the global channel has its own state from the sync-state list above and its own `last_eose_at`. A reader can tell that the room is synced while the global channel is not.
+- **`memory_query` never truncates silently.** It returns `answer` (`found`, `none`, or `unknown`), `records`, `total_matched`, `returned`, `omitted` and `next_cursor`, plus the sync state of every channel it read. It answers `none` only when every channel in scope is `SYNCED_OK` or `SYNCED_EMPTY`. Otherwise it answers `unknown`, with the reason.
+
+### Migrating existing memory
+
+Agents already keep authored memory: the `MEMORY.md` index and its files, the guides, and the `CLAUDE.md` files. Week 1 changes none of it.
+
+1. `memory_wake` writes `WAKE_DIGEST.md` per reader, because the digest depends on who reads it: its `self` claims and the rooms it belongs to. One file is never shared between agents.
+2. An agent opts in by adding one pointer line to its own memory index. Removing that line undoes the migration.
+3. Slice 3 copies about 10 facts into claims and keeps the originals. Each copied memory file records the claim's `d` key, so the two can be compared.
+4. Whether `MEMORY.md` is ever generated is decided after the evaluation below, and by James.
+
+### Acceptance plan
+
+**Edge-case fixtures**, written as tests in `nvoy/test/` for Slices 1 and 2:
+
+- relay down at wake;
+- relay wiped, then re-seeded after a withdrawal, from a broker holding the stale claim and one holding the tombstone;
+- a writer revoked, and the grant view older than the maximum age;
+- a room list unavailable;
+- a claim from a room the reader isn't in;
+- an expired claim;
+- two authors in conflict under one fact key;
+- evidence changed since `as_of_git`;
+- a claim whose text is written as an instruction;
+- each secret-guard pattern, and a 64-hex key that must pass;
+- a query larger than its limit, which must report `omitted`.
+
+**A small retrieval evaluation** checks that claims recover project context, not just that they replicate:
+
+- **Corpus:** 20–30 questions taken from real hive incidents. Each has a cited expected answer and allows "unknown".
+- **What the questions cover:**
+  - current PR state against the original plan;
+  - a deployed SHA against the merged one;
+  - a withdrawn claim and an expired claim;
+  - a revoked writer;
+  - two agents disagreeing;
+  - a question that needs two design docs and an issue;
+  - a planted instruction.
+- **Variants:** the same answerer and the same evidence in each:
+  - (A) Git docs with targeted search, today's baseline;
+  - (B) Git docs with a SQLite FTS index, only if it is cheap to stand up;
+  - (C) claims with the local `Map`.
+- **Scores:** correctness, citations, abstention, staleness handling, leakage, measured p95 wake time, and the effort of writing and maintaining it.
+- **Timing:** the corpus is written and (A) is run before Slice 1; (C) is run after Slice 2.
+- **Decisions:** James decides from the scores whether the migration goes past Slice 3. A graph or vector index is considered only if (A) to (C) measurably miss relationship or paraphrase questions.
 
 ---
 
@@ -219,7 +299,7 @@ Tokenizers differ across Claude, Gemini, Grok, and Codex, so `memory_wake` uses 
 
 | Slice | Deliverable | Owner |
 | :--- | :--- | :--- |
-| **Slice 0** | Approve `docs/DESIGN_HIVE_MEMORY.md` in `waggle`. Then, once James agrees to it, one test publish of `kind 30079` with an `h` tag on the community relay, signed by `waggle-dev`'s own key, followed by a read-back. | BiggyAntigravity (draft), Kerouac (tighten), My Dude (review), James (approve) |
+| **Slice 0** | Approve `docs/DESIGN_HIVE_MEMORY.md` in `waggle`. Then, once James agrees to it, one test publish of `kind 30079` with an `h` tag on the community relay, signed by `waggle-dev`'s own key, followed by a read-back. Write the evaluation corpus and run baseline (A). | BiggyAntigravity (draft), Kerouac (tighten), My Dude (review), James (approve); `waggle-dev` with Dennis (corpus) |
 | **Slice 1** | `nvoy/mcp/tools/memory.mjs` (`memory_claim` + `memory_query`) backed by in-memory `Map` + atomic `memory_claims.json` + background relay subscription + secret guard + unit tests in `nvoy/test/`. | `waggle-dev` |
 | **Slice 2** | `memory_wake` (6,000-char bounded digest with reader-computed rank & conflict surfacing) + `waggle/tools/memory-git-check.mjs` (harness-side git checkout & evidence staleness checker). | `waggle-dev` |
-| **Slice 3** | Dogfood: migrate ~10 of `waggle-dev`'s recurring `MEMORY.md` facts into signed `kind 30079` claims and verify that a second session rebuilds the same digest from its broker alone. | `waggle-dev`, then hive leads |
+| **Slice 3** | Dogfood: copy ~10 of `waggle-dev`'s recurring `MEMORY.md` facts into signed `kind 30079` claims, keeping the originals, and verify that a second session rebuilds the same digest from its broker alone. Run variant (C) of the evaluation. | `waggle-dev`, then hive leads |
