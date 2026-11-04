@@ -118,7 +118,7 @@ The relay cannot evaluate live grants, and an author could put any rank in its o
 | :--- | :--- | :--- | :--- |
 | **Rank 1: Core Design Docs** | `waggle` git repo (`docs/**` at `origin/main`) | Merged git commits on `origin/main`; handled by the harness, outside the broker's event sorter | **Highest precedence.** Overrides Ranks 2, 3, and 4. |
 | **Rank 2: Standards & Canon** | `CLAUDE.md` in git + `["s", "hive:canon"]` claims | **Writer policy pending James's decision. Proposed rule:** accept claims only from James (`4010ac43`) or a speaker with a live `shadow` grant from James (`Dead Rabbit`, `fab80832`); reject all other authors. This is a proposal, not an approved write rule. | Overrides Ranks 3 and 4. |
-| **Rank 3: Operational & Room** | `["s", "hive:ops"]` or `["s", "room:<room_uuid>"]` | For `hive:ops`: author holds a live grant (`task`, `task+act`, or `shadow`) from James. `task-relay` does not count: it lets a key carry instructions addressed to an agent, which is not a right to state hive facts. For `room:<room_uuid>`: author is an authenticated member of that room (`kind 39002` member list). Must have a valid future `exp` timestamp. | Active runtime state. Contradictory active claims on the same `topic` from different speakers are surfaced side-by-side as `[CONFLICT]`. |
+| **Rank 3: Operational & Room** | `["s", "hive:ops"]` or `["s", "room:<room_uuid>"]` | For `hive:ops`: author holds a live grant (`task`, `task+act`, or `shadow`) from James. `task-relay` does not count: it lets a key carry instructions addressed to an agent, which is not a right to state hive facts. For `room:<room_uuid>`: author is an authenticated member of that room (`kind 39002` member list). Must have a valid future `exp` timestamp. | Active runtime state. Active claims under the same fact key (`d` tag) from different speakers, with different `claim` text, are surfaced side by side as `[CONFLICT]`. See "Fact keys, conflicts, and completeness". |
 | **Rank 4: Self Scratchpad** | `["s", "self:<pubkey>"]` | Accepted **only** when `event.pubkey === reader_pubkey`. | Private to the authoring agent. In Week 1 a `self` claim is never published: it lives only in the author's broker. Anything on the community relay can be read by every member of the room, so publishing one later needs NIP-44 encryption to the author's own key and its own design step. |
 
 The broker sorts only claim events; it does not ingest Git documents or assign them an event rank. The harness applies the Git-document rules: merged `docs/**` at a verified current `origin/main` are Rank 1, and `CLAUDE.md` is a Rank 2 standard alongside accepted canon claims. Before using a claim on a topic governed by a design doc, the harness checks the relevant doc; if they conflict, the doc wins. `memory-git-check.mjs` warns when the checkout is behind or cited evidence changed, but does not detect semantic contradictions. If current docs cannot be verified, the harness cannot claim a Rank 1 check has passed, and memory remains untrusted data. This check adds no relay read to `memory_wake`.
@@ -218,8 +218,10 @@ Reads stay local, so a reader's view of grants and room lists can be out of date
 
 | Input | Source | Recorded with | Maximum age (proposed) | When older or unavailable |
 | :--- | :--- | :--- | :--- | :--- |
-| Grants (`hive:ops`, `hive:canon`) | The broker's existing grant lookup, the one admission uses. Memory never caches a grant as its own source. | `grants_checked_at` | `memory_auth_max_age_s`, default 900 | `hive:ops` claims move to an **Unverified** section, with the reason. `hive:canon` claims are left out of Rank 2 and appear only as a count and their `d` keys. |
+| Grants (`hive:ops`, `hive:canon`) | A background refresh that runs the same query and fold admission uses: grant and revocation events from the grantors, read from the grant relays, signature-checked and folded by `foldGrants` (`nvoy/mcp/tools/attention.mjs`). The folded result is held in memory only. It is never written to disk and never re-published. | `grants_checked_at`, the time of the last refresh in which at least one grant relay answered | `memory_auth_max_age_s`, default 900 | `hive:ops` claims move to an **Unverified** section, with the reason. `hive:canon` claims are left out of Rank 2 and appear only as a count and their `d` keys. |
 | Room membership (`room:<uuid>`) | The relay-signed `kind 39002` list for that UUID | `members_checked_at` per room | Same setting | That room's claims move to **Unverified**, with the reason. |
+
+The grant view is relay-backed: `grant-relays.json` records which relays answered, not signed grant state. So a broker has no grant view until its first refresh after start, and every grant-dependent claim is Unverified until then. A refresh in which no grant relay answers changes nothing; the view keeps aging. A refresh that answers and no longer finds the author's grant live, because of a revocation or because the grant is missing, marks that author's claims `rejected` at once. This is the same answer admission would give at that moment, including the known case where a relay has evicted a grant.
 
 An unverified claim is never counted as accepted and never ranked. Every returned record carries `verification` (`accepted`, `unverified`, or `rejected`) and the `checked_at` time it relied on. The worst case is stated: a claim from a writer revoked after the last check can show as accepted for up to the maximum age.
 
@@ -227,8 +229,8 @@ An unverified claim is never counted as accepted and never ranked. Every returne
 
 `kind 30079` keeps only current state, and a relay may discard older versions. So a retraction has to be an event in its own right, or a stale cache could restore it.
 
-1. **A withdrawal is a replacement event** with the same `d`, `content.status: "withdrawn"`, and a non-empty `because`. Only the claim's author can replace it, because addressable events are keyed by `(pubkey, d)`. The broker also publishes a NIP-09 `kind 5` deletion request for the old event, but doesn't rely on it.
-2. **The tombstone is durable.** The broker keeps the withdrawal in `memory_claims.json` until the withdrawn claim's `exp` plus the 30-day maximum TTL. While it is kept, the broker ignores any event for that `(pubkey, d)` with an older `created_at`, wherever the event came from.
+1. **A withdrawal is a replacement event** with the same `d`, `content.status: "withdrawn"`, and a non-empty `because`. Its `created_at` is strictly later than the claim it withdraws: the broker sets it to the later of now and the claim's `created_at` plus one second. NIP-01 breaks a same-second tie between replaceable events by the lowest event ID, so a same-second tombstone could lose on a relay. The same rule applies to every replacement the broker signs. Only the claim's author can replace it, because addressable events are keyed by `(pubkey, d)`. The broker also publishes a NIP-09 `kind 5` deletion request for the old event, but doesn't rely on it.
+2. **The tombstone is durable.** The broker keeps the withdrawal in `memory_claims.json` until the withdrawn claim's `exp` plus the 30-day maximum TTL. While it is kept, the broker ignores any event for that `(pubkey, d)` that is not strictly newer than the tombstone, wherever the event came from. Between two non-tombstone events the broker applies NIP-01's rule, later `created_at` and then lowest ID, so it agrees with the relays.
 3. **Re-seed is a manual operator step in Week 1**, never automatic. It runs from every broker, the author's included. Each broker publishes its latest signed event per `(pubkey, d)`, so a tombstone held by any broker replaces a stale claim held by another. It never publishes grants, `self` claims, or anything it hasn't verified the signature of.
 4. **Someone else's wrong claim** is answered with a contrary claim under the same fact key, which shows as a conflict. Week 1 has no way to withdraw another author's claim.
 5. **A secret published by accident** stays published: a withdrawal stops brokers serving it, but relays and peers may keep copies. Treat the secret as exposed and rotate it.
@@ -238,7 +240,7 @@ An unverified claim is never counted as accepted and never ranked. Every returne
 - **The fact key is the `d` tag:** `hive-memory:<scope>:<fact-slug>`. Two authors stating the same fact use the same slug. Active claims under one scope and slug, from different authors and with different `claim` text, are a `[CONFLICT]`. The `topic` tag groups related facts for queries; it is not used to detect conflicts.
 - **Paraphrased contradictions are not detected.** Two claims with different slugs that disagree are both served. The digest never claims more.
 - **Sync state is kept per channel.** Each room UUID and the global channel has its own state from the sync-state list above and its own `last_eose_at`. A reader can tell that the room is synced while the global channel is not.
-- **`memory_query` never truncates silently.** It returns `answer` (`found`, `none`, or `unknown`), `records`, `total_matched`, `returned`, `omitted` and `next_cursor`, plus the sync state of every channel it read. It answers `none` only when every channel in scope is `SYNCED_OK` or `SYNCED_EMPTY`. Otherwise it answers `unknown`, with the reason.
+- **`memory_query` never truncates silently.** It returns `answer` (`found`, `none`, or `unknown`), `records`, `total_matched`, `returned`, `omitted` and `next_cursor`, plus the sync state of every channel it read. It also returns `unverified`, the number of matching claims held back because an authorization input was too old or unavailable. It answers `none` only when every channel in scope is `SYNCED_OK` or `SYNCED_EMPTY` **and** `unverified` is 0. Otherwise it answers `unknown`, with the reason.
 
 ### Migrating existing memory
 
@@ -256,10 +258,13 @@ Agents already keep authored memory: the `MEMORY.md` index and its files, the gu
 - relay down at wake;
 - relay wiped, then re-seeded after a withdrawal, from a broker holding the stale claim and one holding the tombstone;
 - a writer revoked, and the grant view older than the maximum age;
+- a broker restarted with no grant refresh yet, whose grant-dependent claims must all be Unverified;
 - a room list unavailable;
+- a query whose only matches are unverified, which must answer `unknown` with `unverified` > 0, never `none`;
+- a withdrawal made in the same second as its claim, which must still win on the relay and in every broker;
 - a claim from a room the reader isn't in;
 - an expired claim;
-- two authors in conflict under one fact key;
+- two authors in conflict under one fact key, and two claims that share a `topic` but have different keys, which must not be marked `[CONFLICT]`;
 - evidence changed since `as_of_git`;
 - a claim whose text is written as an instruction;
 - each secret-guard pattern, and a 64-hex key that must pass;
