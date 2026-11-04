@@ -213,3 +213,45 @@ export function idleOf(needs, { owner, nameOf }) {
       grants: x.needs.map(n => ({ grant: n.grant, words: `withdraw an old approval that let ${deed(x.cap, giver, named(n.subject))}` })) }
   }) }
 }
+
+// Groups once the rooms are read (docs/DESIGN_HIVE_CONSOLE.md, "Groups once the rooms are read"). A
+// room can be a group only if its list was read and trusted and it holds at least two agents the
+// grid shows, not counting you; each agent sits in the smallest such room, ties to the room id that
+// sorts first. You and your voice stay first, the rest go last in "Other agents", and the columns follow the rows.
+// Counted from the grid's own rows, never from what a search or a fold hides, so neither can move
+// anyone. Null when no room can be a group, and the grid stays grouped by where they run.
+export const OTHER_AGENTS = 'Other agents'
+export function roomLinesOf({ lines, takers, quiet }, read) {
+  const you = lines.filter(l => l.platform.id === 'you')
+  const shown = lines.filter(l => l.platform.id !== 'you').flatMap(l => l.rows), keys = new Set(shown.map(r => r.pubkey))
+  const rooms = [...read?.rooms || []].map(([id, members]) => ({ id, members }))
+    .filter(g => [...g.members].filter(k => keys.has(k)).length >= 2)
+    .sort((a, b) => a.members.size - b.members.size || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  if (!rooms.length) return null
+  const homes = new Map(rooms.map(g => [g.id, []])), other = []
+  for (const r of shown) { const g = rooms.find(x => x.members.has(r.pubkey)); (g ? homes.get(g.id) : other).push(r) }
+  const out = [
+    ...you,
+    ...rooms.filter(g => homes.get(g.id).length).map(g => ({ room: g.id, platform: { id: `room:${g.id}`, label: read.names?.get(g.id) || g.id, runs: 'room' }, rows: homes.get(g.id) })),
+    ...other.length ? [{ platform: { id: 'other-agents', label: OTHER_AGENTS }, rows: other }] : [],
+  ]
+  const order = new Map(out.flatMap(l => l.rows).map((r, i) => [r.pubkey, i]))
+  const byRow = [...takers].sort((a, b) => (order.get(a.pubkey) ?? Infinity) - (order.get(b.pubkey) ?? Infinity))
+  return { lines: out, takers: byRow, quiet, columns: [...byRow, ...quiet] }
+}
+
+// The line above the grid: how it is grouped, and the switch if there is one. `read` is whether the
+// rooms were read; `grouped` whether the grid is grouped by them; `possible` whether any room can be
+// a group; `unread` how many rooms' lists weren't read or trusted; `at` the clock time of the read.
+export function groupingLine({ read, grouped, possible = true, unread = 0, at = '' }) {
+  if (!read) return { text: 'Grouped by where they run', button: null }
+  if (!possible) return { text: `Grouped by where they run: no room read at ${at} holds two of these agents`, button: null }
+  if (!grouped) return { text: 'Grouped by where they run', button: 'Group by room' }
+  return { text: unread ? `Grouped by the rooms read, ${at}: ${unread === 1 ? "1 room's list wasn't" : `${unread} rooms' lists weren't`} read` : `Grouped by room, read ${at}`, button: 'Group by where they run' }
+}
+
+// The rooms read and trusted that an agent is in, for its panel. Never every room it is in.
+export function roomsOfAgent(pk, read) {
+  if (!read?.rooms) return null
+  return [...read.rooms].filter(([, m]) => m.has(pk)).map(([id]) => id).sort()
+}

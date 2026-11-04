@@ -165,7 +165,7 @@
   <section class="panel" id="list-panel" hidden>
     <div class="legend" id="legend"></div>
     <p class="footnote" id="ask-note"></p>
-    <p class="footnote" id="rooms-note" hidden><span id="rooms-stamp"></span> <button id="rooms-again" class="small quiet" type="button">Read again</button></p>
+    <p class="footnote" id="grouping"><span id="grouping-words"></span> <button id="grouping-go" class="small quiet" type="button" hidden></button> <button id="rooms-again" class="small quiet" type="button" hidden>Read again</button></p>
     <div class="hive-body" id="hive-body">
     <div class="grid-wrap"><table class="grid">
       <thead><tr id="grid-runs"></tr><tr id="grid-head"></tr></thead>
@@ -217,7 +217,7 @@ import { validControlState, postingCounts, notAnswering, stoppedAgents, stoppedL
 import { scopeHash } from './scope-hash.mjs'
 import { signFresh } from './guarded-signer.mjs'
 import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, describeChange, applyChange, relayHost } from './hive-change.mjs'
-import { agentsOf, gridOf, reachOf, cellOf, cellKey, toggle, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, BUZZ_D, buzzOf, draftBuzz, sameBuzz, buzzWords, isBuzz, day } from './hive-grid.mjs'
+import { agentsOf, gridOf, reachOf, cellOf, cellKey, toggle, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, BUZZ_D, buzzOf, draftBuzz, sameBuzz, buzzWords, isBuzz, day, roomLinesOf, groupingLine, roomsOfAgent } from './hive-grid.mjs'
 import { squareOf as stateOf, panelOf, backOf, GLYPH, ANSWER, LEGEND, listsToOpen } from './hive-square.mjs'
 import { readRooms, roomsOf, roomsNeed, loadRoomRelay, relayKeyFor } from './room-lists.mjs'
 import { findAgents, focusOf, focusLines, groupLine, foldedAtStart } from './hive-focus.mjs'
@@ -430,7 +430,9 @@ $('follow-go').onclick = () => {
 // One name per identity, everywhere on the page (#654): an unnamed voice row is "Your voice".
 const rowName = r => r.name || (r.roles.some(x => x.role === 'voice') ? 'Your voice' : shortNpub(r.pubkey))
 
+let lastDraw = null, groupBy = 'room'
 function draw(rows, needs, owner, partial, posting = null) {
+  lastDraw = [rows, needs, owner, partial, posting]
   const byKey = new Map(rows.map(r => [r.pubkey, r]))
   const nameOf = pk => pk === owner ? 'you' : byKey.has(pk) ? rowName(byKey.get(pk)) : shortNpub(pk)
 
@@ -464,8 +466,10 @@ function draw(rows, needs, owner, partial, posting = null) {
   $('not-read').textContent = `Not read yet: ${NOT_READ.join(', ')}. A key known only to those is not on this list.${short}`
 
   // The grid (#662, #664): a row per identity that gives work, grouped by where it runs, and a column
-  // per agent that takes it, so reading across a row says whom it can give work to.
-  const { lines, takers, quiet, columns } = gridOf(rows, hive.active)
+  // per agent that takes it, so reading across a row says whom it can give work to. Once the rooms
+  // are read, grouped by room instead, unless the owner switches back.
+  const byRuns = gridOf(rows, hive.active), byRoom = hive.rooms ? roomLinesOf(byRuns, hive.rooms) : null
+  const { lines, takers, quiet, columns } = byRoom && groupBy === 'room' ? byRoom : byRuns
   const width = columns.length + 2
   const table = $('list').closest('table'); table.classList.remove('all'); table.parentElement.classList.remove('wide')
   const head = $('grid-head'); head.textContent = ''
@@ -490,7 +494,7 @@ function draw(rows, needs, owner, partial, posting = null) {
   runs.appendChild(el('th', 'runtime'))
   const posts = head.appendChild(el('th', 'posts', 'Posts / hour')); posts.scope = 'col'
   posts.title = 'Posts in the last hour, against the hourly limit for new messages'
-  grid = { cells: new Map(), summaries: new Map(), boxes: new Map(), mentions: new Map(), details: new Map(), nameOf, owner, columns, partial, head: [...head.children], active: activeNow(rows, hive.active) }
+  grid = { cells: new Map(), summaries: new Map(), boxes: new Map(), mentions: new Map(), details: new Map(), nameOf, owner, columns, partial, head: [...head.children], active: activeNow(rows, hive.active), byRoom: !!byRoom && groupBy === 'room', roomsPossible: !!byRoom }
   waiting = new Map(); extras = new Map(); drafted = new Map(); ticks = new Map()
   const list = $('list'); list.textContent = ''
   grid.rows = [...lines.flatMap(l => l.rows), ...quiet]; grid.groups = []
@@ -813,8 +817,10 @@ function drawRooms() {
     $('rooms-words').textContent = need.text
     const go = $('rooms-go'); go.hidden = !need.button; go.textContent = need.button || ''; go.dataset.act = need.act || ''
   }
-  $('rooms-note').hidden = !(r && roomRead.at)
-  if (r && roomRead.at) $('rooms-stamp').textContent = `Rooms read ${clock(roomRead.at)}: ${r.rooms.size} room${r.rooms.size === 1 ? '' : 's'} with a member list signed by your Buzz relay. Rooms you aren't in aren't read.`
+  const line = groupingLine({ read: !!r, grouped: !!grid?.byRoom, possible: !!grid?.roomsPossible, unread: r ? r.unread.size : 0, at: roomRead.at ? clock(roomRead.at) : '' })
+  $('grouping-words').textContent = line.text
+  const go = $('grouping-go'); go.hidden = !line.button; go.textContent = line.button || ''
+  $('rooms-again').hidden = !r
   $('needs-panel').hidden = $('rooms-card').hidden && $('hidden-card').hidden && $('leftovers').hidden && !$('needs').childElementCount
 }
 async function readRoomLists() {
@@ -837,12 +843,24 @@ async function readRoomLists() {
     done('read')
   } finally {
     $('rooms-go').disabled = $('rooms-again').disabled = false
-    if (hive === h && grid) { for (const key of grid.cells.keys()) paint(key); drawLegend(h.buzz); drawSide() }
+    if (hive === h && grid) { if (barState !== 'signing') regroup(); else { for (const key of grid.cells.keys()) paint(key); drawLegend(h.buzz); drawSide() } }
     drawRooms()
   }
 }
 $('rooms-go').onclick = () => $('rooms-go').dataset.act === 'config' ? (location.href = './config.html#room-relay') : readRoomLists()
 $('rooms-again').onclick = () => readRoomLists()
+$('grouping-go').onclick = () => { if (barState === 'signing') return; groupBy = groupBy === 'room' ? 'runs' : 'room'; regroup(); drawRooms() }
+// Draw the grid again after the rooms are read or the grouping switches, keeping the changes waiting
+// to be signed and the panel that is open.
+function regroup() {
+  if (!lastDraw) return
+  const keep = { waiting, extras, drafted, ticks }
+  draw(...lastDraw)
+  ;({ waiting, extras, drafted, ticks } = keep)
+  for (const key of waiting.keys()) if (grid.cells.has(key)) { paint(key); summarize(grid.cells.get(key).giver.pubkey) }
+  for (const [pk, want] of ticks) { const box = grid.boxes.get(pk); if (box) box.checked = want }
+  drawBar(); drawSide()
+}
 // The panel's one button: give, stop, or undo the change waiting on this square.
 function change(key) {
   const { giver, cell } = grid.cells.get(key)
@@ -958,6 +976,10 @@ function drawSide() {
     $('side-kicker').textContent = 'Its answers'
     $('side-title').textContent = r ? upper(rowName(r)) : shortNpub(side.pk)
     body.append(focusView(side.pk), grid.details.get(side.pk))
+    const inRooms = roomsOfAgent(side.pk, hive.rooms)
+    if (inRooms) body.appendChild(el('p', 'source', inRooms.length
+      ? `In the rooms read: ${inRooms.map(id => `“${hive.rooms.names?.get(id) || id}”`).join(', ')}.`
+      : 'In none of the rooms read.'))
     return
   }
   const { row, giver, cell } = grid.cells.get(side.key)
