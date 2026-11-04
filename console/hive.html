@@ -85,6 +85,7 @@
   .sq.add{border:2px dashed var(--add);color:var(--add)}
   .sq.remove{background:var(--remove-ground);border:2px dashed var(--remove);color:var(--remove)}
   .sq.self,.sq.person{border-color:transparent;color:var(--faint)}
+  .sq.none.hears{border-width:2px}.sq.none.unseen{border-style:dotted;border-color:var(--faint)}
   .sq.open{outline:2px solid var(--text);outline-offset:2px}
   .legend .sq.copy::after{content:none}
   /* The side panel: beside the grid on a wide screen, under it on a narrow one. */
@@ -156,12 +157,14 @@
   <section class="panel" id="needs-panel" hidden><h2>Needs you <span class="hint">everything waiting on you, in one place</span></h2>
     <div class="need" id="leftovers" hidden><b>Approvals to tidy.</b> <span id="leftovers-words"></span><button id="leftovers-go" class="small quiet">Withdraw</button></div>
     <div class="need" id="hidden-card" hidden><b>Hidden from you.</b> <span id="hidden-words"></span> <button id="hidden-go" class="small quiet" type="button">Show it</button> <span id="hidden-status" role="status"></span></div>
+    <div class="need" id="rooms-card" hidden><span id="rooms-words"></span> <button id="rooms-go" class="small quiet" type="button"></button> <span id="rooms-status" role="status"></span></div>
     <div id="needs"></div>
   </section>
 
   <section class="panel" id="list-panel" hidden>
     <div class="legend" id="legend"></div>
     <p class="footnote" id="ask-note"></p>
+    <p class="footnote" id="rooms-note" hidden><span id="rooms-stamp"></span> <button id="rooms-again" class="small quiet" type="button">Read again</button></p>
     <div class="hive-body" id="hive-body">
     <div class="grid-wrap"><table class="grid">
       <thead><tr id="grid-runs"></tr><tr id="grid-head"></tr></thead>
@@ -215,6 +218,7 @@ import { signFresh } from './guarded-signer.mjs'
 import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, describeChange, applyChange, relayHost } from './hive-change.mjs'
 import { agentsOf, gridOf, reachOf, cellOf, cellKey, toggle, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, BUZZ_D, buzzOf, draftBuzz, sameBuzz, buzzWords, isBuzz, day } from './hive-grid.mjs'
 import { squareOf as stateOf, panelOf, backOf, GLYPH, ANSWER, LEGEND, listsToOpen } from './hive-square.mjs'
+import { readRooms, roomsOf, roomsNeed, loadRoomRelay, fetchRelayKey } from './room-lists.mjs'
 import { findAgents, focusOf, focusLines, groupLine, foldedAtStart } from './hive-focus.mjs'
 import { parseIntent, resolvePrefix, resolveGrant, resolveRevoke } from './deep-link.mjs'
 import { BRIDGE_RELAYS } from './hive-bridge.mjs'
@@ -346,7 +350,7 @@ async function load({ owner: rememberedOwner = null } = {}) {
     const { rows, needs } = buildList({ owner, grantEvents, grants, table, cards, roster, bridge, profiles })
     const active = activeOf(activeRead, { owner, verify: verifyEvent })
     const buzz = buzzOf(activeRead, { owner, verify: verifyEvent })
-    hive = { owner, grants, table, rows, bridge, rosterState, active: active.keys, activeKnown: active.known, buzz, views: viewsFor({ cards, takers: agentsOf(rows).groups.flatMap(g => g.rows.map(r => r.pubkey)), owner, verify: verifyEvent, opened }), profiles }
+    hive = { owner, grants, table, rows, bridge, rosterState, active: active.keys, activeKnown: active.known, buzz, views: viewsFor({ cards, takers: agentsOf(rows).groups.flatMap(g => g.rows.map(r => r.pubkey)), owner, verify: verifyEvent, opened }), profiles, rooms: hive?.rooms || null }
     const partial = {
       cards: !cardRead.full,
       // A row with no card is folded with the owner alone, so a card that went unread may name other grantors.
@@ -527,6 +531,7 @@ function draw(rows, needs, owner, partial, posting = null) {
   $('partial-note').hidden = !partial.approvals
   for (const pk of grid.mentions.keys()) fillMentions(pk)
   drawHidden()
+  drawRooms()
   $('list-panel').hidden = false
   drawBar()
   // A read again keeps the panel on the same square or name, if the grid still draws it.
@@ -708,9 +713,10 @@ const upper = s => s.startsWith('you') ? `Y${s.slice(1)}` : s
 function paint(key) {
   const { row, giver, button } = grid.cells.get(key)
   const sq = stateOf({ taker: row, giver, change: waiting.get(key) || null, ctx: squareCtx() })
-  button.className = `sq ${sq.kind}${side?.kind === 'square' && side.key === key ? ' open' : ''}`
+  const split = sq.kind === 'none' && sq.hear ? sq.hear : null
+  button.className = `sq ${sq.kind}${split ? ` ${split}` : ''}${side?.kind === 'square' && side.key === key ? ' open' : ''}`
   button.textContent = GLYPH[sq.kind]
-  const label = `${upper(grid.nameOf(giver.pubkey))} → ${grid.nameOf(row.pubkey)}: ${ANSWER[sq.kind]}`
+  const label = `${upper(grid.nameOf(giver.pubkey))} → ${grid.nameOf(row.pubkey)}: ${ANSWER[split || sq.kind]}`
   button.setAttribute('aria-label', label); button.title = label
 }
 function summarize(pk) {
@@ -781,7 +787,7 @@ function drawHidden() {
   const n = openable().length, them = n === 1 ? 'it' : 'they'
   $('hidden-card').hidden = !n
   if (n) $('hidden-words').textContent = `${n} agent${n === 1 ? ' keeps' : 's keep'} who ${them} can @mention private to you, so whether ${them} can answer back by name isn't known. Showing it takes ${n} Bunker prompt${n === 1 ? '' : 's'}.`
-  $('needs-panel').hidden = !n && $('leftovers').hidden && !$('needs').childElementCount
+  $('needs-panel').hidden = !n && $('leftovers').hidden && $('rooms-card').hidden && !$('needs').childElementCount
 }
 // The legend, from the same words the squares use.
 function drawLegend(buzz) {
@@ -790,7 +796,50 @@ function drawLegend(buzz) {
     const item = box.appendChild(el('span')); item.append(el('span', `sq ${kind}`, GLYPH[kind]), words)
     if (kind === 'copy') item.appendChild(el('span', 'hint', !buzz.known ? '(not every relay returned it)' : buzz.signedAt ? `(copied ${day(buzz.signedAt)})` : '(not copied yet)'))
   }
+  // Once the rooms are read, the blank splits (docs/DESIGN_HIVE_CONSOLE.md, "Who is in each room").
+  if (hive?.rooms) for (const kind of ['hears', 'unseen']) box.appendChild(el('span')).append(el('span', `sq none ${kind}`, ''), ANSWER[kind].replace(/^./, c => c.toLowerCase()))
 }
+// Who is in each room: read only on the owner's click, one Bunker prompt, and the connection closed
+// after. A read that doesn't answer leaves every square as it was.
+let roomRead = { state: null, at: null }
+function drawRooms() {
+  const r = hive?.rooms, why = r ? [...r.unread.values()] : []
+  const need = roomsNeed({ relay: loadRoomRelay(), state: roomRead.state, untrusted: why.filter(w => w === 'untrusted').length, unlisted: why.filter(w => w === 'no-list').length })
+  $('rooms-card').hidden = !need
+  if (need) {
+    $('rooms-words').textContent = need.text
+    const go = $('rooms-go'); go.hidden = !need.button; go.textContent = need.button || ''; go.dataset.act = need.act || ''
+  }
+  $('rooms-note').hidden = !(r && roomRead.at)
+  if (r && roomRead.at) $('rooms-stamp').textContent = `Rooms read ${clock(roomRead.at)}: ${r.rooms.size} room${r.rooms.size === 1 ? '' : 's'} with a member list signed by your room relay. Rooms you aren't in aren't read.`
+  $('needs-panel').hidden = $('rooms-card').hidden && $('hidden-card').hidden && $('leftovers').hidden && !$('needs').childElementCount
+}
+async function readRoomLists() {
+  const h = hive, relay = loadRoomRelay(), st = $('rooms-status')
+  if (!h) return
+  if (!relay) { location.href = './config.html#room-relay'; return }
+  const done = state => { roomRead = { state, at: state === 'read' ? Date.now() / 1000 : roomRead.at }; st.textContent = '' }
+  $('rooms-go').disabled = $('rooms-again').disabled = true
+  try {
+    st.textContent = 'Reading your room relay…'
+    const key = relay.key || await fetchRelayKey(relay.url)
+    if (!key) return done('no-key')
+    let signer = null, me = null
+    try { signer = await consoleSigner(); me = String(await signer.getPublicKey()).toLowerCase() } catch { return done('declined') }
+    if (me !== h.owner) return done('other-signer')
+    st.textContent = 'Asking your signer to sign in to your room relay…'
+    const out = await readRooms({ url: relay.url, sign: t => signFresh(t, signer), connect: u => new WebSocket(u) })
+    if (out.state !== 'read') return done(out.state)
+    if (hive === h) h.rooms = roomsOf(out.events, { relayKey: key, verify: verifyEvent })
+    done('read')
+  } finally {
+    $('rooms-go').disabled = $('rooms-again').disabled = false
+    if (hive === h && grid) { for (const key of grid.cells.keys()) paint(key); drawLegend(h.buzz); drawSide() }
+    drawRooms()
+  }
+}
+$('rooms-go').onclick = () => $('rooms-go').dataset.act === 'config' ? (location.href = './config.html#room-relay') : readRoomLists()
+$('rooms-again').onclick = () => readRoomLists()
 // The panel's one button: give, stop, or undo the change waiting on this square.
 function change(key) {
   const { giver, cell } = grid.cells.get(key)
@@ -914,7 +963,7 @@ function drawSide() {
   const a = grid.nameOf(giver.pubkey), b = grid.nameOf(row.pubkey)
   $('side-kicker').textContent = p.sq.kind === 'self' ? 'One agent' : `When ${a} ${a === 'you' ? 'write' : 'writes'} to ${b}`
   $('side-title').textContent = p.title
-  const answer = body.appendChild(el('p', 'answer')); answer.append(el('span', `sq ${p.sq.kind}`, GLYPH[p.sq.kind]), p.answer)
+  const answer = body.appendChild(el('p', 'answer')); answer.append(el('span', `sq ${p.sq.kind}${p.sq.kind === 'none' && p.sq.hear ? ` ${p.sq.hear}` : ''}`, GLYPH[p.sq.kind]), p.answer)
   if (p.acts) body.appendChild(el('p', 'acts', p.acts))
   if (p.reasons.length) { const ul = body.appendChild(el('ul', 'reasons')); for (const line of p.reasons) ul.appendChild(el('li', null, line)) }
   if (p.button) {
@@ -955,7 +1004,7 @@ async function checkFound(r, button, out) {
 function drawLeftovers(owner, nameOf) {
   const old = leftovers(hive.grants, { owner })
   $('leftovers').hidden = !old.length
-  $('needs-panel').hidden = !old.length && !$('needs').childElementCount && $('hidden-card').hidden
+  $('needs-panel').hidden = !old.length && !$('needs').childElementCount && $('hidden-card').hidden && $('rooms-card').hidden
   $('leftovers-words').textContent = `${old.length} old approval${old.length === 1 ? '' : 's'} from the channel pass and waggle carrying no longer count: nothing reads them since waggle stopped carrying work. Withdraw ${old.length === 1 ? 'it' : 'them'} so the list is clean.`
   const whose = pk => pk === owner ? 'your' : `${nameOf(pk)}'s`
   $('leftovers-go').onclick = () => propose(old.map(g => ({ key: `withdraw:${g.id}`, sign: '–',

@@ -12,6 +12,7 @@
 import { gatesFor } from './pair-check.mjs'
 import { oneWay, WHY, mentionStatus, mentionGrantsOf } from './owner-view.mjs'
 import { whatIf } from './hive-what-if.mjs'
+import { sharedRooms } from './room-lists.mjs'
 
 export const GLYPH = Object.freeze({ work: '✓', copy: '✓', blocked: '!', none: '', unknown: '?', add: '+', remove: '–', self: '·', person: '' })
 export const ANSWER = Object.freeze({
@@ -19,6 +20,8 @@ export const ANSWER = Object.freeze({
   copy: 'Your copy says it takes work from it',
   blocked: "Takes the work, but can't answer back by name",
   none: "Won't act on it",
+  hears: "Hears it, won't act on it",
+  unseen: 'Not in any room you can see with it',
   unknown: 'Not known yet',
   add: 'Will take work from it once you sign',
   remove: 'Will stop taking work from it once you sign',
@@ -43,8 +46,24 @@ const list = names => names.length < 3 ? names.join(' and ') : `${names.slice(0,
 const UNREAD = { 'no-view': "its card doesn't carry the list", 'not-for-you': "its card doesn't carry a list for you", 'bad-shape': "the list isn't in the form this page reads" }
 const PRIVATE = ['not-opened', 'no-signer', 'not-asked', 'decrypt-failed', 'cannot-decrypt', 'other-signer']
 
-// The square's state. `change` is the owner's pending 'add' or 'remove' for it, if any.
-// ctx: owner, nameOf, grants, subjectOf, views, buzz, partial (pair-check's ctx).
+// Whether the taker hears the giver, from the room lists the owner read (docs/DESIGN_HIVE_CONSOLE.md,
+// "Who is in each room"). Only when both are in some room the page read: `{ rooms }` they share, or
+// `{ rooms: [] }` for "not in any room you can see". Null when that isn't known, which keeps today's
+// line: an nvoy agent on public relays, no room read yet, or a room whose list wasn't trusted.
+export function hearingOf(taker, giver, ctx) {
+  const read = ctx.rooms?.rooms
+  if (!read) return null
+  const inAny = pk => [...read.values()].some(m => m.has(pk))
+  if (!inAny(taker.pubkey) || !inAny(giver.pubkey)) return null
+  const rooms = sharedRooms(giver.pubkey, taker.pubkey, read)
+  // A room whose list wasn't read or wasn't trusted may hold them both, so "not in any" waits.
+  if (!rooms.length && ctx.rooms.unread?.size) return null
+  return { rooms }
+}
+
+// The square's state. `change` is the owner's pending 'add' or 'remove' for it, if any. A blank
+// square ('none') splits by `hear`: 'hears' or 'unseen' once the rooms are read, else null.
+// ctx: owner, nameOf, grants, subjectOf, views, buzz, partial (pair-check's ctx), rooms.
 export function squareOf({ taker, giver, change = null, ctx }) {
   if (taker.pubkey === giver.pubkey) return { kind: 'self', base: 'self', gates: null }
   const gates = gatesFor(taker, giver, ctx)
@@ -52,7 +71,8 @@ export function squareOf({ taker, giver, change = null, ctx }) {
     : gates.approval.state === 'proven' ? oneWay({ on: true, giver: giver.pubkey, agent: taker.pubkey, view: ctx.views.get(taker.pubkey) }) ? 'blocked' : 'work'
       : gates.approval.state === 'claimed' ? 'copy'
         : gates.approval.state === 'closed' ? 'none' : 'unknown'
-  return { kind: change || base, base, gates }
+  const h = base === 'none' ? hearingOf(taker, giver, ctx) : null
+  return { kind: change || base, base, gates, hear: h ? h.rooms.length ? 'hears' : 'unseen' : null }
 }
 
 // The approval reason: who let it happen, or why it is not known.
@@ -102,6 +122,20 @@ function backLine(sq, { taker, giver, ctx }) {
   return `Who ${b} can @mention can't be read: ${UNREAD[v.why] || WHY[v.why] || UNREAD['bad-shape']}.`
 }
 
+const roomWords = (rooms, names) => {
+  const named = rooms.map(r => names?.get(r)).filter(Boolean).map(n => `“${n}”`)
+  const rest = rooms.length - named.length
+  return named.length ? list(rest ? [...named, `${rest} more`] : named) : `${rooms.length} room${rooms.length === 1 ? '' : 's'} you read`
+}
+// What the room lists say about whether the post arrives. Null keeps NOT_READ_LINE.
+export function hearingLine({ taker, giver, ctx }) {
+  const h = hearingOf(taker, giver, ctx)
+  if (!h) return null
+  const a = ctx.nameOf(giver.pubkey), b = ctx.nameOf(taker.pubkey)
+  if (h.rooms.length) return `${Up(b)} hears ${a} in ${roomWords(h.rooms, ctx.rooms.names)}. Whether ${b} is connected right now isn't read.`
+  return `${Up(b)} isn't in any room you can see with ${a}. Rooms you aren't in aren't read, so whether ${poss(a)} post reaches ${b} isn't known. Whether ${b} is connected right now isn't read either.`
+}
+
 export const NOT_READ_LINE = (a, b) => `Whether ${poss(a)} post reaches ${b} isn't read yet: that needs each room's member list. Whether ${b} is connected right now isn't read either.`
 
 // Everything the side panel says about one square, except the reverse square, which the page
@@ -111,7 +145,7 @@ export function panelOf({ taker, giver, cell, change = null, ctx }) {
   const a = ctx.nameOf(giver.pubkey), b = ctx.nameOf(taker.pubkey)
   if (sq.kind === 'self') return { sq, title: `${Up(a)} → itself`, answer: ANSWER.self, reasons: [], button: null }
   const reasons = [approvalLine(sq, { taker, giver, cell, change, ctx }), backLine(sq, { taker, giver, ctx })].filter(Boolean)
-  if (sq.base !== 'person') reasons.push(NOT_READ_LINE(a, b))
+  if (sq.base !== 'person') reasons.push(hearingLine({ taker, giver, ctx }) || NOT_READ_LINE(a, b))
   let acts = null
   if (['work', 'blocked'].includes(sq.base) && sq.gates.kind !== 'buzz' && taker.answers?.fold) {
     const w = whatIf({ author: giver.pubkey, row: taker, dm: false, owner: ctx.owner, nameOf: ctx.nameOf })
@@ -119,7 +153,7 @@ export function panelOf({ taker, giver, cell, change = null, ctx }) {
   }
   const v = ctx.views.get(taker.pubkey)
   return {
-    sq, title: `${Up(a)} → ${b}`, answer: ANSWER[sq.kind], acts, reasons,
+    sq, title: `${Up(a)} → ${b}`, answer: ANSWER[sq.kind === 'none' && sq.hear ? sq.hear : sq.kind], acts, reasons,
     button: buttonOf(sq, { cell, change, a, b, ctx }),
     showPrivate: sq.base !== 'person' && v?.state === 'cant-tell' && v.why === 'not-opened',
     source: sq.base === 'person' ? null : sq.gates.kind === 'buzz' ? `Answered from your copy of ${b}'s Buzz allow-list.` : `Answered by nvoy's own rules, the same ones ${b}'s listener runs.`,
