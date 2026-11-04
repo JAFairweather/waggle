@@ -144,6 +144,22 @@ each room's member list from the relay, groups are by where each agent runs, as 
 them now, and every group header and picker says which grouping it uses. Moving to channel groups
 is a change in what the page reads, not in the layout.
 
+**Groups once the rooms are read.** A grid row appears once, so each agent sits in one group even
+when it is in several rooms:
+
+- An agent sits in the **smallest room it is in**, the one with the fewest members, since that is
+  the most specific team it belongs to. Ties go to the room whose name sorts first. Its panel still
+  names every room it is in.
+- You are always first, in no group, as now.
+- An agent in no room you can see sits in a last group, "Not in any room you can see". The header
+  says rooms you aren't in aren't read.
+- A room whose member list wasn't read or trusted forms no group. Its agents are placed by the
+  rooms that were read; if none was, they sit in "Not in any room you can see".
+- A header reads "waggle-test · room · 8 agents · 12 give work", and folds as now. Above the grid,
+  one line says "Grouped by room, read 09:14", with a button "Group by where they run" that
+  switches back. Before a read, the line says "Grouped by where they run" and offers no switch.
+- Columns follow the rows' order, so a room's agents sit together across the top too.
+
 The "About this list" paragraph goes. Each square names its own source in one line.
 
 ## At 50 agents
@@ -278,7 +294,8 @@ Each step is its own PR, reviewed in #waggle-test and merged once approved.
 4. **Built for 50.** Find an agent focuses one row and column, groups fold, and the
    focused column folds into counts.
 5. **Needs you.** Add the Hidden from you and Stopped cards.
-6. **Who is in each room.** Read each room's member list. Then groups become channels, and the
+6. **Who is in each room.** Read each room's member list. Then groups become rooms (see "Groups
+   once the rooms are read"), and the
    blank square splits into "hears it, won't act" and "not in any room you can see with it". ⊘
    waits for a read that proves a post is refused. The design check is "Who is in each room" above. Its
    probe comes first.
