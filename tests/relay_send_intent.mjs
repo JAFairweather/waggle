@@ -273,5 +273,32 @@ section('6. the tool, run — not matched (#587)')
   ok(empty.code === 1 && /empty body/.test(empty.err), 'an empty body is refused even with --dry-run')
 }
 
+section('a reply marker is unrepresentable, and says so (#604)')
+{
+  // Every spelling a caller might plausibly reach for. The point is not the list — it is that NONE
+  // of them can be set and quietly lost, because two hardcoded sites downstream drop a parent
+  // reference and report nothing.
+  for (const key of ['inReplyTo', 'in_reply_to', 'replyTo', 'reply_to', 'parent', 'parentId']) {
+    const r = buildIntent({ body: '@My Dude — probe', channel: CHANNEL, self: SELF, [key]: 'f'.repeat(64) })
+    // ASSERT THE REASON, NOT ONLY THE REFUSAL. `!ok` cannot tell a correct refusal from a correct
+    // refusal that sends the reader hunting in the wrong file.
+    ok(r.ok === false && r.reason.includes(key) && /#604/.test(r.reason) && /Nothing was sent/.test(r.reason),
+      `refuses \`${key}\`, names the field and #604`)
+  }
+
+  // POSITIVE CONTROL — the guard refuses the parent reference, not everything. A name with a space,
+  // because that is the fixture shape that shipped a live outage when it was missing (#168).
+  const clean = buildIntent({ body: '@My Dude — probe', channel: CHANNEL, self: SELF })
+  ok(clean.ok === true && clean.rumor.tags.length === 1 && clean.rumor.tags[0][0] === 'relay',
+    'POSITIVE CONTROL — an ordinary send still builds, with its single relay tag')
+
+  // ABSENCE IS NOT A VALUE. A caller threading an option through as null/'' must not be refused, or
+  // the guard fires on every send that merely mentions the field.
+  for (const empty of [null, undefined, '']) {
+    const r = buildIntent({ body: '@My Dude — probe', channel: CHANNEL, self: SELF, inReplyTo: empty })
+    ok(r.ok === true, `an absent inReplyTo (${JSON.stringify(empty)}) is not a refusal`)
+  }
+}
+
 console.log(`\nrelay_send_intent: ${pass} checks passed${fail ? `, ${fail} FAILED` : ''}`)
 process.exit(fail ? 1 : 0)
