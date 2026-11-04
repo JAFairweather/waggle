@@ -187,6 +187,8 @@ ok(authTemplate(URL_, 'c', 5).created_at === 5 && authTemplate(URL_, 'c').conten
   ok((page.match(/--hear:#[0-9a-f]{6};--hear-ground:#[0-9a-f]{6}/g) || []).length === 2, 'the ring has a colour in the dark theme and the light one')
   ok(!/\.sq\.none\.unseen\{/.test(page), '"not in any room you can see" is the plain blank')
   ok(/box\.appendChild\(el\('span'\)\)\.append\(el\('span', 'sq none hears', ''\), "hears it in a room, won't act on it"\)/.test(page), 'the legend shows the ring once the rooms are read')
+  // A blank may also be a pair whose list wasn't read or trusted, so the legend never says it is unseen.
+  ok(!/not in any room you can see with it`/.test(page) && /item\.append\(el\('span', `sq \$\{kind\}`, GLYPH\[kind\]\), words\)/.test(page), 'the legend\'s blank stays "won\'t act on it" after a read')
   ok(/const key = await relayKeyFor\(relay\)/.test(page) && !/relay\.key \|\|/.test(page), 'the page chooses its key through relayKeyFor')
 }
 

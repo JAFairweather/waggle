@@ -793,10 +793,11 @@ function drawHidden() {
 // The legend, from the same words the squares use.
 function drawLegend(buzz) {
   const box = $('legend'); box.textContent = ''
-  // Once the rooms are read, a blank square is "not in any room you can see with it", and a ring is
-  // "hears it, won't act on it" (docs/DESIGN_HIVE_CONSOLE.md, "Who is in each room").
+  // Once the rooms are read, a ring is "hears it, won't act on it" (docs/DESIGN_HIVE_CONSOLE.md,
+  // "Who is in each room"). A blank stays "won't act on it": it may be a pair in no room you can see,
+  // or one whose list wasn't read or trusted, and only its panel says which.
   for (const [kind, words] of LEGEND) {
-    const item = box.appendChild(el('span')); item.append(el('span', `sq ${kind}`, GLYPH[kind]), kind === 'none' && hive?.rooms ? `${words}, and not in any room you can see with it` : words)
+    const item = box.appendChild(el('span')); item.append(el('span', `sq ${kind}`, GLYPH[kind]), words)
     if (kind === 'none' && hive?.rooms) box.appendChild(el('span')).append(el('span', 'sq none hears', ''), "hears it in a room, won't act on it")
     if (kind === 'copy') item.appendChild(el('span', 'hint', !buzz.known ? '(not every relay returned it)' : buzz.signedAt ? `(copied ${day(buzz.signedAt)})` : '(not copied yet)'))
   }
