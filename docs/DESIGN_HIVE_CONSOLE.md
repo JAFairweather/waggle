@@ -147,18 +147,23 @@ is a change in what the page reads, not in the layout.
 **Groups once the rooms are read.** A grid row appears once, so each agent sits in one group even
 when it is in several rooms:
 
-- An agent sits in the **smallest room it is in**, the one with the fewest members, since that is
-  the most specific team it belongs to. Ties go to the room whose name sorts first. Its panel still
-  names every room it is in.
+- A room can be a group only if its member list was read and trusted, and it holds **at least two
+  agents the grid shows**, not counting you. That keeps a two-person room from beating a team's
+  room and scattering the grid into one-agent groups.
+- An agent sits in the smallest such room it is in, the one with the fewest members. Ties go to
+  the room id that sorts first, so a rename never moves anyone.
 - You are always first, in no group, as now.
-- An agent in no room you can see sits in a last group, "Not in any room you can see". The header
-  says rooms you aren't in aren't read.
-- A room whose member list wasn't read or trusted forms no group. Its agents are placed by the
-  rooms that were read; if none was, they sit in "Not in any room you can see".
+- An agent in no such room sits in a last group, "Other agents". It never says "not in any room":
+  a room whose list wasn't read or trusted may hold it.
+- An agent's panel names every read, trusted room it is in, not every room it is in.
 - A header reads "waggle-test · room · 8 agents · 12 give work", and folds as now. Above the grid,
   one line says "Grouped by room, read 09:14", with a button "Group by where they run" that
-  switches back. Before a read, the line says "Grouped by where they run" and offers no switch.
+  switches back. When any room's list is missing or untrusted it says "Grouped by the rooms read,
+  09:14: n rooms' lists weren't read". Before a read, the line says "Grouped by where they run" and
+  offers no switch.
 - Columns follow the rows' order, so a room's agents sit together across the top too.
+- This is a rule of thumb, not a fact about the hive. The build is tried on a real signed room read
+  before it merges, and the screenshots go in the PR.
 
 The "About this list" paragraph goes. Each square names its own source in one line.
 
