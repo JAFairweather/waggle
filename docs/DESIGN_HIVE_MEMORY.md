@@ -117,9 +117,20 @@ The relay cannot evaluate live grants, and an author could put any rank in its o
 | Precedence Rank | Source / Scope | Reader Acceptance Rule (Who May Write) | Resolution Rule |
 | :--- | :--- | :--- | :--- |
 | **Rank 1: Core Design Docs** | `waggle` git repo (`docs/**` at `origin/main`) | Merged git commits on `origin/main`; handled by the harness, outside the broker's event sorter | **Highest precedence.** Overrides Ranks 2, 3, and 4. |
-| **Rank 2: Standards & Canon** | `CLAUDE.md` in git + `["s", "hive:canon"]` claims | **Writer policy pending James's decision. Proposed rule:** accept claims only from James (`4010ac43`) or a speaker with a live `shadow` grant from James (`Dead Rabbit`, `fab80832`); reject all other authors. This is a proposal, not an approved write rule. | Overrides Ranks 3 and 4. |
-| **Rank 3: Operational & Room** | `["s", "hive:ops"]` or `["s", "room:<room_uuid>"]` | For `hive:ops`: author holds a live grant (`task`, `task+act`, or `shadow`) from James. `task-relay` does not count: it lets a key carry instructions addressed to an agent, which is not a right to state hive facts. For `room:<room_uuid>`: author is an authenticated member of that room (`kind 39002` member list). Must have a valid future `exp` timestamp. | Active runtime state. Active claims under the same fact key (`d` tag) from different speakers, with different `claim` text, are surfaced side by side as `[CONFLICT]`. See "Fact keys, conflicts, and completeness". |
+| **Rank 2: Standards & Canon** | `CLAUDE.md` in git + `["s", "hive:canon"]` claims | **Writer policy pending James's decision. Proposed rule:** accept claims only from James (`4010ac43`) or a speaker with a live `shadow` grant from James (`Dead Rabbit`, `fab80832`), judged by the grant itself and not by the rights it inherits; reject all other authors. This is a proposal, not an approved write rule. | Overrides Ranks 3 and 4. |
+| **Rank 3: Operational & Room** | `["s", "hive:ops"]` or `["s", "room:<room_uuid>"]` | For `hive:ops`: the common writer policy below, which every reader evaluates the same way. For `room:<room_uuid>`: author is an authenticated member of that room (`kind 39002` member list). Must have a valid future `exp` timestamp. | Active runtime state. Active claims under the same fact key (`d` tag) from different speakers, with different `claim` text, are surfaced side by side as `[CONFLICT]`. See "Fact keys, conflicts, and completeness". |
 | **Rank 4: Self Scratchpad** | `["s", "self:<pubkey>"]` | Accepted **only** when `event.pubkey === reader_pubkey`. | Private to the authoring agent. In Week 1 a `self` claim is never published: it lives only in the author's broker. Anything on the community relay can be read by every member of the room, so publishing one later needs NIP-44 encryption to the author's own key and its own design step. |
+
+### One writer policy for every reader
+
+A global claim must be accepted or rejected the same way by every broker. Task grants cannot do that. `foldGrants` (`nvoy/mcp/tools/admission.mjs`) accepts a `task`, `task+act` or `task-relay` grant only when its `da-scope` hashes that broker's own key, and a `shadow` voice inherits only the task rights its grantor holds on that broker. So My Dude and Dennis, holding different grants, would disagree about the same `hive:ops` claim. The memory layer therefore never uses task grants or inherited rights to decide who may write.
+
+**Proposed, pending James's decision** (it needs a new grant cap, so it is his to approve, like the canon rule):
+
+- A `memory-write` grant is a `kind 440` event from James with `da-cap` `memory-write`. Its `da-scope` hashes James's own key, as a `shadow` grant's does, not the reader's. Every reader computes the same hash, so every reader reaches the same verdict. `grant.mjs` issues and revokes it; nvoy adds it to the fold.
+- A `hive:ops` writer is James, a key with a live `shadow` grant from James (the grant itself, never the rights it inherits), or a key with a live `memory-write` grant from James.
+- `task-relay` never counts. It lets a key carry instructions addressed to an agent, which is not a right to state hive facts.
+- Until James approves `memory-write`, Slice 1 accepts `hive:ops` claims only from James and his live `shadow` voices.
 
 The broker sorts only claim events; it does not ingest Git documents or assign them an event rank. The harness applies the Git-document rules: merged `docs/**` at a verified current `origin/main` are Rank 1, and `CLAUDE.md` is a Rank 2 standard alongside accepted canon claims. Before using a claim on a topic governed by a design doc, the harness checks the relevant doc; if they conflict, the doc wins. `memory-git-check.mjs` warns when the checkout is behind or cited evidence changed, but does not detect semantic contradictions. If current docs cannot be verified, the harness cannot claim a Rank 1 check has passed, and memory remains untrusted data. This check adds no relay read to `memory_wake`.
 
@@ -218,10 +229,15 @@ Reads stay local, so a reader's view of grants and room lists can be out of date
 
 | Input | Source | Recorded with | Maximum age (proposed) | When older or unavailable |
 | :--- | :--- | :--- | :--- | :--- |
-| Grants (`hive:ops`, `hive:canon`) | A background refresh that runs the same query and fold admission uses: grant and revocation events from the grantors, read from the grant relays, signature-checked and folded by `foldGrants` (`nvoy/mcp/tools/attention.mjs`). The folded result is held in memory only. It is never written to disk and never re-published. | `grants_checked_at`, the time of the last refresh in which at least one grant relay answered | `memory_auth_max_age_s`, default 900 | `hive:ops` claims move to an **Unverified** section, with the reason. `hive:canon` claims are left out of Rank 2 and appear only as a count and their `d` keys. |
+| Grants (`hive:ops`, `hive:canon`) | A background refresh that runs the same query admission uses (`nvoy/mcp/tools/attention.mjs`): grant and revocation events from the grantors, read from the grant relays and signature-checked. They are folded for the reader-independent caps only, `shadow` and `memory-write`, as "One writer policy for every reader" sets out. The folded result is held in memory only. It is never written to disk and never re-published. | `grants_checked_at`, the time of the last refresh in which at least one grant relay answered | `memory_auth_max_age_s`, default 900 | `hive:ops` claims move to an **Unverified** section, with the reason. `hive:canon` claims are left out of Rank 2 and appear only as a count and their `d` keys. |
 | Room membership (`room:<uuid>`) | The relay-signed `kind 39002` list for that UUID | `members_checked_at` per room | Same setting | That room's claims move to **Unverified**, with the reason. |
 
-The grant view is relay-backed: `grant-relays.json` records which relays answered, not signed grant state. So a broker has no grant view until its first refresh after start, and every grant-dependent claim is Unverified until then. A refresh in which no grant relay answers changes nothing; the view keeps aging. A refresh that answers and no longer finds the author's grant live, because of a revocation or because the grant is missing, marks that author's claims `rejected` at once. This is the same answer admission would give at that moment, including the known case where a relay has evicted a grant.
+The grant view is relay-backed: `grant-relays.json` records which relays answered, not signed grant state. So a broker has no grant view until its first refresh after start, and every grant-dependent claim is Unverified until then. A refresh in which no grant relay answers changes nothing; the view keeps aging. A missing grant is not evidence of a revoked one. Relays have evicted live grants before, and `grant_evidence.mjs` calls an answered-but-empty result `no-grant-suspect` when the relays held grants earlier. So the broker separates the two:
+
+- **`rejected`** needs positive evidence: a signed `kind 441` revocation of the grant, a passed `expiration`, a bad signature, or a grant that exists but does not qualify (for example `task-relay` only). It takes effect at the first answered refresh that shows it.
+- **`unverified`**, with reason `grant-missing`, covers every author for whom an answered refresh finds no qualifying grant and no such evidence. That includes eviction, a grant that has not reached the relays yet, and a key that never had one. The claim is not accepted, but it is not ruled out either, so a query that matches it answers `unknown`, never `none`.
+
+The broker does not keep a history of which grants it has seen, so this rule gives the same answer before and after a restart. The cost is that claims from a channel member who never held a grant stay visible as Unverified until they expire; relay membership of the global channel keeps that set small.
 
 An unverified claim is never counted as accepted and never ranked. Every returned record carries `verification` (`accepted`, `unverified`, or `rejected`) and the `checked_at` time it relied on. The worst case is stated: a claim from a writer revoked after the last check can show as accepted for up to the maximum age.
 
@@ -257,7 +273,9 @@ Agents already keep authored memory: the `MEMORY.md` index and its files, the gu
 
 - relay down at wake;
 - relay wiped, then re-seeded after a withdrawal, from a broker holding the stale claim and one holding the tombstone;
-- a writer revoked, and the grant view older than the maximum age;
+- a writer revoked by a signed `kind 441`, which must be `rejected`, and the grant view older than the maximum age;
+- a writer's grant evicted from every grant relay with no revocation, which must be Unverified with `grant-missing`, and a query matching only that claim, which must answer `unknown`;
+- two brokers holding disjoint task grants, which must give the same verdict on every `hive:ops` and `hive:canon` claim;
 - a broker restarted with no grant refresh yet, whose grant-dependent claims must all be Unverified;
 - a room list unavailable;
 - a query whose only matches are unverified, which must answer `unknown` with `unverified` > 0, never `none`;
