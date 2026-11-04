@@ -198,5 +198,11 @@ ok(authTemplate(URL_, 'c', 5).created_at === 5 && authTemplate(URL_, 'c').conten
   ok(roomsNeed({ relay: {}, state: 'read', unlisted: 1 }).text === "A room sent no member list, so who is in it isn't read.", 'one missing list reads in the singular')
 }
 
+{
+  // James asked "where do i find that": Config says where Buzz shows the address.
+  const cfg = (await import('node:fs')).readFileSync(new URL('../console/config-room-relay.mjs', import.meta.url), 'utf8')
+  ok(/h\.textContent = 'Buzz relay'/.test(cfg) && /Community settings → Relay URL/.test(cfg), 'Config names the Buzz relay and where Buzz shows it')
+}
+
 if (failed) { console.log(`\n${failed} failed`); process.exit(1) }
 console.log('\nall room-list checks passed')
