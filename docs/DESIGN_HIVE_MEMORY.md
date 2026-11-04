@@ -1,8 +1,8 @@
 # Hive shared memory (`Waggle Claims & Wake Digest`)
 
-**Status:** Slice 0 draft, for review. Not approved.  
-**Author:** BiggyAntigravity, from its proposal and `waggle-dev`'s review of it.  
-**Reviewers:** Kerouac, My Dude, James (`4010ac43`)  
+- **Status:** Slice 0 draft, for review. Not approved.
+- **Author:** BiggyAntigravity, from its proposal and `waggle-dev`'s review of it.
+- **Reviewers:** Kerouac, My Dude, James (`4010ac43`)
 
 ---
 
@@ -20,7 +20,7 @@ author writes claim -> secret guard checks payload -> NIP-46 signs kind 30079
 Shared memory is complete only when:
 1. **Nostr replicates; the local broker serves reads.** Every broker keeps an in-memory `Map` backed by an atomic `memory_claims.json` file. `memory_wake` and `memory_query` read that local state, with no relay round trip or page cap. A test must show `memory_wake` answering while the relay is down.
 2. **Memory is data, never instruction.** Every memory record returned by a broker carries `authority: null` and `trustedInstruction: false`.
-3. **Readers compute rank and write rights at read time.** An author cannot promote a claim to canon with a tag.
+3. **Readers compute claim rank and write rights at read time.** An author cannot promote a claim to canon with a tag. The harness gives merged design docs precedence over claims.
 
 ---
 
@@ -68,21 +68,34 @@ On `main`, `kind 30078` already carries signed owner control commands (`waggle-c
   "pubkey": "fab80832...",
   "created_at": 1793822400,
   "tags": [
-    ["d", "hive-memory:room:waggle-test:relay-auth-membership"],
+    ["d", "hive-memory:room:a8186b53-537d-46ad-a7e7-b6486c58970e:relay-auth-membership"],
     ["h", "a8186b53-537d-46ad-a7e7-b6486c58970e"],
-    ["s", "room:waggle-test"],
+    ["s", "room:a8186b53-537d-46ad-a7e7-b6486c58970e"],
     ["topic", "relay-auth"],
     ["as_of_git", "waggle@a1b2c3d"],
     ["as_of_evt", "9f8e7d6c..."],
     ["exp", "1795032000"],
-    ["supersedes", "fab80832...:hive-memory:room:waggle-test:old-claim"]
+    ["supersedes", "fab80832...:hive-memory:room:a8186b53-537d-46ad-a7e7-b6486c58970e:old-claim"]
   ],
   "content": "{\"claim\":\"External keys cannot read the community relay directly.\",\"because\":\"Community relay config enables enforce_relay_membership, which rejects non-members at NIP-42 AUTH time.\",\"evidence\":[\"waggle@a1b2c3d:docs/DESIGN_RELAY_INGRESS.md\"],\"status\":\"active\"}",
   "sig": "..."
 }
 ```
 
-The `h` tag carries the channel UUID, matching waggle's channel event format. The `d` and `s` tags identify the claim's scope.
+For a room claim, `h` and the room ID in `s` and `d` are the same stable channel UUID, not its display name. The reader checks membership against that UUID in the relay-signed `kind 39002` list.
+
+### Channel route for hive-wide claims
+
+Every broker is configured with the same `memory_global_channel_id`: one dedicated Buzz channel UUID for the hive. This is a required deployment value, chosen when the shared memory channel is provisioned; it is neither the author's current room nor the 64-hex hive identity. A broker must refuse global claim writes and mark global sync unavailable until this UUID is configured and its speaker identity is a member. Room claims continue to use their room UUID in `h`.
+
+| Scope | `h` tag | Relay access and claim acceptance |
+| :--- | :--- | :--- |
+| `room:<room_uuid>` | That room's UUID | The author publishes as a room member. Readers check the relay-signed `kind 39002` member list for the same UUID. |
+| `hive:ops`, `hive:canon` | `memory_global_channel_id` | Every broker authenticates with NIP-42 as its own speaker identity and subscribes to `kind 30079` with `#h` set to this UUID. The global channel must include every reading broker and each eligible writer, including James if he writes canon. Relay channel membership permits transport; readers still apply the scope's grant and writer rules below. |
+
+Write and ingestion checks reject a room claim unless its `h`, `s` room UUID, and `d` room segment agree. They reject a global claim unless its `h` equals `memory_global_channel_id`. Week 1 `self:<pubkey>` claims stay local and have no relay route.
+
+Subscriptions to the global channel run in the background alongside room subscriptions. On startup, the broker loads persisted claims before relay sync; `memory_wake` can serve them locally with the appropriate sync warning. A broker that cannot authenticate or read the global channel reports global sync unavailable and must not present cached global claims as freshly synced. Membership in one room does not confer access to this channel. The exact UUID and its member roster must be recorded in deployment configuration before Slice 1.
 
 ### Mandatory fields enforced at write and read time
 
@@ -96,17 +109,19 @@ The `h` tag carries the channel UUID, matching waggle's channel event format. Th
 
 ## Scopes, reader-computed rank, and write rights
 
-The relay cannot evaluate live grants, and an author could put any rank in its own event. **No rank tag on the wire is authoritative.** Each reader computes precedence and validity at read time from:
+The relay cannot evaluate live grants, and an author could put any rank in its own event. **No rank tag on the wire is authoritative.** For claim events (Ranks 2–4), each reader computes precedence and validity at read time from:
 1. The claim's scope tag (`s`),
 2. The author's `pubkey`, and
-3. The live grant state known to the reader at read time.
+3. Live grants or the relay-signed room member list, as required by the scope.
 
-| Precedence Rank | Source / Scope (`s` tag) | Reader Acceptance Rule (Who May Write) | Resolution Rule |
+| Precedence Rank | Source / Scope | Reader Acceptance Rule (Who May Write) | Resolution Rule |
 | :--- | :--- | :--- | :--- |
-| **Rank 1: Core Design Docs** | `waggle` git repo (`docs/**` at `origin/main`) | Merged git commits on `origin/main` | **Highest precedence.** Always overrides Ranks 2, 3, and 4. |
+| **Rank 1: Core Design Docs** | `waggle` git repo (`docs/**` at `origin/main`) | Merged git commits on `origin/main`; handled by the harness, outside the broker's event sorter | **Highest precedence.** Overrides Ranks 2, 3, and 4. |
 | **Rank 2: Standards & Canon** | `CLAUDE.md` in git + `["s", "hive:canon"]` claims | **Writer policy pending James's decision. Proposed rule:** accept claims only from James (`4010ac43`) or a speaker with a live `shadow` grant from James (`Dead Rabbit`, `fab80832`); reject all other authors. This is a proposal, not an approved write rule. | Overrides Ranks 3 and 4. |
-| **Rank 3: Operational & Room** | `["s", "hive:ops"]` or `["s", "room:<group_id>"]` | For `hive:ops`: author holds a live grant (`task`, `task+act`, or `shadow`) from James. `task-relay` does not count: it lets a key carry instructions addressed to an agent, which is not a right to state hive facts. For `room:<group_id>`: author is an authenticated member of `<group_id>` (`kind 39002` member list). Must have a valid future `exp` timestamp. | Active runtime state. Contradictory active claims on the same `topic` from different speakers are surfaced side-by-side as `[CONFLICT]`. |
+| **Rank 3: Operational & Room** | `["s", "hive:ops"]` or `["s", "room:<room_uuid>"]` | For `hive:ops`: author holds a live grant (`task`, `task+act`, or `shadow`) from James. `task-relay` does not count: it lets a key carry instructions addressed to an agent, which is not a right to state hive facts. For `room:<room_uuid>`: author is an authenticated member of that room (`kind 39002` member list). Must have a valid future `exp` timestamp. | Active runtime state. Contradictory active claims on the same `topic` from different speakers are surfaced side-by-side as `[CONFLICT]`. |
 | **Rank 4: Self Scratchpad** | `["s", "self:<pubkey>"]` | Accepted **only** when `event.pubkey === reader_pubkey`. | Private to the authoring agent. In Week 1 a `self` claim is never published: it lives only in the author's broker. Anything on the community relay can be read by every member of the room, so publishing one later needs NIP-44 encryption to the author's own key and its own design step. |
+
+The broker sorts only claim events; it does not ingest Git documents or assign them an event rank. The harness applies the Git-document rules: merged `docs/**` at a verified current `origin/main` are Rank 1, and `CLAUDE.md` is a Rank 2 standard alongside accepted canon claims. Before using a claim on a topic governed by a design doc, the harness checks the relevant doc; if they conflict, the doc wins. `memory-git-check.mjs` warns when the checkout is behind or cited evidence changed, but does not detect semantic contradictions. If current docs cannot be verified, the harness cannot claim a Rank 1 check has passed, and memory remains untrusted data. This check adds no relay read to `memory_wake`.
 
 ---
 
@@ -121,8 +136,8 @@ Memory claims are never passed through `admitted_task.mjs` and never carry an `a
   "trustedInstruction": false,
   "computed_rank": 3,
   "author_pubkey": "fab80832...",
-  "scope": "room:waggle-test",
-  "d": "hive-memory:room:waggle-test:relay-auth-membership",
+  "scope": "room:a8186b53-537d-46ad-a7e7-b6486c58970e",
+  "d": "hive-memory:room:a8186b53-537d-46ad-a7e7-b6486c58970e:relay-auth-membership",
   "topic": "relay-auth",
   "claim": "External keys cannot read the community relay directly.",
   "because": "Community relay config enables enforce_relay_membership, which rejects non-members at NIP-42 AUTH time.",
