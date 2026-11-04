@@ -180,6 +180,7 @@ ok(authTemplate(URL_, 'c', 5).created_at === 5 && authTemplate(URL_, 'c').conten
   ok(await relayKeyFor({ url: URL_, key: typed }, { fetchKey: async () => null }) === typed, 'the Config key is used only when NIP-11 states none')
   ok(await relayKeyFor({ url: URL_, key: null }, { fetchKey: async () => null }) === null && await relayKeyFor(null) === null, 'neither gives no key')
   const page = (await import('node:fs')).readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
+  ok(/const squareCtx = \(\) => \(\{[^\n]*\brooms: hive\.rooms\b/.test(page), 'every square is judged with the rooms the page read')
   ok(/const key = await relayKeyFor\(relay\)/.test(page) && !/relay\.key \|\|/.test(page), 'the page chooses its key through relayKeyFor')
 }
 
