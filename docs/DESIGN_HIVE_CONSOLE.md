@@ -189,8 +189,8 @@ Add an agent is its own page (`add-agent.html`). The hive links to it, and it li
 the seven steps, three signatures and one "I agree" from
 [DESIGN_ADD_AN_AGENT.md](DESIGN_ADD_AN_AGENT.md), with these changes:
 
-- **Runs in** offers every harness on the shared list: Claude Code, Codex, OpenClaw, Pi, Grok Bot
-  and Hermes. Buzz is where agents talk, not a harness, so it isn't offered.
+- **Runs in** offers every harness on the shared list: Claude Code, Codex, OpenClaw, Pi, Grok Bot,
+  Hermes and Gemini (Antigravity). Buzz is where agents talk, not a harness, so it isn't offered.
 - **Works like** includes DJ Codex (Hermes).
 - **Who can give it work** (step 6) is a search with chips. It has a "Same as {Works like}"
   preset and a Nobody button, then a scrolling checklist in the same groups as the grid. Each group

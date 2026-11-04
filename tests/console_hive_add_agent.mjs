@@ -210,6 +210,7 @@ check(!readBackSteps(null)[3], 'nothing read back: nothing done')
 
 // ── 9. Step 6 is a search with chips, built for 50 (#698) ─────────────────────────────────────────
 check(HARNESSES.some(([id, label]) => id === 'hermes' && label === 'Hermes'), 'Hermes is offered in Runs in')
+check(HARNESSES.some(([id, label]) => id === 'antigravity' && label === 'Gemini (Antigravity)'), 'Gemini (Antigravity) is offered in Runs in')
 check(!HARNESSES.some(([id]) => id === 'buzz'), 'Buzz is where agents talk, not a harness')
 const pickGroups = [{ id: 'you', label: 'You' }, { id: 'lab', label: 'Frontier lab harnesses' }, { id: 'other', label: 'Everyone else' }]
 const many = [{ pubkey: 'o', label: 'You', where: 'Your Bunker' }]
