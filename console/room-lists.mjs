@@ -94,6 +94,13 @@ export async function fetchRelayKey(url, { fetch = globalThis.fetch, timeoutMs =
   } catch { return null }
 }
 
+/// The key the page checks lists against. The relay's own NIP-11 `self` wins whenever it states
+/// one; the key typed on Config is used only when it doesn't. Null when neither gives one.
+export async function relayKeyFor(relay, { fetchKey = fetchRelayKey } = {}) {
+  if (!relay?.url) return null
+  return (await fetchKey(relay.url)) || relay.key || null
+}
+
 /// The NIP-42 sign-in the owner's signer is asked for: this relay, this connection's challenge.
 export const authTemplate = (url, challenge, now = Math.floor(Date.now() / 1000)) =>
   ({ kind: 22242, created_at: now, content: '', tags: [['relay', url], ['challenge', challenge]] })
@@ -169,7 +176,11 @@ export function roomsNeed({ relay, state, untrusted = 0, unlisted = 0, readAt = 
   if (state === 'other-signer') return { text: "Not read: you're signed in as a different key from this hive.", button: 'Read who is in each room', act: 'read' }
   if (state === 'auth-refused') return { text: "Your room relay wouldn't let you sign in, so who is in each room isn't read.", button: null }
   if (state === 'no-key') return { text: "Who is in each room isn't read: your room relay doesn't say which key signs its lists. Add it on Config.", button: 'Add it on Config', act: 'config' }
-  if (untrusted) return { text: "A room's member list came back, but not signed by your room relay, so it isn't trusted.", button: 'Read again', act: 'read' }
-  if (unlisted) return { text: `${unlisted === 1 ? 'A room' : `${unlisted} rooms`} sent no member list, so who is in ${unlisted === 1 ? 'it' : 'them'} isn't read.`, button: 'Read again', act: 'read' }
+  const parts = []
+  if (untrusted) parts.push(untrusted === 1
+    ? "A room's member list came back, but not signed by your room relay, so it isn't trusted."
+    : `${untrusted} rooms' member lists came back, but not signed by your room relay, so they aren't trusted.`)
+  if (unlisted) parts.push(`${unlisted === 1 ? 'A room' : `${unlisted} rooms`} sent no member list, so who is in ${unlisted === 1 ? 'it' : 'them'} isn't read.`)
+  if (parts.length) return { text: parts.join(' '), button: 'Read again', act: 'read' }
   return null
 }

@@ -11,7 +11,7 @@
 //   node tests/console_room_lists.mjs
 
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools'
-import { judgeRoomLists, sharedRooms, relayKeyFrom, isRoomRefusal, ROOM_MEMBERS, ROOM_NAME, readRooms, roomsOf, roomsNeed, authTemplate, loadRoomRelay, saveRoomRelay, fetchRelayKey } from '../console/room-lists.mjs'
+import { judgeRoomLists, sharedRooms, relayKeyFrom, isRoomRefusal, ROOM_MEMBERS, ROOM_NAME, readRooms, roomsOf, roomsNeed, authTemplate, loadRoomRelay, saveRoomRelay, fetchRelayKey, relayKeyFor } from '../console/room-lists.mjs'
 
 let failed = 0
 const ok = (cond, msg) => { if (cond) console.log(`ok   ${msg}`); else { failed++; console.log(`FAIL ${msg}`) } }
@@ -173,6 +173,16 @@ ok(authTemplate(URL_, 'c', 5).created_at === 5 && authTemplate(URL_, 'c').conten
   ok(await fetchRelayKey(URL_, { fetch: async () => { throw new Error('cors') } }) === null, 'a blocked NIP-11 read gives no key')
 }
 
+// 5b. The relay's published key wins over one typed on Config; Config is only the fallback.
+{
+  const typed = getPublicKey(generateSecretKey())
+  ok(await relayKeyFor({ url: URL_, key: typed }, { fetchKey: async () => relayKey }) === relayKey, "NIP-11's self wins over a conflicting Config key")
+  ok(await relayKeyFor({ url: URL_, key: typed }, { fetchKey: async () => null }) === typed, 'the Config key is used only when NIP-11 states none')
+  ok(await relayKeyFor({ url: URL_, key: null }, { fetchKey: async () => null }) === null && await relayKeyFor(null) === null, 'neither gives no key')
+  const page = (await import('node:fs')).readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
+  ok(/const key = await relayKeyFor\(relay\)/.test(page) && !/relay\.key \|\|/.test(page), 'the page chooses its key through relayKeyFor')
+}
+
 // 6. Needs you: one line per case, each with the button the design names.
 {
   ok(roomsNeed({ relay: null }).act === 'config', 'no address: Add it on Config')
@@ -182,6 +192,9 @@ ok(authTemplate(URL_, 'c', 5).created_at === 5 && authTemplate(URL_, 'c').conten
   ok(roomsNeed({ relay: {}, state: 'auth-refused' }).button === null, 'refused sign-in: no button')
   ok(/not signed by your room relay/.test(roomsNeed({ relay: {}, state: 'read', untrusted: 1 }).text), 'an untrusted list says so')
   ok(roomsNeed({ relay: {}, state: 'read' }) === null, 'a clean read needs nothing')
+  const both = roomsNeed({ relay: {}, state: 'read', untrusted: 2, unlisted: 3 }).text
+  ok(/^2 rooms' member lists came back, but not signed by your room relay/.test(both) && /3 rooms sent no member list/.test(both), 'untrusted and missing lists are both counted in one line')
+  ok(roomsNeed({ relay: {}, state: 'read', unlisted: 1 }).text === "A room sent no member list, so who is in it isn't read.", 'one missing list reads in the singular')
 }
 
 if (failed) { console.log(`\n${failed} failed`); process.exit(1) }
