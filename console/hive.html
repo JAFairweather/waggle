@@ -7,8 +7,8 @@
 <meta name="description" content="One list of every identity in the hive, each with who can give it work, what it may do without asking, where it can post, what it holds and how it works, read from each answer's own source.">
 <script type="importmap">{ "imports": { "nostr-tools": "./vendor/nostr-tools.mjs", "nostr-tools/pure": "./vendor/nostr-tools.mjs", "nostr-tools/pool": "./vendor/nostr-tools-pool.mjs", "nostr-tools/nip46": "./vendor/nostr-tools-nip46.mjs" } }</script>
 <style>
-  :root{--ground:#0b0906;--panel:#14100a;--line:#2a2317;--text:#f4efe4;--dim:#9c927f;--faint:#6f6555;--gold:#e2c079;--accent:#cf8a2e;--good:#8fae6a;--warn:#d9a648;--critical:#c0705a;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,monospace;--display:"Iowan Old Style",Palatino,Georgia,serif}
-  @media (prefers-color-scheme:light){:root{--ground:#f5f0e4;--panel:#fffdf7;--line:#ddd2ba;--text:#241d12;--dim:#6f6553;--faint:#8a7f66;--gold:#8a5a14;--accent:#8a5a14;--good:#4f7a34;--warn:#9a6a12;--critical:#a2482f}}
+  :root{--ground:#0b0906;--panel:#14100a;--line:#2a2317;--text:#f4efe4;--dim:#9c927f;--faint:#6f6555;--gold:#e2c079;--accent:#cf8a2e;--good:#8fae6a;--warn:#d9a648;--critical:#c0705a;--hear:#86aee0;--hear-ground:#16202c;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,monospace;--display:"Iowan Old Style",Palatino,Georgia,serif}
+  @media (prefers-color-scheme:light){:root{--ground:#f5f0e4;--panel:#fffdf7;--line:#ddd2ba;--text:#241d12;--dim:#6f6553;--faint:#8a7f66;--gold:#8a5a14;--accent:#8a5a14;--good:#4f7a34;--warn:#9a6a12;--critical:#a2482f;--hear:#2b5fa8;--hear-ground:#e9f0f9}}
   *{box-sizing:border-box} body{margin:0;background:var(--ground);color:var(--text);font:15px/1.5 var(--sans)} main{max-width:900px;margin:auto;padding:34px 20px 64px} a{color:var(--gold)} h1{font:600 30px var(--display);margin:0 0 5px}
   .sub{color:var(--dim);max-width:70ch;margin:0 0 26px}
   .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:17px 18px;margin:15px 0}
@@ -85,7 +85,8 @@
   .sq.add{border:2px dashed var(--add);color:var(--add)}
   .sq.remove{background:var(--remove-ground);border:2px dashed var(--remove);color:var(--remove)}
   .sq.self,.sq.person{border-color:transparent;color:var(--faint)}
-  .sq.none.hears{border-width:2px}.sq.none.unseen{border-style:dotted;border-color:var(--faint)}
+  .sq.none.hears{background:var(--hear-ground);border-color:var(--hear)}
+  .sq.none.hears::before{content:"";position:absolute;inset:0;margin:auto;width:42%;height:42%;border-radius:50%;border:2.5px solid var(--hear);box-sizing:border-box}
   .sq.open{outline:2px solid var(--text);outline-offset:2px}
   .legend .sq.copy::after{content:none}
   /* The side panel: beside the grid on a wide screen, under it on a narrow one. */
@@ -792,12 +793,13 @@ function drawHidden() {
 // The legend, from the same words the squares use.
 function drawLegend(buzz) {
   const box = $('legend'); box.textContent = ''
+  // Once the rooms are read, a blank square is "not in any room you can see with it", and a ring is
+  // "hears it, won't act on it" (docs/DESIGN_HIVE_CONSOLE.md, "Who is in each room").
   for (const [kind, words] of LEGEND) {
-    const item = box.appendChild(el('span')); item.append(el('span', `sq ${kind}`, GLYPH[kind]), words)
+    const item = box.appendChild(el('span')); item.append(el('span', `sq ${kind}`, GLYPH[kind]), kind === 'none' && hive?.rooms ? `${words}, and not in any room you can see with it` : words)
+    if (kind === 'none' && hive?.rooms) box.appendChild(el('span')).append(el('span', 'sq none hears', ''), "hears it in a room, won't act on it")
     if (kind === 'copy') item.appendChild(el('span', 'hint', !buzz.known ? '(not every relay returned it)' : buzz.signedAt ? `(copied ${day(buzz.signedAt)})` : '(not copied yet)'))
   }
-  // Once the rooms are read, the blank splits (docs/DESIGN_HIVE_CONSOLE.md, "Who is in each room").
-  if (hive?.rooms) for (const kind of ['hears', 'unseen']) box.appendChild(el('span')).append(el('span', `sq none ${kind}`, ''), ANSWER[kind].replace(/^./, c => c.toLowerCase()))
 }
 // Who is in each room: read only on the owner's click, one Bunker prompt, and the connection closed
 // after. A read that doesn't answer leaves every square as it was.

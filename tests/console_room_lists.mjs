@@ -181,6 +181,12 @@ ok(authTemplate(URL_, 'c', 5).created_at === 5 && authTemplate(URL_, 'c').conten
   ok(await relayKeyFor({ url: URL_, key: null }, { fetchKey: async () => null }) === null && await relayKeyFor(null) === null, 'neither gives no key')
   const page = (await import('node:fs')).readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
   ok(/const squareCtx = \(\) => \(\{[^\n]*\brooms: hive\.rooms\b/.test(page), 'every square is judged with the rooms the page read')
+  // "Hears it" must show at a glance: a ring on its own ground, in both themes; "not in any room
+  // you can see" is the plain blank, so it carries no mark of its own.
+  ok(/\.sq\.none\.hears\{background:var\(--hear-ground\)/.test(page) && /\.sq\.none\.hears::before\{content:""[^}]*border-radius:50%[^}]*var\(--hear\)/.test(page), 'a square that hears it draws a ring on a pale ground')
+  ok((page.match(/--hear:#[0-9a-f]{6};--hear-ground:#[0-9a-f]{6}/g) || []).length === 2, 'the ring has a colour in the dark theme and the light one')
+  ok(!/\.sq\.none\.unseen\{/.test(page), '"not in any room you can see" is the plain blank')
+  ok(/box\.appendChild\(el\('span'\)\)\.append\(el\('span', 'sq none hears', ''\), "hears it in a room, won't act on it"\)/.test(page), 'the legend shows the ring once the rooms are read')
   ok(/const key = await relayKeyFor\(relay\)/.test(page) && !/relay\.key \|\|/.test(page), 'the page chooses its key through relayKeyFor')
 }
 
