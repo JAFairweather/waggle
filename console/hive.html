@@ -500,21 +500,22 @@ function draw(rows, needs, owner, partial, posting = null) {
   grid.rows = [...lines.flatMap(l => l.rows), ...quiet]; grid.groups = []
   if (!folds) folds = new Map()
   const start = foldedAtStart(lines.reduce((n, l) => n + l.rows.length, 0))
-  const section = (label, runs, inGroup, cls) => {
+  // A group's fold is kept by its id, not its name: two rooms can share a name.
+  const section = (label, runs, inGroup, cls, key = label) => {
     const tr = el('tr', `group${cls ? ` ${cls}` : ''}`), th = tr.appendChild(el('th')); th.colSpan = width; th.scope = 'colgroup'
     const drawn = inGroup.map(r => rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting }))
     if (cls) { th.append(label); for (const d of drawn) d.classList.add(cls) } else {
       // A group folds to one line: its name, how many agents, and how many squares give work (#698).
       const fold = th.appendChild(el('button', 'fold')); fold.type = 'button'
-      if (!folds.has(label)) folds.set(label, start)
-      fold.onclick = () => { folds.set(label, !folds.get(label)); drawGroups() }
-      grid.groups.push({ label, fold, sum: el('span', 'sum'), rows: inGroup, trs: drawn })
+      if (!folds.has(key)) folds.set(key, start)
+      fold.onclick = () => { folds.set(key, !folds.get(key)); drawGroups() }
+      grid.groups.push({ key, label, fold, sum: el('span', 'sum'), rows: inGroup, trs: drawn })
     }
     if (runs) th.appendChild(el('span', 'runs', runs))
     if (!cls) th.appendChild(grid.groups.at(-1).sum)
     list.append(tr, ...drawn)
   }
-  for (const { platform, rows: inGroup } of lines) section(platform.label, platform.runs, inGroup)
+  for (const { platform, rows: inGroup } of lines) section(platform.label, platform.runs, inGroup, null, platform.id)
   if (quiet.length) section(hive.active ? 'Not active' : 'Everyone else', hive.active ? 'you set these aside' : 'gives no work, takes none, and runs nowhere this page knows', quiet, 'more')
   const more = $('folded'); more.textContent = ''; more.hidden = !quiet.length
   if (quiet.length) {
@@ -878,7 +879,7 @@ const changeAt = (t, g) => waiting.get(cellKey(t, g)) || null
 function drawGroups() {
   if (!grid?.groups) return
   for (const g of grid.groups) {
-    const shut = folds.get(g.label)
+    const shut = folds.get(g.key)
     g.fold.textContent = `${shut ? '▸' : '▾'} ${g.label}`; g.fold.setAttribute('aria-expanded', String(!shut))
     g.sum.textContent = groupLine('', g.rows, { columns: grid.columns, kindOf: kindAt }).replace(/^ · /, '')
     // A folded group still shows the agent Find an agent is on: the search narrows to its row.

@@ -257,6 +257,9 @@ check(parseIntent(`#buzz=${mydude}:abc`).action === 'invalid' && parseIntent(`#b
   check(roomLinesOf(base, { rooms: new Map([['dm', new Set([owner, mc])], ['q', new Set([stray, giver])]]) }) === null && roomLinesOf(base, null) === null, 'with no room that can be a group, the grid stays grouped by where they run')
   check(JSON.stringify(roomLinesOf(gridOf(rows), { rooms, names })) === JSON.stringify(g), 'the grouping comes from the grid alone, so the same grid groups the same way')
 
+  const twins = roomLinesOf(base, { rooms: new Map([['a1', new Set([mc, dev])], ['a2', new Set([dj, pi])]]), names: new Map([['a1', 'general'], ['a2', 'general']]) })
+  const twinIds = twins.lines.filter(l => l.room).map(l => l.platform.id)
+  check(twins.lines.filter(l => l.platform.label === 'general').length === 2 && new Set(twinIds).size === 2, 'two rooms with the same name stay two groups, each with its own id')
   check(groupingLine({ read: false }).text === 'Grouped by where they run' && groupingLine({ read: false }).button === null, 'before a read the line says where they run and offers no switch')
   const byRoom = groupingLine({ read: true, grouped: true, at: '09:14' })
   check(byRoom.text === 'Grouped by room, read 09:14' && byRoom.button === 'Group by where they run', 'grouped by room, the line says when it was read and offers the way back')
@@ -270,6 +273,7 @@ check(parseIntent(`#buzz=${mydude}:abc`).action === 'invalid' && parseIntent(`#b
   const page = readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
   check(/roomLinesOf\(byRuns, hive\.rooms\)/.test(page) && /id="grouping-go"/.test(page) && /groupingLine\(/.test(page), 'the page groups by room once the rooms are read, with the switch above the grid')
   check(/function regroup\(\)[\s\S]{0,200}const keep = \{ waiting, extras, drafted, ticks \}/.test(page), 'grouping again keeps the changes waiting to be signed')
+  check(/section\(platform\.label, platform\.runs, inGroup, null, platform\.id\)/.test(page) && /folds\.get\(g\.key\)/.test(page) && !/folds\.(get|set|has)\((g\.)?label/.test(page), "a group folds by its id, so two rooms with one name don't fold together")
   check(/In the rooms read: /.test(page) && /In none of the rooms read\./.test(page), "an agent's panel names the rooms read that it is in")
 }
 
