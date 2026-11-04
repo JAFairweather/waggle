@@ -11,6 +11,9 @@
 //  4. The panel's one button: Let / Stop it / Undo, and a disabled one naming who can change it.
 //  5. The words keep the spec's plain vocabulary.
 //  6. A square's "Show who B can @mention" opens only B's private list; Needs you's "Show it" opens all.
+//  7. Once the room lists are read, a blank square splits into "hears it, won't act" and "not in any
+//     room you can see with it", only when both are in a room the page read and every room's list was
+//     trusted. Otherwise it keeps today's line, and "hears it" always names the room.
 //
 // Every key is synthetic.
 //
@@ -155,6 +158,33 @@ const NOT_READ = /(post|your post) reaches .* isn't read yet: that needs each ro
   check(listsToOpen(views, luke.pk).length === 0, 'a square whose list is already read asks for nothing')
   const page = readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
   check(/show\.onclick = \(\) => openViews\(row\.pubkey\)/.test(page) && /\$\('hidden-go'\)\.onclick = \(\) => openViews\(\)/.test(page), "the page passes the square's taker, and Needs you passes no one")
+}
+
+// ── 7. Who is in each room ───────────────────────────────────────────────────────────────────────
+{
+  const h = await hive([piTasksMc])
+  const rooms = (m, names = new Map(), unread = new Map()) => ({ rooms: new Map(Object.entries(m).map(([r, ks]) => [r, new Set(ks)])), names, unread })
+  h.ctx.rooms = rooms({ r1: [pi.pk, mc.pk, owner.pk] }, new Map([['r1', 'general']]))
+  const hears = h.square(pi.pk, mc.pk)
+  check(hears.sq.kind === 'none' && hears.sq.hear === 'hears' && hears.answer === ANSWER.hears, 'blank, and both in a room read: "hears it, won\'t act"')
+  check(hears.reasons.some(r => r === 'Pi Dog hears MC Claude in “general”. Whether Pi Dog is connected right now isn\'t read.'), 'the panel names the room it hears it in')
+  const work = h.square(mc.pk, pi.pk)
+  check(work.sq.kind === 'work' && work.sq.hear === null && work.reasons.some(r => /^MC Claude hears Pi Dog in “general”/.test(r)), 'a ✓ square keeps ✓ and names the room')
+
+  h.ctx.rooms = rooms({ r1: [pi.pk, owner.pk], r2: [mc.pk, owner.pk] })
+  const unseen = h.square(pi.pk, mc.pk)
+  check(unseen.sq.hear === 'unseen' && unseen.answer === ANSWER.unseen && GLYPH.none === '', 'no shared room read: "not in any room you can see with it"')
+  check(unseen.reasons.some(r => /isn't in any room you can see with MC Claude\. Rooms you aren't in aren't read/.test(r)), 'it says rooms you aren\'t in aren\'t read')
+  check(!unseen.reasons.some(r => /doesn't hear/.test(r)) && !/doesn't hear/.test(unseen.answer), 'never a flat "doesn\'t hear it"')
+
+  h.ctx.rooms = rooms({ r1: [pi.pk, owner.pk], r2: [mc.pk, owner.pk] }, new Map(), new Map([['r3', 'untrusted']]))
+  const held = h.square(pi.pk, mc.pk)
+  check(held.sq.hear === null && held.answer === ANSWER.none && held.reasons.some(r => NOT_READ.test(r)), 'a room not read or not trusted holds back "not in any room"')
+
+  h.ctx.rooms = rooms({ r1: [pi.pk, owner.pk] })
+  const nvoy = h.square(pi.pk, mc.pk)
+  check(nvoy.sq.hear === null && nvoy.reasons.some(r => NOT_READ.test(r)), "an agent in no room read keeps today's line, and its squares don't split")
+  check(h.square(mc.pk, pi.pk).reasons.some(r => NOT_READ.test(r)), 'so does a square whose taker is in no room read')
 }
 
 if (!pass) { console.error('\nconsole_hive_square: FAILURES ABOVE'); process.exit(1) }
