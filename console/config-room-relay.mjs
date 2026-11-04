@@ -20,6 +20,7 @@ if (main) {
   }
   const [lu, url] = mk('room-relay-url', 'Address', 'wss://…')
   const [lk, key] = mk('room-relay-key', "Its signing key (only if it doesn't publish one)", '64-character hex, optional')
+  lk.style.display = 'block'; lk.style.marginTop = '12px'
   const save = document.createElement('button'); save.type = 'button'; save.textContent = 'Keep it'
   const drop = document.createElement('button'); drop.type = 'button'; drop.textContent = 'Forget it'; drop.style.marginLeft = '8px'
   const st = document.createElement('div'); st.className = 'status'; st.setAttribute('role', 'status')
