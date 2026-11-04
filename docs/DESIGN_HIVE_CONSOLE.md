@@ -161,9 +161,15 @@ when it is in several rooms:
   switches back. When any room's list is missing or untrusted it says "Grouped by the rooms read,
   09:14: n rooms' lists weren't read". Before a read, the line says "Grouped by where they run" and
   offers no switch.
+- When a read finds no room that can be a group, the grid stays grouped by where they run rather
+  than putting every agent in "Other agents". The line says "Grouped by where they run: no room read
+  at 09:14 holds two of these agents", with no switch.
+- A group folds by its room id, never its name: two rooms can share a name.
 - Columns follow the rows' order, so a room's agents sit together across the top too.
-- This is a rule of thumb, not a fact about the hive. The build is tried on a real signed room read
-  before it merges, and the screenshots go in the PR.
+- This is a rule of thumb, not a fact about the hive. The build is tried on a stand-in read before
+  it merges, and on the owner's real signed room read as soon as it deploys, with the screenshots
+  in the PR. If the real read shows it wrong, it's reverted. The owner chose this order on
+  2026-11-04: the real read needs the owner's signer, and that is paired only with the live page.
 
 The "About this list" paragraph goes. Each square names its own source in one line.
 

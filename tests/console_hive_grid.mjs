@@ -24,16 +24,20 @@
 //     else's approval, an approval someone else also gave, a card that does not count the owner.
 //     An approval from a grantor the agent does not count locks nothing: the agent ignores it.
 //  4. Clicking a square waits for a signature, and clicking it again takes that back.
+// 10. Once the rooms are read, the grid groups by room (docs/DESIGN_HIVE_CONSOLE.md, "Groups once
+//     the rooms are read"): a room is a group only with two agents the grid shows, not you; each
+//     agent sits in its smallest such room, ties to the room id; you first, the rest in "Other
+//     agents"; the columns follow the rows; and the line above the grid says how it is grouped.
 //  5. Old channel passes and waggle carrying, which nothing reads since #658, are offered for
 //     withdrawal: the owner's live ones only.
 //
 //   node tests/console_hive_grid.mjs
 
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { PLATFORMS, RUNS_ON, RUNS_LOGO } from '../console/hive-list.mjs'
 import { buzzLists, buzzLink } from '../tools/buzz-allow.mjs'
 import { parseIntent } from '../console/deep-link.mjs'
-import { gridOf, reachOf, agentsOf, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, ACTIVE_KIND, ACTIVE_D, BUZZ_D, readBuzz, buzzOf, draftBuzz, sameBuzz, buzzWords, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers } from '../console/hive-grid.mjs'
+import { gridOf, reachOf, agentsOf, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, ACTIVE_KIND, ACTIVE_D, BUZZ_D, readBuzz, buzzOf, draftBuzz, sameBuzz, buzzWords, cellOf, cellKey, toggle, squareOf, changeWords, summaryOf, leftovers, roomLinesOf, groupingLine, roomsOfAgent, OTHER_AGENTS } from '../console/hive-grid.mjs'
 
 let pass = true
 const check = (cond, label) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${label}`); if (!cond) pass = false }
@@ -219,6 +223,59 @@ const intent = parseIntent(new URL(link).hash)
 check(intent.action === 'buzz' && JSON.stringify(intent.lists.find(([a]) => a === mydude)[1]) === JSON.stringify([dj, voice].sort()) && intent.lists.some(([a, s]) => a === dev && s.join() === 'owner'),
   'the link round-trips to the page as whole keys, with the owner and anyone marked')
 check(parseIntent(`#buzz=${mydude}:abc`).action === 'invalid' && parseIntent(`#buzz=${mydude}:${dj}:x`).action === 'invalid', 'a link with anything but whole keys is refused')
+
+// 10. Groups once the rooms are read.
+{
+  const base = gridOf(rows)
+  const rooms = new Map([
+    ['big', new Set([owner, mc, dev, dj, pi, mydude])],
+    ['team', new Set([owner, mc, dev])],
+    ['dm', new Set([owner, mc])],
+    ['tie-b', new Set([dj, pi, other])],
+    ['tie-a', new Set([dj, pi, bridge])],
+    ['q', new Set([stray, giver])],
+  ])
+  const names = new Map([['tie-a', 'Zed'], ['tie-b', 'Alpha'], ['big', 'waggle-test']])
+  const g = roomLinesOf(base, { rooms, names, unread: new Map() })
+  const ids = l => l.platform.id
+  check(JSON.stringify(g.lines.map(ids)) === JSON.stringify(['you', 'room:team', 'room:tie-a', 'room:big', 'other-agents']), 'rooms group the grid: you first, smallest rooms first, the rest last')
+  check(g.lines[0] === base.lines[0], 'you and your voice stay first, as when grouped by where they run')
+  const at = id => g.lines.find(l => ids(l) === id).rows.map(r => r.pubkey)
+  check(JSON.stringify(at('room:team')) === JSON.stringify([mc, dev]), 'an agent sits in the smallest room it is in, not the biggest')
+  check(!g.lines.some(l => ids(l) === 'room:dm'), 'a room with one agent the grid shows, not counting you, is no group')
+  check(JSON.stringify(at('room:tie-a')) === JSON.stringify([pi, dj]) && !g.lines.some(l => ids(l) === 'room:tie-b'), 'a tie goes to the room id that sorts first, whatever the rooms are named')
+  check(!g.lines.some(l => ids(l) === 'room:q'), 'a quiet identity is not an agent the grid shows, so it makes no group')
+  check(JSON.stringify(at('room:big')) === JSON.stringify([mydude]), 'an agent left only in a bigger room sits there')
+  check(JSON.stringify(at('other-agents')) === JSON.stringify([dennis, giver]), 'an agent in no such room sits in Other agents')
+  const label = id => g.lines.find(l => ids(l) === id).platform
+  check(label('room:big').label === 'waggle-test' && label('room:big').runs === 'room' && label('room:team').label === 'team', "a room's group is headed by its name, or its id without one, and says room")
+  check(label('other-agents').label === OTHER_AGENTS && !/not in any room/.test(label('other-agents').label + (label('other-agents').runs || '')), 'Other agents never says "not in any room"')
+  check(JSON.stringify(g.columns.map(r => r.pubkey)) === JSON.stringify([mc, dev, pi, dj, mydude, dennis, stray]), "the columns follow the rows' order, quiet ones last")
+  const mixed = roomLinesOf(base, { rooms: new Map([['x', new Set([mc, dennis])], ['y', new Set([dev, pi])]]) })
+  check(JSON.stringify(mixed.columns.map(r => r.pubkey)) === JSON.stringify([mc, dennis, dev, pi, dj, mydude, stray]), "rooms that cross harnesses reorder the columns to match the rows")
+  check(g.quiet === base.quiet && g.takers.length === base.takers.length, 'grouping by room moves no one in or out of the grid')
+  check(roomLinesOf(base, { rooms: new Map([['dm', new Set([owner, mc])], ['q', new Set([stray, giver])]]) }) === null && roomLinesOf(base, null) === null, 'with no room that can be a group, the grid stays grouped by where they run')
+  check(JSON.stringify(roomLinesOf(gridOf(rows), { rooms, names })) === JSON.stringify(g), 'the grouping comes from the grid alone, so the same grid groups the same way')
+
+  const twins = roomLinesOf(base, { rooms: new Map([['a1', new Set([mc, dev])], ['a2', new Set([dj, pi])]]), names: new Map([['a1', 'general'], ['a2', 'general']]) })
+  const twinIds = twins.lines.filter(l => l.room).map(l => l.platform.id)
+  check(twins.lines.filter(l => l.platform.label === 'general').length === 2 && new Set(twinIds).size === 2, 'two rooms with the same name stay two groups, each with its own id')
+  check(groupingLine({ read: false }).text === 'Grouped by where they run' && groupingLine({ read: false }).button === null, 'before a read the line says where they run and offers no switch')
+  const byRoom = groupingLine({ read: true, grouped: true, at: '09:14' })
+  check(byRoom.text === 'Grouped by room, read 09:14' && byRoom.button === 'Group by where they run', 'grouped by room, the line says when it was read and offers the way back')
+  check(groupingLine({ read: true, grouped: true, unread: 2, at: '09:14' }).text === "Grouped by the rooms read, 09:14: 2 rooms' lists weren't read"
+    && groupingLine({ read: true, grouped: true, unread: 1, at: '09:14' }).text === "Grouped by the rooms read, 09:14: 1 room's list wasn't read", 'a partial read says how many rooms were not read')
+  check(groupingLine({ read: true, grouped: false, at: '09:14' }).button === 'Group by room', 'switched back, it offers to group by room again')
+  check(groupingLine({ read: true, grouped: false, possible: false, at: '09:14' }).button === null, 'a read with no room that can be a group offers no switch')
+
+  check(JSON.stringify(roomsOfAgent(mc, { rooms })) === JSON.stringify(['big', 'dm', 'team']) && roomsOfAgent(dennis, { rooms }).length === 0 && roomsOfAgent(mc, null) === null, "an agent's panel names the rooms read that it is in, and nothing before a read")
+
+  const page = readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
+  check(/roomLinesOf\(byRuns, hive\.rooms\)/.test(page) && /id="grouping-go"/.test(page) && /groupingLine\(/.test(page), 'the page groups by room once the rooms are read, with the switch above the grid')
+  check(/function regroup\(\)[\s\S]{0,200}const keep = \{ waiting, extras, drafted, ticks \}/.test(page), 'grouping again keeps the changes waiting to be signed')
+  check(/section\(platform\.label, platform\.runs, inGroup, null, platform\.id\)/.test(page) && /folds\.get\(g\.key\)/.test(page) && !/folds\.(get|set|has)\((g\.)?label/.test(page), "a group folds by its id, so two rooms with one name don't fold together")
+  check(/In the rooms read: /.test(page) && /In none of the rooms read\./.test(page), "an agent's panel names the rooms read that it is in")
+}
 
 if (!pass) { console.log('\nconsole_hive_grid: FAIL'); process.exit(1) }
 console.log('\nconsole_hive_grid: ok')
