@@ -927,7 +927,7 @@ function focusView(pk) {
 
 // The side panel (#698): a square's answer both ways, or one agent's answers. The grid is the console.
 let side = null
-const squareCtx = () => ({ owner: hive.owner, nameOf: grid.nameOf, grants: hive.grants, subjectOf: hive.table.subjectOf, views: hive.views, buzz: hive.buzz, partial: grid.partial })
+const squareCtx = () => ({ owner: hive.owner, nameOf: grid.nameOf, grants: hive.grants, subjectOf: hive.table.subjectOf, views: hive.views, buzz: hive.buzz, partial: grid.partial, rooms: hive.rooms })
 function openSide(next, { focus = true } = {}) {
   // Moving within the panel keeps the square or name it was first opened from, for Close to return to.
   const was = side
