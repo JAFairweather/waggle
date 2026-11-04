@@ -10,9 +10,9 @@ import { loadRoomRelay, saveRoomRelay, forgetRoomRelay } from './room-lists.mjs'
 const main = document.querySelector('main')
 if (main) {
   const box = document.createElement('section'); box.className = 'panel'; box.id = 'room-relay'
-  const h = document.createElement('h2'); h.textContent = 'Room relay'
+  const h = document.createElement('h2'); h.textContent = 'Buzz relay'
   const note = document.createElement('p'); note.className = 'note'; note.style.marginTop = '0'
-  note.textContent = "The relay your Buzz rooms live on. The hive page reads who is in each room from it, with one Bunker prompt when you ask. It's kept in this browser only."
+  note.textContent = "The address your Buzz app connects to: your rooms and their member lists live there. The hive page reads who is in each room from it, with one Bunker prompt when you ask. It's kept in this browser only."
   const mk = (id, label, ph) => {
     const l = document.createElement('label'); l.htmlFor = id; l.textContent = label
     const i = document.createElement('input'); i.id = id; i.placeholder = ph; i.spellcheck = false; i.autocomplete = 'off'

@@ -191,10 +191,10 @@ ok(authTemplate(URL_, 'c', 5).created_at === 5 && authTemplate(URL_, 'c').conten
   ok(roomsNeed({ relay: {}, state: 'no-answer' }).button === 'Read again', 'no answer: Read again')
   ok(roomsNeed({ relay: {}, state: 'declined' }).button === 'Read who is in each room', 'declined: read again from the start')
   ok(roomsNeed({ relay: {}, state: 'auth-refused' }).button === null, 'refused sign-in: no button')
-  ok(/not signed by your room relay/.test(roomsNeed({ relay: {}, state: 'read', untrusted: 1 }).text), 'an untrusted list says so')
+  ok(/not signed by your Buzz relay/.test(roomsNeed({ relay: {}, state: 'read', untrusted: 1 }).text), 'an untrusted list says so')
   ok(roomsNeed({ relay: {}, state: 'read' }) === null, 'a clean read needs nothing')
   const both = roomsNeed({ relay: {}, state: 'read', untrusted: 2, unlisted: 3 }).text
-  ok(/^2 rooms' member lists came back, but not signed by your room relay/.test(both) && /3 rooms sent no member list/.test(both), 'untrusted and missing lists are both counted in one line')
+  ok(/^2 rooms' member lists came back, but not signed by your Buzz relay/.test(both) && /3 rooms sent no member list/.test(both), 'untrusted and missing lists are both counted in one line')
   ok(roomsNeed({ relay: {}, state: 'read', unlisted: 1 }).text === "A room sent no member list, so who is in it isn't read.", 'one missing list reads in the singular')
 }
 
