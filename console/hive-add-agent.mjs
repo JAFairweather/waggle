@@ -11,7 +11,7 @@ import { sameAsDrafted, publishTo, relayHost } from './hive-change.mjs'
 
 export const SETUP_KIND = 30078
 export const HARNESSES = Object.freeze([
-  ['claude-code', 'Claude Code'], ['codex', 'Codex'], ['pi', 'Pi'], ['openclaw', 'OpenClaw'], ['grokbot', 'Grok Bot'], ['hermes', 'Hermes']])
+  ['claude-code', 'Claude Code'], ['codex', 'Codex'], ['pi', 'Pi'], ['openclaw', 'OpenClaw'], ['grokbot', 'Grok Bot'], ['hermes', 'Hermes'], ['antigravity', 'Gemini (Antigravity)']])
 const HARNESS_IDS = HARNESSES.map(([id]) => id)
 const NAME = /^[a-z0-9][a-z0-9._-]{1,63}$/
 const HEX64 = /^[0-9a-f]{64}$/
