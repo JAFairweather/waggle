@@ -233,12 +233,12 @@ might fix it:
 
 | What happened | What the page says | Button |
 |---|---|---|
-| The page doesn't know the room relay's address | "Who is in each room isn't read: this page doesn't know your room relay yet." | Add it on Config |
-| No connection, or no answer within 10 seconds | "Your room relay didn't answer, so who is in each room isn't read." | Read again |
-| The Bunker prompt is declined or times out | "Not read: you didn't sign in to your room relay." | Read who is in each room |
-| The relay refuses the sign-in | "Your room relay wouldn't let you sign in, so who is in each room isn't read." | none |
+| The page doesn't know the room relay's address | "Who is in each room isn't read: this page doesn't know your Buzz relay yet." | Add it on Config |
+| No connection, or no answer within 10 seconds | "Your Buzz relay didn't answer, so who is in each room isn't read." | Read again |
+| The Bunker prompt is declined or times out | "Not read: you didn't sign in to your Buzz relay." | Read who is in each room |
+| The relay refuses the sign-in | "Your Buzz relay wouldn't let you sign in, so who is in each room isn't read." | none |
 | A room the page lists sends no member list | That room's squares stay unread, and its group header says "who is in it isn't read". | Read again |
-| A room's member list comes back signed by any key but the relay's own | "A room's member list came back, but not signed by your room relay, so it isn't trusted." That room's squares stay unread, and its group header says "who is in it isn't read". | Read again |
+| A room's member list comes back signed by any key but the relay's own | "A room's member list came back, but not signed by your Buzz relay, so it isn't trusted." That room's squares stay unread, and its group header says "who is in it isn't read". | Read again |
 
 The page checks each list's signature against the relay's key, and a list that fails is never
 read as the room's members.
@@ -261,7 +261,8 @@ Three things need a live answer before the first PR is written, from a probe run
    document if it states one, and otherwise from the owner's Config next to the address.
 
 The relay's address comes from the owner's Config, as other operational details do. It is never
-written into this repository.
+written into this repository. Config and every visible line call it the **Buzz relay**, the address
+the owner's Buzz app connects to, since "room relay" is a word the owner has no reason to know.
 
 ## Build order
 

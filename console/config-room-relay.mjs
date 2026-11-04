@@ -10,15 +10,17 @@ import { loadRoomRelay, saveRoomRelay, forgetRoomRelay } from './room-lists.mjs'
 const main = document.querySelector('main')
 if (main) {
   const box = document.createElement('section'); box.className = 'panel'; box.id = 'room-relay'
-  const h = document.createElement('h2'); h.textContent = 'Room relay'
+  const h = document.createElement('h2'); h.textContent = 'Buzz relay'
   const note = document.createElement('p'); note.className = 'note'; note.style.marginTop = '0'
-  note.textContent = "The relay your Buzz rooms live on. The hive page reads who is in each room from it, with one Bunker prompt when you ask. It's kept in this browser only."
+  note.textContent = "The address your Buzz app connects to: your rooms and their member lists live there. The hive page reads who is in each room from it, with one Bunker prompt when you ask. It's kept in this browser only."
   const mk = (id, label, ph) => {
     const l = document.createElement('label'); l.htmlFor = id; l.textContent = label
     const i = document.createElement('input'); i.id = id; i.placeholder = ph; i.spellcheck = false; i.autocomplete = 'off'
     return [l, i]
   }
   const [lu, url] = mk('room-relay-url', 'Address', 'wss://…')
+  const where = document.createElement('p'); where.className = 'note'; where.style.margin = '4px 0 0'
+  where.textContent = "In Buzz, it's in this community's menu → Community settings → Relay URL."
   const [lk, key] = mk('room-relay-key', "Its signing key (only if it doesn't publish one)", '64-character hex, optional')
   lk.style.display = 'block'; lk.style.marginTop = '12px'
   const save = document.createElement('button'); save.type = 'button'; save.textContent = 'Keep it'
@@ -31,7 +33,7 @@ if (main) {
     st.textContent = ok ? 'Kept. Back on your hive, Needs you offers to read who is in each room.' : 'Not kept: the address must start wss://, and the key, if given, must be 64 hex characters.'
   }
   drop.onclick = () => { forgetRoomRelay(); url.value = key.value = ''; st.textContent = 'Forgotten in this browser.' }
-  box.append(h, note, lu, url, lk, key, save, drop, st)
+  box.append(h, note, lu, url, where, lk, key, save, drop, st)
   const tail = main.querySelector('section.panel.note')
   tail ? main.insertBefore(box, tail) : main.appendChild(box)
   if (location.hash === '#room-relay') box.scrollIntoView()

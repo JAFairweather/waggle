@@ -169,17 +169,17 @@ export function roomsOf(events, { relayKey, verify = verifyEvent } = {}) {
 
 /// The Needs you line for a read that didn't happen, and its button. Null when nothing is wrong.
 export function roomsNeed({ relay, state, untrusted = 0, unlisted = 0, readAt = null }) {
-  if (!relay) return { text: "Who is in each room isn't read: this page doesn't know your room relay yet.", button: 'Add it on Config', act: 'config' }
+  if (!relay) return { text: "Who is in each room isn't read: this page doesn't know your Buzz relay yet.", button: 'Add it on Config', act: 'config' }
   if (!state) return { text: "Who is in each room isn't read. Reading it takes one Bunker prompt.", button: 'Read who is in each room', act: 'read' }
-  if (state === 'no-answer') return { text: "Your room relay didn't answer, so who is in each room isn't read.", button: 'Read again', act: 'read' }
-  if (state === 'declined') return { text: "Not read: you didn't sign in to your room relay.", button: 'Read who is in each room', act: 'read' }
+  if (state === 'no-answer') return { text: "Your Buzz relay didn't answer, so who is in each room isn't read.", button: 'Read again', act: 'read' }
+  if (state === 'declined') return { text: "Not read: you didn't sign in to your Buzz relay.", button: 'Read who is in each room', act: 'read' }
   if (state === 'other-signer') return { text: "Not read: you're signed in as a different key from this hive.", button: 'Read who is in each room', act: 'read' }
-  if (state === 'auth-refused') return { text: "Your room relay wouldn't let you sign in, so who is in each room isn't read.", button: null }
-  if (state === 'no-key') return { text: "Who is in each room isn't read: your room relay doesn't say which key signs its lists. Add it on Config.", button: 'Add it on Config', act: 'config' }
+  if (state === 'auth-refused') return { text: "Your Buzz relay wouldn't let you sign in, so who is in each room isn't read.", button: null }
+  if (state === 'no-key') return { text: "Who is in each room isn't read: your Buzz relay doesn't say which key signs its lists. Add it on Config.", button: 'Add it on Config', act: 'config' }
   const parts = []
   if (untrusted) parts.push(untrusted === 1
-    ? "A room's member list came back, but not signed by your room relay, so it isn't trusted."
-    : `${untrusted} rooms' member lists came back, but not signed by your room relay, so they aren't trusted.`)
+    ? "A room's member list came back, but not signed by your Buzz relay, so it isn't trusted."
+    : `${untrusted} rooms' member lists came back, but not signed by your Buzz relay, so they aren't trusted.`)
   if (unlisted) parts.push(`${unlisted === 1 ? 'A room' : `${unlisted} rooms`} sent no member list, so who is in ${unlisted === 1 ? 'it' : 'them'} isn't read.`)
   if (parts.length) return { text: parts.join(' '), button: 'Read again', act: 'read' }
   return null

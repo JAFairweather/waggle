@@ -814,7 +814,7 @@ function drawRooms() {
     const go = $('rooms-go'); go.hidden = !need.button; go.textContent = need.button || ''; go.dataset.act = need.act || ''
   }
   $('rooms-note').hidden = !(r && roomRead.at)
-  if (r && roomRead.at) $('rooms-stamp').textContent = `Rooms read ${clock(roomRead.at)}: ${r.rooms.size} room${r.rooms.size === 1 ? '' : 's'} with a member list signed by your room relay. Rooms you aren't in aren't read.`
+  if (r && roomRead.at) $('rooms-stamp').textContent = `Rooms read ${clock(roomRead.at)}: ${r.rooms.size} room${r.rooms.size === 1 ? '' : 's'} with a member list signed by your Buzz relay. Rooms you aren't in aren't read.`
   $('needs-panel').hidden = $('rooms-card').hidden && $('hidden-card').hidden && $('leftovers').hidden && !$('needs').childElementCount
 }
 async function readRoomLists() {
@@ -824,13 +824,13 @@ async function readRoomLists() {
   const done = state => { roomRead = { state, at: state === 'read' ? Date.now() / 1000 : roomRead.at }; st.textContent = '' }
   $('rooms-go').disabled = $('rooms-again').disabled = true
   try {
-    st.textContent = 'Reading your room relay…'
+    st.textContent = 'Reading your Buzz relay…'
     const key = await relayKeyFor(relay)
     if (!key) return done('no-key')
     let signer = null, me = null
     try { signer = await consoleSigner(); me = String(await signer.getPublicKey()).toLowerCase() } catch { return done('declined') }
     if (me !== h.owner) return done('other-signer')
-    st.textContent = 'Asking your signer to sign in to your room relay…'
+    st.textContent = 'Asking your signer to sign in to your Buzz relay…'
     const out = await readRooms({ url: relay.url, sign: t => signFresh(t, signer), connect: u => new WebSocket(u) })
     if (out.state !== 'read') return done(out.state)
     if (hive === h) h.rooms = roomsOf(out.events, { relayKey: key, verify: verifyEvent })
