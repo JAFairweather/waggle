@@ -19,7 +19,7 @@ import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nos
 import * as nip44 from 'nostr-tools/nip44'
 import { readFileSync } from 'node:fs'
 import { HARNESSES, agentName, draftAddAgent, draftBind, readBack, requestD, sendRequest, sealedShape, SETUP_KIND } from '../console/hive-add-agent.mjs'
-import { STEPS, NOT_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, HANDOFF } from '../console/add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, HANDOFF } from '../console/add-agent-flow.mjs'
 import * as flow from '../console/add-agent-flow.mjs'
 import { HIVE_RELAY, INVITE_TTL_SECS, joinGate, readHiveTerms, sealInvite, termsFromRead } from '../console/hive-invite.mjs'
 
@@ -59,6 +59,8 @@ check(JSON.stringify(bind.tags) === JSON.stringify([['d', 'nvoy-onboard/hr/bind_
 check(throws(() => draftBind({ ...base, channelKey: '-----BEGIN OPENSSH PRIVATE KEY-----' }), /private/), 'a private key never becomes a draft')
 check(throws(() => draftBind({ ...base, channelKey: 'ssh-rsa AAAAB3Nza' }), /starting ssh-ed25519/), 'an unsupported key type')
 check(throws(() => draftBind({ ...base, channelKey: `${KEY}\n${KEY}` }), /one line/), 'two lines')
+check(throws(() => draftBind({ ...base, harness: 'codex', channelKey: KEY }), /second key/), 'a Codex agent is refused: its wake feed needs a key this request cannot carry')
+check(draftBind({ ...base, harness: 'antigravity', channelKey: KEY }).tags.some(t => t[0] === 'harness' && t[1] === 'antigravity'), 'an Antigravity agent binds its one channel key')
 
 // ── 4. Sending ──────────────────────────────────────────────────────────────────────────────────
 const relays = ['wss://a.example', 'wss://b.example']
@@ -189,7 +191,14 @@ check(/<a id="add-open" class="button small" href="add-agent.html">/.test(hive) 
 
 // The seven steps: three signatures, each a newer add_agent carrying everything chosen so far.
 check(STEPS.map(s => s.label).join('|') === 'Name it|Make its key|Set up its tools|Start it on its box|Join the hive|Who can give it work|Prove it works', 'the rail has the seven steps of the design, in its order')
-check(Object.keys(NOT_BUILT).join() === '4,7', 'the two steps the page cannot do yet say so, and nothing else does')
+check(Object.keys(NOT_BUILT).join() === '7' && Object.keys(PART_BUILT).join() === '4', 'the step the page cannot do yet, and the step it does only in part, say so, and nothing else does')
+check(!Object.keys(NOT_BUILT).some(n => n in PART_BUILT), 'a step is either not built or partly built, never both')
+
+// Step 4: paste the public half the line printed, sign it as bind_runtime, read that very event back.
+check(/<input id="channel-key"/.test(page) && /id="box-go"/.test(page) && /id="box-status"/.test(page), 'step 4 has the paste field, its own button and its own status')
+check(/send\('box-status', 'box-go', f => draftBind\(/.test(page), 'step 4 signs a bind_runtime through the same send path as the other signatures')
+check(/'#d': \[requestD\(form\.name, 'bind_runtime'\)\]/.test(page) && /readBack\(back\.events, signed/.test(page), 'step 4 reads back the very bind it sent, by its own d, not the add_agent')
+check(/PART_BUILT\[s\.n\] \? 'partly built'/.test(page) && /\$\('box-later'\)\.textContent = PART_BUILT\[4\]/.test(page), 'the rail and the step say step 4 is partly built, never done')
 const sealedJoin = { invite: nip44.encrypt('code', nip44.getConversationKey(O.sk, A.pk)), policy: 'v1', age: 'confirmed' }
 const flowFields = { name: 'hr', agent: A.pk, harness: 'claude-code', like: 'crystalclaude', installed }
 const atT = (t, extra = {}) => finalizeEvent(draftAddAgent({ ...flowFields, ...extra, now: t }), O.sk)

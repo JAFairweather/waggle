@@ -76,6 +76,7 @@ export function draftAddAgent({ name, agent, harness, like, givers = [], rooms =
 // bind_runtime: the channel key the install line made on the agent's box. Public half only.
 export function draftBind({ name, agent, harness, like, channelKey, now = Math.floor(Date.now() / 1000) }) {
   const n = common({ name, agent, harness, like })
+  if (harness === 'codex') throw new Error('A Codex agent needs a second key for its wake feed, and this request carries only one. Step 4 cannot bind it yet.')
   const line = String(channelKey || '').trim()
   if (/PRIVATE KEY|nsec1|bunker:|nostrconnect:/i.test(line)) throw new Error('That is private. Paste only the line that starts ssh-ed25519.')
   const m = SSH_PUBLIC.exec(line)
