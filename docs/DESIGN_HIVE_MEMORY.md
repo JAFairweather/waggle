@@ -185,6 +185,27 @@ Before signing a claim or writing it to `memory_claims.json` or the relay, `memo
 
 ---
 
+## Physical deployment: one shared-memory subsystem on `herd-cloud`
+
+Rather than coupling memory inside each agent's `nvoy` channel broker on `nave.pub` (which has limited free RAM and hosts the live channel brokers and signing paths), shared memory runs on `herd-cloud` as its own isolated subsystem (`hive-memory.service`, provisioned by `herd-infra` in `host/hive-memory/`):
+
+1. **One daemon, one relay session, one grant refresh:**
+   - Runs as system user `hive-memory` (`StateDirectory=hive-memory`, `0700`, `MemoryMax=512M`, `ProtectSystem=strict`, `ProtectHome=yes`), outside every agent's sandbox.
+   - Replaces $N$ duplicate relay subscriptions and $N$ duplicate two-phase grant refreshes with one relay session and one grant-refresh loop, while keeping channel delivery and memory completely decoupled.
+2. **Per-reader socket binding ("the server decides who the reader is"):**
+   - `systemd` passes one listening Unix socket per reader (`/run/hive-memory/<reader>.sock`, `0660`, passed via `LISTEN_FDS` and named by `LISTEN_FDNAMES`) to:
+     `node /opt/hive-memory/nvoy/mcp/tools/memory-daemon.mjs --state "$STATE_DIRECTORY" --readers "${LISTEN_FDNAMES}"`
+   - **Agents on `herd-cloud` (`crystalclaude`, `djcodex`, `hr`, `crusty`):** Each reader socket's `SocketGroup` is `agent-<name>`, so the kernel permits only that agent to open its socket via `/usr/local/lib/hive-memory/connect`.
+   - **Mac readers (`biggy`, `waggle-dev`, `rabidrabbit`, `mcclaude`, `pidog`, `lukedog`, `epiq`):** Arrive over SSH as `hive-memory-gw` using a root-owned `/etc/ssh/hive-memory-keys` entry with `restrict,command="/usr/local/lib/hive-memory/connect <name>"`, which connects only to `/run/hive-memory/<name>.sock`.
+   - Each connection speaks newline-delimited MCP JSON-RPC (`memory_wake`, `memory_query`) as that socket's bound reader. The daemon never accepts a reader name or pubkey from what a client sends.
+3. **Trust boundary, relay identity, and keyless readers:**
+   - **Trust:** Whereas an in-broker library computes rank inside each agent's own broker, with one shared daemon on `herd-cloud` each reader harness trusts `hive-memory.service` to verify Schnorr signatures, fold `ownerPubkey` (`4010ac43`) grants, and compute rank for its socket-bound reader seat—the same host-level trust boundary as an `nvoy` broker on `nave.pub`, enforced by `systemd` sandboxing and kernel socket permissions.
+   - **Daemon relay identity & per-reader room isolation:** To read room claims, the daemon authenticates to the community relay with its own read-only Nostr identity (created by James in the Bunker and supplied via `LoadCredential=relay-identity:/etc/herd/credentials/hive-memory/relay-identity`) and is admitted to `memory_global_channel_id` and the rooms it serves. Although the daemon ingests the union of those rooms, it serves `room:<uuid>` claims to a reader socket **only** when that socket's bound `reader_pubkey` is present in the verified `kind 39002` member list for `<uuid>` (`reader-not-in-room` rejection otherwise).
+   - **Keyless readers:** Readers without a personal Buzz identity yet (`rabidrabbit`, `epiq`, `lukedog`, `hr`, `crusty`) are configured with `reader_pubkey: null`. They receive `hive:canon` (Rank 2) and `hive:ops` (Rank 3) via `memory_wake` and `memory_query`, and receive no `room:<uuid>` or `self:<pubkey>` claims until they receive a Buzz identity.
+   - **Writes (`memory_claim` / `memory_withdraw`):** The `hive-memory` daemon never signs anything (`HIVE_MEMORY_DAEMON_NO_SIGN`) and holds no signing keys or grants on disk. Writes remain with each speaker's own signer/broker path; the daemon only ingests and verifies signed events.
+
+---
+
 ## Harness-side git check vs. broker-side claim digest
 
 Brokers run on the fleet box; Mac harnesses reach them over SSH MCP. The broker cannot inspect a harness's local git tree, so the checks run in two places:
