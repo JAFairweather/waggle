@@ -20,8 +20,14 @@ export const STEPS = Object.freeze([
 
 // Steps the page cannot carry out yet, and what each waits on. Shown as such, never as done.
 export const NOT_BUILT = Object.freeze({
-  4: 'The install line is not built yet (nvoy #294). Until it is, the operator starts it on its box.',
   7: 'The checks are not built yet. Until they are, look for its hello in #waggle-test.',
+})
+
+// Steps the page carries out only in part, and what the missing part waits on. Never shown as done:
+// step 4 is done only when the fleet's receipt and the agent's presence say so, and the page does not
+// read either yet.
+export const PART_BUILT = Object.freeze({
+  4: 'The page does not show the install line or check the connection yet. The operator gives you the line; run it on the box, then paste the key it prints here and sign it.',
 })
 
 const tagOf = (ev, k) => ev.tags.find(t => t[0] === k)?.[1]
