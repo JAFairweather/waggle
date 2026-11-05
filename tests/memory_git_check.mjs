@@ -47,8 +47,14 @@ test('checkMemoryGitState detects behind origin/main, stale vs unverified diffs,
   git(dir, 'commit', '-m', 'c2')
   const sha2 = git(dir, 'rev-parse', 'HEAD')
 
-  // Point refs/remotes/origin/main to sha2, then rewind local HEAD to sha1 (1 commit behind)
+  // Point refs/remotes/origin/main to sha2, create a side branch commit from sha1 whose docs/B.md matches main,
+  // then rewind local HEAD to sha1 (1 commit behind origin/main)
   git(dir, 'update-ref', 'refs/remotes/origin/main', sha2)
+  git(dir, 'checkout', '-b', 'side-branch', sha1)
+  writeFileSync(join(dir, 'docs', 'SIDE.md'), 'side-only\n')
+  git(dir, 'add', '.')
+  git(dir, 'commit', '-m', 'side-c1')
+  const sideSha = git(dir, 'rev-parse', '--short', 'HEAD')
   git(dir, 'checkout', '--detach', sha1)
 
   // Missing FETCH_HEAD flags fetchStale=true and notes unfetched status in banner
@@ -73,6 +79,11 @@ test('checkMemoryGitState detects behind origin/main, stale vs unverified diffs,
         evidence: ['waggle@deadbeef:docs/A.md'],
       },
       {
+        d: 'hive-memory:hive:ops:claim-side-branch',
+        as_of_git: `waggle@${sideSha}`,
+        evidence: [`waggle@${sideSha}:docs/B.md`],
+      },
+      {
         d: 'hive-memory:hive:ops:claim-nvoy',
         as_of_git: 'nvoy@a1b2c3d',
         evidence: ['nvoy@a1b2c3d:mcp/tools/memory.mjs'],
@@ -95,6 +106,12 @@ test('checkMemoryGitState detects behind origin/main, stale vs unverified diffs,
     resUnfetched.unverifiedWarningsByClaim['hive-memory:hive:ops:claim-missing-sha'],
     '[UNVERIFIED: cannot diff waggle@deadbeef]',
   )
+  assert.equal(resUnfetched.staleWarningsByClaim['hive-memory:hive:ops:claim-side-branch'], undefined)
+  assert.equal(
+    resUnfetched.unverifiedWarningsByClaim['hive-memory:hive:ops:claim-side-branch'],
+    `[UNVERIFIED: waggle@${sideSha} is not on origin/main]`,
+  )
+  assert.ok(resUnfetched.unverifiedRefs.includes(`waggle@${sideSha}:docs/B.md`))
   assert.deepEqual(resUnfetched.uncheckedRefs, ['nvoy@a1b2c3d:mcp/tools/memory.mjs'])
 
   // Fresh FETCH_HEAD clears fetchStale

@@ -195,7 +195,23 @@ export function checkMemoryGitState({
       }
       continue
     }
-    const diffRes = runGit(dir, ['diff', '--name-only', `${item.sha}..${targetHead}`, '--', item.path])
+    const shaRes = revParseCommit(dir, item.sha)
+    if (!shaRes.ok) {
+      unverifiedRefsSet.add(item.raw)
+      if (item.claimKey) {
+        unverifiedWarningsByClaim[item.claimKey] = `[UNVERIFIED: cannot diff ${item.asOfGit || `${item.repo}@${item.sha}`}]`
+      }
+      continue
+    }
+    const ancestorRes = runGit(dir, ['merge-base', '--is-ancestor', shaRes.stdout, targetHead])
+    if (!ancestorRes.ok) {
+      unverifiedRefsSet.add(item.raw)
+      if (item.claimKey) {
+        unverifiedWarningsByClaim[item.claimKey] = `[UNVERIFIED: ${item.asOfGit || `${item.repo}@${item.sha}`} is not on ${cleanTargetRef}]`
+      }
+      continue
+    }
+    const diffRes = runGit(dir, ['diff', '--name-only', `${shaRes.stdout}..${targetHead}`, '--', item.path])
     if (!diffRes.ok) {
       unverifiedRefsSet.add(item.raw)
       if (item.claimKey) {
