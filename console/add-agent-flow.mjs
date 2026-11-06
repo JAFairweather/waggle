@@ -2,11 +2,13 @@
 //
 // The owner signs three times: the tools (step 3), the hive invite (step 5) and who gives it work
 // (step 6). Each is a newer add_agent request for the same agent, so each carries everything chosen
-// so far; nvoy-onboard continues the install when the identity fields match, and its join step waits,
+// so far. Step 6 also signs a task approval (a 440) from the owner for each giver who lacks one (#716); nvoy-onboard continues the install when the identity fields match, and its join step waits,
 // "pending", until a request carries the invite. A step is done only when the page has read its
 // request back cold from the relays, never because a relay said OK.
 
 import { SETUP_KIND, requestD } from './hive-add-agent.mjs'
+import { readGrants, scopeTable } from './hive-list.mjs'
+import { WORK_CAPS } from './hive-change.mjs'
 
 export const STEPS = Object.freeze([
   { n: 1, label: 'Name it', sub: 'who it is and where it runs' },
@@ -14,7 +16,7 @@ export const STEPS = Object.freeze([
   { n: 3, label: 'Set up its tools', sub: 'on the server, one signature' },
   { n: 4, label: 'Start it on its box', sub: 'one line on its box' },
   { n: 5, label: 'Join the hive', sub: 'you agree, it joins itself' },
-  { n: 6, label: 'Who can give it work', sub: 'one signature' },
+  { n: 6, label: 'Who can give it work', sub: 'one click, then your signer' },
   { n: 7, label: 'Prove it works', sub: 'read back from the relay' },
 ])
 
@@ -52,10 +54,24 @@ export function joinOf(ev) {
 
 // What the newest request read back proves. Step 6 is done only when that newest request is the
 // one the page sent from step 6 (`sixth`, its id): a giver list alone does not say the owner chose it.
-export function readBackSteps(ev, { sixth = null } = {}) {
+// Step 6 is done only when its request is the newest and every giver it names holds a live task
+// approval from the owner over the agent (`plan`, from workGrantPlan).
+export function readBackSteps(ev, { sixth = null, plan = null } = {}) {
   if (!ev) return { 3: false, 5: false, 6: false, givers: [] }
   const givers = ev.tags.filter(t => t[0] === 'giver').map(t => t[1])
-  return { 3: true, 5: !!joinOf(ev), 6: !!sixth && ev.id === sixth, givers }
+  return { 3: true, 5: !!joinOf(ev), 6: !!sixth && ev.id === sixth && !!plan && plan.missing.length === 0, givers }
+}
+
+// Who still needs the owner's approval to give the agent work (#716). A giver on the request is not
+// enough: without a live 440 from the owner over the agent, nvoy hears their mentions as data only and
+// wakes nothing. `events` are the owner's 440s and 441s; the owner comes first, so a signer that stops
+// part way has still approved the owner.
+export async function workGrantPlan({ owner, agent, givers, events, verify, scopeHash, now }) {
+  const live = readGrants(events, { verify, now }).grants.filter(g => g.live && g.grantor === owner && WORK_CAPS.includes(g.cap))
+  const { subjectOf } = await scopeTable([agent], live, scopeHash)
+  const held = new Set(live.filter(g => subjectOf(g.hash) === agent).map(g => g.grantee))
+  const want = [...new Set(givers || [])].filter(pk => pk !== agent).sort((a, b) => (b === owner) - (a === owner))
+  return { held: want.filter(pk => held.has(pk)), missing: want.filter(pk => !held.has(pk)) }
 }
 
 // Step 6 picks from the hive grid's own groups, so it reads the same at 8 agents or 50: a search,

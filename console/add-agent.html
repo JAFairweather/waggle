@@ -85,7 +85,7 @@
     <div class="caption" id="caption">New agent · step 1 of 7</div>
     <ol id="rail"></ol>
     <p class="note">Every secret stays in your Bunker. This page only ever sees public keys and your signatures.</p>
-    <div class="part"><b>Your part, start to finish</b>Make the key, paste its npub, approve one link in your Bunker · three signatures · one "I agree". The server does everything else.</div>
+    <div class="part"><b>Your part, start to finish</b>Make the key, paste its npub, approve one link in your Bunker · three steps to sign · one "I agree". The server does everything else.</div>
   </nav>
 
   <main class="step">
@@ -158,7 +158,7 @@
 
     <section data-step="6" hidden>
       <h1>Who can give <span data-name></span> work?</h1>
-      <p class="intro">Search for who it takes work from, or start from the agent it works like. It won't act on what anyone you leave out says.</p>
+      <p class="intro">Search for who it takes work from, or start from the agent it works like. It won't act on what anyone you leave out says. Signing sends the request, then an approval from you for each one picked who doesn't have one yet; your signer asks for each.</p>
       <div class="pick-bar"><input id="giver-q" type="search" placeholder="Search by name or where it runs" aria-label="Search agents" autocomplete="off"><button type="button" class="quiet" id="giver-like">Same as the agent it works like</button><button type="button" class="quiet" id="giver-none">Nobody</button></div>
       <p class="hint" id="giver-like-why" hidden></p>
       <div class="group-label" id="chosen-label"></div>
@@ -188,7 +188,9 @@ import { HARNESSES, agentName, draftAddAgent, draftBind, readBack, sendRequest, 
 import { HIVE_RELAY, readHiveTerms, sealInvite } from './hive-invite.mjs'
 import { readCards, relayCoverage, GRANT_RELAYS, CARD_RELAYS, CARD_D, RUNS_LOGO, RUNS_ON, PLATFORMS, platformOf } from './hive-list.mjs'
 import { shortNpub } from './agent-roster.mjs'
-import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine } from './add-agent-flow.mjs'
+import { draftGrant, applyChange } from './hive-change.mjs'
+import { scopeHash } from './scope-hash.mjs'
+import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine } from './add-agent-flow.mjs'
 
 const $ = id => document.getElementById(id)
 // Everything shown here came from someone else's signature, so it reaches the DOM only as text.
@@ -424,7 +426,8 @@ async function readLatest() {
   if (!owner || !form.name || !form.agent) return
   const back = await read(GRANT_RELAYS, { kinds: [SETUP_KIND], authors: [owner], '#d': [requestD(form.name, 'add_agent')], limit: 8 })
   latest = newestAdd(back.events, { owner, name: form.name, agent: form.agent, verify: verifyEvent })
-  const steps = readBackSteps(latest, { sixth: form.sixth })
+  const plan = latest && form.sixth && latest.id === form.sixth ? await workGrants(latest) : null
+  const steps = readBackSteps(latest, { sixth: form.sixth, plan })
   done[3] = steps[3]; done[5] = steps[5]; done[6] = steps[6]
   fixed = fixedBy(latest)
   if (fixed) { form.harness = fixed.harness; form.like = fixed.like; keep(); drawRuns(); drawLike() }
@@ -432,6 +435,35 @@ async function readLatest() {
   joined = joinOf(latest) || joined
   drawRail(); drawRows()
   return latest
+}
+
+// The owner's 440s and 441s, against the givers the request names: who still needs an approval (#716).
+async function workGrants(ev) {
+  const back = await read(GRANT_RELAYS, { kinds: [440, 441], authors: [owner], limit: 500 })
+  return workGrantPlan({ owner, agent: form.agent, givers: readBackSteps(ev).givers, events: back.events, verify: verifyEvent, scopeHash })
+}
+// After step 6's request reads back: one task approval from you for each giver without one, each
+// read back cold. Without it their mentions reach the agent as data only and wake nothing.
+async function signWorkGrants() {
+  const st = $('work-status'), b = $('work-go'), head = st.textContent
+  const nameOf = pk => choices().find(c => c.pubkey === pk)?.label || shortNpub(pk)
+  b.disabled = true
+  try {
+    const plan = await workGrants(latest)
+    const signer = plan.missing.length ? await consoleSigner() : null
+    for (const [i, grantee] of plan.missing.entries()) {
+      const template = await draftGrant({ grantee, agent: form.agent, cap: 'task', scopeHash })
+      const r = await applyChange(template, { sign: t => signFresh(t, signer), owner, verify: verifyEvent, connect: url => new WebSocket(url),
+        onStep: step => { st.textContent = `${head} Approval for ${nameOf(grantee)} (${i + 1} of ${plan.missing.length}): ${step}…` } })
+      if (!r.verdict.done) throw new Error(`Approval for ${nameOf(grantee)}: ${r.text}`)
+    }
+    await readLatest()
+    st.className = done[6] ? 'status ok' : 'status'
+    const n = plan.missing.length, all = plan.held.length + n
+    st.textContent = `${head} ${done[6] ? `All ${all} can give it work: ${n} approval${n === 1 ? '' : 's'} signed now and read back.` : 'The approvals are not all read back yet; open this step again in a minute.'}`
+  } catch (e) {
+    st.className = 'status err'; st.textContent = `${head} ${e.message || String(e)}`
+  } finally { b.disabled = false }
 }
 
 // Each signature re-sends everything chosen so far, as a newer request for the same agent.
@@ -487,7 +519,9 @@ $('box-go').onclick = () => {
 }
 $('work-go').onclick = () => {
   if (!joined) { $('work-status').className = 'status'; $('work-status').textContent = 'Step 5 is not signed yet, so this request carries no invite. Sign step 5 after; it keeps these ticks.' }
+  const before = form.sixth
   return send('work-status', 'work-go', f => draftAddAgent({ ...f, join: joined || undefined }), signed => { form.sixth = signed.id; keep() })
+    .then(() => form.sixth !== before && latest?.id === form.sixth && signWorkGrants())
 }
 
 for (const b of document.querySelectorAll('[data-back]')) b.onclick = () => go(Math.max(1, form.step - 1))
