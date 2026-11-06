@@ -22,9 +22,7 @@ export const STEPS = Object.freeze([
 ])
 
 // Steps the page cannot carry out yet, and what each waits on. Shown as such, never as done.
-export const NOT_BUILT = Object.freeze({
-  7: 'The checks are not built yet. Until they are, look for its hello in #waggle-test.',
-})
+export const NOT_BUILT = Object.freeze({})
 
 // Steps the page carries out only in part, and what the missing part waits on. Never shown as done:
 // step 4 is done only when the fleet's receipt and the agent's presence say so, and the page does not
@@ -173,4 +171,72 @@ export function roomChoices(read, { like = null, agent = null } = {}) {
       start: !closed && (!!(like && members?.has(like)) || shown.toLowerCase() === DEFAULT_ROOM) })
   }
   return out.sort((a, b) => (b.start - a.start) || (a.closed - b.closed) || a.name.localeCompare(b.name))
+}
+
+// Step 7, "Prove it works" (#719, DESIGN_ADD_AN_AGENT "Proof"). Everything here judges what the page
+// read back itself; nothing is taken from a receipt.
+export const CHAT_KIND = 9
+
+// The test mention the owner signs: a message in the proof room that names the agent with a p tag,
+// which is how nvoy reads a mention (Buzz never resolves @text).
+export function testMention({ room, agent, name, now = Math.floor(Date.now() / 1000) }) {
+  return { kind: CHAT_KIND, created_at: now, tags: [['h', room], ['p', agent]],
+    content: `@${name} this is the check that ends your setup. Please reply to this message.` }
+}
+
+// What the page asks the room relay for: the agent's own posts in the room, and its profile.
+export const proofFilters = ({ room, agent }) => [
+  { kinds: [CHAT_KIND], '#h': [room], authors: [agent], limit: 50 },
+  { kinds: [0], authors: [agent], limit: 5 },
+]
+
+const checked = (ev, verify) => { try { return verify(JSON.parse(JSON.stringify(ev))) === true } catch { return false } }
+
+// nvoy's reply: the agent's message in the same room that e-tags the mention with the 'reply' marker.
+// nvoy_channel_reply answers only an envelope its broker admitted, so this one event proves both that
+// the mention was taken as work and that the answer came back.
+export const answers = (ev, { room, agent, mention }) => !!mention && ev?.kind === CHAT_KIND && ev.pubkey === agent &&
+  tagOf(ev, 'h') === room && ev.tags.some(t => t[0] === 'e' && t[1] === mention.id && t[3] === 'reply')
+
+const ROW = (ok, state, extra = {}) => ({ ok, state, ...extra })
+
+// Rows 1 to 4, from one read of the room. `state` is how that read ended (proveInRoom), or null when
+// nothing has been read yet.
+export function proofRows({ events = [], room, agent, mention = null, state = null, verify }) {
+  const claimed = events.filter(ev => ev?.kind === CHAT_KIND && ev.pubkey === agent && tagOf(ev, 'h') === room)
+  const posts = claimed.filter(ev => checked(ev, verify))
+  const reply = posts.find(ev => answers(ev, { room, agent, mention })) || null
+  const unread = state === null ? 'Not read by this page yet' : null
+  const waiting = !mention ? 'Send the test mention to check this'
+    : state === 'waited' ? 'No answer within the wait. Send it again, or look in the room'
+      : state === 'refused' ? 'Your Buzz relay did not take the test mention' : 'Waiting for its answer'
+  return {
+    hello: ROW(claimed.length > 0, unread || (claimed.length ? 'Read back' : 'Nothing from it in this room yet')),
+    readBack: ROW(posts.length > 0, unread || (posts.length ? 'Read back' : claimed.length ? 'Not signed by its key' : 'Nothing to check yet')),
+    taken: ROW(!!reply, unread && !mention ? unread : reply ? 'Read back' : waiting),
+    answered: ROW(!!reply, unread && !mention ? unread : reply ? 'Read back' : waiting, { reply }),
+  }
+}
+
+// Row 5. Green only when Buzz and every public relay in the agent's card return the same signed kind 0.
+// Amber while any relay has nothing yet, an older one, or did not answer. Red, naming the relay, when a
+// relay serves a different profile that is at least as new as Buzz's: two profiles disagree.
+// `buzz` is the events the room read returned; `outside` is [{ url, answered, newest }] per relay.
+export function profileRow({ buzz = [], outside = [], relays = null, agent, verify }) {
+  const own = ev => ev?.kind === 0 && ev.pubkey === agent && checked(ev, verify)
+  const newest = list => list.filter(own).sort((a, b) => b.created_at - a.created_at || (a.id < b.id ? 1 : -1))[0] || null
+  const home = newest(buzz)
+  if (!relays) return ROW(false, 'amber', { text: "Its agent card isn't read, so the relays its profile goes to aren't known." })
+  if (!home) return ROW(false, 'amber', { text: 'No profile signed by its key on your Buzz relay yet.' })
+  const by = new Map(outside.map(r => [r.url, r]))
+  const behind = [], differs = []
+  for (const url of relays) {
+    const r = by.get(url), there = r?.newest && own(r.newest) ? r.newest : null
+    if (there?.id === home.id) continue
+    if (there && there.created_at >= home.created_at) differs.push(url)
+    else behind.push(!r?.answered ? `${url} (no answer)` : `${url} (${there ? 'an older one' : 'none yet'})`)
+  }
+  if (differs.length) return ROW(false, 'red', { text: `A different profile is on ${differs.join(', ')}.`, home })
+  if (behind.length) return ROW(false, 'amber', { text: `Not on every relay yet: ${behind.join(', ')}.`, home })
+  return ROW(true, 'green', { text: `The same signed profile on your Buzz relay and ${relays.length} public relay${relays.length === 1 ? '' : 's'}.`, home })
 }

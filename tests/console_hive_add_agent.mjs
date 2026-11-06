@@ -205,7 +205,7 @@ check(/<a id="add-open" class="button small" href="add-agent.html">/.test(hive) 
 
 // The seven steps: three signatures, each a newer add_agent carrying everything chosen so far.
 check(STEPS.map(s => s.label).join('|') === 'Name it|Make its key|Set up its tools|Start it on its box|Join the hive|Who can give it work|Prove it works', 'the rail has the seven steps of the design, in its order')
-check(Object.keys(NOT_BUILT).join() === '7' && Object.keys(PART_BUILT).join() === '4', 'the step the page cannot do yet, and the step it does only in part, say so, and nothing else does')
+check(Object.keys(NOT_BUILT).join() === '' && Object.keys(PART_BUILT).join() === '4', 'only step 4 is marked partly built, and no step is marked not built (step 7 is built, #719)')
 check(!Object.keys(NOT_BUILT).some(n => n in PART_BUILT), 'a step is either not built or partly built, never both')
 
 // Step 4: paste the public half the line printed, sign it as bind_runtime, read that very event back.
@@ -376,6 +376,57 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   check(c[0].start && c[1].start && !c[c.length - 1].start, 'ticked rooms first')
   check(flow.roomChoices(null, {}).length === 0, 'no read, no choices: nothing is guessed')
   check(draftAddAgent({ ...base, rooms: [ids[1]] }).tags.some(t => t[0] === 'room' && t[1] === ids[1]), 'a ticked room goes in the request')
+}
+
+// ── Step 7, "Prove it works" (#719): five rows, each from what the page read back itself ──
+{
+  const ag = key(), me = key(), other = key(), room = 'a8186b53-537d-46ad-a7e7-b6486c58970e'
+  const t = flow.testMention({ room, agent: ag.pk, name: 'newbie', now: 3000 })
+  check(t.kind === 9 && t.tags.some(x => x[0] === 'h' && x[1] === room) && t.tags.some(x => x[0] === 'p' && x[1] === ag.pk) && /^@newbie /.test(t.content),
+    'the test mention is a message in the room that names the agent with a p tag, the way nvoy reads a mention')
+  const f = flow.proofFilters({ room, agent: ag.pk })
+  check(f[0].kinds[0] === 9 && f[0]['#h'][0] === room && f[0].authors[0] === ag.pk && f[1].kinds[0] === 0 && f[1].authors[0] === ag.pk, "the read asks only for the agent's own posts in the room and its profile")
+  const mention = finalizeEvent(t, me.sk)
+  const post = (sk, tags, content = 'hi', at = 3001) => finalizeEvent({ kind: 9, created_at: at, content, tags: [['h', room], ...tags] }, sk)
+  const hello = post(ag.sk, [], 'hello'), reply = post(ag.sk, [['e', mention.id, '', 'reply'], ['p', me.pk]], 'here')
+  const rows = (events, extra = {}) => flow.proofRows({ events, room, agent: ag.pk, mention, state: 'answered', verify: verifyEvent, ...extra })
+
+  const fresh = flow.proofRows({ room, agent: ag.pk, verify: verifyEvent })
+  check(!fresh.hello.ok && !fresh.answered.ok && fresh.hello.state === 'Not read by this page yet', 'before any read, every row says it is not read yet')
+  const all = rows([hello, reply])
+  check(all.hello.ok && all.readBack.ok && all.taken.ok && all.answered.ok && all.answered.reply.id === reply.id, 'a hello and a reply to the mention, both signed by the agent, pass rows 1 to 4')
+  const helloOnly = rows([hello], { state: 'waited' })
+  check(helloOnly.hello.ok && helloOnly.readBack.ok && !helloOnly.taken.ok && !helloOnly.answered.ok && /No answer/.test(helloOnly.taken.state), 'a hello with no answer passes only rows 1 and 2, and says no answer came')
+  const forged = { ...reply, content: 'edited' }
+  const f1 = rows([forged])
+  check(f1.hello.ok && !f1.readBack.ok && !f1.answered.ok && f1.readBack.state === 'Not signed by its key', 'a post whose signature fails is seen, but never read back or counted as the answer')
+  check(!rows([post(ag.sk, [['e', mention.id, '', 'root']])]).answered.ok, "an event that tags the mention without nvoy's reply marker is not the answer")
+  check(!rows([post(ag.sk, [['e', 'f'.repeat(64), '', 'reply']])]).answered.ok, 'a reply to some other message is not the answer')
+  check(!rows([post(other.sk, [['e', mention.id, '', 'reply']])]).answered.ok && !rows([post(other.sk, [])]).hello.ok, 'a post by any other key counts for nothing')
+  const elsewhere = finalizeEvent({ kind: 9, created_at: 3001, content: 'x', tags: [['h', 'other-room'], ['e', mention.id, '', 'reply']] }, ag.sk)
+  check(!rows([elsewhere]).hello.ok && !rows([elsewhere]).answered.ok, 'a post in another room counts for nothing')
+  check(!flow.proofRows({ events: [hello, reply], room, agent: ag.pk, mention: null, state: 'read', verify: verifyEvent }).answered.ok, 'with no mention sent, nothing can be the answer')
+
+  // Row 5: green only when Buzz and every relay in its card serve the same signed kind 0.
+  const face = (sk, at, name = 'newbie') => finalizeEvent({ kind: 0, created_at: at, content: JSON.stringify({ name }), tags: [] }, sk)
+  const home = face(ag.sk, 4000), older = face(ag.sk, 3500, 'old'), newer = face(ag.sk, 4100, 'other')
+  const R = ['wss://a.example', 'wss://b.example']
+  const row = (outside, relays = R, buzz = [home]) => flow.profileRow({ buzz, outside, relays, agent: ag.pk, verify: verifyEvent })
+  check(row([{ url: R[0], answered: true, newest: home }, { url: R[1], answered: true, newest: home }]).state === 'green', 'the same signed profile on Buzz and every card relay is green')
+  const behind = row([{ url: R[0], answered: true, newest: home }, { url: R[1], answered: true, newest: older }])
+  check(behind.state === 'amber' && behind.text.includes(R[1]) && !behind.ok, 'a relay still serving an older profile is amber, and named')
+  check(row([{ url: R[0], answered: true, newest: home }, { url: R[1], answered: false, newest: null }]).text.includes('no answer'), 'a relay that did not answer is amber, never green')
+  check(row([{ url: R[0], answered: true, newest: home }]).state === 'amber', 'a card relay the page did not read is not passed')
+  const split = row([{ url: R[0], answered: true, newest: home }, { url: R[1], answered: true, newest: newer }])
+  check(split.state === 'red' && split.text.includes(R[1]), 'a different profile at least as new as Buzz\'s is red, naming the relay')
+  check(row([{ url: R[0], answered: true, newest: home }, { url: R[1], answered: true, newest: home }], R, []).state === 'amber', 'no profile on Buzz is not green, whatever the public relays hold')
+  check(row([{ url: R[0], answered: true, newest: home }, { url: R[1], answered: true, newest: home }], R, [{ ...home, content: '{}' }]).state === 'amber', 'a Buzz profile whose signature fails is no profile')
+  check(row([], null).state === 'amber' && /card/.test(row([], null).text), 'with no card read, which relays to check is not known, so it is not green')
+  check(row([], []).state === 'green', 'a card that names no public relay needs only Buzz')
+  check(row([{ url: R[0], answered: true, newest: face(other.sk, 5000) }, { url: R[1], answered: true, newest: home }]).state === 'amber', "another key's profile on a relay is not this agent's")
+
+  check(/id="proof-go"/.test(page) && /proveInRoom\(/.test(page) && /wsReadBack\(/.test(page), 'step 7 has its button, and runs the room check and the public profile read')
+  check(/done\[7\] = p\.hello\.ok && p\.readBack\.ok && p\.taken\.ok && p\.answered\.ok && !!face\?\.ok/.test(page), 'step 7 is done only when all five rows pass')
 }
 
 if (fails) { console.error(`\nconsole_hive_add_agent: ${fails} failing`); process.exit(1) }

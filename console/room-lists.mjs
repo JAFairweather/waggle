@@ -186,3 +186,76 @@ export function roomsNeed({ relay, state, untrusted = 0, unlisted = 0, readAt = 
   if (parts.length) return { text: parts.join(' '), button: 'Read again', act: 'read' }
   return null
 }
+
+// Step 7 of "Add an agent" (#719): how long the page listens for the agent's answer to the test mention.
+export const PROOF_WAIT_SECS = 180
+
+/// One signed-in connection for step 7's checks. It reads `filters`, then, given an unsigned test
+/// `mention`, has the owner's signer sign it once, sends it, and keeps listening until `settled(events,
+/// sent)` says the answer is in or `waitMs` passes; `onSent` hears when the relay took the mention. It
+/// signs in only when the relay asks, and only for this connection's challenge; the timers stop while
+/// the signer is asked. Resolves { state, events, sent, reason }, where state is 'read' (no mention given), 'answered', 'waited' (sent, no answer in
+/// time), 'refused' (the relay would not take the mention), 'no-answer', 'declined' or 'auth-refused'.
+export function proveInRoom({ url, sign, connect, filters, mention = null, settled = () => false, onSent = () => {},
+  timeoutMs = ROOM_READ_SECS * 1000, waitMs = PROOF_WAIT_SECS * 1000 }) {
+  return new Promise(resolve => {
+    let ws, done = false, timer = null, challenge = null, wanted = false, signing = false, signed = false, authId = null, sub = 0
+    let sent = null, accepted = false
+    const events = [], seen = new Set()
+    const end = (state, reason = null) => {
+      if (done) return; done = true; clearTimeout(timer)
+      try { ws.close() } catch { /* already closed */ }
+      resolve({ state, events: [...events], sent, reason })
+    }
+    const arm = (ms = timeoutMs, state = 'no-answer') => { clearTimeout(timer); timer = setTimeout(() => end(state), ms) }
+    const ask = () => { sub++; events.length = 0; seen.clear(); ws.send(JSON.stringify(['REQ', `proof${sub}`, ...filters])); arm() }
+    const send = () => { ws.send(JSON.stringify(['EVENT', sent])); arm() }
+    const signIn = async () => {
+      if (signing || signed || !challenge) return
+      signing = true; clearTimeout(timer)
+      let ev
+      try { ev = await sign(authTemplate(url, challenge)) } catch { return end('declined') }
+      if (done) return
+      if (!ev?.id) return end('declined')
+      signed = true; authId = ev.id
+      ws.send(JSON.stringify(['AUTH', ev])); arm()
+    }
+    const mentionNow = async () => {
+      if (!mention) return end('read')
+      if (sent) return send()
+      clearTimeout(timer)
+      let ev
+      try { ev = await sign(mention) } catch { return end('declined') }
+      if (done) return
+      if (!ev?.id) return end('declined')
+      sent = ev; send()
+    }
+    try { ws = connect(url) } catch { return end('no-answer') }
+    arm()
+    ws.onopen = () => ask()
+    ws.onerror = () => end('no-answer')
+    ws.onclose = () => end(accepted ? 'waited' : 'no-answer')
+    ws.onmessage = e => {
+      let m; try { m = JSON.parse(e.data) } catch { return }
+      if (!Array.isArray(m)) return
+      if (m[0] === 'AUTH' && typeof m[1] === 'string') { challenge = m[1]; if (wanted) signIn(); return }
+      if (m[0] === 'OK' && m[1] === authId) return m[2] !== true ? end('auth-refused', String(m[3] || '')) : sent ? send() : ask()
+      if (m[0] === 'OK' && sent && m[1] === sent.id) {
+        if (m[2] === true) { accepted = true; arm(waitMs, 'waited'); onSent(sent); return settled(events, sent) && end('answered') }
+        if (/^auth-required/i.test(String(m[3] || '')) && !signed) { wanted = true; return signIn() }
+        return end('refused', String(m[3] || ''))
+      }
+      if (m[1] !== `proof${sub}`) return
+      if (m[0] === 'EVENT' && m[2]) {
+        if (seen.has(m[2].id)) return
+        seen.add(m[2].id); events.push(m[2])
+        if (accepted && settled(events, sent)) end('answered')
+      } else if (m[0] === 'EOSE') { if (!sent) mentionNow() }
+      else if (m[0] === 'CLOSED') {
+        const why = String(m[2] || '')
+        if (/^auth-required/i.test(why) && !signed) { wanted = true; return signIn() }
+        end('auth-refused', why)
+      }
+    }
+  })
+}

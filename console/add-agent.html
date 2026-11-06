@@ -12,7 +12,7 @@
   *{box-sizing:border-box} body{margin:0;background:var(--ground);color:var(--text);font:15px/1.5 var(--sans)} a{color:var(--gold)}
   button,.button{border:0;border-radius:6px;background:var(--accent);color:#160e03;padding:10px 15px;font:700 14px var(--sans);cursor:pointer;text-decoration:none;display:inline-block}
   button:disabled{opacity:.45;cursor:not-allowed}
-  button.quiet{background:none;color:var(--text);border:1px solid var(--line);font-weight:600}
+  button.quiet,.button.quiet{background:none;color:var(--text);border:1px solid var(--line);font-weight:600}
   .top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding:14px 20px}
   .crumbs{display:flex;align-items:baseline;gap:10px;font-size:15px}.crumbs .wordmark{font:700 20px var(--sans);letter-spacing:-.01em}.crumbs .sep{color:var(--faint)}.crumbs a{color:var(--dim);text-decoration:none}.crumbs b{font-weight:650}
   #who{font-size:13px;color:var(--dim)}
@@ -178,10 +178,10 @@
 
     <section data-step="7" hidden>
       <h1>Prove <span data-name></span> works</h1>
-      <p class="intro">Two checks, both read back from the relay, never taken on trust: <span data-name></span> says hello in #waggle-test, then an agent gives it a small job, and the answer has to come back signed by <span data-name></span>'s own key.</p>
+      <p class="intro">Five checks, each read back from the relays, never taken on trust. You send <span data-name></span> a test mention in its first room; its answer has to come back signed by its own key, and its profile has to read the same on your Buzz relay and every public relay it publishes to.</p>
       <ol class="rows" id="proof-rows"></ol>
-      <div class="later-box" id="proof-later" style="margin-top:14px"></div>
-      <div class="actions"><a class="button" href="hive.html">Open the hive</a><button type="button" class="quiet" id="restart">Start over</button><button type="button" class="quiet" data-back>Back</button></div>
+      <p class="hint" id="proof-line" role="status"></p>
+      <div class="actions"><button type="button" id="proof-go">Run the checks</button><a class="button quiet" href="hive.html">Open the hive</a><button type="button" class="quiet" id="restart">Start over</button><button type="button" class="quiet" data-back>Back</button></div>
     </section>
   </main>
 </div>
@@ -196,8 +196,9 @@ import { readCards, relayCoverage, GRANT_RELAYS, CARD_RELAYS, CARD_D, RUNS_LOGO,
 import { shortNpub } from './agent-roster.mjs'
 import { draftGrant, applyChange } from './hive-change.mjs'
 import { scopeHash } from './scope-hash.mjs'
-import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, roomChoices } from './add-agent-flow.mjs'
-import { readRooms, roomsOf, roomsNeed, loadRoomRelay, relayKeyFor } from './room-lists.mjs'
+import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, roomChoices, testMention, proofFilters, proofRows, profileRow, answers } from './add-agent-flow.mjs'
+import { readRooms, roomsOf, roomsNeed, loadRoomRelay, relayKeyFor, proveInRoom, PROOF_WAIT_SECS } from './room-lists.mjs'
+import { wsReadBack } from './profile-publish.mjs'
 
 const $ = id => document.getElementById(id)
 // Everything shown here came from someone else's signature, so it reaches the DOM only as text.
@@ -231,6 +232,8 @@ const form = { step: 1, name: '', display: '', about: '', harness: 'claude-code'
 
 // What the page has read: whose hive, its agents, and the newest request for this agent.
 let owner = null, loaded = false, installed = [], profiles = new Map(), latest = null, joined = null, terms = null, fixed = null, roomRead = null
+// Step 7: how the last check ended, what it read, and the profile on each public relay.
+let proof = { state: null, events: [], sent: null }, outside = null, cardRelays = null
 const done = { 1: false, 2: false, 3: false, 4: false, 5: false, 6: false, 7: false }
 
 const nameShown = () => form.name || 'the new agent'
@@ -286,14 +289,18 @@ function drawRows() {
         !!c?.joined, c?.joined ? 'Read back' : c && !c.listed ? 'No member list read' : '']
     }),
   ])
+  const room = proofRoom(), where = room ? roomLabel(room) : 'its first room'
+  const p = proofRows({ ...proof, room, agent: form.agent, mention: proof.sent, verify: verifyEvent })
+  const face = outside ? profileRow({ buzz: proof.events, outside, relays: cardRelays, agent: form.agent, verify: verifyEvent }) : null
   rows($('proof-rows'), [
-    ['It said hello', n + ' posted in #waggle-test through its own tools'],
-    ['Read back from the relay', 'the post is there, signed by ' + n + "'s own key"],
-    ['Taken as work', 'an agent asked it something, and its listener admitted it'],
-    ['Answer back', n + ' replied in the thread, read back the same way'],
+    ['It said hello', n + ' has posted in ' + where, p.hello.ok, p.hello.state],
+    ['Read back from the relay', 'its post is there, signed by ' + n + "'s own key", p.readBack.ok, p.readBack.state],
+    ['Taken as work', 'your mention woke it: only an admitted mention can be answered in its thread', p.taken.ok, p.taken.state],
+    ['Answer back', n + ' replied to your mention, read back the same way', p.answered.ok, p.answered.state],
+    ['Has its profile', 'the same signed profile on your Buzz relay and every public relay in its card', !!face?.ok, face ? face.text : ''],
   ])
+  done[7] = p.hello.ok && p.readBack.ok && p.taken.ok && p.answered.ok && !!face?.ok
   $('box-later').textContent = PART_BUILT[4]
-  $('proof-later').textContent = NOT_BUILT[7]
 }
 
 function drawRuns() {
@@ -607,6 +614,48 @@ async function readRoomChoices() {
   } finally { btn.disabled = false }
 }
 $('rooms-read').onclick = () => readRoomChoices()
+
+// Step 7 (#719): one sign-in to your Buzz relay reads the agent's posts and profile in its first room;
+// then you sign one test mention, and the page listens for the agent's reply in that thread.
+const proofRoom = () => (form.rooms || [])[0] || null
+const roomLabel = id => '#' + (roomRead?.names?.get(id) || id.slice(0, 8))
+const PROOF_FAIL = {
+  'no-answer': "Your Buzz relay didn't answer, so nothing was checked.",
+  declined: "Not checked: you didn't sign.",
+  'auth-refused': "Your Buzz relay wouldn't let you sign in, so nothing was checked.",
+}
+// The public relays its profile goes to, from its own signed card: wss:// addresses only, at most eight.
+const relaysOf = card => Array.isArray(card?.relays) ? [...new Set(card.relays.filter(u => typeof u === 'string' && /^wss:\/\/[^\s/]+(\/\S*)?$/.test(u)))].slice(0, 8) : null
+async function runChecks() {
+  const relay = loadRoomRelay(), line = $('proof-line'), btn = $('proof-go'), room = proofRoom()
+  const say = (text, err = false) => { line.className = err ? 'hint err' : 'hint'; line.textContent = text }
+  if (!form.agent) return say('Paste its key in step 2 first.', true)
+  if (!room) return say('Pick its rooms in step 5 first: the check runs in the first one.', true)
+  if (!relay) return say("This page doesn't know your Buzz relay yet. Add it on Config, then run the checks.", true)
+  btn.disabled = true
+  try {
+    let signer = null, me = null
+    try { signer = await consoleSigner(); me = String(await signer.getPublicKey()).toLowerCase() } catch { return say(PROOF_FAIL.declined, true) }
+    if (me !== owner) return say("Not checked: you're signed in as a different key from this hive.", true)
+    say(`Signing in to your Buzz relay, then asking you to sign the test mention in ${roomLabel(room)}…`)
+    const agent = form.agent, mention = testMention({ room, agent, name: form.display || nameShown() })
+    const out = await proveInRoom({ url: relay.url, sign: t => signFresh(t, signer), connect: u => new WebSocket(u),
+      filters: proofFilters({ room, agent }), mention,
+      onSent: () => say(`Sent. Waiting up to ${PROOF_WAIT_SECS / 60} minutes for ${nameShown()} to answer…`),
+      settled: (events, sent) => events.some(ev => answers(ev, { room, agent, mention: sent }) && verifyEvent(JSON.parse(JSON.stringify(ev)))) })
+    if (PROOF_FAIL[out.state]) return say(PROOF_FAIL[out.state], true)
+    proof = { state: out.state, events: out.events, sent: out.sent }
+    say('Reading its profile from the public relays in its card…')
+    const card = readCards((await read(CARD_RELAYS, { kinds: [30078], '#d': [CARD_D], authors: [agent], limit: 5 })).events, { owner, verify: verifyEvent }).get(agent)
+    cardRelays = relaysOf(card)
+    outside = await Promise.all((cardRelays || []).map(u => wsReadBack(u, agent)))
+    drawRows(); drawRail()
+    say(out.state === 'refused' ? `Your Buzz relay didn't take the test mention: ${String(out.reason || 'no reason given').slice(0, 200)}`
+      : out.state === 'waited' ? `No answer within ${PROOF_WAIT_SECS / 60} minutes. If you aren't one of the names that can give it work (step 6), your mention reaches it as data only and wakes nothing.`
+        : done[7] ? `All five checks read back. ${nameShown()} works.` : 'Read back. The rows say what is still missing.', out.state !== 'answered')
+  } finally { btn.disabled = false }
+}
+$('proof-go').onclick = () => runChecks()
 $('about').oninput = () => { form.about = $('about').value; keep() }
 
 // The hive this page adds to: the remembered owner, else the signer's public key.
