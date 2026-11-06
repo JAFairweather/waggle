@@ -19,7 +19,7 @@ import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nos
 import * as nip44 from 'nostr-tools/nip44'
 import { readFileSync } from 'node:fs'
 import { HARNESSES, agentName, draftAddAgent, draftBind, profileTags, readBack, requestD, sendRequest, sealedShape, SETUP_KIND } from '../console/hive-add-agent.mjs'
-import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, HANDOFF } from '../console/add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, HANDOFF, workSignGate } from '../console/add-agent-flow.mjs'
 import * as flow from '../console/add-agent-flow.mjs'
 import { draftGrant, draftRevoke } from '../console/hive-change.mjs'
 import { scopeHash } from '../console/scope-hash.mjs'
@@ -330,7 +330,7 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   check(JSON.stringify(giverPlan(chips).outside.map(c => c.label)) === '["Dennis"]', 'outside givers are those with no seat; you need no list')
   check(/\.map\(c => \(\{ \.\.\.c, outside: true \}\)\)/.test(page), 'every hive-only giver is marked outside the fleet')
   check(!/puts <span data-name><\/span> on each one's mention list/.test(page) && !/Can give it work \(/.test(page), "the page no longer says the signature puts it on everyone's list")
-  check(/the fleet runs nothing for/.test(page) && /That proves what you chose, not that each one can @mention/.test(page), 'it names who the fleet runs nothing for, and read-back is not the mention proof')
+  check(/the fleet runs nothing for/.test(page) && /Whether each can @mention \$\{n\} yet shows once the fleet has updated its list/.test(page), 'it names who the fleet runs nothing for, and read-back is not the mention proof')
 }
 
 // A giver saved in this tab that the page no longer shows is never signed unseen.
@@ -360,6 +360,20 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   const used = Object.keys(flow).filter(k => typeof flow[k] === 'function' && new RegExp(`\\b${k}\\(`).test(page))
   const missing = used.filter(k => !imported.has(k))
   check(used.length > 5 && !missing.length, `every flow function the page calls is imported${missing.length ? `: missing ${missing.join(', ')}` : ''}`)
+}
+
+// mydude on #722: step 6 signs the approvals itself, so its copy must not send the owner to the hive grid.
+{
+  const plan = page.slice(page.indexOf('function drawPlan('), page.indexOf('\n}\n', page.indexOf('function drawPlan(')))
+  check(!/hive grid|its own column/.test(plan) && /signs an approval from you for each chosen agent/.test(plan), 'step 6 says it signs the approvals here, not later on the hive grid')
+}
+
+// mydude on #722: step 6 must not sign, nor sign approvals, before step 5 is signed.
+{
+  check(typeof workSignGate(null) === 'string' && workSignGate({ id: 'x' }) === null, 'step 6 is refused until step 5 is signed')
+  const h = page.slice(page.indexOf("$('work-go').onclick"), page.indexOf('\n}\n', page.indexOf("$('work-go').onclick")))
+  const gate = h.indexOf('workSignGate(joined)'), ret = h.indexOf('return }'), sendAt = h.indexOf('send('), grants = h.indexOf('signWorkGrants(')
+  check(gate > -1 && ret > gate && sendAt > ret && grants > ret, 'the step 6 button returns on the gate before it sends the request or signs an approval')
 }
 
 if (fails) { console.error(`\nconsole_hive_add_agent: ${fails} failing`); process.exit(1) }
