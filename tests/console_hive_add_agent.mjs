@@ -19,8 +19,10 @@ import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nos
 import * as nip44 from 'nostr-tools/nip44'
 import { readFileSync } from 'node:fs'
 import { HARNESSES, agentName, draftAddAgent, draftBind, readBack, requestD, sendRequest, sealedShape, SETUP_KIND } from '../console/hive-add-agent.mjs'
-import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, pickerOf, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, HANDOFF } from '../console/add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, HANDOFF, workSignGate } from '../console/add-agent-flow.mjs'
 import * as flow from '../console/add-agent-flow.mjs'
+import { draftGrant, draftRevoke } from '../console/hive-change.mjs'
+import { scopeHash } from '../console/scope-hash.mjs'
 import { HIVE_RELAY, INVITE_TTL_SECS, joinGate, readHiveTerms, sealInvite, termsFromRead } from '../console/hive-invite.mjs'
 
 const key = () => { const sk = generateSecretKey(); return { sk, pk: getPublicKey(sk) } }
@@ -214,7 +216,43 @@ let flowSteps = readBackSteps(req3)
 check(flowSteps[3] && !flowSteps[5] && !flowSteps[6], 'after step 3: tools asked for, no invite yet')
 flowSteps = readBackSteps(req6)
 check(flowSteps[3] && flowSteps[5] && !flowSteps[6] && flowSteps.givers.join() === [O.pk, G.pk].join(), 'givers alone do not make step 6 done')
-check(readBackSteps(req6, { sixth: req6.id })[6] && !readBackSteps(req5, { sixth: req6.id })[6], 'step 6 is done only when the newest request is the one sent from step 6')
+const granted = { held: [O.pk, G.pk], missing: [] }
+check(readBackSteps(req6, { sixth: req6.id, plan: granted })[6] && !readBackSteps(req5, { sixth: req6.id, plan: granted })[6], 'step 6 is done only when the newest request is the one sent from step 6')
+check(!readBackSteps(req6, { sixth: req6.id })[6] && !readBackSteps(req6, { sixth: req6.id, plan: { held: [O.pk], missing: [G.pk] } })[6], 'and only when every giver holds your approval: a giver on the request alone is heard as data only (#716)')
+
+// Step 6's approvals (#716): one task 440 from the owner per giver, over the agent, owner first.
+{
+  const grant = async (grantee, { cap = 'task', agent = A.pk, by = O.sk, now = 1000 } = {}) => finalizeEvent(await draftGrant({ grantee, agent, cap, scopeHash, now }), by)
+  const plan = events => workGrantPlan({ owner: O.pk, agent: A.pk, givers: [G.pk, O.pk, G.pk, A.pk], events, verify: verifyEvent, scopeHash })
+  let p = await plan([])
+  check(p.missing.join() === [O.pk, G.pk].join() && !p.held.length, 'nothing signed: every giver needs one, the owner first, the agent itself and repeats dropped')
+  const gO = await grant(O.pk), gG = await grant(G.pk)
+  p = await plan([gO, gG])
+  check(!p.missing.length && p.held.join() === [O.pk, G.pk].join(), 'a live task grant from the owner over this agent counts for its grantee')
+  p = await plan([gO, await grant(G.pk, { cap: 'task+act' })])
+  check(!p.missing.length, 'task+act counts as work too')
+  p = await plan([gO, await grant(G.pk, { agent: X.pk })])
+  check(p.missing.join() === G.pk, "an approval over another agent does not count for this one")
+  p = await plan([gO, await grant(G.pk, { by: X.sk })])
+  check(p.missing.join() === G.pk, "an approval signed by someone else is not the owner's")
+  p = await plan([gO, gG, finalizeEvent(draftRevoke({ grantId: gG.id, now: 1001 }), O.sk)])
+  check(p.missing.join() === G.pk && p.held.join() === O.pk, 'a withdrawn approval needs signing again')
+  const gA = await grant(G.pk, { now: 1000 }), gB = await grant(G.pk, { now: 1001 })
+  p = await plan([gO, gA, gB, finalizeEvent(draftRevoke({ grantId: gB.id, now: 1002 }), O.sk)])
+  check(p.missing.join() === G.pk, "the broker's fold: approval A, then B, then B withdrawn leaves the giver with none, though A was never withdrawn")
+  p = await plan([gO, gA, gB, finalizeEvent(draftRevoke({ grantId: gA.id, now: 1002 }), O.sk)])
+  check(!p.missing.length, 'withdrawing the replaced approval A leaves the newest, B, standing')
+  p = await workGrantPlan({ owner: O.pk, agent: A.pk, givers: [O.pk, G.pk], events: [gO, gG], verify: verifyEvent, scopeHash, full: false })
+  check(p.uncertain && !readBackSteps({ id: 'r', tags: [] }, { sixth: 'r', plan: p })[6], 'a read where not every relay answered in full never marks step 6 done')
+  p = await plan([gO, { ...gG, tags: gG.tags.map(t => t[0] === 'p' ? ['p', X.pk] : t) }])
+  check(p.missing.join() === G.pk, 'an edited approval fails its signature and does not count')
+  const tmpl = await draftGrant({ grantee: O.pk, agent: A.pk, cap: 'task', scopeHash })
+  const scope = tmpl.tags.find(t => t[0] === 'da-scope')
+  check(tmpl.kind === 440 && tmpl.tags[0][1] === O.pk && tmpl.tags.find(t => t[0] === 'da-cap')[1] === 'task' && scope[1] === await scopeHash(A.pk, scope[2]) && !JSON.stringify(tmpl).includes(A.pk), 'the drafted approval is grant.mjs\'s shape: p = giver, cap task, the agent only as a salted hash')
+  check(/\.then\(\(\) => form\.sixth !== before && latest\?\.id === form\.sixth && signWorkGrants\(\)\)/.test(page), 'the page signs approvals only after step 6\'s own request reads back')
+  check(/draftGrant\(\{ grantee, agent: form\.agent, cap: 'task', scopeHash \}\)/.test(page) && /applyChange\(template, \{ sign: t => signFresh\(t, signer\), owner,/.test(page), 'each approval goes through the hive page\'s apply path: shown event, owner key, read back cold')
+  check(/if \(plan\.uncertain\) throw/.test(page) && /const full = grants\.full && !grants\.capped && ends\.full && !ends\.capped/.test(page), 'the page signs nothing, and claims nothing, on a read that was not full or hit its limit')
+}
 check(!readBackSteps(null)[3], 'nothing read back: nothing done')
 
 // ── 9. Step 6 is a search with chips, built for 50 (#698) ─────────────────────────────────────────
@@ -280,7 +318,7 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   check(JSON.stringify(giverPlan(chips).outside.map(c => c.label)) === '["Dennis"]', 'outside givers are those with no seat; you need no list')
   check(/\.map\(c => \(\{ \.\.\.c, outside: true \}\)\)/.test(page), 'every hive-only giver is marked outside the fleet')
   check(!/puts <span data-name><\/span> on each one's mention list/.test(page) && !/Can give it work \(/.test(page), "the page no longer says the signature puts it on everyone's list")
-  check(/the fleet runs nothing for/.test(page) && /That proves what you chose, not that each one can @mention/.test(page), 'it names who the fleet runs nothing for, and read-back is not the mention proof')
+  check(/the fleet runs nothing for/.test(page) && /Whether each can @mention \$\{n\} yet shows once the fleet has updated its list/.test(page), 'it names who the fleet runs nothing for, and read-back is not the mention proof')
 }
 
 // A giver saved in this tab that the page no longer shows is never signed unseen.
@@ -310,6 +348,20 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   const used = Object.keys(flow).filter(k => typeof flow[k] === 'function' && new RegExp(`\\b${k}\\(`).test(page))
   const missing = used.filter(k => !imported.has(k))
   check(used.length > 5 && !missing.length, `every flow function the page calls is imported${missing.length ? `: missing ${missing.join(', ')}` : ''}`)
+}
+
+// mydude on #722: step 6 signs the approvals itself, so its copy must not send the owner to the hive grid.
+{
+  const plan = page.slice(page.indexOf('function drawPlan('), page.indexOf('\n}\n', page.indexOf('function drawPlan(')))
+  check(!/hive grid|its own column/.test(plan) && /signs an approval from you for each chosen agent/.test(plan), 'step 6 says it signs the approvals here, not later on the hive grid')
+}
+
+// mydude on #722: step 6 must not sign, nor sign approvals, before step 5 is signed.
+{
+  check(typeof workSignGate(null) === 'string' && workSignGate({ id: 'x' }) === null, 'step 6 is refused until step 5 is signed')
+  const h = page.slice(page.indexOf("$('work-go').onclick"), page.indexOf('\n}\n', page.indexOf("$('work-go').onclick")))
+  const gate = h.indexOf('workSignGate(joined)'), ret = h.indexOf('return }'), sendAt = h.indexOf('send('), grants = h.indexOf('signWorkGrants(')
+  check(gate > -1 && ret > gate && sendAt > ret && grants > ret, 'the step 6 button returns on the gate before it sends the request or signs an approval')
 }
 
 if (fails) { console.error(`\nconsole_hive_add_agent: ${fails} failing`); process.exit(1) }
