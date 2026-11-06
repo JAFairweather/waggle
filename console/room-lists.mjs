@@ -153,9 +153,9 @@ export function readRooms({ url, sign, connect, timeoutMs = ROOM_READ_SECS * 100
 }
 
 /// Judge a whole read: rooms are named by relay-signed 39000 events, members by 39002. A room with a
-/// trusted name but no trusted list stays unread. Returns { rooms, unread, names }.
+/// trusted name but no trusted list stays unread. Returns { rooms, unread, names, closed }.
 export function roomsOf(events, { relayKey, verify = verifyEvent } = {}) {
-  const names = new Map(), at = new Map()
+  const names = new Map(), at = new Map(), closed = new Set()
   for (const ev of events || []) {
     if (ev?.kind !== ROOM_NAME || !relayKey || ev.pubkey !== relayKey) continue
     const room = roomOf(ev)
@@ -163,8 +163,10 @@ export function roomsOf(events, { relayKey, verify = verifyEvent } = {}) {
     at.set(room, ev.created_at)
     const n = ev.tags.find(t => t[0] === 'name')?.[1]
     names.set(room, typeof n === 'string' && n.trim() ? n.trim().slice(0, 64) : null)
+    // NIP-29: a closed room takes no join request; only an admin adds a member.
+    if (ev.tags.some(t => t[0] === 'closed')) closed.add(room); else closed.delete(room)
   }
-  return { ...judgeRoomLists(events, { asked: [...names.keys()], relayKey, verify }), names }
+  return { ...judgeRoomLists(events, { asked: [...names.keys()], relayKey, verify }), names, closed }
 }
 
 /// The Needs you line for a read that didn't happen, and its button. Null when nothing is wrong.

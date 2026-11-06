@@ -157,6 +157,44 @@ export function giverPlan(chips) {
   return { outside: chips.filter(c => c.outside && !c.isOwner) }
 }
 
+// The rooms step 5 offers (#683), from a read of the room relay (room-lists.mjs roomsOf). Ticked to
+// start: the rooms the agent it works like is in, and the hive's default room (James, 2026-11-06:
+// "waggle-test"). A closed room takes no join, so it is offered as one the owner adds it to once it
+// has started. `joined` is true only when the room's own signed member list names the agent.
+export const DEFAULT_ROOM = 'waggle-test'
+export function roomChoices(read, { like = null, agent = null } = {}) {
+  if (!read?.names) return []
+  const out = []
+  for (const [id, name] of read.names) {
+    const members = read.rooms?.get(id)
+    const shown = name ? name.replace(/^#/, '') : id.slice(0, 8)
+    const closed = !!read.closed?.has(id)
+    out.push({ id, name: shown, closed, listed: !!members, joined: !!(agent && members?.has(agent)),
+      start: !closed && (!!(like && members?.has(like)) || shown.toLowerCase() === DEFAULT_ROOM) })
+  }
+  return out.sort((a, b) => (b.start - a.start) || (a.closed - b.closed) || a.name.localeCompare(b.name))
+}
+
+// The rooms a signed request may carry: only rooms the page read in this visit that are still open to
+// join. Saved choices with no read behind them are not signed (rooms: null); saved ones the read no
+// longer offers, or that closed since they were ticked, are dropped and named.
+export function roomsToSign(saved, read) {
+  const want = Array.isArray(saved) ? saved : []
+  if (!read) return { rooms: want.length ? null : [], dropped: [] }
+  const open = new Set(roomChoices(read).filter(c => !c.closed).map(c => c.id))
+  return { rooms: want.filter(id => open.has(id)), dropped: want.filter(id => !open.has(id)) }
+}
+
+// fields() runs at steps 2 and 3 too, where no room has been read yet. Only a signature needs a read:
+// checking the key and name drafts with no rooms, so a restored form can still walk forward to step 5.
+export const ROOMS_UNREAD = 'Read your rooms in step 5 first: the page signs only rooms it has just read.'
+export function roomsFor(saved, read, { signing = false } = {}) {
+  const picked = roomsToSign(saved, read)
+  if (picked.rooms) return picked.rooms
+  if (signing) throw new Error(ROOMS_UNREAD)
+  return []
+}
+
 // Step 6 signs only on top of a signed step 5: a request sent without the invite would leave the agent
 // out of its rooms, and the task approvals would follow it. null when it may sign, else why not.
 export const workSignGate = joined => joined ? null : 'Sign step 5 first, so this request carries the invite to your rooms. Nothing was signed.'

@@ -362,6 +362,61 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   check(used.length > 5 && !missing.length, `every flow function the page calls is imported${missing.length ? `: missing ${missing.join(', ')}` : ''}`)
 }
 
+// ── Rooms (#683): ticked to start are the like-agent's rooms and #waggle-test; closed ones never ──
+{
+  const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444']
+  const read = { names: new Map([[ids[0], 'general'], [ids[1], '#waggle-test'], [ids[2], 'ops'], [ids[3], null]]),
+    rooms: new Map([[ids[0], new Set([G.pk])], [ids[1], new Set([A.pk])], [ids[2], new Set([G.pk])]]), closed: new Set([ids[2]]) }
+  const c = flow.roomChoices(read, { like: G.pk, agent: A.pk })
+  const by = Object.fromEntries(c.map(x => [x.name, x]))
+  check(by.general.start && by['waggle-test'].start, "the like-agent's room and #waggle-test start ticked")
+  check(!by.ops.start && by.ops.closed, 'a closed room is never ticked, even when the like-agent is in it')
+  check(by['waggle-test'].joined && !by.general.joined, "joined only when the room's own list names the agent")
+  check(!by[ids[3].slice(0, 8)].listed && !by[ids[3].slice(0, 8)].start, 'a room with no member list read is offered, unticked, and not called joined')
+  check(c[0].start && c[1].start && !c[c.length - 1].start, 'ticked rooms first')
+  check(flow.roomChoices(null, {}).length === 0, 'no read, no choices: nothing is guessed')
+  check(draftAddAgent({ ...base, rooms: [ids[1]] }).tags.some(t => t[0] === 'room' && t[1] === ids[1]), 'a ticked room goes in the request')
+
+  // mydude on #724: a saved choice is signed only after a read in this visit, and never once closed.
+  const none = flow.roomsToSign([ids[0]], null)
+  check(none.rooms === null, 'saved rooms with no read behind them are not signed')
+  check(JSON.stringify(flow.roomsToSign(null, null).rooms) === '[]' && JSON.stringify(flow.roomsToSign([], null).rooms) === '[]', 'with nothing chosen yet, no read is needed (step 3 signs no rooms)')
+  const later = { ...read, closed: new Set([ids[2], ids[0]]), names: new Map([...read.names].filter(([id]) => id !== ids[3])) }
+  const kept = flow.roomsToSign([ids[0], ids[1], ids[3]], later)
+  check(kept.rooms.join() === ids[1] && kept.dropped.join() === [ids[0], ids[3]].join(), 'after a restore, a room closed since and a room gone since are dropped and named; an open one is kept')
+  check(flow.roomsToSign([ids[2]], read).rooms.length === 0, 'a room that was closed all along is never signed, even if a saved form names it')
+  check(/const rooms = roomsFor\(form\.rooms, roomRead, \{ signing \}\)/.test(page) && /installed: others, givers, rooms,/.test(page), 'every request the page drafts takes its rooms from roomsFor, so none is signed unread')
+  check(/try \{ f = fields\(\{ signing: true \}\)/.test(page) && (page.match(/fields\(\{ signing: true \}\)/g) || []).length === 1, 'send(), the one path that signs, is the one that asks for the room read')
+  check(/function checkKey\(\) \{[^}]*const f = fields\(\); draftAddAgent\(f\)/.test(page), "step 2's Next checks the key and name without step 5's room read")
+  check(/if \(!roomRead\) \{ \$\('join-status'\)/.test(page), 'step 5 will not sign until the rooms are read')
+  {
+    // The sequence mydude reproduced: tick two rooms, reload, one closes, read again, sign.
+    let form = JSON.parse(JSON.stringify({ rooms: [ids[0], ids[1]] }))  // restored from sessionStorage
+    let roomRead = null
+    check(flow.roomsToSign(form.rooms, roomRead).rooms === null, 'restored, unread: signing is refused')
+    roomRead = { ...read, closed: new Set([ids[0]]) }                 // the room closed while away
+    const { rooms, dropped } = flow.roomsToSign(form.rooms, roomRead)
+    if (dropped.length) form = { ...form, rooms }                      // what drawRoomChoices does
+    const shown = flow.roomChoices(roomRead, { like: G.pk, agent: A.pk }).find(c => c.id === ids[0])
+    check(shown.closed && !form.rooms.includes(ids[0]), 'the closed room is disabled on screen and gone from the saved choice')
+    const signed = draftAddAgent({ ...base, rooms: flow.roomsToSign(form.rooms, roomRead).rooms }).tags.filter(t => t[0] === 'room').map(t => t[1])
+    check(signed.join() === ids[1], 'the request signed after that read names only the room still open')
+  }
+  check(/const \{ rooms, dropped \} = roomsToSign\(form\.rooms, roomRead\)\s+if \(dropped\.length\) \{ form\.rooms = rooms/.test(page), 'a read drops saved rooms that closed or went, before anything is drawn or signed')
+}
+
+// mydude on #724: a reload with saved rooms must still pass step 2, and still need a read before signing.
+{
+  const a = '11111111-1111-4111-8111-111111111111', b = '22222222-2222-4222-8222-222222222222'
+  const form = JSON.parse(JSON.stringify({ rooms: [a, b] }))  // restored from sessionStorage
+  let roomRead = null                                           // every page load starts unread
+  check(JSON.stringify(flow.roomsFor(form.rooms, roomRead)) === '[]', 'restored and unread, step 2 checks the key with no rooms in the draft')
+  let refused = ''; try { flow.roomsFor(form.rooms, roomRead, { signing: true }) } catch (e) { refused = e.message }
+  check(refused === flow.ROOMS_UNREAD, 'the next signature that would carry the saved rooms still needs a fresh read')
+  roomRead = { names: new Map([[a, '#waggle-test']]), rooms: new Map(), closed: new Set() }
+  check(flow.roomsFor(form.rooms, roomRead, { signing: true }).join() === a, 'once read in this visit, signing carries the saved rooms still open, and drops the one gone')
+}
+
 // mydude on #722: step 6 signs the approvals itself, so its copy must not send the owner to the hive grid.
 {
   const plan = page.slice(page.indexOf('function drawPlan('), page.indexOf('\n}\n', page.indexOf('function drawPlan(')))
