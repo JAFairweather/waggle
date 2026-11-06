@@ -84,9 +84,23 @@ const NOT_READ = /(post|your post) reaches .* isn't read yet: that needs each ro
   check(blocked.sq.kind === 'blocked' && GLYPH.blocked === '!', "the taker's readable list leaves the giver out: !")
   check(blocked.reasons[1] === "Pi Dog isn't on MC Claude's @mention list, so MC Claude can't bring Pi Dog back in by name.", '! says who cannot be brought back in, by name')
 
+  // The fix that went with the pair check (#698) comes back on the square: "!" offers the mention approval.
+  check(blocked.mention?.label === 'Let MC Claude @mention Pi Dog…' && blocked.mention.agent === mc.pk && blocked.mention.giver === pi.pk, '! offers to let the taker @mention its giver back')
+  check(work.mention === null, '✓ offers no mention fix')
+  check(oneWayHive.square(mc.pk, pi.pk, 'remove').mention === null, 'a pending work change hides the mention fix')
+  const mentionGrant = finalizeEvent({ kind: 440, created_at: 1700000050, content: '',
+    tags: [['p', pi.pk], ['da-scope', await scopeHash(mc.pk, SALT), SALT], ['da-cap', 'mention'], ['name', 'pi']] }, owner.sk)
+  const waiting = await hive([piTasksMc, mentionGrant], { views: new Map([[mc.pk, readable([])]]) })
+  const w = waiting.square(mc.pk, pi.pk)
+  check(w.sq.kind === 'blocked' && w.mention === null && /waiting for MC Claude to take it/.test(w.reasons[1]), 'a signed approval still waiting hides the fix, and says it is waiting')
+  const refusedView = readable([]); refusedView.view.refused = [{ grant: mentionGrant.id, reason: 'name taken' }]
+  const refused = await hive([piTasksMc, mentionGrant], { views: new Map([[mc.pk, refusedView]]) })
+  check(refused.square(mc.pk, pi.pk).mention?.agent === mc.pk, 'a refused approval offers the fix again, for another name')
+
   const sealed = await hive([piTasksMc], { views: new Map([[mc.pk, { state: 'cant-tell', why: 'not-opened', event: {} }]]) })
   const priv = sealed.square(mc.pk, pi.pk)
   check(priv.sq.kind === 'work' && priv.showPrivate && /keeps who it can @mention private to you/.test(priv.reasons[1]), 'a private list keeps ✓, says so, and offers to show it')
+  check(priv.mention === null, 'a private list offers no mention fix until it is opened')
 
   const none = h.square(pi.pk, mc.pk)
   check(none.sq.kind === 'none' && GLYPH.none === '' && none.reasons[0] === 'Nobody has let MC Claude give Pi Dog work.', 'no approval: blank, and says nobody approved it')

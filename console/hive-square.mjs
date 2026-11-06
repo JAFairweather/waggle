@@ -155,9 +155,21 @@ export function panelOf({ taker, giver, cell, change = null, ctx }) {
   return {
     sq, title: `${Up(a)} → ${b}`, answer: ANSWER[sq.kind === 'none' && sq.hear ? sq.hear : sq.kind], acts, reasons,
     button: buttonOf(sq, { cell, change, a, b, ctx }),
+    mention: mentionOf(sq, { taker, giver, change, a, b, ctx }),
     showPrivate: sq.base !== 'person' && v?.state === 'cant-tell' && v.why === 'not-opened',
     source: sq.base === 'person' ? null : sq.gates.kind === 'buzz' ? `Answered from your copy of ${b}'s Buzz allow-list.` : `Answered by nvoy's own rules, the same ones ${b}'s listener runs.`,
   }
+}
+
+// A "!" square's fix: let the taker @mention its giver back. Not while an approval for that is
+// signed and waiting, and not where the taker's list can't be read (it's then not a "!" at all).
+export function mentionOf(sq, { taker, giver, change, a, b, ctx }) {
+  if (sq.base !== 'blocked' || change || sq.gates?.kind === 'buzz') return null
+  const v = ctx.views.get(taker.pubkey)
+  if (v?.state !== 'readable') return null
+  const mine = mentionGrantsOf(ctx.grants, { owner: ctx.owner, giver: giver.pubkey, agent: taker.pubkey, subjectOf: ctx.subjectOf })
+  if (mentionStatus(v, mine).state === 'pending') return null
+  return { label: `Let ${b} @mention ${a}…`, agent: taker.pubkey, giver: giver.pubkey }
 }
 
 // The one button. Disabled ones say who can change it instead.
