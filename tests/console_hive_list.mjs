@@ -149,6 +149,20 @@ check(!row(cardOnly.pk).roles.some(r => r.grant.id === lapsed.id), 'an expired g
 check(!!row(subjectOnly.pk) && roles(subjectOnly.pk).includes('teammate'), 'a key known only as a resolved grant subject is a row with its role')
 check(!row(unknown.pk) && needs.some(n => n.kind === 'custom' && n.grant.id === forUnknown.id && /unresolved scope/.test(n.text)), 'a grant for a key no source names is under Needs you as unresolved, not dropped')
 check(roleOf({ grantor: stranger.pk, grantee: owner.pk, cap: 'task' }, { owner: owner.pk, subject: pidog.pk }).role === 'custom', 'a task grant from someone other than the owner is custom')
+// The hive square's mention approval (#726) is a recipe, never "Matches no role".
+{
+  // DJ Codex may mention Pi Dog as @pidog: Pi Dog is the grantee, DJ Codex the hashed subject.
+  const ev = await grant(owner, pidog.pk, 'mention', djcodex.pk, [['name', 'pidog']])
+  const { grants: mg } = readGrants([ev], { verify: verifyEvent, now: clock * 1000 })
+  const t = await scopeTable([djcodex.pk], mg, scopeHash)
+  const built = buildList({ owner: owner.pk, grants: mg, table: t })
+  const role = built.rows.find(r => r.pubkey === djcodex.pk)?.roles.find(r => r.role === 'mentions')
+  check(role?.of === pidog.pk && role.name === 'pidog' && !built.needs.some(n => n.kind === 'custom'),
+    'an owner mention grant is the subject\'s "May @mention" role, naming the grantee and the name, and is not under Needs you')
+  check(roleOf({ grantor: stranger.pk, grantee: pidog.pk, cap: 'mention' }, { owner: owner.pk, subject: djcodex.pk }).role === 'custom' &&
+    roleOf({ grantor: owner.pk, grantee: pidog.pk, cap: 'mention' }, { owner: owner.pk, subject: null }).role === 'custom',
+    'a mention grant from someone else, or with an unresolved subject, stays custom')
+}
 
 // 3. Duplicates and expiry under Needs you.
 const dup = duplicates(grants, table.subjectOf)
