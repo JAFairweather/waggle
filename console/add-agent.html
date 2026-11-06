@@ -196,7 +196,7 @@ import { readCards, relayCoverage, GRANT_RELAYS, CARD_RELAYS, CARD_D, RUNS_LOGO,
 import { shortNpub } from './agent-roster.mjs'
 import { draftGrant, applyChange } from './hive-change.mjs'
 import { scopeHash } from './scope-hash.mjs'
-import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, roomChoices, testMention, proofFilters, proofRows, profileRow, answers } from './add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, roomChoices, testMention, proofFilters, proofRows, profileRow, answers, roomsToSign } from './add-agent-flow.mjs'
 import { readRooms, roomsOf, roomsNeed, loadRoomRelay, relayKeyFor, proveInRoom, PROOF_WAIT_SECS } from './room-lists.mjs'
 import { wsReadBack } from './profile-publish.mjs'
 
@@ -431,7 +431,9 @@ function fields() {
   const givers = (form.givers || []).filter(pk => pk !== agent && pk !== form.agent)
   const gone = goneLine(reconcileGivers(givers, choices()).gone, shortNpub)
   if (gone) throw new Error(gone)
-  return { name, agent, harness: form.harness, like: $('like').value, installed: others, givers, rooms: form.rooms || [],
+  const picked = roomsToSign(form.rooms, roomRead)
+  if (!picked.rooms) throw new Error('Read your rooms in step 5 first: the page signs only rooms it has just read.')
+  return { name, agent, harness: form.harness, like: $('like').value, installed: others, givers, rooms: picked.rooms,
     displayName: $('display').value.trim() || name, about: $('about').value.trim() }
 }
 function checkName() {
@@ -526,6 +528,7 @@ async function send(statusId, buttonId, build, after, readBackOf = readLatest) {
 $('tools-go').onclick = () => send('tools-status', 'tools-go', f => draftAddAgent({ ...f, join: joined || undefined }))
 $('join-go').onclick = () => {
   if (!$('agree-row').hidden && !$('agree').checked) { $('join-status').className = 'status err'; $('join-status').textContent = 'Tick "I agree" first.'; return }
+  if (!roomRead) { $('join-status').className = 'status err'; $('join-status').textContent = 'Read your rooms first, so the request names the rooms you chose.'; return }
   return send('join-status', 'join-go', async (f, signer, st) => {
     // A form mistake is caught before anything is minted: draftAddAgent(f) ran in send().
     // The terms again, as the agent will read them: a version that changed since it was shown is shown, not signed.
@@ -574,11 +577,15 @@ $('display').oninput = () => { form.display = $('display').value; keep() }
 
 // Rooms (#683): read from the room relay with one sign-in, then ticked here. Nothing is joined from
 // this page: the rooms go in the request, and the agent joins each with its own key.
+let unticked = 0
 const likeKey = () => installed.find(a => a.id === ($('like').value || form.like))?.pubkey || null
 function drawRoomChoices() {
   const list = $('room-list'), line = $('rooms-line'), choices = roomChoices(roomRead, { like: likeKey(), agent: form.agent })
   if (!roomRead) return
   if (form.rooms === null) { form.rooms = choices.filter(c => c.start).map(c => c.id); keep() }
+  // A saved choice the read no longer offers, or that closed since, is unticked and named, never signed.
+  const { rooms, dropped } = roomsToSign(form.rooms, roomRead)
+  if (dropped.length) { form.rooms = rooms; unticked = dropped.length; keep() }
   list.textContent = ''; list.hidden = !choices.length
   for (const c of choices) {
     const row = list.appendChild(el('label'))
@@ -590,7 +597,8 @@ function drawRoomChoices() {
   const ticked = form.rooms.length
   line.className = 'hint'
   line.textContent = !choices.length ? 'Your Buzz relay lists no rooms you can see.'
-    : `${ticked} of ${choices.length} rooms ticked. The ones the agent it works like is in, and #waggle-test, are ticked to start.`
+    : `${ticked} of ${choices.length} rooms ticked. The ones the agent it works like is in, and #waggle-test, are ticked to start.` +
+      (unticked ? ` ${unticked === 1 ? 'A room you chose before has' : `${unticked} rooms you chose before have`} closed or gone since, so ${unticked === 1 ? 'it is' : 'they are'} unticked.` : '')
   drawRows()
 }
 async function readRoomChoices() {
@@ -608,7 +616,7 @@ async function readRoomChoices() {
     line.textContent = 'Asking your signer to sign in to your Buzz relay…'
     const out = await readRooms({ url: relay.url, sign: t => signFresh(t, signer), connect: u => new WebSocket(u) })
     if (out.state !== 'read') return fail(roomsNeed({ relay, state: out.state }).text)
-    roomRead = roomsOf(out.events, { relayKey: key, verify: verifyEvent })
+    roomRead = roomsOf(out.events, { relayKey: key, verify: verifyEvent }); unticked = 0
     btn.textContent = 'Read your rooms again'
     drawRoomChoices()
   } finally { btn.disabled = false }

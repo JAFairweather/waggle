@@ -240,3 +240,13 @@ export function profileRow({ buzz = [], outside = [], relays = null, agent, veri
   if (behind.length) return ROW(false, 'amber', { text: `Not on every relay yet: ${behind.join(', ')}.`, home })
   return ROW(true, 'green', { text: `The same signed profile on your Buzz relay and ${relays.length} public relay${relays.length === 1 ? '' : 's'}.`, home })
 }
+
+// The rooms a signed request may carry: only rooms the page read in this visit that are still open to
+// join. Saved choices with no read behind them are not signed (rooms: null); saved ones the read no
+// longer offers, or that closed since they were ticked, are dropped and named.
+export function roomsToSign(saved, read) {
+  const want = Array.isArray(saved) ? saved : []
+  if (!read) return { rooms: want.length ? null : [], dropped: [] }
+  const open = new Set(roomChoices(read).filter(c => !c.closed).map(c => c.id))
+  return { rooms: want.filter(id => open.has(id)), dropped: want.filter(id => !open.has(id)) }
+}
