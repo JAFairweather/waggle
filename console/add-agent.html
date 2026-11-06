@@ -94,6 +94,9 @@
       <p class="intro">Give it a name and say what it runs in. It starts out working like an agent you already have, and you can change anything later.</p>
       <div class="fields"><label class="field">Name<input id="name" placeholder="crystalclaude" spellcheck="false" autocomplete="off"></label>
         <label class="field">Works like<select id="like" aria-label="Agent it starts like"><option value="">Reading your agents…</option></select></label></div>
+      <div class="fields"><label class="field">Display name<input id="display" placeholder="Crystal Claude" maxlength="64" autocomplete="off"></label>
+        <label class="field">About it (optional)<input id="about" placeholder="What it does, in a line" maxlength="500" autocomplete="off"></label></div>
+      <p class="hint">The agent publishes these as its profile when it first starts. A blank display name uses its name. A profile can change only once a day, so get it right here.</p>
       <div class="group-label">Runs in</div>
       <div class="pills" id="runs" role="group" aria-label="Runs in"></div>
       <p class="hint" id="fixed-why" hidden></p>
@@ -184,7 +187,7 @@
 import { verifyEvent, nip19 } from 'nostr-tools'
 import { consoleSigner } from './signer-session.mjs'
 import { signFresh } from './guarded-signer.mjs'
-import { HARNESSES, agentName, draftAddAgent, draftBind, readBack, sendRequest, SETUP_KIND, requestD } from './hive-add-agent.mjs'
+import { HARNESSES, agentName, draftAddAgent, draftBind, profileTags, readBack, sendRequest, SETUP_KIND, requestD } from './hive-add-agent.mjs'
 import { HIVE_RELAY, readHiveTerms, sealInvite } from './hive-invite.mjs'
 import { readCards, relayCoverage, GRANT_RELAYS, CARD_RELAYS, CARD_D, RUNS_LOGO, RUNS_ON, PLATFORMS, platformOf } from './hive-list.mjs'
 import { shortNpub } from './agent-roster.mjs'
@@ -220,7 +223,7 @@ async function read(relays, filter) {
 const SAVED = 'waggle-add-agent'
 const saved = (() => { try { return JSON.parse(sessionStorage.getItem(SAVED) || '{}') } catch { return {} } })()
 const keep = () => { try { sessionStorage.setItem(SAVED, JSON.stringify(form)) } catch { /* private mode: the form lives until reload */ } }
-const form = { step: 1, name: '', harness: 'claude-code', like: '', agent: '', givers: null, sixth: null, ...saved }
+const form = { step: 1, name: '', display: '', about: '', harness: 'claude-code', like: '', agent: '', givers: null, sixth: null, ...saved }
 
 // What the page has read: whose hive, its agents, and the newest request for this agent.
 let owner = null, loaded = false, installed = [], profiles = new Map(), latest = null, joined = null, terms = null, fixed = null
@@ -411,11 +414,14 @@ function fields() {
   const givers = (form.givers || []).filter(pk => pk !== agent && pk !== form.agent)
   const gone = goneLine(reconcileGivers(givers, choices()).gone, shortNpub)
   if (gone) throw new Error(gone)
-  return { name, agent, harness: form.harness, like: $('like').value, installed: others, givers }
+  return { name, agent, harness: form.harness, like: $('like').value, installed: others, givers,
+    displayName: $('display').value.trim() || name, about: $('about').value.trim() }
 }
 function checkName() {
   form.name = agentName($('name').value); form.like = $('like').value
   if (!form.like) throw new Error('Pick an agent for it to start like.')
+  profileTags({ displayName: $('display').value.trim() || form.name, about: $('about').value })
+  form.display = $('display').value; form.about = $('about').value
   keep(); done[1] = true
 }
 function checkKey() {
@@ -547,11 +553,13 @@ for (const b of document.querySelectorAll('[data-next]')) b.onclick = async () =
 }
 $('restart').onclick = () => { try { sessionStorage.removeItem(SAVED) } catch {} location.reload() }
 $('name').oninput = () => { form.name = $('name').value.trim().toLowerCase(); drawNames(); drawRail() }
+$('display').oninput = () => { form.display = $('display').value; keep() }
+$('about').oninput = () => { form.about = $('about').value; keep() }
 
 // The hive this page adds to: the remembered owner, else the signer's public key.
 const OWNER_KEY = 'waggle-hive-owner'
 async function start() {
-  $('name').value = form.name; $('key').value = form.agent ? nip19.npubEncode(form.agent) : ''
+  $('name').value = form.name; $('display').value = form.display || ''; $('about').value = form.about || ''; $('key').value = form.agent ? nip19.npubEncode(form.agent) : ''
   drawRuns(); drawRows(); go(form.step)
   try { const v = localStorage.getItem(OWNER_KEY); owner = /^[0-9a-f]{64}$/.test(v || '') ? v : null } catch {}
   if (!owner) {

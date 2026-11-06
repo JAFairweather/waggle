@@ -49,6 +49,19 @@ export function agentName(text) {
   return name
 }
 
+// The agent's first profile, which its own broker publishes on first start (#717). nvoy-onboard
+// refuses the same shapes: a name of one line, 1 to 64 characters; an about of at most 500, and only
+// with a name, since a first profile must set one.
+export function profileTags({ displayName = '', about = '' } = {}) {
+  const name = String(displayName).trim(), line = String(about).trim()
+  if (!name && !line) return []
+  if (!name) throw new Error('Give it a display name to go with the line about it.')
+  if (/nsec1|bunker:|nostrconnect:|PRIVATE KEY|secret=/i.test(name + line)) throw new Error('That looks like a secret. A profile is public; take it out.')
+  if (name.length > 64 || /[\u0000-\u001f\u007f]/.test(name)) throw new Error('The display name is one line of up to 64 characters.')
+  if (line.length > 500 || /[\u0000-\u0009\u000b-\u001f\u007f]/.test(line)) throw new Error('The line about it is up to 500 characters.')
+  return [['display_name', name], ...(line ? [['about', line]] : [])]
+}
+
 function common({ name, agent, harness, like, installed = [] }) {
   const n = agentName(name)
   if (!HEX64.test(agent || '')) throw new Error('That is not the agent\'s public key.')
@@ -59,18 +72,19 @@ function common({ name, agent, harness, like, installed = [] }) {
   return n
 }
 
-// add_agent: who it is, what it runs in, whom it starts like, who may give it work, its rooms, and
-// (when `join` is given) how it joins the hive.
-export function draftAddAgent({ name, agent, harness, like, givers = [], rooms = [], join, installed = [], now = Math.floor(Date.now() / 1000) }) {
+// add_agent: who it is, what it runs in, whom it starts like, who may give it work, its rooms, the
+// name it shows (when given), and (when `join` is given) how it joins the hive.
+export function draftAddAgent({ name, agent, harness, like, givers = [], rooms = [], displayName, about, join, installed = [], now = Math.floor(Date.now() / 1000) }) {
   const n = common({ name, agent, harness, like, installed })
   const g = [...new Set(givers)]
   if (g.some(pk => !HEX64.test(pk))) throw new Error('A giver is not a public key.')
   if (g.includes(agent)) throw new Error('An agent does not give itself work.')
   const r = [...new Set(rooms.map(room => String(room).toLowerCase()))]
   if (r.some(room => !ROOM.test(room))) throw new Error('A room is not a Buzz room id.')
+  const shown = profileTags({ displayName, about })
   const j = join === undefined ? [] : joinTags(join)
   return { kind: SETUP_KIND, created_at: now, content: '', tags: [['d', requestD(n, 'add_agent')], ['op', 'add_agent'], ['p', agent],
-    ['harness', harness], ['like', like], ...g.map(pk => ['giver', pk]), ...r.map(room => ['room', room]), ...j] }
+    ['harness', harness], ['like', like], ...g.map(pk => ['giver', pk]), ...r.map(room => ['room', room]), ...shown, ...j] }
 }
 
 // bind_runtime: the channel key the install line made on the agent's box. Public half only.
