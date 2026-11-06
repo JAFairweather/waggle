@@ -78,6 +78,8 @@ export function roleOf(grant, { owner, bridges = [], subject }) {
   }
   if (fromOwner && subject && grant.cap === 'task-relay' && bridges.includes(grant.grantee)) return { role: 'carrier', agent: subject, by: grant.grantee }
   if (fromOwner && grant.cap === 'shadow' && subject === owner) return { role: 'voice', agent: grant.grantee }
+  // The hive square's own approval (#726): the subject may @mention the grantee by name.
+  if (fromOwner && subject && grant.cap === 'mention') return { role: 'mentions', agent: subject, of: grant.grantee, name: grant.name || null }
   // An admit is live, not a leftover: without one the bridge refuses the key's posts and carries it no
   // mentions (#649), so it is never flagged for cleanup.
   if (grant.cap === 'admit' || grant.cap === 'admit+read') return { role: 'guest', agent: grant.grantee }
@@ -86,7 +88,7 @@ export function roleOf(grant, { owner, bridges = [], subject }) {
 
 export const ROLE_NAME = {
   teammate: 'Teammate', trusted: 'Trusted teammate', colleague: 'Colleague', carrier: 'Carrier',
-  voice: 'Voice', guest: 'Channel pass', custom: 'Custom',
+  voice: 'Voice', guest: 'Channel pass', mentions: 'May @mention', custom: 'Custom',
 }
 
 // Two live grants with the same grantor, grantee, capability and subject are one grant too many.
