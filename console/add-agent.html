@@ -210,7 +210,10 @@ function query(url, filter) {
 }
 async function read(relays, filter) {
   const results = await Promise.all(relays.map(u => query(u, filter)))
-  return { events: results.flatMap(r => r.out), ...relayCoverage(results.map(r => r.state)) }
+  // A relay that sent as many events as the limit may have stopped there, so that read is not full.
+  // Keep limits at or under 500, strfry's default cap, or a relay can stop short unnoticed.
+  const capped = results.some(r => filter.limit && r.out.length >= filter.limit)
+  return { events: results.flatMap(r => r.out), capped, ...relayCoverage(results.map(r => r.state)) }
 }
 
 // The form, kept for this tab only, so a reload mid-way does not lose it. Public fields only.
@@ -437,10 +440,15 @@ async function readLatest() {
   return latest
 }
 
-// The owner's 440s and 441s, against the givers the request names: who still needs an approval (#716).
+// The owner's approvals to these givers, and the withdrawals of them, against the givers the request
+// names: who still needs an approval (#716). Narrow reads, so a full answer is a complete one.
 async function workGrants(ev) {
-  const back = await read(GRANT_RELAYS, { kinds: [440, 441], authors: [owner], limit: 500 })
-  return workGrantPlan({ owner, agent: form.agent, givers: readBackSteps(ev).givers, events: back.events, verify: verifyEvent, scopeHash })
+  const givers = readBackSteps(ev).givers
+  const grants = givers.length ? await read(GRANT_RELAYS, { kinds: [440], authors: [owner], '#p': givers, limit: 500 }) : { events: [], full: true, capped: false }
+  const ids = [...new Set(grants.events.map(e => e.id))]
+  const ends = ids.length ? await read(GRANT_RELAYS, { kinds: [441], authors: [owner], '#e': ids, limit: 500 }) : { events: [], full: true, capped: false }
+  const full = grants.full && !grants.capped && ends.full && !ends.capped
+  return workGrantPlan({ owner, agent: form.agent, givers, events: [...grants.events, ...ends.events], verify: verifyEvent, scopeHash, full })
 }
 // After step 6's request reads back: one task approval from you for each giver without one, each
 // read back cold. Without it their mentions reach the agent as data only and wake nothing.
@@ -450,6 +458,7 @@ async function signWorkGrants() {
   b.disabled = true
   try {
     const plan = await workGrants(latest)
+    if (plan.uncertain) throw new Error(`Not every relay answered in full, so I can't tell which approvals you already gave. Nothing was signed; try again in a minute.`)
     const signer = plan.missing.length ? await consoleSigner() : null
     for (const [i, grantee] of plan.missing.entries()) {
       const template = await draftGrant({ grantee, agent: form.agent, cap: 'task', scopeHash })

@@ -8,6 +8,7 @@
 
 import { SETUP_KIND, requestD } from './hive-add-agent.mjs'
 import { readGrants, scopeTable } from './hive-list.mjs'
+import { foldGrantsWith } from './vendor/nvoy-admission.mjs'
 import { WORK_CAPS } from './hive-change.mjs'
 
 export const STEPS = Object.freeze([
@@ -59,19 +60,21 @@ export function joinOf(ev) {
 export function readBackSteps(ev, { sixth = null, plan = null } = {}) {
   if (!ev) return { 3: false, 5: false, 6: false, givers: [] }
   const givers = ev.tags.filter(t => t[0] === 'giver').map(t => t[1])
-  return { 3: true, 5: !!joinOf(ev), 6: !!sixth && ev.id === sixth && !!plan && plan.missing.length === 0, givers }
+  return { 3: true, 5: !!joinOf(ev), 6: !!sixth && ev.id === sixth && !!plan && !plan.uncertain && plan.missing.length === 0, givers }
 }
 
 // Who still needs the owner's approval to give the agent work (#716). A giver on the request is not
 // enough: without a live 440 from the owner over the agent, nvoy hears their mentions as data only and
-// wakes nothing. `events` are the owner's 440s and 441s; the owner comes first, so a signer that stops
-// part way has still approved the owner.
-export async function workGrantPlan({ owner, agent, givers, events, verify, scopeHash, now }) {
-  const live = readGrants(events, { verify, now }).grants.filter(g => g.live && g.grantor === owner && WORK_CAPS.includes(g.cap))
-  const { subjectOf } = await scopeTable([agent], live, scopeHash)
-  const held = new Set(live.filter(g => subjectOf(g.hash) === agent).map(g => g.grantee))
+// wakes nothing. `events` are the owner's 440s and 441s, folded with nvoy's own fold, so the page and
+// the broker agree: the newest approval per giver and capability wins, and withdrawing it leaves none.
+// `full` is false when a relay did not answer in full; then nothing counts as missing for certain, and
+// step 6 is not done. The owner comes first, so a signer that stops part way has approved the owner.
+export async function workGrantPlan({ owner, agent, givers, events, verify, scopeHash, full = true }) {
+  const table = await scopeTable([agent], readGrants(events, { verify }).grants, scopeHash)
+  const { live } = foldGrantsWith(events, { me: agent, grantors: [owner], scopeHash: table.hashOf })
+  const held = pk => WORK_CAPS.some(cap => live.get(pk)?.has(cap))
   const want = [...new Set(givers || [])].filter(pk => pk !== agent).sort((a, b) => (b === owner) - (a === owner))
-  return { held: want.filter(pk => held.has(pk)), missing: want.filter(pk => !held.has(pk)) }
+  return { held: want.filter(held), missing: want.filter(pk => !held(pk)), uncertain: !full }
 }
 
 // Step 6 picks from the hive grid's own groups, so it reads the same at 8 agents or 50: a search,

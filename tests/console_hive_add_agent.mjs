@@ -237,6 +237,13 @@ check(!readBackSteps(req6, { sixth: req6.id })[6] && !readBackSteps(req6, { sixt
   check(p.missing.join() === G.pk, "an approval signed by someone else is not the owner's")
   p = await plan([gO, gG, finalizeEvent(draftRevoke({ grantId: gG.id, now: 1001 }), O.sk)])
   check(p.missing.join() === G.pk && p.held.join() === O.pk, 'a withdrawn approval needs signing again')
+  const gA = await grant(G.pk, { now: 1000 }), gB = await grant(G.pk, { now: 1001 })
+  p = await plan([gO, gA, gB, finalizeEvent(draftRevoke({ grantId: gB.id, now: 1002 }), O.sk)])
+  check(p.missing.join() === G.pk, "the broker's fold: approval A, then B, then B withdrawn leaves the giver with none, though A was never withdrawn")
+  p = await plan([gO, gA, gB, finalizeEvent(draftRevoke({ grantId: gA.id, now: 1002 }), O.sk)])
+  check(!p.missing.length, 'withdrawing the replaced approval A leaves the newest, B, standing')
+  p = await workGrantPlan({ owner: O.pk, agent: A.pk, givers: [O.pk, G.pk], events: [gO, gG], verify: verifyEvent, scopeHash, full: false })
+  check(p.uncertain && !readBackSteps({ id: 'r', tags: [] }, { sixth: 'r', plan: p })[6], 'a read where not every relay answered in full never marks step 6 done')
   p = await plan([gO, { ...gG, tags: gG.tags.map(t => t[0] === 'p' ? ['p', X.pk] : t) }])
   check(p.missing.join() === G.pk, 'an edited approval fails its signature and does not count')
   const tmpl = await draftGrant({ grantee: O.pk, agent: A.pk, cap: 'task', scopeHash })
@@ -244,6 +251,7 @@ check(!readBackSteps(req6, { sixth: req6.id })[6] && !readBackSteps(req6, { sixt
   check(tmpl.kind === 440 && tmpl.tags[0][1] === O.pk && tmpl.tags.find(t => t[0] === 'da-cap')[1] === 'task' && scope[1] === await scopeHash(A.pk, scope[2]) && !JSON.stringify(tmpl).includes(A.pk), 'the drafted approval is grant.mjs\'s shape: p = giver, cap task, the agent only as a salted hash')
   check(/\.then\(\(\) => form\.sixth !== before && latest\?\.id === form\.sixth && signWorkGrants\(\)\)/.test(page), 'the page signs approvals only after step 6\'s own request reads back')
   check(/draftGrant\(\{ grantee, agent: form\.agent, cap: 'task', scopeHash \}\)/.test(page) && /applyChange\(template, \{ sign: t => signFresh\(t, signer\), owner,/.test(page), 'each approval goes through the hive page\'s apply path: shown event, owner key, read back cold')
+  check(/if \(plan\.uncertain\) throw/.test(page) && /const full = grants\.full && !grants\.capped && ends\.full && !ends\.capped/.test(page), 'the page signs nothing, and claims nothing, on a read that was not full or hit its limit')
 }
 check(!readBackSteps(null)[3], 'nothing read back: nothing done')
 
