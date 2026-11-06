@@ -18,7 +18,7 @@
 import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
 import * as nip44 from 'nostr-tools/nip44'
 import { readFileSync } from 'node:fs'
-import { HARNESSES, agentName, draftAddAgent, draftBind, readBack, requestD, sendRequest, sealedShape, SETUP_KIND } from '../console/hive-add-agent.mjs'
+import { HARNESSES, agentName, draftAddAgent, draftBind, profileTags, readBack, requestD, sendRequest, sealedShape, SETUP_KIND } from '../console/hive-add-agent.mjs'
 import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, HANDOFF, workSignGate } from '../console/add-agent-flow.mjs'
 import * as flow from '../console/add-agent-flow.mjs'
 import { draftGrant, draftRevoke } from '../console/hive-change.mjs'
@@ -42,6 +42,18 @@ check(JSON.stringify(add.tags) === JSON.stringify([['d', 'nvoy-onboard/hr/add_ag
   ['like', 'crystalclaude'], ['giver', O.pk], ['giver', G.pk], ['room', room]]), 'the closed tag set, the name lowered, givers and rooms once each')
 check(add.tags.every(tag => tag.length === 2 && typeof tag[1] === 'string'), 'every tag is a name and one value')
 check(requestD('hr', 'bind_runtime') === 'nvoy-onboard/hr/bind_runtime', 'each op has its own d, so a bind does not replace the add')
+
+// The name it shows travels in the add; its own broker publishes it as the first profile (#717).
+const shown = draftAddAgent({ ...base, displayName: ' Human Resources ', about: 'People and pay.' })
+check(JSON.stringify(shown.tags.slice(-2)) === JSON.stringify([['display_name', 'Human Resources'], ['about', 'People and pay.']]), 'display_name and about, trimmed, after the rooms')
+check(!add.tags.some(t => t[0] === 'display_name' || t[0] === 'about'), 'no profile tags when none is given')
+check(JSON.stringify(profileTags({ displayName: 'HR' })) === JSON.stringify([['display_name', 'HR']]), 'a name alone')
+check(throws(() => profileTags({ about: 'People.' }), /display name/), 'an about with no name')
+check(throws(() => profileTags({ displayName: 'x'.repeat(65) }), /64/), 'a name over 64')
+check(throws(() => profileTags({ displayName: 'a\nb' }), /one line/), 'a name on two lines')
+check(throws(() => profileTags({ displayName: 'HR', about: 'x'.repeat(501) }), /500/), 'an about over 500')
+check(throws(() => profileTags({ displayName: 'HR', about: 'nsec1abc' }), /secret/), 'a secret in the profile')
+check(profileTags({ displayName: 'HR', about: 'line one\nline two' }).length === 2, 'an about may run to several lines')
 
 // ── 2. Refused before signing ───────────────────────────────────────────────────────────────────
 check(throws(() => agentName('my agent'), /letters, digits/), 'a name with a space')
