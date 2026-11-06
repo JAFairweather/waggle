@@ -376,6 +376,31 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   check(c[0].start && c[1].start && !c[c.length - 1].start, 'ticked rooms first')
   check(flow.roomChoices(null, {}).length === 0, 'no read, no choices: nothing is guessed')
   check(draftAddAgent({ ...base, rooms: [ids[1]] }).tags.some(t => t[0] === 'room' && t[1] === ids[1]), 'a ticked room goes in the request')
+
+  // mydude on #724: a saved choice is signed only after a read in this visit, and never once closed.
+  const none = flow.roomsToSign([ids[0]], null)
+  check(none.rooms === null, 'saved rooms with no read behind them are not signed')
+  check(JSON.stringify(flow.roomsToSign(null, null).rooms) === '[]' && JSON.stringify(flow.roomsToSign([], null).rooms) === '[]', 'with nothing chosen yet, no read is needed (step 3 signs no rooms)')
+  const later = { ...read, closed: new Set([ids[2], ids[0]]), names: new Map([...read.names].filter(([id]) => id !== ids[3])) }
+  const kept = flow.roomsToSign([ids[0], ids[1], ids[3]], later)
+  check(kept.rooms.join() === ids[1] && kept.dropped.join() === [ids[0], ids[3]].join(), 'after a restore, a room closed since and a room gone since are dropped and named; an open one is kept')
+  check(flow.roomsToSign([ids[2]], read).rooms.length === 0, 'a room that was closed all along is never signed, even if a saved form names it')
+  check(/const picked = roomsToSign\(form\.rooms, roomRead\)\s+if \(!picked\.rooms\) throw/.test(page) && /rooms: picked\.rooms,/.test(page), 'every signed request takes its rooms from roomsToSign, so none is signed unread')
+  check(/if \(!roomRead\) \{ \$\('join-status'\)/.test(page), 'step 5 will not sign until the rooms are read')
+  {
+    // The sequence mydude reproduced: tick two rooms, reload, one closes, read again, sign.
+    let form = JSON.parse(JSON.stringify({ rooms: [ids[0], ids[1]] }))  // restored from sessionStorage
+    let roomRead = null
+    check(flow.roomsToSign(form.rooms, roomRead).rooms === null, 'restored, unread: signing is refused')
+    roomRead = { ...read, closed: new Set([ids[0]]) }                 // the room closed while away
+    const { rooms, dropped } = flow.roomsToSign(form.rooms, roomRead)
+    if (dropped.length) form = { ...form, rooms }                      // what drawRoomChoices does
+    const shown = flow.roomChoices(roomRead, { like: G.pk, agent: A.pk }).find(c => c.id === ids[0])
+    check(shown.closed && !form.rooms.includes(ids[0]), 'the closed room is disabled on screen and gone from the saved choice')
+    const signed = draftAddAgent({ ...base, rooms: flow.roomsToSign(form.rooms, roomRead).rooms }).tags.filter(t => t[0] === 'room').map(t => t[1])
+    check(signed.join() === ids[1], 'the request signed after that read names only the room still open')
+  }
+  check(/const \{ rooms, dropped \} = roomsToSign\(form\.rooms, roomRead\)\s+if \(dropped\.length\) \{ form\.rooms = rooms/.test(page), 'a read drops saved rooms that closed or went, before anything is drawn or signed')
 }
 
 if (fails) { console.error(`\nconsole_hive_add_agent: ${fails} failing`); process.exit(1) }

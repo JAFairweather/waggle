@@ -174,3 +174,13 @@ export function roomChoices(read, { like = null, agent = null } = {}) {
   }
   return out.sort((a, b) => (b.start - a.start) || (a.closed - b.closed) || a.name.localeCompare(b.name))
 }
+
+// The rooms a signed request may carry: only rooms the page read in this visit that are still open to
+// join. Saved choices with no read behind them are not signed (rooms: null); saved ones the read no
+// longer offers, or that closed since they were ticked, are dropped and named.
+export function roomsToSign(saved, read) {
+  const want = Array.isArray(saved) ? saved : []
+  if (!read) return { rooms: want.length ? null : [], dropped: [] }
+  const open = new Set(roomChoices(read).filter(c => !c.closed).map(c => c.id))
+  return { rooms: want.filter(id => open.has(id)), dropped: want.filter(id => !open.has(id)) }
+}
