@@ -156,3 +156,7 @@ export function changedFrom(latest, { harness, like }) {
 export function giverPlan(chips) {
   return { outside: chips.filter(c => c.outside && !c.isOwner) }
 }
+
+// Step 6 signs only on top of a signed step 5: a request sent without the invite would leave the agent
+// out of its rooms, and the task approvals would follow it. null when it may sign, else why not.
+export const workSignGate = joined => joined ? null : 'Sign step 5 first, so this request carries the invite to your rooms. Nothing was signed.'

@@ -19,7 +19,7 @@ import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nos
 import * as nip44 from 'nostr-tools/nip44'
 import { readFileSync } from 'node:fs'
 import { HARNESSES, agentName, draftAddAgent, draftBind, readBack, requestD, sendRequest, sealedShape, SETUP_KIND } from '../console/hive-add-agent.mjs'
-import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, HANDOFF } from '../console/add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, HANDOFF, workSignGate } from '../console/add-agent-flow.mjs'
 import * as flow from '../console/add-agent-flow.mjs'
 import { draftGrant, draftRevoke } from '../console/hive-change.mjs'
 import { scopeHash } from '../console/scope-hash.mjs'
@@ -354,6 +354,14 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
 {
   const plan = page.slice(page.indexOf('function drawPlan('), page.indexOf('\n}\n', page.indexOf('function drawPlan(')))
   check(!/hive grid|its own column/.test(plan) && /signs an approval from you for each chosen agent/.test(plan), 'step 6 says it signs the approvals here, not later on the hive grid')
+}
+
+// mydude on #722: step 6 must not sign, nor sign approvals, before step 5 is signed.
+{
+  check(typeof workSignGate(null) === 'string' && workSignGate({ id: 'x' }) === null, 'step 6 is refused until step 5 is signed')
+  const h = page.slice(page.indexOf("$('work-go').onclick"), page.indexOf('\n}\n', page.indexOf("$('work-go').onclick")))
+  const gate = h.indexOf('workSignGate(joined)'), ret = h.indexOf('return }'), sendAt = h.indexOf('send('), grants = h.indexOf('signWorkGrants(')
+  check(gate > -1 && ret > gate && sendAt > ret && grants > ret, 'the step 6 button returns on the gate before it sends the request or signs an approval')
 }
 
 if (fails) { console.error(`\nconsole_hive_add_agent: ${fails} failing`); process.exit(1) }

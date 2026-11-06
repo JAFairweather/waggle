@@ -190,7 +190,7 @@ import { readCards, relayCoverage, GRANT_RELAYS, CARD_RELAYS, CARD_D, RUNS_LOGO,
 import { shortNpub } from './agent-roster.mjs'
 import { draftGrant, applyChange } from './hive-change.mjs'
 import { scopeHash } from './scope-hash.mjs'
-import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine } from './add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, workSignGate } from './add-agent-flow.mjs'
 
 const $ = id => document.getElementById(id)
 // Everything shown here came from someone else's signature, so it reaches the DOM only as text.
@@ -527,7 +527,8 @@ $('box-go').onclick = () => {
   return send('box-status', 'box-go', f => draftBind({ ...f, channelKey: pasted }), null, readBind)
 }
 $('work-go').onclick = () => {
-  if (!joined) { $('work-status').className = 'status'; $('work-status').textContent = 'Step 5 is not signed yet, so this request carries no invite. Sign step 5 after; it keeps these ticks.' }
+  const stop = workSignGate(joined)
+  if (stop) { $('work-status').className = 'status err'; $('work-status').textContent = stop; return }
   const before = form.sixth
   return send('work-status', 'work-go', f => draftAddAgent({ ...f, join: joined || undefined }), signed => { form.sixth = signed.id; keep() })
     .then(() => form.sixth !== before && latest?.id === form.sixth && signWorkGrants())
