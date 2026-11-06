@@ -196,7 +196,7 @@ import { readCards, relayCoverage, GRANT_RELAYS, CARD_RELAYS, CARD_D, RUNS_LOGO,
 import { shortNpub } from './agent-roster.mjs'
 import { draftGrant, applyChange } from './hive-change.mjs'
 import { scopeHash } from './scope-hash.mjs'
-import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, roomChoices, testMention, proofFilters, proofRows, profileRow, answers, roomsToSign } from './add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, roomChoices, testMention, proofFilters, proofRows, profileRow, answers, roomsToSign, roomsFor } from './add-agent-flow.mjs'
 import { readRooms, roomsOf, roomsNeed, loadRoomRelay, relayKeyFor, proveInRoom, PROOF_WAIT_SECS } from './room-lists.mjs'
 import { wsReadBack } from './profile-publish.mjs'
 
@@ -417,8 +417,9 @@ function showTerms(read) {
   line.textContent = read.version === 'none' ? `The hive at ${host} has no terms to agree to.` : `The hive at ${host} serves terms version ${read.version.slice(0, 12)}${read.age ? ', and asks you to confirm the age requirement' : ''}.`
 }
 
-// Step 1 and 2 are checked here; nothing is signed or sent.
-function fields() {
+// Step 1 and 2 are checked here; nothing is signed or sent. `signing` is set only by send(), the one
+// path that signs: it alone needs the rooms read in this visit.
+function fields({ signing = false } = {}) {
   const name = agentName($('name').value)
   const pasted = $('key').value.trim()
   let agent = pasted
@@ -431,9 +432,8 @@ function fields() {
   const givers = (form.givers || []).filter(pk => pk !== agent && pk !== form.agent)
   const gone = goneLine(reconcileGivers(givers, choices()).gone, shortNpub)
   if (gone) throw new Error(gone)
-  const picked = roomsToSign(form.rooms, roomRead)
-  if (!picked.rooms) throw new Error('Read your rooms in step 5 first: the page signs only rooms it has just read.')
-  return { name, agent, harness: form.harness, like: $('like').value, installed: others, givers, rooms: picked.rooms,
+  const rooms = roomsFor(form.rooms, roomRead, { signing })
+  return { name, agent, harness: form.harness, like: $('like').value, installed: others, givers, rooms,
     displayName: $('display').value.trim() || name, about: $('about').value.trim() }
 }
 function checkName() {
@@ -504,7 +504,7 @@ async function signWorkGrants() {
 async function send(statusId, buttonId, build, after, readBackOf = readLatest) {
   const st = $(statusId), b = $(buttonId); st.className = 'status'
   let f
-  try { f = fields(); draftAddAgent({ ...f, join: joined || undefined }) } catch (e) { st.className = 'status err'; st.textContent = e.message; return }
+  try { f = fields({ signing: true }); draftAddAgent({ ...f, join: joined || undefined }) } catch (e) { st.className = 'status err'; st.textContent = e.message; return }
   b.disabled = true
   try {
     const signer = await consoleSigner()

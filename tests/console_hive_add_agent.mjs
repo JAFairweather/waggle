@@ -385,7 +385,9 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   const kept = flow.roomsToSign([ids[0], ids[1], ids[3]], later)
   check(kept.rooms.join() === ids[1] && kept.dropped.join() === [ids[0], ids[3]].join(), 'after a restore, a room closed since and a room gone since are dropped and named; an open one is kept')
   check(flow.roomsToSign([ids[2]], read).rooms.length === 0, 'a room that was closed all along is never signed, even if a saved form names it')
-  check(/const picked = roomsToSign\(form\.rooms, roomRead\)\s+if \(!picked\.rooms\) throw/.test(page) && /rooms: picked\.rooms,/.test(page), 'every signed request takes its rooms from roomsToSign, so none is signed unread')
+  check(/const rooms = roomsFor\(form\.rooms, roomRead, \{ signing \}\)/.test(page) && /installed: others, givers, rooms,/.test(page), 'every request the page drafts takes its rooms from roomsFor, so none is signed unread')
+  check(/try \{ f = fields\(\{ signing: true \}\)/.test(page) && (page.match(/fields\(\{ signing: true \}\)/g) || []).length === 1, 'send(), the one path that signs, is the one that asks for the room read')
+  check(/function checkKey\(\) \{[^}]*const f = fields\(\); draftAddAgent\(f\)/.test(page), "step 2's Next checks the key and name without step 5's room read")
   check(/if \(!roomRead\) \{ \$\('join-status'\)/.test(page), 'step 5 will not sign until the rooms are read')
   {
     // The sequence mydude reproduced: tick two rooms, reload, one closes, read again, sign.
@@ -452,6 +454,18 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
 
   check(/id="proof-go"/.test(page) && /proveInRoom\(/.test(page) && /wsReadBack\(/.test(page), 'step 7 has its button, and runs the room check and the public profile read')
   check(/done\[7\] = p\.hello\.ok && p\.readBack\.ok && p\.taken\.ok && p\.answered\.ok && !!face\?\.ok/.test(page), 'step 7 is done only when all five rows pass')
+}
+
+// mydude on #724: a reload with saved rooms must still pass step 2, and still need a read before signing.
+{
+  const a = '11111111-1111-4111-8111-111111111111', b = '22222222-2222-4222-8222-222222222222'
+  const form = JSON.parse(JSON.stringify({ rooms: [a, b] }))  // restored from sessionStorage
+  let roomRead = null                                           // every page load starts unread
+  check(JSON.stringify(flow.roomsFor(form.rooms, roomRead)) === '[]', 'restored and unread, step 2 checks the key with no rooms in the draft')
+  let refused = ''; try { flow.roomsFor(form.rooms, roomRead, { signing: true }) } catch (e) { refused = e.message }
+  check(refused === flow.ROOMS_UNREAD, 'the next signature that would carry the saved rooms still needs a fresh read')
+  roomRead = { names: new Map([[a, '#waggle-test']]), rooms: new Map(), closed: new Set() }
+  check(flow.roomsFor(form.rooms, roomRead, { signing: true }).join() === a, 'once read in this visit, signing carries the saved rooms still open, and drops the one gone')
 }
 
 if (fails) { console.error(`\nconsole_hive_add_agent: ${fails} failing`); process.exit(1) }

@@ -250,3 +250,13 @@ export function roomsToSign(saved, read) {
   const open = new Set(roomChoices(read).filter(c => !c.closed).map(c => c.id))
   return { rooms: want.filter(id => open.has(id)), dropped: want.filter(id => !open.has(id)) }
 }
+
+// fields() runs at steps 2 and 3 too, where no room has been read yet. Only a signature needs a read:
+// checking the key and name drafts with no rooms, so a restored form can still walk forward to step 5.
+export const ROOMS_UNREAD = 'Read your rooms in step 5 first: the page signs only rooms it has just read.'
+export function roomsFor(saved, read, { signing = false } = {}) {
+  const picked = roomsToSign(saved, read)
+  if (picked.rooms) return picked.rooms
+  if (signing) throw new Error(ROOMS_UNREAD)
+  return []
+}
