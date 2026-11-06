@@ -97,7 +97,7 @@ function wsPush(url, ev, { WS = globalThis.WebSocket, timeoutMs = 12000 } = {}) 
 
 // A fresh connection every time — that is what makes it COLD. `answered` is tracked apart from
 // `newest`: a relay that never sent EOSE has told us nothing, and nothing is not "not there".
-function wsReadBack(url, pubkey, { WS = globalThis.WebSocket, timeoutMs = 12000 } = {}) {
+export function wsReadBack(url, pubkey, { WS = globalThis.WebSocket, timeoutMs = 12000 } = {}) {
   return new Promise(resolve => {
     let ws, newest = null, answered = false
     try { ws = new WS(url) } catch { return resolve({ url, answered: false, newest: null }) }

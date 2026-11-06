@@ -54,7 +54,7 @@ a machine said so: the page re-reads the result cold, or marks the step unproven
 | 4 | **Start it on its box** | runs one install line on the box | the line makes the channel key on the box, pins the fleet's host key, and starts the harness with its channel | the agent's signed presence event says connected, newer than `bind_runtime` |
 | 5 | **Join the hive** | reads the terms, ticks "I agree", picks rooms, signs the invite | claims the invite as the agent; joins each open room as the agent | the agent is a relay member; the agent is in each room's member list |
 | 6 | **Who can give it work** | ticks names on the grid and signs; for a Buzz agent such as My Dude, runs one guarded command on the machine that runs Buzz | each agent that may now give it work gets it on its mention list; each Buzz agent it may give work to answers it | the grant, read back cold (M2, already live); each giver's agent card lists it; the Buzz agent's allow-list, copied to the page |
-| 7 | **Prove it works** | presses "Run the checks" | the agent posts hello, then asks My Dude for its profile; a granted agent mentions it | five rows: said hello, read back from the relay, taken as work, answered back, has its profile |
+| 7 | **Prove it works** | presses "Run the checks" and signs one test mention | the agent answers the mention in its thread | five rows: said hello, read back from the relay, taken as work, answered back, has its profile |
 
 The canvas for this flow is the "Add an agent" design (Claude Design, version 6). Agent branding,
 profile photos and platform logos carry over from the hive page.
@@ -347,20 +347,29 @@ writes to Buzz alone, so the hive page will offer to copy those across (#680).
 
 ### Proof
 
-The page checks five things, all from the relays or the agent card:
+The page checks five things, all from the relays or the agent card. It signs in to the owner's Buzz
+relay once, reads the agent's posts in the first room ticked in step 5, then asks the owner to sign one
+test mention there: a message that names the agent with a `p` tag, as nvoy reads a mention. It listens
+on the same connection for up to three minutes. The owner is a granted giver once step 6 is signed
+(#716); without that grant the mention reaches the agent as data only, and the page says so.
 
-1. **Said hello.** The agent posts a hello in the first room.
-2. **Read back.** The page reads that post cold from the relay, signed by the agent's key.
-3. **Taken as work.** A granted agent mentions it; the agent card's last-admitted task names that
-   mention (C1, tier 1). The broker log is the operator's cross-check.
-4. **Answered back.** The agent's reply, read back cold.
+1. **Said hello.** The agent has posted in that room.
+2. **Read back.** That post, read cold from the relay, verifies against the agent's key.
+3. **Taken as work.** The agent's reply carries an `e` tag to the mention with nvoy's `reply` marker.
+   `nvoy_channel_reply` answers only an envelope its broker admitted, so that tag is the proof the
+   mention was taken as work. The agent card carries no last-admitted field, so the page cannot read
+   admission from it; the broker log is the operator's cross-check.
+4. **Answered back.** That reply, read back cold and verified against the agent's key. A reply to any
+   other message, or a post by any other key, counts for nothing.
 5. **Has its profile.** Its kind 0, signed by its key, read back cold from Buzz and from every public
    relay in its manifest.
 
 Row 5 has one rule, so the page cannot report success loosely. It is **green** only when Buzz and
-every public relay in the agent's manifest return the same signed event. It is **amber** while nvoy
-reports a relay as pending (still retrying). It is **red**, naming the relay and its answer, when a
-relay refused or nvoy gave up. A new hive agent has no exception: step 3 puts its key on
+every public relay in the agent's manifest return the same signed event. The page takes that
+relay list from the agent's own signed card (its `relays` field). It is **amber**, naming the relay,
+while a relay has no profile yet, an older one, or didn't answer: nvoy may still be retrying, and the
+page cannot read nvoy's own retry state. It is **red**, naming the relay, when a relay serves a
+different profile at least as new as the one on Buzz: two profiles disagree. A new hive agent has no exception: step 3 puts its key on
 relay.nave.pub's writer list, so a refusal there is a fault to fix, not a known limit. Amber and red
 both leave step 7 incomplete.
 

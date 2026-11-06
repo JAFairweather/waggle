@@ -11,7 +11,7 @@
 //   node tests/console_room_lists.mjs
 
 import { generateSecretKey, getPublicKey, finalizeEvent } from 'nostr-tools'
-import { judgeRoomLists, sharedRooms, relayKeyFrom, isRoomRefusal, ROOM_MEMBERS, ROOM_NAME, readRooms, roomsOf, roomsNeed, authTemplate, loadRoomRelay, saveRoomRelay, fetchRelayKey, relayKeyFor } from '../console/room-lists.mjs'
+import { judgeRoomLists, sharedRooms, relayKeyFrom, isRoomRefusal, ROOM_MEMBERS, ROOM_NAME, readRooms, roomsOf, roomsNeed, authTemplate, loadRoomRelay, saveRoomRelay, fetchRelayKey, relayKeyFor, proveInRoom } from '../console/room-lists.mjs'
 
 let failed = 0
 const ok = (cond, msg) => { if (cond) console.log(`ok   ${msg}`); else { failed++; console.log(`FAIL ${msg}`) } }
@@ -166,6 +166,74 @@ const named = (sk, room, name) => wire(finalizeEvent({ kind: ROOM_NAME, created_
   ok(got.rooms.get('r9')?.has(a) && !got.names.has('r9'), 'a relay-signed list is read even when its room name did not come back')
 }
 ok(authTemplate(URL_, 'c', 5).created_at === 5 && authTemplate(URL_, 'c').content === '', 'the sign-in template is plain')
+
+// 4b. Step 7 of "Add an agent" (#719): read, send one signed test mention, and listen for the reply.
+{
+  const agentSk = generateSecretKey(), agent = getPublicKey(agentSk), room = 'r1'
+  const say9 = (content, tags, at = 2000) => wire(finalizeEvent({ kind: 9, created_at: at, content, tags: [['h', room], ...tags] }, agentSk))
+  const template = { kind: 9, created_at: 3000, content: 'check', tags: [['h', room], ['p', agent]] }
+  const filters = [{ kinds: [9], '#h': [room], authors: [agent], limit: 50 }]
+  const settled = (events, sent) => events.some(ev => ev.tags.some(t => t[0] === 'e' && t[1] === sent.id))
+  {
+    const signed = []
+    const r = fakeRelay((m, ws) => {
+      if (m[0] === 'REQ' && m[1] === 'proof1') ws.say(['CLOSED', 'proof1', 'auth-required: sign in'])
+      if (m[0] === 'AUTH') ws.say(['OK', m[1].id, true, ''])
+      if (m[0] === 'REQ' && m[1] === 'proof2') { ws.say(['EVENT', 'proof2', say9('hello', [])]); ws.say(['EOSE', 'proof2']) }
+      if (m[0] === 'EVENT') { ws.say(['OK', m[1].id, true, '']); ws.say(['EVENT', 'proof2', say9('here', [['e', m[1].id, '', 'reply']])]) }
+    })
+    let heard = null
+    const out = await proveInRoom({ url: URL_, connect: r.connect, filters, mention: template, settled, onSent: ev => { heard = ev.id },
+      sign: async t => { signed.push(t.kind); return finalizeEvent(t, ownerSk) } })
+    ok(out.state === 'answered' && out.events.length === 2, 'the reply to the mention ends the check as answered, with the hello kept')
+    ok(signed.join() === '22242,9', 'the signer is asked twice: the sign-in, then the mention, once each')
+    ok(out.sent?.kind === 9 && out.sent.pubkey === getPublicKey(ownerSk) && heard === out.sent.id, 'the mention is the owner-signed template, and onSent hears it once the relay took it')
+    ok(r.sent.filter(m => m[0] === 'EVENT').length === 1 && r.ws.closed, 'the mention is sent once, and the connection closes when the answer is in')
+    ok(JSON.stringify(r.sent.find(m => m[0] === 'REQ').slice(2)) === JSON.stringify(filters), 'the read asks for exactly the filters given')
+  }
+  {
+    let signs = 0
+    const r = fakeRelay((m, ws) => {
+      if (m[0] === 'REQ') ws.say(['EOSE', m[1]])
+      if (m[0] === 'EVENT' && !r.sent.some(x => x[0] === 'AUTH')) ws.say(['OK', m[1].id, false, 'auth-required: members only'])
+      else if (m[0] === 'EVENT') { ws.say(['OK', m[1].id, true, '']); ws.say(['EVENT', 'proof1', say9('here', [['e', m[1].id, '', 'reply']])]) }
+      if (m[0] === 'AUTH') ws.say(['OK', m[1].id, true, ''])
+    })
+    const out = await proveInRoom({ url: URL_, connect: r.connect, filters, mention: template, settled, sign: async t => { signs++; return finalizeEvent(t, ownerSk) } })
+    const posts = r.sent.filter(m => m[0] === 'EVENT')
+    ok(out.state === 'answered' && posts.length === 2 && posts[0][1].id === posts[1][1].id && signs === 2,
+      'a relay that wants a sign-in only to post gets one, and the same signed mention is sent again, not signed twice')
+  }
+  {
+    const r = fakeRelay((m, ws) => { if (m[0] === 'REQ') { ws.say(['EVENT', m[1], say9('hello', [])]); ws.say(['EOSE', m[1]]) } if (m[0] === 'EVENT') ws.say(['OK', m[1].id, false, 'blocked: not in this room']) })
+    const out = await proveInRoom({ url: URL_, connect: r.connect, filters, mention: template, settled, sign: async t => finalizeEvent(t, ownerSk) })
+    ok(out.state === 'refused' && /not in this room/.test(out.reason) && out.events.length === 1, 'a refused mention is reported with the relay\'s reason, and what was read is kept')
+  }
+  {
+    const r = fakeRelay((m, ws) => { if (m[0] === 'REQ') ws.say(['EOSE', m[1]]); if (m[0] === 'EVENT') ws.say(['OK', m[1].id, true, '']) })
+    const out = await proveInRoom({ url: URL_, connect: r.connect, filters, mention: template, settled, waitMs: 30, sign: async t => finalizeEvent(t, ownerSk) })
+    ok(out.state === 'waited' && out.sent && r.ws.closed, 'a mention taken but not answered in time is "waited", never answered')
+  }
+  {
+    const r = fakeRelay((m, ws) => {
+      if (m[0] === 'REQ') ws.say(['EOSE', m[1]])
+      if (m[0] === 'EVENT') { ws.say(['OK', m[1].id, true, '']); ws.say(['EVENT', 'proof1', say9('unrelated', [['e', 'f'.repeat(64), '', 'reply']])]) }
+    })
+    const out = await proveInRoom({ url: URL_, connect: r.connect, filters, mention: template, settled, waitMs: 40, sign: async t => finalizeEvent(t, ownerSk) })
+    ok(out.state === 'waited', 'a reply to some other message does not answer the check')
+  }
+  {
+    const r = fakeRelay((m, ws) => { if (m[0] === 'REQ') ws.say(['EOSE', m[1]]) })
+    const out = await proveInRoom({ url: URL_, connect: r.connect, filters, mention: template, settled, sign: async t => { if (t.kind === 9) throw new Error('declined'); return finalizeEvent(t, ownerSk) } })
+    ok(out.state === 'declined' && !r.sent.some(m => m[0] === 'EVENT'), 'a declined mention sends nothing')
+  }
+  {
+    let asked = 0
+    const r = fakeRelay((m, ws) => { if (m[0] === 'REQ') { ws.say(['EVENT', m[1], say9('hello', [])]); ws.say(['EOSE', m[1]]) } })
+    const out = await proveInRoom({ url: URL_, connect: r.connect, filters, sign: async () => { asked++ } })
+    ok(out.state === 'read' && out.events.length === 1 && asked === 0 && !r.sent.some(m => m[0] === 'EVENT'), 'with no mention it only reads, and signs nothing the relay did not ask for')
+  }
+}
 
 // 5. Config: only a wss address, and only a hex key.
 {
