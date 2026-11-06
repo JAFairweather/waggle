@@ -380,7 +380,7 @@ function drawPlan(chips) {
   const n = nameShown(), { outside } = giverPlan(chips), line = $('giver-plan')
   const parts = [`This signature asks the fleet to put ${n} on the @mention list of each chosen agent with a seat on your server box.`]
   if (outside.length) parts.push(`${outside.map(c => c.label).join(', ')} ${outside.length > 1 ? 'have' : 'has'} no seat there, so the fleet runs nothing for ${outside.length > 1 ? 'them' : 'it'}: a Buzz agent's list is changed in Buzz Desktop.`)
-  parts.push(done[6] ? `Your request is read back from the relays. That proves what you chose, not that each one can @mention ${n} yet: its squares on the hive grid show that once ${n} has a column.` : `The approval itself is a square on the hive grid, signed there once ${n} has its own column.`)
+  parts.push(done[6] ? `Your request and an approval from you for each chosen agent are read back from the relays, so ${n} takes their mentions as work. Whether each can @mention ${n} yet shows once the fleet has updated its list.` : `It also signs an approval from you for each chosen agent that doesn't hold one, so ${n} takes their mentions as work. This step is done once the request and every approval read back from the relays.`)
   line.textContent = parts.join(' ')
 }
 

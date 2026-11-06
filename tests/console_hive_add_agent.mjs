@@ -318,7 +318,7 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   check(JSON.stringify(giverPlan(chips).outside.map(c => c.label)) === '["Dennis"]', 'outside givers are those with no seat; you need no list')
   check(/\.map\(c => \(\{ \.\.\.c, outside: true \}\)\)/.test(page), 'every hive-only giver is marked outside the fleet')
   check(!/puts <span data-name><\/span> on each one's mention list/.test(page) && !/Can give it work \(/.test(page), "the page no longer says the signature puts it on everyone's list")
-  check(/the fleet runs nothing for/.test(page) && /That proves what you chose, not that each one can @mention/.test(page), 'it names who the fleet runs nothing for, and read-back is not the mention proof')
+  check(/the fleet runs nothing for/.test(page) && /Whether each can @mention \$\{n\} yet shows once the fleet has updated its list/.test(page), 'it names who the fleet runs nothing for, and read-back is not the mention proof')
 }
 
 // A giver saved in this tab that the page no longer shows is never signed unseen.
@@ -348,6 +348,12 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   const used = Object.keys(flow).filter(k => typeof flow[k] === 'function' && new RegExp(`\\b${k}\\(`).test(page))
   const missing = used.filter(k => !imported.has(k))
   check(used.length > 5 && !missing.length, `every flow function the page calls is imported${missing.length ? `: missing ${missing.join(', ')}` : ''}`)
+}
+
+// mydude on #722: step 6 signs the approvals itself, so its copy must not send the owner to the hive grid.
+{
+  const plan = page.slice(page.indexOf('function drawPlan('), page.indexOf('\n}\n', page.indexOf('function drawPlan(')))
+  check(!/hive grid|its own column/.test(plan) && /signs an approval from you for each chosen agent/.test(plan), 'step 6 says it signs the approvals here, not later on the hive grid')
 }
 
 if (fails) { console.error(`\nconsole_hive_add_agent: ${fails} failing`); process.exit(1) }
