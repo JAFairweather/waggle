@@ -196,7 +196,7 @@ import { readCards, relayCoverage, GRANT_RELAYS, CARD_RELAYS, CARD_D, RUNS_LOGO,
 import { shortNpub } from './agent-roster.mjs'
 import { draftGrant, applyChange } from './hive-change.mjs'
 import { scopeHash } from './scope-hash.mjs'
-import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, roomChoices, roomsToSign, roomsFor } from './add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, roomChoices, roomsToSign, roomsFor, workSignGate } from './add-agent-flow.mjs'
 import { readRooms, roomsOf, roomsNeed, loadRoomRelay, relayKeyFor } from './room-lists.mjs'
 
 const $ = id => document.getElementById(id)
@@ -393,7 +393,7 @@ function drawPlan(chips) {
   const n = nameShown(), { outside } = giverPlan(chips), line = $('giver-plan')
   const parts = [`This signature asks the fleet to put ${n} on the @mention list of each chosen agent with a seat on your server box.`]
   if (outside.length) parts.push(`${outside.map(c => c.label).join(', ')} ${outside.length > 1 ? 'have' : 'has'} no seat there, so the fleet runs nothing for ${outside.length > 1 ? 'them' : 'it'}: a Buzz agent's list is changed in Buzz Desktop.`)
-  parts.push(done[6] ? `Your request is read back from the relays. That proves what you chose, not that each one can @mention ${n} yet: its squares on the hive grid show that once ${n} has a column.` : `The approval itself is a square on the hive grid, signed there once ${n} has its own column.`)
+  parts.push(done[6] ? `Your request and an approval from you for each chosen agent are read back from the relays, so ${n} takes their mentions as work. Whether each can @mention ${n} yet shows once the fleet has updated its list.` : `It also signs an approval from you for each chosen agent that doesn't hold one, so ${n} takes their mentions as work. This step is done once the request and every approval read back from the relays.`)
   line.textContent = parts.join(' ')
 }
 
@@ -546,7 +546,8 @@ $('box-go').onclick = () => {
   return send('box-status', 'box-go', f => draftBind({ ...f, channelKey: pasted }), null, readBind)
 }
 $('work-go').onclick = () => {
-  if (!joined) { $('work-status').className = 'status'; $('work-status').textContent = 'Step 5 is not signed yet, so this request carries no invite. Sign step 5 after; it keeps these ticks.' }
+  const stop = workSignGate(joined)
+  if (stop) { $('work-status').className = 'status err'; $('work-status').textContent = stop; return }
   const before = form.sixth
   return send('work-status', 'work-go', f => draftAddAgent({ ...f, join: joined || undefined }), signed => { form.sixth = signed.id; keep() })
     .then(() => form.sixth !== before && latest?.id === form.sixth && signWorkGrants())
