@@ -196,7 +196,7 @@ import { readCards, relayCoverage, GRANT_RELAYS, CARD_RELAYS, CARD_D, RUNS_LOGO,
 import { shortNpub } from './agent-roster.mjs'
 import { draftGrant, applyChange } from './hive-change.mjs'
 import { scopeHash } from './scope-hash.mjs'
-import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, roomChoices, testMention, proofFilters, proofRows, profileRow, answers, roomsToSign, roomsFor, workSignGate } from './add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, roomChoices, testMention, proofFilters, proofRows, profileRow, answers, roomsToSign, roomsFor, workSignGate, relaysOf, PROFILE_RELAY_LIMIT } from './add-agent-flow.mjs'
 import { readRooms, roomsOf, roomsNeed, loadRoomRelay, relayKeyFor, proveInRoom, PROOF_WAIT_SECS } from './room-lists.mjs'
 import { wsReadBack } from './profile-publish.mjs'
 
@@ -633,8 +633,6 @@ const PROOF_FAIL = {
   declined: "Not checked: you didn't sign.",
   'auth-refused': "Your Buzz relay wouldn't let you sign in, so nothing was checked.",
 }
-// The public relays its profile goes to, from its own signed card: wss:// addresses only, at most eight.
-const relaysOf = card => Array.isArray(card?.relays) ? [...new Set(card.relays.filter(u => typeof u === 'string' && /^wss:\/\/[^\s/]+(\/\S*)?$/.test(u)))].slice(0, 8) : null
 async function runChecks() {
   const relay = loadRoomRelay(), line = $('proof-line'), btn = $('proof-go'), room = proofRoom()
   const say = (text, err = false) => { line.className = err ? 'hint err' : 'hint'; line.textContent = text }
@@ -657,7 +655,7 @@ async function runChecks() {
     say('Reading its profile from the public relays in its card…')
     const card = readCards((await read(CARD_RELAYS, { kinds: [30078], '#d': [CARD_D], authors: [agent], limit: 5 })).events, { owner, verify: verifyEvent }).get(agent)
     cardRelays = relaysOf(card)
-    outside = await Promise.all((cardRelays || []).map(u => wsReadBack(u, agent)))
+    outside = await Promise.all((cardRelays || []).slice(0, PROFILE_RELAY_LIMIT).map(u => wsReadBack(u, agent)))
     drawRows(); drawRail()
     say(out.state === 'refused' ? `Your Buzz relay didn't take the test mention: ${String(out.reason || 'no reason given').slice(0, 200)}`
       : out.state === 'waited' ? `No answer within ${PROOF_WAIT_SECS / 60} minutes. If you aren't one of the names that can give it work (step 6), your mention reaches it as data only and wakes nothing.`

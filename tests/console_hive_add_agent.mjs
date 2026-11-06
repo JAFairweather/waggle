@@ -451,6 +451,17 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   check(row([], null).state === 'amber' && /card/.test(row([], null).text), 'with no card read, which relays to check is not known, so it is not green')
   check(row([], []).state === 'green', 'a card that names no public relay needs only Buzz')
   check(row([{ url: R[0], answered: true, newest: face(other.sk, 5000) }, { url: R[1], answered: true, newest: home }]).state === 'amber', "another key's profile on a relay is not this agent's")
+  // mydude on #725: a matching event from a relay that never sent EOSE is not a full read.
+  const noEose = row([{ url: R[0], answered: true, newest: home }, { url: R[1], answered: false, newest: home }])
+  check(noEose.state === 'amber' && noEose.text.includes(`${R[1]} (no answer)`), 'the same profile from a relay that never finished answering is amber, never green')
+  // mydude on #725: a card naming more relays than the page reads is never silently cut to the limit.
+  const many = Array.from({ length: flow.PROFILE_RELAY_LIMIT + 2 }, (_, i) => `wss://r${i}.example`)
+  check(flow.relaysOf({ relays: [...many, many[0], 'https://x.example', 7] }).join() === many.join(), 'relaysOf keeps every distinct wss:// relay in the card, with no cut')
+  const read = many.slice(0, flow.PROFILE_RELAY_LIMIT).map(url => ({ url, answered: true, newest: home }))
+  const over = row(read, many)
+  check(over.state === 'amber' && !over.ok && over.text.includes(`${many.at(-1)} (not checked`), 'relays past the read limit are named as unchecked, and the row is not green')
+  check(row(read, many.slice(0, flow.PROFILE_RELAY_LIMIT)).state === 'green', 'a card at the limit, all matching, is green')
+  check(!/const relaysOf/.test(page) && /\.slice\(0, PROFILE_RELAY_LIMIT\)\.map\(u => wsReadBack/.test(page), 'the page reads the card relays through the shared relaysOf, capped by the named limit')
 
   check(/id="proof-go"/.test(page) && /proveInRoom\(/.test(page) && /wsReadBack\(/.test(page), 'step 7 has its button, and runs the room check and the public profile read')
   check(/done\[7\] = p\.hello\.ok && p\.readBack\.ok && p\.taken\.ok && p\.answered\.ok && !!face\?\.ok/.test(page), 'step 7 is done only when all five rows pass')

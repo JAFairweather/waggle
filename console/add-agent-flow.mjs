@@ -222,6 +222,11 @@ export function proofRows({ events = [], room, agent, mention = null, state = nu
 // Amber while any relay has nothing yet, an older one, or did not answer. Red, naming the relay, when a
 // relay serves a different profile that is at least as new as Buzz's: two profiles disagree.
 // `buzz` is the events the room read returned; `outside` is [{ url, answered, newest }] per relay.
+// The public relays its profile goes to, from its own signed card: every wss:// address, deduplicated.
+// The page reads at most PROFILE_RELAY_LIMIT of them; profileRow names the rest as unchecked, never passed.
+export const PROFILE_RELAY_LIMIT = 8
+export const relaysOf = card => Array.isArray(card?.relays) ? [...new Set(card.relays.filter(u => typeof u === 'string' && /^wss:\/\/[^\s/]+(\/\S*)?$/.test(u)))] : null
+
 export function profileRow({ buzz = [], outside = [], relays = null, agent, verify }) {
   const own = ev => ev?.kind === 0 && ev.pubkey === agent && checked(ev, verify)
   const newest = list => list.filter(own).sort((a, b) => b.created_at - a.created_at || (a.id < b.id ? 1 : -1))[0] || null
@@ -230,12 +235,14 @@ export function profileRow({ buzz = [], outside = [], relays = null, agent, veri
   if (!home) return ROW(false, 'amber', { text: 'No profile signed by its key on your Buzz relay yet.' })
   const by = new Map(outside.map(r => [r.url, r]))
   const behind = [], differs = []
-  for (const url of relays) {
+  relays.forEach((url, i) => {
+    if (i >= PROFILE_RELAY_LIMIT) return behind.push(`${url} (not checked: only the first ${PROFILE_RELAY_LIMIT} are read)`)
     const r = by.get(url), there = r?.newest && own(r.newest) ? r.newest : null
-    if (there?.id === home.id) continue
-    if (there && there.created_at >= home.created_at) differs.push(url)
-    else behind.push(!r?.answered ? `${url} (no answer)` : `${url} (${there ? 'an older one' : 'none yet'})`)
-  }
+    if (there && there.id !== home.id && there.created_at >= home.created_at) return differs.push(url)
+    // A match counts only from a relay that finished answering (EOSE): an event alone is not a full read.
+    if (!r?.answered) return behind.push(`${url} (no answer)`)
+    if (there?.id !== home.id) behind.push(`${url} (${there ? 'an older one' : 'none yet'})`)
+  })
   if (differs.length) return ROW(false, 'red', { text: `A different profile is on ${differs.join(', ')}.`, home })
   if (behind.length) return ROW(false, 'amber', { text: `Not on every relay yet: ${behind.join(', ')}.`, home })
   return ROW(true, 'green', { text: `The same signed profile on your Buzz relay and ${relays.length} public relay${relays.length === 1 ? '' : 's'}.`, home })
