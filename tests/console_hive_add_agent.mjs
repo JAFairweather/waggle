@@ -362,5 +362,21 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   check(used.length > 5 && !missing.length, `every flow function the page calls is imported${missing.length ? `: missing ${missing.join(', ')}` : ''}`)
 }
 
+// ── Rooms (#683): ticked to start are the like-agent's rooms and #waggle-test; closed ones never ──
+{
+  const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222', '33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444']
+  const read = { names: new Map([[ids[0], 'general'], [ids[1], '#waggle-test'], [ids[2], 'ops'], [ids[3], null]]),
+    rooms: new Map([[ids[0], new Set([G.pk])], [ids[1], new Set([A.pk])], [ids[2], new Set([G.pk])]]), closed: new Set([ids[2]]) }
+  const c = flow.roomChoices(read, { like: G.pk, agent: A.pk })
+  const by = Object.fromEntries(c.map(x => [x.name, x]))
+  check(by.general.start && by['waggle-test'].start, "the like-agent's room and #waggle-test start ticked")
+  check(!by.ops.start && by.ops.closed, 'a closed room is never ticked, even when the like-agent is in it')
+  check(by['waggle-test'].joined && !by.general.joined, "joined only when the room's own list names the agent")
+  check(!by[ids[3].slice(0, 8)].listed && !by[ids[3].slice(0, 8)].start, 'a room with no member list read is offered, unticked, and not called joined')
+  check(c[0].start && c[1].start && !c[c.length - 1].start, 'ticked rooms first')
+  check(flow.roomChoices(null, {}).length === 0, 'no read, no choices: nothing is guessed')
+  check(draftAddAgent({ ...base, rooms: [ids[1]] }).tags.some(t => t[0] === 'room' && t[1] === ids[1]), 'a ticked room goes in the request')
+}
+
 if (fails) { console.error(`\nconsole_hive_add_agent: ${fails} failing`); process.exit(1) }
 console.log('\nconsole_hive_add_agent: all passed')

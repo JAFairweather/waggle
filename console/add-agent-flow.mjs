@@ -156,3 +156,21 @@ export function changedFrom(latest, { harness, like }) {
 export function giverPlan(chips) {
   return { outside: chips.filter(c => c.outside && !c.isOwner) }
 }
+
+// The rooms step 5 offers (#683), from a read of the room relay (room-lists.mjs roomsOf). Ticked to
+// start: the rooms the agent it works like is in, and the hive's default room (James, 2026-11-06:
+// "waggle-test"). A closed room takes no join, so it is offered as one the owner adds it to once it
+// has started. `joined` is true only when the room's own signed member list names the agent.
+export const DEFAULT_ROOM = 'waggle-test'
+export function roomChoices(read, { like = null, agent = null } = {}) {
+  if (!read?.names) return []
+  const out = []
+  for (const [id, name] of read.names) {
+    const members = read.rooms?.get(id)
+    const shown = name ? name.replace(/^#/, '') : id.slice(0, 8)
+    const closed = !!read.closed?.has(id)
+    out.push({ id, name: shown, closed, listed: !!members, joined: !!(agent && members?.has(agent)),
+      start: !closed && (!!(like && members?.has(like)) || shown.toLowerCase() === DEFAULT_ROOM) })
+  }
+  return out.sort((a, b) => (b.start - a.start) || (a.closed - b.closed) || a.name.localeCompare(b.name))
+}

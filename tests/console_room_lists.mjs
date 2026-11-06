@@ -131,6 +131,14 @@ const named = (sk, room, name) => wire(finalizeEvent({ kind: ROOM_NAME, created_
   ok(rooms.get('r1')?.has(a) && names.get('r1') === 'general' && unread.size === 0, 'roomsOf names the room and its members')
 }
 {
+  // A closed room (NIP-29) takes no join; the newest name event decides.
+  const shut = (room, created_at, closed) => wire(finalizeEvent({ kind: ROOM_NAME, created_at, content: '', tags: [['d', room], ['name', room], ...(closed ? [['closed']] : [])] }, relaySk))
+  const got = roomsOf([shut('r1', 1000, true), shut('r2', 1000, true), shut('r2', 1001, false), shut('r3', 1000, false)], { relayKey })
+  ok(got.closed.has('r1') && !got.closed.has('r2') && !got.closed.has('r3'), 'closed is read from the newest relay-signed name event')
+  const forged = roomsOf([wire(finalizeEvent({ kind: ROOM_NAME, created_at: 1000, content: '', tags: [['d', 'r9'], ['closed']] }, ownerSk))], { relayKey })
+  ok(!forged.closed.has('r9') && !forged.names.has('r9'), 'a name event not signed by the relay marks nothing')
+}
+{
   const r = fakeRelay((m, ws) => {
     if (m[0] === 'REQ') ws.say(['CLOSED', m[1], 'auth-required: sign in'])
     if (m[0] === 'AUTH') ws.say(['OK', m[1].id, false, 'restricted: not a relay member'])

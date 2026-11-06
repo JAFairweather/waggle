@@ -152,7 +152,10 @@
         <label id="agree-row" hidden><input type="checkbox" id="agree"> <span>I've read them and agree for <span data-name></span>.</span></label>
         <label id="age-row" hidden><input type="checkbox" id="age"> <span>I confirm the age requirement they ask for.</span></label>
       </div>
-      <p class="hint">Rooms: add <span data-name></span> to rooms from Buzz for now. Picking them here comes later.</p>
+      <div class="group-label">Rooms</div>
+      <p class="hint" id="rooms-line">Choose the rooms <span data-name></span> joins. Reading them takes one Bunker prompt to sign in to your Buzz relay.</p>
+      <div class="checklist" id="room-list" hidden></div>
+      <div class="actions" style="margin-top:8px"><button type="button" class="quiet" id="rooms-read">Read your rooms</button></div>
       <ol class="rows" id="join-rows"></ol>
       <p class="hint" style="margin-top:14px">Signing makes a single-use invite with your key and seals it to the agent's key in your Bunker. Only the agent can open it; this page never shows or keeps it.</p>
       <div class="status" id="join-status" role="status"></div>
@@ -193,7 +196,8 @@ import { readCards, relayCoverage, GRANT_RELAYS, CARD_RELAYS, CARD_D, RUNS_LOGO,
 import { shortNpub } from './agent-roster.mjs'
 import { draftGrant, applyChange } from './hive-change.mjs'
 import { scopeHash } from './scope-hash.mjs'
-import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine } from './add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, roomChoices } from './add-agent-flow.mjs'
+import { readRooms, roomsOf, roomsNeed, loadRoomRelay, relayKeyFor } from './room-lists.mjs'
 
 const $ = id => document.getElementById(id)
 // Everything shown here came from someone else's signature, so it reaches the DOM only as text.
@@ -223,10 +227,10 @@ async function read(relays, filter) {
 const SAVED = 'waggle-add-agent'
 const saved = (() => { try { return JSON.parse(sessionStorage.getItem(SAVED) || '{}') } catch { return {} } })()
 const keep = () => { try { sessionStorage.setItem(SAVED, JSON.stringify(form)) } catch { /* private mode: the form lives until reload */ } }
-const form = { step: 1, name: '', display: '', about: '', harness: 'claude-code', like: '', agent: '', givers: null, sixth: null, ...saved }
+const form = { step: 1, name: '', display: '', about: '', harness: 'claude-code', like: '', agent: '', givers: null, rooms: null, sixth: null, ...saved }
 
 // What the page has read: whose hive, its agents, and the newest request for this agent.
-let owner = null, loaded = false, installed = [], profiles = new Map(), latest = null, joined = null, terms = null, fixed = null
+let owner = null, loaded = false, installed = [], profiles = new Map(), latest = null, joined = null, terms = null, fixed = null, roomRead = null
 const done = { 1: false, 2: false, 3: false, 4: false, 5: false, 6: false, 7: false }
 
 const nameShown = () => form.name || 'the new agent'
@@ -272,9 +276,15 @@ function drawRows() {
     ['Allowed on the server\'s relay', 'so its profile and card can publish'],
     ['Its agent card', 'seen on the card relays, naming you as its owner'],
   ])
+  const inRoom = new Map(roomChoices(roomRead, { agent: form.agent }).map(c => [c.id, c]))
   rows($('join-rows'), [
     ['Invite made', 'one use, signed by you, sealed to ' + n + ', never shown on screen', done[5], done[5] ? 'In the request' : ''],
     ['In the hive', n + ' claimed it with its own key, and the community accepted its login'],
+    ...(form.rooms || []).map(id => {
+      const c = inRoom.get(id)
+      return ['In #' + (c ? c.name : id.slice(0, 8)), c?.joined ? "the room's own member list names " + n : 'joins with its own key once it is in the hive',
+        !!c?.joined, c?.joined ? 'Read back' : c && !c.listed ? 'No member list read' : '']
+    }),
   ])
   rows($('proof-rows'), [
     ['It said hello', n + ' posted in #waggle-test through its own tools'],
@@ -414,7 +424,7 @@ function fields() {
   const givers = (form.givers || []).filter(pk => pk !== agent && pk !== form.agent)
   const gone = goneLine(reconcileGivers(givers, choices()).gone, shortNpub)
   if (gone) throw new Error(gone)
-  return { name, agent, harness: form.harness, like: $('like').value, installed: others, givers,
+  return { name, agent, harness: form.harness, like: $('like').value, installed: others, givers, rooms: form.rooms || [],
     displayName: $('display').value.trim() || name, about: $('about').value.trim() }
 }
 function checkName() {
@@ -554,6 +564,49 @@ for (const b of document.querySelectorAll('[data-next]')) b.onclick = async () =
 $('restart').onclick = () => { try { sessionStorage.removeItem(SAVED) } catch {} location.reload() }
 $('name').oninput = () => { form.name = $('name').value.trim().toLowerCase(); drawNames(); drawRail() }
 $('display').oninput = () => { form.display = $('display').value; keep() }
+
+// Rooms (#683): read from the room relay with one sign-in, then ticked here. Nothing is joined from
+// this page: the rooms go in the request, and the agent joins each with its own key.
+const likeKey = () => installed.find(a => a.id === ($('like').value || form.like))?.pubkey || null
+function drawRoomChoices() {
+  const list = $('room-list'), line = $('rooms-line'), choices = roomChoices(roomRead, { like: likeKey(), agent: form.agent })
+  if (!roomRead) return
+  if (form.rooms === null) { form.rooms = choices.filter(c => c.start).map(c => c.id); keep() }
+  list.textContent = ''; list.hidden = !choices.length
+  for (const c of choices) {
+    const row = list.appendChild(el('label'))
+    const box = row.appendChild(el('input')); box.type = 'checkbox'; box.disabled = c.closed
+    box.checked = !c.closed && form.rooms.includes(c.id)
+    box.onchange = () => { form.rooms = box.checked ? [...new Set([...form.rooms, c.id])] : form.rooms.filter(id => id !== c.id); keep(); drawRoomChoices(); drawRows() }
+    row.append(el('span', null, '#' + c.name + (c.closed ? ` — closed: you add ${nameShown()} once it has started` : c.joined ? ' — already in it' : '')))
+  }
+  const ticked = form.rooms.length
+  line.className = 'hint'
+  line.textContent = !choices.length ? 'Your Buzz relay lists no rooms you can see.'
+    : `${ticked} of ${choices.length} rooms ticked. The ones the agent it works like is in, and #waggle-test, are ticked to start.`
+  drawRows()
+}
+async function readRoomChoices() {
+  const relay = loadRoomRelay(), line = $('rooms-line'), btn = $('rooms-read')
+  const fail = text => { line.className = 'hint err'; line.textContent = text }
+  if (!relay) return fail("This page doesn't know your Buzz relay yet. Add it on Config, then read your rooms again.")
+  btn.disabled = true
+  try {
+    line.className = 'hint'; line.textContent = 'Reading your Buzz relay…'
+    const key = await relayKeyFor(relay)
+    if (!key) return fail(roomsNeed({ relay, state: 'no-key' }).text)
+    let signer = null, me = null
+    try { signer = await consoleSigner(); me = String(await signer.getPublicKey()).toLowerCase() } catch { return fail(roomsNeed({ relay, state: 'declined' }).text) }
+    if (me !== owner) return fail(roomsNeed({ relay, state: 'other-signer' }).text)
+    line.textContent = 'Asking your signer to sign in to your Buzz relay…'
+    const out = await readRooms({ url: relay.url, sign: t => signFresh(t, signer), connect: u => new WebSocket(u) })
+    if (out.state !== 'read') return fail(roomsNeed({ relay, state: out.state }).text)
+    roomRead = roomsOf(out.events, { relayKey: key, verify: verifyEvent })
+    btn.textContent = 'Read your rooms again'
+    drawRoomChoices()
+  } finally { btn.disabled = false }
+}
+$('rooms-read').onclick = () => readRoomChoices()
 $('about').oninput = () => { form.about = $('about').value; keep() }
 
 // The hive this page adds to: the remembered owner, else the signer's public key.
