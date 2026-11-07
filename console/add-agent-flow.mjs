@@ -10,6 +10,7 @@ import { SETUP_KIND, requestD } from './hive-add-agent.mjs'
 import { readGrants, scopeTable } from './hive-list.mjs'
 import { foldGrantsWith } from './vendor/nvoy-admission.mjs'
 import { WORK_CAPS } from './hive-change.mjs'
+import { RUNNER } from './onboard-progress.mjs'
 
 export const STEPS = Object.freeze([
   { n: 1, label: 'Name it', sub: 'who it is and where it runs' },
@@ -24,12 +25,15 @@ export const STEPS = Object.freeze([
 // Steps the page cannot carry out yet, and what each waits on. Shown as such, never as done.
 export const NOT_BUILT = Object.freeze({})
 
-// Steps the page carries out only in part, and what the missing part waits on. Never shown as done:
-// step 4 is done only when the fleet's receipt and the agent's presence say so, and the page does not
-// read either yet.
-export const PART_BUILT = Object.freeze({
-  4: 'The page does not show the install line or check the connection yet. The operator gives you the line; run it on the box, then paste the key it prints here and sign it.',
+// Steps the page carries out only in part, and what the missing part waits on. Never shown as done.
+// Steps 3 and 4 wait on the fleet's runner key (nvoy ONBOARD_PHASE_B, "The runner key"): until the
+// page pins one, no receipt is read, so the pairing link and the install line come from the operator.
+// The writer list, the agent card and the presence are read either way.
+export const partBuilt = runner => Object.freeze(runner ? {} : {
+  3: "The fleet's runner isn't set up yet, so the operator runs these steps and passes the pairing link on to you.",
+  4: "The fleet's runner isn't set up yet, so the operator gives you the install line. Run it on the box, paste the key it prints here, and sign it.",
 })
+export const PART_BUILT = partBuilt(RUNNER)
 
 const tagOf = (ev, k) => ev.tags.find(t => t[0] === k)?.[1]
 

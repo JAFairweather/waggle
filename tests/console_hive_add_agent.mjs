@@ -23,6 +23,7 @@ import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGra
 import * as flow from '../console/add-agent-flow.mjs'
 import { draftGrant, draftRevoke } from '../console/hive-change.mjs'
 import { scopeHash } from '../console/scope-hash.mjs'
+import * as progressMod from '../console/onboard-progress.mjs'
 import { HIVE_RELAY, INVITE_TTL_SECS, joinGate, readHiveTerms, sealInvite, termsFromRead } from '../console/hive-invite.mjs'
 
 const key = () => { const sk = generateSecretKey(); return { sk, pk: getPublicKey(sk) } }
@@ -205,14 +206,15 @@ check(/<a id="add-open" class="button small" href="add-agent.html">/.test(hive) 
 
 // The seven steps: three signatures, each a newer add_agent carrying everything chosen so far.
 check(STEPS.map(s => s.label).join('|') === 'Name it|Make its key|Set up its tools|Start it on its box|Join the hive|Who can give it work|Prove it works', 'the rail has the seven steps of the design, in its order')
-check(Object.keys(NOT_BUILT).join() === '' && Object.keys(PART_BUILT).join() === '4', 'only step 4 is marked partly built, and no step is marked not built (step 7 is built, #719)')
+check(Object.keys(NOT_BUILT).join() === '' && Object.keys(PART_BUILT).join() === (progressMod.RUNNER ? '' : '3,4'), 'steps 3 and 4 are partly built only while no runner key is pinned, and no step is marked not built (step 7 is built, #719)')
+check(Object.keys(flow.partBuilt('ab'.repeat(32))).length === 0 && Object.keys(flow.partBuilt(null)).join() === '3,4', 'pinning the runner key is what finishes steps 3 and 4')
 check(!Object.keys(NOT_BUILT).some(n => n in PART_BUILT), 'a step is either not built or partly built, never both')
 
 // Step 4: paste the public half the line printed, sign it as bind_runtime, read that very event back.
 check(/<input id="channel-key"/.test(page) && /id="box-go"/.test(page) && /id="box-status"/.test(page), 'step 4 has the paste field, its own button and its own status')
 check(/send\('box-status', 'box-go', f => draftBind\(/.test(page), 'step 4 signs a bind_runtime through the same send path as the other signatures')
 check(/'#d': \[requestD\(form\.name, 'bind_runtime'\)\]/.test(page) && /readBack\(back\.events, signed/.test(page), 'step 4 reads back the very bind it sent, by its own d, not the add_agent')
-check(/PART_BUILT\[s\.n\] \? 'partly built'/.test(page) && /\$\('box-later'\)\.textContent = PART_BUILT\[4\]/.test(page), 'the rail and the step say step 4 is partly built, never done')
+check(/PART_BUILT\[s\.n\] \? 'partly built'/.test(page) && /\$\('box-later'\)\.textContent = PART_BUILT\[4\] \|\|/.test(page), 'the rail and the step say step 4 is partly built while it is, never done')
 const sealedJoin = { invite: nip44.encrypt('code', nip44.getConversationKey(O.sk, A.pk)), policy: 'v1', age: 'confirmed' }
 const flowFields = { name: 'hr', agent: A.pk, harness: 'claude-code', like: 'crystalclaude', installed }
 const atT = (t, extra = {}) => finalizeEvent(draftAddAgent({ ...flowFields, ...extra, now: t }), O.sk)
@@ -491,6 +493,95 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   const h = page.slice(page.indexOf("$('work-go').onclick"), page.indexOf('\n}\n', page.indexOf("$('work-go').onclick")))
   const gate = h.indexOf('workSignGate(joined)'), ret = h.indexOf('return }'), sendAt = h.indexOf('send('), grants = h.indexOf('signWorkGrants(')
   check(gate > -1 && ret > gate && sendAt > ret && grants > ret, 'the step 6 button returns on the gate before it sends the request or signs an approval')
+}
+
+// #721 Phase B: the runner's sealed receipt, the install line, the writer list and the presence.
+{
+  const P = progressMod, R = key(), request = 'ab'.repeat(32), now = 1_800_000_000_000, nowS = now / 1000
+  const hostKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBIYeHBpTKcWZcMIRUe6qSiCIGJ4pIrXrSdB1zg9hqTd'
+  const install = { instance: 'hr', ssh_target: 'root@fleet.example', host_key: hostKey, commit: 'c0ffee'.repeat(6) + 'c0ff' }
+  const link = 'nostrconnect://' + 'ef'.repeat(32) + '?relay=wss%3A%2F%2Frelay.example&secret=one-time&perms=sign_event%3A1'
+  // The body exactly as nvoy's onboard_receipt.mjs receiptBody makes it.
+  const body = (extra = {}) => ({ v: 1, name: 'hr', request, instance: 'hr', steps: [
+    { step: 'staged', state: 'done', at: now - 5000, detail: 'staged like crystalclaude' },
+    { step: 'paired', state: 'pending', at: now - 4000, detail: 'not approved in the Bunker yet' }], ...extra })
+  const seal = (b, { by = R, to = O.pk, t = nowS - 60, tags } = {}) => finalizeEvent({ kind: 30078, created_at: t,
+    content: nip44.encrypt(JSON.stringify(b), nip44.getConversationKey(by.sk, to)),
+    tags: tags || [['d', P.receiptD(request)], ['p', to], ['e', request], ['expiration', String(t + 30 * 86400)]] }, by.sk)
+  const open = ev => nip44.decrypt(ev.content, nip44.getConversationKey(O.sk, R.pk))
+  const opts = { runner: R.pk, owner: O.pk, request, verify: verifyEvent, now }
+
+  check(P.RUNNER === null || /^[0-9a-f]{64}$/.test(P.RUNNER), 'the runner key is pinned as hex, or not at all')
+  check(JSON.stringify(P.receiptFilter(opts)) === JSON.stringify({ kinds: [30078], authors: [R.pk], '#p': [O.pk], '#d': ['nvoy-onboard:' + request], limit: 10 }), 'receipts are asked for by the pinned runner, sealed to you, for this request')
+  const r1 = seal(body({ pairing: { uri: link, made_at: nowS - 60, expires_at: nowS + 240 } })), r2 = seal(body(), { t: nowS - 10 })
+  check(P.newestReceipt([r1, r2], opts)?.id === r2.id, 'the newest receipt wins')
+  check(P.newestReceipt([seal(body(), { by: X })], opts) === null, 'a receipt from any other key is not shown')
+  check(P.newestReceipt([r1], { ...opts, runner: null }) === null, 'with no pinned runner no receipt is read')
+  check(P.newestReceipt([seal(body(), { tags: [['d', P.receiptD(request)], ['p', O.pk], ['e', 'cd'.repeat(32)]] })], opts) === null, 'a receipt whose e names another request is not this one')
+  check(P.newestReceipt([seal(body(), { tags: [['d', P.receiptD(request)], ['p', O.pk], ['e', request], ['expiration', String(nowS - 1)]] })], opts) === null, 'an expired receipt is not shown')
+  check(P.newestReceipt([{ ...r2, content: r1.content }], opts) === null, 'a receipt edited after signing is not shown')
+
+  const o1 = P.openedReceipt(open(r1), { name: 'hr', request, now })
+  check(o1.pairing?.uri === link && o1.install === null, 'the link opens while pairing waits')
+  check(P.openedReceipt(open(r1), { name: 'hr', request, now: (nowS + 300) * 1000 }).pairing === null, 'an expired link is not offered')
+  const pairedBody = body({ pairing: { uri: link, made_at: 1, expires_at: nowS + 240 } }); pairedBody.steps[1] = { step: 'paired', state: 'done', at: now, detail: 'the Bunker signs as this agent' }
+  check(P.openedReceipt(JSON.stringify(pairedBody), { name: 'hr', request, now }).pairing === null, 'once paired, no link is offered')
+  check(throws(() => P.openedReceipt(open(r1), { name: 'other', request, now }), /another request/), 'a receipt for another name is refused')
+  for (const uri of ['https://evil.example', 'nostrconnect://' + 'ef'.repeat(32) + '?a=b c', 'nostrconnect://xyz?relay=x', 'javascript:alert(1)'])
+    check(throws(() => P.openedReceipt(JSON.stringify(body({ pairing: { uri, made_at: 1, expires_at: nowS + 60 } })), { name: 'hr', request, now }), /pairing link/), `a link not in nostrconnect's shape is refused: ${uri.slice(0, 24)}`)
+  check(throws(() => P.openedReceipt(JSON.stringify(body({ steps: [{ step: 'staged', state: 'maybe', detail: '' }] })), { name: 'hr', request, now }), /malformed/), 'a step in an unknown state is refused')
+  check(P.stepRow(o1, 'staged').ok && /^Done: staged like/.test(P.stepRow(o1, 'staged').state) && !P.stepRow(o1, 'paired').ok && P.stepRow(o1, 'checked').state === 'Not started yet', 'step rows read the receipt; an unmentioned step is not started, never done')
+  check(P.stepRow(null, 'staged').ok === false, 'with no receipt, nothing is done')
+  check(!P.runnerQuiet(r2, now) && P.runnerQuiet(r2, now + 26 * 60 * 1000), 'a receipt older than two heartbeats says the runner may have stopped')
+
+  // The install line: the four fields by the installer's rules, then one single-quoted argument each.
+  const withInstall = P.openedReceipt(JSON.stringify(body({ install })), { name: 'hr', request, now })
+  check(JSON.stringify(withInstall.install) === JSON.stringify(install), 'the install details open as the four fields')
+  for (const [bad, why] of [[{ ...install, port: '22' }, 'an extra field'], [{ ...install, instance: 'other' }, 'another instance'], [{ ...install, ssh_target: "root@x';rm -rf ~" }, 'a shell character in the target'],
+    [{ ...install, ssh_target: 'fleet.example' }, 'a target with no user'], [{ ...install, commit: 'C0FFEE'.repeat(6) + 'c0ff' }, 'an upper-case commit'], [{ ...install, host_key: 'ssh-rsa AAAAB3NzaC1yc2E' }, 'an RSA host key'],
+    [{ ...install, host_key: 'ssh-ed25519 AAAAB3NzaC1yc2EAAAADAQAB' }, 'a host key whose body is another type'], [{ ...install, host_key: hostKey + ' comment' }, 'a host key with a comment'], [{ ...install, commit: 1 }, 'a number']])
+    check(throws(() => P.installFields(bad, { instance: 'hr' }), /can't build the line/), `install details with ${why} are refused, never repaired`)
+  const line = P.installLine(install)
+  check(line.includes(`--instance 'hr' --ssh-target 'root@fleet.example' --host-key '${hostKey}' --start`) && line.includes(`checkout -q --detach '${install.commit}'`) && line.includes(`git clone -q '${P.NVOY_REPO}'`), 'each value is one quoted argument, at the pinned commit')
+  check(!/curl|wget|\|\s*(ba)?sh/.test(line) && /npm --prefix "\$d\/mcp" ci --omit=dev --ignore-scripts/.test(line), 'nothing is downloaded into a shell, and the dependencies are the locked ones with no install scripts')
+  const { spawnSync } = await import('node:child_process')
+  check(spawnSync('sh', ['-n', '-c', line]).status === 0, 'the line parses as one shell command')
+
+  // The writer list (nave.pub #157): signed whole, newest first, never from a partial read.
+  const list = (keys, t, by = O) => finalizeEvent({ kind: 30000, created_at: t, content: '', tags: [['d', 'nave-relay-writers'], ...keys.map(k => ['p', k])] }, by.sk)
+  const old = list([G.pk], 100), cur = list([G.pk, X.pk], 200)
+  const wopts = { owner: O.pk, agent: A.pk, verify: verifyEvent }
+  const plan = P.writersPlan({ state: 'complete', events: [old, cur, list([A.pk], 300, X)] }, wopts)
+  check(plan.state === 'missing' && plan.keys.join() === [G.pk, X.pk, A.pk].join() && plan.list.id === cur.id, 'the new list is your newest list plus the agent; a list by anyone else is ignored')
+  check(P.writersPlan({ state: 'partial', events: [cur] }, wopts).state === 'unread' && P.writersPlan({ state: 'none', events: [] }, wopts).state === 'unread', 'a partial or failed read signs nothing')
+  check(P.writersPlan({ state: 'complete', events: [] }, wopts).keys.join() === A.pk, 'with no list yet, the first holds only the agent')
+  check(P.writersPlan({ state: 'complete', events: [list([A.pk], 400)] }, wopts).state === 'listed', 'an agent already listed needs no signature')
+  const draft = P.draftWriters(plan.keys, { now: 150, after: 200 })
+  check(draft.kind === 30000 && draft.created_at === 201 && JSON.stringify(draft.tags) === JSON.stringify([['d', 'nave-relay-writers'], ['p', G.pk], ['p', X.pk], ['p', A.pk]]), 'the draft is the whole set, dated after the list it replaces')
+  check(throws(() => P.draftWriters(['nope']), /not a public key/) && throws(() => P.draftWriters([]), /not a public key/), 'a malformed or empty set is not drafted')
+
+  // The presence (DESIGN_ADD_AN_AGENT, "Proof"): the fingerprint the page computes, in the agent's signed event.
+  const fp = await P.fingerprint(KEY.split(' ').slice(0, 2).join(' '))
+  const { createHash } = await import('node:crypto')
+  check(fp === 'SHA256:' + createHash('sha256').update(Buffer.from(KEY.split(' ')[1], 'base64')).digest('base64').replace(/=+$/, ''), "the fingerprint is ssh-keygen's SHA256 form of the pasted key")
+  check(await P.fingerprint('ssh-rsa AAAA') === null && await P.fingerprint('') === null, 'a key not in the pasted shape has no fingerprint')
+  const pres = (c, { t = nowS - 30, exp = nowS + 7200, by = A } = {}) => finalizeEvent({ kind: 30078, created_at: t, content: JSON.stringify(c),
+    tags: [['d', 'nvoy-channel-presence'], ...(exp ? [['expiration', String(exp)]] : [])] }, by.sk)
+  const popts = { agent: A.pk, instance: 'hr', key: fp, since: nowS - 600, verify: verifyEvent, now }
+  const up = { instance: 'hr', key: fp, connected: true, since: nowS - 60, seen_at: nowS - 30 }
+  check(P.presenceRow([pres(up)], popts).ok, 'connected, with the pasted key, newer than the bind, unexpired: green')
+  check(!P.presenceRow([pres(up, { by: X })], popts).ok, 'presence signed by another key is not its presence')
+  check(/different key/.test(P.presenceRow([pres({ ...up, key: 'SHA256:other' })], popts).state), 'connected with another key is named')
+  check(/not now/.test(P.presenceRow([pres(up, { exp: nowS - 1 })], popts).state) && /not now/.test(P.presenceRow([pres(up, { exp: null })], popts).state), 'expired, or never expiring, is not connected now')
+  check(/older than the bind/.test(P.presenceRow([pres(up, { t: nowS - 700 })], popts).state), 'presence from before the bind does not count')
+  check(/not now/.test(P.presenceRow([pres({ ...up, connected: false }, { t: nowS - 5 }), pres(up)], popts).state), 'the newest presence wins')
+  check(/Paste/.test(P.presenceRow([pres(up)], { ...popts, key: null }).state), 'with no pasted key there is nothing to match')
+
+  // The page: the link is never written to the console or kept, and the install line is text, never HTML.
+  check(!/console\.(log|info|warn|error)\([^)]*(pairing|uri)/.test(page) && !/setItem\([^)]*(pairing|opened|progress)/.test(page), 'the pairing link is never logged or kept in the browser')
+  check(/\$\('install-line'\)\.textContent = /.test(page) && !/innerHTML/.test(page), 'the install line reaches the page as text only')
+  check(/nip44Decrypt\(RUNNER, r\.content\)/.test(page) && /r\.id !== progress\.receipt\?\.id/.test(page), 'a receipt is opened from the pinned runner, once per new receipt')
+  check(/done\[3\] = requestBack && progress\.writers\?\.state === 'listed' && !!progress\.card/.test(page) && /done\[4\] = bound\.ok && !!progress\.presence\?\.ok/.test(page), 'step 3 is done on the request, the writer list and the card read back; step 4 on the bind and the presence')
 }
 
 if (fails) { console.error(`\nconsole_hive_add_agent: ${fails} failing`); process.exit(1) }

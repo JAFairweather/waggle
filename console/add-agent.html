@@ -54,6 +54,8 @@
   ol.rows li.ok .mark{border:0;background:var(--good);color:var(--ground)}
   ol.rows .what{flex:1}ol.rows .what b{display:block;font-weight:600;font-size:14px}ol.rows .what span{font-size:13px;color:var(--dim)}
   ol.rows .state{font-size:12px;color:var(--faint);white-space:nowrap}ol.rows li.ok .state{color:var(--good)}
+  #install-line{word-break:break-all;font-family:ui-monospace,Menlo,monospace;border:1px solid var(--line);border-radius:9px;padding:12px 14px}
+  .later-box[hidden]{display:none}
   .later-box{border:1px dashed var(--line);border-radius:9px;padding:14px 16px;color:var(--dim);font-size:14px;margin:0 0 14px}
   .pick-bar{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}.pick-bar input{flex:1 1 240px;width:auto}.pick-bar button{flex:none}
   .chips{display:flex;flex-wrap:wrap;gap:6px;min-height:32px;margin:0 0 14px}
@@ -124,16 +126,26 @@
       <p class="intro">One signature asks the server to build <span data-name></span> its own listener, post box and private line, and to let it onto the server's relay.</p>
       <ol class="rows" id="tool-rows"></ol>
       <p class="hint" style="margin-top:14px">While this installs, the server re-checks every agent's tools. The others may pause for a few seconds; their work waits and isn't lost.</p>
-      <ol class="boxes"><li><span class="n">→</span><div><p>When the server sets it up, it prints a <code>nostrconnect://</code> link. On the <b data-name></b> key in your Bunker, choose <b>Connect app</b>, paste it, and approve. It lets the server ask your Bunker to sign <span data-name></span>'s posts, logins and room joins, and nothing else.</p>
-        <p class="small">This page does not show the link yet; the operator passes it on. Your Bunker asks you before it accepts.</p></div></li></ol>
+      <p class="hint" id="runner-line" role="status"></p>
+      <ol class="boxes" id="pair-box"><li><span class="n">→</span><div><p>When the server sets it up, it makes a <code>nostrconnect://</code> link and seals it to you. On the <b data-name></b> key in your Bunker, choose <b>Connect app</b>, paste it, and approve. It lets the server ask your Bunker to sign <span data-name></span>'s posts, logins and room joins, and nothing else.</p>
+        <p class="small" id="pair-state">Your Bunker asks you before it accepts.</p>
+        <div class="actions" id="pair-actions" hidden><button type="button" id="pair-copy">Copy the link</button><a class="button quiet" id="pair-open" href="#" rel="noreferrer">Open in your signer</a></div></div></li></ol>
+      <div class="status" id="writers-status" role="status"></div>
       <div class="status" id="tools-status" role="status"></div>
-      <div class="actions"><button type="button" id="tools-go">Sign and set up</button><button type="button" class="quiet" data-next>Next: start it on its box</button><button type="button" class="quiet" data-back>Back</button></div>
+      <div class="actions"><button type="button" id="tools-go">Sign and set up</button><button type="button" class="quiet" id="writers-go">Let it onto the server's relay</button><button type="button" class="quiet" data-next>Next: start it on its box</button><button type="button" class="quiet" data-back>Back</button></div>
     </section>
 
     <section data-step="4" hidden>
       <h1>Start <span data-name></span> on its box</h1>
       <p class="intro">This starts it on its own box as <span data-name></span>, makes the key for its private line right there, and keeps it running after a restart.</p>
       <div class="later-box" id="box-later"></div>
+      <div id="install-box" hidden>
+        <p class="hint">Run this in a terminal on <span data-name></span>'s box. It needs <code>git</code>, <code>node</code> 20 or later, <code>ssh</code> and <code>claude</code>, and changes nothing when one is missing. Run it again after it asks you to save the Claude login; a second run keeps its key.</p>
+        <pre class="doc" id="install-line" tabindex="0"></pre>
+        <div class="actions"><button type="button" class="quiet" id="install-copy">Copy the line</button></div>
+        <p class="small">The fleet's address and host key come sealed to you in its receipt, signed by the fleet's runner key, which this page pins. The page checks each field before it builds the line.</p>
+      </div>
+      <ol class="rows" id="box-rows"></ol>
       <label class="field" style="margin-top:14px">The key the line printed<input id="channel-key" placeholder="ssh-ed25519 AAAA…" spellcheck="false" autocomplete="off"></label>
       <p class="hint">Only the public half: one line that starts <code>ssh-ed25519</code>. The private half stays on the box. Signing asks the server to let this one key reach <span data-name></span>'s channel.</p>
       <div class="status" id="box-status" role="status"></div>
@@ -194,11 +206,12 @@ import { HARNESSES, agentName, draftAddAgent, draftBind, profileTags, readBack, 
 import { HIVE_RELAY, readHiveTerms, sealInvite } from './hive-invite.mjs'
 import { readCards, relayCoverage, GRANT_RELAYS, CARD_RELAYS, CARD_D, RUNS_LOGO, RUNS_ON, PLATFORMS, platformOf } from './hive-list.mjs'
 import { shortNpub } from './agent-roster.mjs'
-import { draftGrant, applyChange } from './hive-change.mjs'
+import { draftGrant, applyChange, sameAsDrafted, publishTo, relayHost } from './hive-change.mjs'
 import { scopeHash } from './scope-hash.mjs'
 import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, roomChoices, testMention, proofFilters, proofRows, profileRow, answers, roomsToSign, roomsFor, workSignGate, relaysOf, PROFILE_RELAY_LIMIT } from './add-agent-flow.mjs'
 import { readRooms, roomsOf, roomsNeed, loadRoomRelay, relayKeyFor, proveInRoom, PROOF_WAIT_SECS } from './room-lists.mjs'
 import { wsReadBack } from './profile-publish.mjs'
+import { RUNNER, receiptFilter, newestReceipt, openedReceipt, TOOL_ROWS, stepRow, runnerQuiet, installLine, writersFilter, writersPlan, draftWriters, WRITER_RELAY, fingerprint, presenceFilter, presenceRow } from './onboard-progress.mjs'
 
 const $ = id => document.getElementById(id)
 // Everything shown here came from someone else's signature, so it reaches the DOM only as text.
@@ -228,13 +241,16 @@ async function read(relays, filter) {
 const SAVED = 'waggle-add-agent'
 const saved = (() => { try { return JSON.parse(sessionStorage.getItem(SAVED) || '{}') } catch { return {} } })()
 const keep = () => { try { sessionStorage.setItem(SAVED, JSON.stringify(form)) } catch { /* private mode: the form lives until reload */ } }
-const form = { step: 1, name: '', display: '', about: '', harness: 'claude-code', like: '', agent: '', givers: null, rooms: null, sixth: null, ...saved }
+const form = { step: 1, name: '', display: '', about: '', harness: 'claude-code', like: '', agent: '', givers: null, rooms: null, sixth: null, channelKey: '', ...saved }
 
 // What the page has read: whose hive, its agents, and the newest request for this agent.
 let owner = null, loaded = false, installed = [], profiles = new Map(), latest = null, joined = null, terms = null, fixed = null, roomRead = null
 // Step 7: how the last check ended, what it read, and the profile on each public relay.
 let proof = { state: null, events: [], sent: null }, outside = null, cardRelays = null
 const done = { 1: false, 2: false, 3: false, 4: false, 5: false, 6: false, 7: false }
+// Steps 3 and 4 (#721): the runner's newest sealed receipt for the newest request, opened once per
+// receipt; the writer list, the card and the presence event, each read cold by this page.
+let progress = { receipt: null, opened: null, error: null, refusedId: null, writers: null, card: null, presence: null }, requestBack = false
 
 const nameShown = () => form.name || 'the new agent'
 function drawNames() { for (const n of document.querySelectorAll('[data-name]')) n.textContent = nameShown() }
@@ -257,6 +273,7 @@ function go(n) {
   drawRail(); drawNames()
   if (n === 6) drawGivers()
   if (n === 5 && !terms) readHiveTerms().then(showTerms)
+  if (n === 3 || n === 4) readProgress({ retry: true })
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
@@ -272,13 +289,19 @@ function rows(box, list) {
 function drawRows() {
   const n = nameShown()
   rows($('tool-rows'), [
-    ['Your setup request', 'signed by you, read back cold from the relays', done[3]],
-    ['Its own space on the server', 'a user and ports no other agent shares'],
-    ['Its signing connection', 'your Bunker answers as ' + n, false],
-    ['Its listener and post box', 'hears #waggle-test, posts as ' + n],
-    ['Allowed on the server\'s relay', 'so its profile and card can publish'],
-    ['Its agent card', 'seen on the card relays, naming you as its owner'],
+    ['Your setup request', 'signed by you, read back cold from the relays', requestBack],
+    ...TOOL_ROWS.map(([step, label, sub]) => { const r = stepRow(progress.opened, step); return [label, sub.replace('{name}', n), r.ok, r.state] }),
+    ["Allowed on the server's relay", 'your writer list on the relay names ' + n, progress.writers?.state === 'listed', writersState()],
+    ['Its agent card', 'seen on the card relays, naming you as its owner', !!progress.card, progress.card ? 'Read back' : progress.card === false ? 'Not on the card relays yet' : ''],
   ])
+  const bound = stepRow(progress.opened, 'started')
+  rows($('box-rows'), [
+    ['Bound on the server', "the fleet let the key you pasted reach " + n + "'s channel", bound.ok, bound.state],
+    ['Connected with this key', n + "'s own signed presence names the key you pasted", !!progress.presence?.ok, progress.presence?.state || ''],
+  ])
+  done[3] = requestBack && progress.writers?.state === 'listed' && !!progress.card
+  done[4] = bound.ok && !!progress.presence?.ok
+  drawProgress()
   const inRoom = new Map(roomChoices(roomRead, { agent: form.agent }).map(c => [c.id, c]))
   rows($('join-rows'), [
     ['Invite made', 'one use, signed by you, sealed to ' + n + ', never shown on screen', done[5], done[5] ? 'In the request' : ''],
@@ -300,7 +323,28 @@ function drawRows() {
     ['Has its profile', 'the same signed profile on your Buzz relay and every public relay in its card', !!face?.ok, face ? face.text : ''],
   ])
   done[7] = p.hello.ok && p.readBack.ok && p.taken.ok && p.answered.ok && !!face?.ok
-  $('box-later').textContent = PART_BUILT[4]
+}
+const writersState = () => !progress.writers ? '' : progress.writers.state === 'listed' ? 'Read back' : progress.writers.state === 'missing' ? 'Not on it yet: sign it below' : progress.writers.text
+function drawProgress() {
+  const n = nameShown(), pr = progress.opened?.pairing, paired = stepRow(progress.opened, 'paired').ok
+  const age = progress.receipt ? Math.max(0, Math.round((Date.now() / 1000 - progress.receipt.created_at) / 60)) : 0
+  const line = $('runner-line')
+  line.className = progress.error || runnerQuiet(progress.receipt) ? 'hint err' : 'hint'
+  line.textContent = PART_BUILT[3] ? PART_BUILT[3] : progress.error ? progress.error : !latest ? 'Sign the setup request first.'
+    : !progress.receipt ? 'The fleet has not reported on this request yet. Its runner looks every 30 seconds.'
+      : runnerQuiet(progress.receipt) ? `The fleet's last report on this request is ${age} minutes old, so its runner may have stopped. Ask the operator.`
+        : `The fleet last reported ${age < 1 ? 'under a minute' : `${age} minute${age === 1 ? '' : 's'}`} ago.`
+  $('pair-actions').hidden = !pr
+  $('pair-open').href = pr ? pr.uri : '#'
+  $('pair-state').textContent = pr ? `The link is ready, sealed to you. It works until ${new Date(pr.expiresAt * 1000).toLocaleTimeString()}; after that the fleet makes a new one.`
+    : paired ? `Approved: your Bunker answers for ${n}.` : PART_BUILT[3] ? 'The operator passes the link on to you for now. Your Bunker asks you before it accepts.'
+      : 'The link shows here once the fleet makes it. Your Bunker asks you before it accepts.'
+  let text = null
+  try { text = progress.opened?.install ? installLine(progress.opened.install) : null } catch {}
+  $('install-box').hidden = !text
+  $('install-line').textContent = text || ''
+  $('box-later').hidden = !!text
+  $('box-later').textContent = PART_BUILT[4] || (progress.error ? `Can't build the line: ${progress.error}` : `The line shows here once the fleet has staged ${n} and reported it.`)
 }
 
 function drawRuns() {
@@ -456,7 +500,7 @@ async function readLatest() {
   latest = newestAdd(back.events, { owner, name: form.name, agent: form.agent, verify: verifyEvent })
   const plan = latest && form.sixth && latest.id === form.sixth ? await workGrants(latest) : null
   const steps = readBackSteps(latest, { sixth: form.sixth, plan })
-  done[3] = steps[3]; done[5] = steps[5]; done[6] = steps[6]
+  requestBack = steps[3]; done[5] = steps[5]; done[6] = steps[6]
   fixed = fixedBy(latest)
   if (fixed) { form.harness = fixed.harness; form.like = fixed.like; keep(); drawRuns(); drawLike() }
   if (form.step === 6) drawGivers()
@@ -464,6 +508,77 @@ async function readLatest() {
   drawRail(); drawRows()
   return latest
 }
+
+// Steps 3 and 4: one cold read of everything the page proves itself, and the runner's newest receipt.
+// A receipt is opened (one prompt from your signer) only when it is new; one that failed to open is
+// not asked about again until you check by hand.
+let reading = false
+async function readProgress({ retry = false } = {}) {
+  if (reading || !owner || !form.agent || !form.name) return
+  reading = true
+  try {
+    const [w, c, p] = await Promise.all([
+      query(WRITER_RELAY, writersFilter(owner)),
+      read(CARD_RELAYS, { kinds: [30078], '#d': [CARD_D], authors: [form.agent], limit: 5 }),
+      read(CARD_RELAYS, presenceFilter(form.agent)),
+    ])
+    progress.writers = writersPlan({ state: w.state, events: w.out }, { owner, agent: form.agent, verify: verifyEvent })
+    progress.card = readCards(c.events, { owner, verify: verifyEvent }).has(form.agent) ? true : c.full ? false : null
+    if (RUNNER && latest) {
+      const back = await read([...new Set([...GRANT_RELAYS, WRITER_RELAY])], receiptFilter({ runner: RUNNER, owner, request: latest.id }))
+      const r = newestReceipt(back.events, { runner: RUNNER, owner, request: latest.id, verify: verifyEvent })
+      if (!r) Object.assign(progress, { receipt: null, opened: null, error: null })
+      else if (r.id !== progress.receipt?.id && (retry || r.id !== progress.refusedId)) {
+        try {
+          const signer = await consoleSigner()
+          if (typeof signer.nip44Decrypt !== 'function') throw new Error('Your signer cannot open sealed messages (NIP-44). Sign in with your Bunker.')
+          const opened = openedReceipt(await signer.nip44Decrypt(RUNNER, r.content), { name: form.name, request: latest.id })
+          Object.assign(progress, { receipt: r, opened, error: null, refusedId: null })
+        } catch (e) { Object.assign(progress, { error: `The fleet's receipt didn't open: ${e.message || String(e)}`, refusedId: r.id }) }
+      }
+    }
+    const started = progress.opened?.steps.get('started')
+    progress.presence = presenceRow(p.events, { agent: form.agent, instance: form.name, key: await fingerprint(form.channelKey),
+      since: started?.state === 'done' && started.at ? Math.floor(started.at / 1000) : 0, verify: verifyEvent })
+  } finally { reading = false }
+  drawRows(); drawRail()
+}
+setInterval(() => { if ((form.step === 3 || form.step === 4) && !document.hidden) readProgress() }, 20000)
+
+// Step 3: the relay's writer list (nave.pub #157), signed whole: the newest list read in full, plus
+// this agent. A partial read signs nothing, because each list replaces the last.
+$('writers-go').onclick = async () => {
+  const st = $('writers-status'), b = $('writers-go'), n = nameShown()
+  const say = (text, cls = 'status') => { st.className = cls; st.textContent = text }
+  if (!owner || !form.agent) return say('Paste its key in step 2 first.', 'status err')
+  b.disabled = true
+  try {
+    say(`Reading your writer list on ${relayHost(WRITER_RELAY)}…`)
+    const w = await query(WRITER_RELAY, writersFilter(owner))
+    const plan = writersPlan({ state: w.state, events: w.out }, { owner, agent: form.agent, verify: verifyEvent })
+    if (plan.state === 'listed') { await readProgress(); return say(`${n} is already on your writer list. Read back.`, 'status ok') }
+    if (plan.state !== 'missing') throw new Error(plan.text)
+    const signer = await consoleSigner()
+    if (String(await signer.getPublicKey()).toLowerCase() !== owner) throw new Error('Your signer is a different key from the hive this page read. Nothing was signed.')
+    const template = draftWriters(plan.keys, { after: plan.list?.created_at || 0 })
+    say(`Your writer list (${plan.keys.length} key${plan.keys.length === 1 ? '' : 's'}): waiting for your signer…`)
+    const signed = await signFresh(template, signer)
+    if (!verifyEvent(JSON.parse(JSON.stringify(signed))) || !sameAsDrafted(signed, template) || signed.pubkey !== owner) throw new Error('The signer returned an event that is not the one shown. Nothing was published.')
+    say('Your writer list: publishing…')
+    const [r] = await publishTo(signed, { relays: [WRITER_RELAY], connect: url => new WebSocket(url) })
+    if (r?.outcome !== 'accepted') throw new Error(`${relayHost(WRITER_RELAY)} did not take the list${r?.reason ? `: ${r.reason.slice(0, 200)}` : ''}. Nothing changed.`)
+    await readProgress()
+    say(progress.writers?.state === 'listed' ? `Read back: your list on ${relayHost(WRITER_RELAY)} names ${n}.` : 'Sent, but not read back yet; check again in a minute.',
+      progress.writers?.state === 'listed' ? 'status ok' : 'status')
+  } catch (e) { say(e.message || String(e), 'status err') } finally { b.disabled = false }
+}
+async function copy(text, btn) {
+  const was = btn.textContent
+  try { await navigator.clipboard.writeText(text); btn.textContent = 'Copied' } catch { btn.textContent = "Couldn't copy: select it instead" }
+  setTimeout(() => { btn.textContent = was }, 2500)
+}
+$('pair-copy').onclick = () => progress.opened?.pairing && copy(progress.opened.pairing.uri, $('pair-copy'))
+$('install-copy').onclick = () => copy($('install-line').textContent, $('install-copy'))
 
 // The owner's approvals to these givers, and the withdrawals of them, against the givers the request
 // names: who still needs an approval (#716). Narrow reads, so a full answer is a complete one.
@@ -525,7 +640,7 @@ async function send(statusId, buttonId, build, after, readBackOf = readLatest) {
   } finally { b.disabled = false }
 }
 
-$('tools-go').onclick = () => send('tools-status', 'tools-go', f => draftAddAgent({ ...f, join: joined || undefined }))
+$('tools-go').onclick = () => send('tools-status', 'tools-go', f => draftAddAgent({ ...f, join: joined || undefined })).then(() => readProgress())
 $('join-go').onclick = () => {
   if (!$('agree-row').hidden && !$('agree').checked) { $('join-status').className = 'status err'; $('join-status').textContent = 'Tick "I agree" first.'; return }
   if (!roomRead) { $('join-status').className = 'status err'; $('join-status').textContent = 'Read your rooms first, so the request names the rooms you chose.'; return }
@@ -550,7 +665,7 @@ async function readBind(signed) {
 $('box-go').onclick = () => {
   const pasted = $('channel-key').value
   if (/PRIVATE KEY/i.test(pasted)) $('channel-key').value = ''
-  return send('box-status', 'box-go', f => draftBind({ ...f, channelKey: pasted }), null, readBind)
+  return send('box-status', 'box-go', f => draftBind({ ...f, channelKey: pasted }), () => { form.channelKey = pasted.trim(); keep() }, readBind).then(() => readProgress())
 }
 $('work-go').onclick = () => {
   const stop = workSignGate(joined)
@@ -575,6 +690,7 @@ for (const b of document.querySelectorAll('[data-next]')) b.onclick = async () =
 $('restart').onclick = () => { try { sessionStorage.removeItem(SAVED) } catch {} location.reload() }
 $('name').oninput = () => { form.name = $('name').value.trim().toLowerCase(); drawNames(); drawRail() }
 $('display').oninput = () => { form.display = $('display').value; keep() }
+$('channel-key').value = form.channelKey || ''
 
 // Rooms (#683): read from the room relay with one sign-in, then ticked here. Nothing is joined from
 // this page: the rooms go in the request, and the agent joins each with its own key.
@@ -689,6 +805,7 @@ async function start() {
   loaded = true; drawLike(); drawGivers()
   if (form.name && form.like) done[1] = true
   if (form.agent) { done[2] = true; await readLatest() }
+  if (form.step === 3 || form.step === 4) readProgress({ retry: true })
   drawRail()
 }
 start()
