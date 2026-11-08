@@ -146,6 +146,33 @@ agent in it.
 Hive membership and room membership are separate lists. Adding someone to a room does not admit
 them to the hive, which is why step 5 does both, hive first.
 
+### Two ways in (step 1 asks which)
+
+Step 1 offers two choices. Steps 1 to 3 and 5 to 7 are the same for both. They differ only at step 4,
+and in who owns the box.
+
+| | **Launch a new agent** (hosted on herd-cloud) | **Add identity to an existing agent** (own box) |
+|---|---|---|
+| For | an agent the hive hosts, such as Curator | an agent that already runs somewhere the owner controls |
+| The box | a login on herd-cloud, `agent-<name>`, made by herd-infra `bin/add-agent` with `KIND=nvoy-claude` and `INSTANCE=<fleet instance id>` | the owner's own machine |
+| Who makes the box | the herd operator (Dead Rabbit), once the agent's herd-infra definition is merged; Neil takes any root step | the owner |
+| The channel key | made on that login by the same box installer, in `~/.nvoy-box/<instance>/home` | made on the owner's box by the install line |
+| The Claude login | the herd's one shared token, put by the owner (James) at a path in the agent's home, mode 0600 | the owner's own login, saved to `credential_file` |
+| Step 4 on the page | "Seat its Claude login": shows who provisions the login, and the path to place the token. The page asks for no pasted line | the install line, as below |
+| Proof | the same: the agent's signed presence event, newer than `bind_runtime` | the same |
+
+**What does not change.** The console never touches a box and never holds a private key. The page
+does not ask for, show or relay the Claude token in either way: in the hosted way it is placed by path
+by the owner, and never goes through chat, the page, a request or a receipt. Nothing signs on either
+box. The presence proof is the same: the channel process opened by the agent's own key.
+
+**Open for review.** (1) Hosted agents today use the herd-infra `add-agent` route (a login with its
+own pane and sandbox, the nvoy harness in `~/.nvoy-box/<instance>/home`), not a manifest `harness`
+block on the fleet. This design follows that route, since it is how the other herd agents are built,
+and leaves the interim fleet `harness` block (`HARNESS_PLACEMENT.md`) alone. (2) Whether the page can
+show the hosted step's progress (login provisioned, token placed) by reading it, or only by the
+presence event. Until it can read it, it says "not read by this page yet".
+
 ### The install line
 
 Step 4 is the one step that runs on the agent's box. Everything else on the page is a signed request.
