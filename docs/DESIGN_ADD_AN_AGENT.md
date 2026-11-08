@@ -171,10 +171,16 @@ public half for the owner's signed `bind_runtime`, and the hosted way has no pas
 
 1. The herd operator provisions the login with `add-agent`, and the box installer runs there as
    `agent-<name>`. It makes the channel key on that login. Only the public half leaves the box.
-2. The runner reports that public half in its request-bound receipt, as a new row `channel_key`, from
-   `~/.nvoy-box/<instance>/channel.pub`, which the installer wrote. The runner reads it as the login `agent-<name>` (the box directory is 0700; the public file is 0644). The private `channel` file is never read. The receipt is sealed to the owner and signed by the pinned runner
-   key, like every other row. This row carries a public key only, never a secret.
-3. The page shows it as "Reported by the fleet: its channel key `<fingerprint>`", and the owner signs
+2. **A different host holds it, so the public half is staged across.** The runner runs as root on
+   nvoy-fleet, and mounts `/var/lib/nvoy-onboard` but not herd-cloud's `/home/agent-<name>`. It cannot
+   read `~/.nvoy-box/<instance>/channel.pub` there. A reviewed operator helper (herd-infra) reads only
+   that public file, as `agent-<name>` on herd-cloud, and writes it atomically to a request-bound name
+   under `/var/lib/nvoy-onboard` on nvoy-fleet. The private `channel` file is never read or moved.
+3. The runner checks the staged file (the request, the instance, and that it is one public key of the
+   expected type), then reports it in its request-bound receipt as a new row `channel_key`, sealed to
+   the owner and signed by the pinned runner key like every other row. This row carries a public key
+   only, never a secret. A direct read by the runner on herd-cloud is not a capability today.
+4. The page shows it as "Reported by the fleet: its channel key `<fingerprint>`", and the owner signs
    `bind_runtime` for it, as in the own-box way.
 
 A wrong or swapped key cannot prove anything. The presence proof names the key by fingerprint, and the
@@ -189,8 +195,7 @@ Until that arrives, the step reads "Waiting for it to connect".
 
 **Open for review.** Hosted agents use the herd-infra `add-agent` route (a login with its own pane and
 sandbox, the nvoy harness with its Claude home in `~/.nvoy-box/<instance>/home`), not a fleet manifest `harness` block.
-That keeps the interim fleet harness (`HARNESS_PLACEMENT.md`) from being revived. Source-supported, not yet a live read: the runner reading `channel.pub` as `agent-<name>`. That is an
-implementation check. If the live read fails, this section is updated before the step is called done.
+That keeps the interim fleet harness (`HARNESS_PLACEMENT.md`) from being revived. The staging helper is not built: the helper's owner and its reviewed home (herd-infra) are open until Dead Rabbit names them.
 
 ### The install line (the own-box way)
 
