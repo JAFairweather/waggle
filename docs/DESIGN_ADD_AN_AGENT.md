@@ -77,23 +77,28 @@ receipts as progress only, and still checks every proof itself.
 
 ### Who runs it, in two phases
 
-Decision D5 already settles this: **first a fleet command run by the operator on request, then
-automatic once three agents have gone through cleanly.**
+Decision D5 said: first a fleet command run by the operator, then automatic once three agents had
+gone through cleanly. **James overrode that: phase B is built now** (nvoy `docs/ONBOARD_PHASE_B.md`),
+so the watcher below is the normal path and phase A is the fallback.
 
 - **Phase A, now.** The page signs and publishes the request. The operator runs one fleet command
   that reads the newest request for that name, verifies it, and runs the steps in order: `allocate
   --like`, `instance-pair`, `check`, `apply`, the relay writer entry, the invite claim and the room
   joins. Every step is an existing nvoy tool. crystalclaude was agent one; waggle-dev was done by
   hand before the tools existed and does not count.
-- **Phase B, after three clean agents.** The same command runs as a forced-command service that
-  waits for signed requests. It holds when it is down, and never falls back to anything else.
+- **Phase B, built.** `nvoy-onboard watch` runs on a 30 second systemd timer under its own runner key
+  (`nvoy-onboard`, held in the Bunker). It reads owner-signed `add_agent` requests, runs the same
+  steps, and sends the owner sealed receipts. A request is marked finished only after the final
+  receipt is accepted. It holds when it is down, and never falls back to anything else. A read of
+  the owner's events that is incomplete is reported and fails the tick, never treated as "nothing to
+  do".
 
 ### The pairing link
 
 `instance-pair` prints a `nostrconnect://` link that the owner approves in the Bunker. That link
 carries a one-time secret, so it must not appear in a public event or in chat. In phase A the
-operator hands it to the owner as today. In phase B the fleet seals it to the owner's key (NIP-44)
-and the page opens it for them with one click. Bunker46 on the owner's phone accepts a pasted
+operator hands it to the owner as today. In phase B the runner seals it, with the other install
+details, in its receipt to the owner's key (NIP-44), and the page opens it for them with one click. Bunker46 on the owner's phone accepts a pasted
 `nostrconnect://` link (confirmed 2026-11-02), so no scanned code is needed.
 
 The connection asks for these signing kinds from the start: posts, reactions, deletes, chat, seals,
@@ -107,9 +112,11 @@ Today the relay admits writers from `deploy/relay/allowlist.json` in nave.pub, w
 merge and a relay restart for every agent. Until a new key is on it, the agent card cannot publish
 and step 3 cannot prove itself.
 
-**Proposed:** the relay's write policy also admits any key on an owner-signed writer list, read live
-with no restart. The page signs the new list in step 3. That is a nave.pub change and needs its own
-issue. Until it lands, step 3's "allowed on the relay" row is the operator's PR, shown as pending.
+**Built (nave.pub #157, #159, #161):** the relay's write policy also admits any key on an
+owner-signed writer list (kind 30000, d `nave-relay-writers`), read live with no restart. The page
+signs the list in step 3. The runner key is on the static allowlist so it can publish receipts. Until
+the relay-box deploy and the owner's signature on the list are done, step 3's "allowed on the relay"
+row stays pending.
 
 ### The hive invite
 
@@ -124,9 +131,9 @@ The terms version and the age confirmation travel in the signed request exactly 
 them. The fleet passes `--accept-policy <version> --age-confirmed` only when the signed request names
 the policy version the relay serves at claim time. A changed policy stops the claim and asks again.
 
-**Open:** whether the agent's connection should be allowed to decrypt (NIP-44), or whether the fleet
-should hold a separate runner key for sealed fields. The first adds a permission to every agent; the
-second adds a key to the fleet.
+**Settled:** the fleet holds a separate runner key (`nvoy-onboard`) for sealed fields, with only
+get_public_key, nip44_encrypt, sign_event:27235 and sign_event:30078. Agent connections gain no
+decrypt permission.
 
 ### Rooms
 
@@ -397,7 +404,7 @@ Each is one PR, with its deploy verified.
      signs `bind_runtime` from the pasted public half, and reads the presence event cold.
 8. **waggle:** `tools/buzz-allow.mjs` add mode, for "Buzz agents answer it". Proven when the read mode
    shows the one new key and nothing else changed, and a mention from the new agent is answered.
-9. **Phase B**, once HR, crusty and one more agent have gone through phase A cleanly.
+9. **Phase B**: built (see above). Live only once the runner is paired and the timer is enabled.
 
 ## Close condition
 
