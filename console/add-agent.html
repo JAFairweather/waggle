@@ -539,7 +539,7 @@ async function readProgress({ retry = false } = {}) {
     }
     const started = progress.opened?.steps.get('started')
     progress.presence = presenceRow(p.events, { agent: form.agent, instance: form.name, key: await fingerprint(form.channelKey),
-      since: started?.state === 'done' && started.at ? Math.floor(started.at / 1000) : 0, verify: verifyEvent })
+      since: started?.state === 'done' && Number.isFinite(started.at) && started.at > 0 ? Math.floor(started.at / 1000) : null, verify: verifyEvent })
   } finally { reading = false }
   drawRows(); drawRail()
 }

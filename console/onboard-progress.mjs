@@ -153,7 +153,9 @@ export async function fingerprint(channelKey) {
   return 'SHA256:' + globalThis.btoa(String.fromCharCode(...sum)).replace(/=+$/, '')
 }
 export const presenceFilter = agent => ({ kinds: [SETUP_KIND], authors: [agent], '#d': [PRESENCE_D], limit: 5 })
-export function presenceRow(events, { agent, instance, key, since = 0, verify, now = Date.now() }) {
+// `since` is the bind time in seconds. Without a finite, positive one there is nothing to be newer than,
+// so no presence can be green: an unknown bind time never lets an old signed presence stand in for it.
+export function presenceRow(events, { agent, instance, key, since = null, verify, now = Date.now() }) {
   const nowS = Math.floor(now / 1000)
   const ev = (events || []).filter(e => e?.kind === SETUP_KIND && e.pubkey === agent && tagOf(e, 'd') === PRESENCE_D && checked(e, verify)).sort(newestFirst)[0]
   if (!key) return { ok: false, state: 'Paste the key the line printed to check this' }
@@ -163,6 +165,7 @@ export function presenceRow(events, { agent, instance, key, since = 0, verify, n
   if (!body || body.instance !== instance || typeof body.key !== 'string') return { ok: false, state: 'Its presence event is malformed' }
   if (body.key !== key) return { ok: false, state: 'Connected with a different key from the one pasted here' }
   if (expiredAt(ev, nowS) || tagOf(ev, 'expiration') === undefined) return { ok: false, state: 'Connected before, not now' }
+  if (!Number.isFinite(since) || since <= 0) return { ok: false, state: 'Waiting for the fleet: the bind time is not in its receipt yet' }
   if (ev.created_at < since) return { ok: false, state: 'Waiting for the fleet: its presence is older than the bind' }
   return body.connected === true ? { ok: true, state: 'Read back: connected with this key' } : { ok: false, state: 'Connected before, not now' }
 }

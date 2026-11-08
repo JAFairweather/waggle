@@ -575,6 +575,8 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   check(/not now/.test(P.presenceRow([pres(up, { exp: nowS - 1 })], popts).state) && /not now/.test(P.presenceRow([pres(up, { exp: null })], popts).state), 'expired, or never expiring, is not connected now')
   check(/older than the bind/.test(P.presenceRow([pres(up, { t: nowS - 700 })], popts).state), 'presence from before the bind does not count')
   check(/not now/.test(P.presenceRow([pres({ ...up, connected: false }, { t: nowS - 5 }), pres(up)], popts).state), 'the newest presence wins')
+  for (const since of [undefined, null, 0, -1, NaN, '5', Infinity]) check(!P.presenceRow([pres(up, { t: nowS - 5000 })], { ...popts, since }).ok && /bind time/.test(P.presenceRow([pres(up, { t: nowS - 5000 })], { ...popts, since }).state), `an old presence is not green when the bind time is ${String(since)}`)
+  check(P.openedReceipt(JSON.stringify({ v: 1, name: 'hr', request: 'r', instance: 'hr', steps: [{ step: 'started', state: 'done', detail: 'x' }, { step: 'p', state: 'done', detail: 'x', at: 'soon' }] }), { name: 'hr', request: 'r' }).steps.get('started').at === null, 'a done step with no finite at is read as having no time')
   check(/Paste/.test(P.presenceRow([pres(up)], { ...popts, key: null }).state), 'with no pasted key there is nothing to match')
 
   // The page: the link is never written to the console or kept, and the install line is text, never HTML.
