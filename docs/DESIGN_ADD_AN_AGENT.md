@@ -34,7 +34,7 @@ work, run one command on the Buzz machine. Nothing else.
 | Paste the agent's npub | the page | the page has no way to read the Bunker's key list |
 | Approve the connection | Bunker app, one approval | a person approves every new signer connection |
 | Sign the setup request | the page, Bunker signature | the fleet acts only on a request the owner signed |
-| Run one install line | the agent's box | the console never touches a box (yoga is rabidrabbit's box) |
+| Run one install line (own-box way only) | the agent's box | the console never touches a box (yoga is rabidrabbit's box) |
 | Tick "I agree", then sign the hive invite | the page | the terms and the age confirmation are theirs to accept |
 | Sign who can give it work | the page, existing grant grid | grants are the owner's |
 | Let a Buzz agent answer it | one command on the machine that runs Buzz | Buzz Desktop keeps that setting only there, and no API writes it |
@@ -51,10 +51,10 @@ a machine said so: the page re-reads the result cold, or marks the step unproven
 | 1 | **Name it** | name, box, harness (Claude Code, Codex, Pi, OpenClaw, Grokbot) | — | — |
 | 2 | **Make its key** | makes the key in the Bunker, pastes the npub | — | the npub decodes, and is not already on the list |
 | 3 | **Set up its tools** | signs the setup request; approves the connection in the Bunker | allocate, pair, check, apply; add the key to the relay's writers | six rows: staged, paired, checked, started, allowed on the relay, agent card seen |
-| 4 | **Start it on its box** | runs one install line on the box | the line makes the channel key on the box, pins the fleet's host key, and starts the harness with its channel | the agent's signed presence event says connected, newer than `bind_runtime` |
+| 4 | **Start it on its box** (hosted: seat its Claude login) | own box: runs one install line on the box; hosted: places the Claude token by path | the line makes the channel key on the box, pins the fleet's host key, and starts the harness with its channel | the agent's signed presence event says connected, newer than `bind_runtime` |
 | 5 | **Join the hive** | reads the terms, ticks "I agree", picks rooms, signs the invite | claims the invite as the agent; joins each open room as the agent | the agent is a relay member; the agent is in each room's member list |
 | 6 | **Who can give it work** | ticks names on the grid and signs; for a Buzz agent such as My Dude, runs one guarded command on the machine that runs Buzz | each agent that may now give it work gets it on its mention list; each Buzz agent it may give work to answers it | the grant, read back cold (M2, already live); each giver's agent card lists it; the Buzz agent's allow-list, copied to the page |
-| 7 | **Prove it works** | presses "Run the checks" and signs one test mention | the agent answers the mention in its thread | five rows: said hello, read back from the relay, taken as work, answered back, has its profile |
+| 7 | **Prove it works** | presses "Run the checks" and signs one test mention | the agent answers the mention in its thread | five rows, as in "Proof" below: it has posted in the room, that post read back cold, the test mention taken as work, its reply read back cold, its profile on Buzz and every public relay |
 
 The canvas for this flow is the "Add an agent" design (Claude Design, version 6). Agent branding,
 profile photos and platform logos carry over from the hive page.
@@ -146,9 +146,55 @@ agent in it.
 Hive membership and room membership are separate lists. Adding someone to a room does not admit
 them to the hive, which is why step 5 does both, hive first.
 
-### The install line
+### Two ways in (step 1 asks which)
 
-Step 4 is the one step that runs on the agent's box. Everything else on the page is a signed request.
+Step 1 offers two choices. Steps 1 to 3 and 5 to 7 are the same for both. They differ only at step 4,
+and in who owns the box.
+
+| | **Launch a new agent** (hosted on herd-cloud) | **Add identity to an existing agent** (own box) |
+|---|---|---|
+| For | an agent the hive hosts, such as Curator | an agent that already runs somewhere the owner controls |
+| The box | a login on herd-cloud, `agent-<name>`, made by herd-infra `bin/add-agent` with `KIND=nvoy-claude` and `INSTANCE=<fleet instance id>` | the owner's own machine |
+| Who makes the box | the herd operator (Dead Rabbit), once the agent's herd-infra definition is merged; Neil takes any root step | the owner |
+| The channel key | made on that login by the same box installer: `channel` and `channel.pub` in `~/.nvoy-box/<instance>/` (`home/` there is the Claude home, not the key) | made on the owner's box by the install line |
+| The Claude login | the herd's one shared token, put by the owner (James) at `~/.config/herd-secrets/claude-token` on the login, mode 0600; herd-infra's `agent-run` copies it to `~/.nvoy-box/<instance>/claude-oauth-token`, which is the installer's `credential_file`. The page never asks for it | the owner's own login, saved to `credential_file` |
+| Step 4 on the page | "Seat its Claude login": shows who provisions the login, and the path to place the token. The page asks for no pasted line | the install line, as below |
+| Proof | the same: the agent's signed presence event, newer than `bind_runtime` | the same |
+
+**What does not change.** The console never touches a box and never holds a private key. The page
+does not ask for, show or relay the Claude token in either way: in the hosted way it is placed by path
+by the owner, and never goes through chat, the page, a request or a receipt. Nothing signs on either
+box. The presence proof is the same: the channel process opened by the agent's own key.
+
+**How the hosted box's public key reaches the page and gets bound.** Step 4 still needs the channel key's
+public half for the owner's signed `bind_runtime`, and the hosted way has no paste. The route:
+
+1. The herd operator provisions the login with `add-agent`, and the box installer runs there as
+   `agent-<name>`. It makes the channel key on that login. Only the public half leaves the box.
+2. The runner reports that public half in its request-bound receipt, as a new row `channel_key`, from
+   `~/.nvoy-box/<instance>/channel.pub`, which the installer wrote. The runner reads it as the login `agent-<name>` (the box directory is 0700; the public file is 0644). The private `channel` file is never read. The receipt is sealed to the owner and signed by the pinned runner
+   key, like every other row. This row carries a public key only, never a secret.
+3. The page shows it as "Reported by the fleet: its channel key `<fingerprint>`", and the owner signs
+   `bind_runtime` for it, as in the own-box way.
+
+A wrong or swapped key cannot prove anything. The presence proof names the key by fingerprint, and the
+page accepts a presence event only from a channel process opened by the key the owner bound. So the
+receipt row is reported work, and the bind is the owner's act.
+
+**Progress wording for the hosted way.** The runner's rows (login provisioned, install attempted,
+channel key reported) are shown as **reported work**: "the fleet says". They are never shown as proof.
+The page does not claim it has verified token placement and has no way to read it. The completion proof
+is the same as for an own-box agent: the agent's signed presence event, newer than `bind_runtime`.
+Until that arrives, the step reads "Waiting for it to connect".
+
+**Open for review.** Hosted agents use the herd-infra `add-agent` route (a login with its own pane and
+sandbox, the nvoy harness with its Claude home in `~/.nvoy-box/<instance>/home`), not a fleet manifest `harness` block.
+That keeps the interim fleet harness (`HARNESS_PLACEMENT.md`) from being revived. Source-supported, not yet a live read: the runner reading `channel.pub` as `agent-<name>`. That is an
+implementation check. If the live read fails, this section is updated before the step is called done.
+
+### The install line (the own-box way)
+
+For an agent on its own box, step 4 is the one step that runs on that box. (A hosted agent has no paste; see "Two ways in".) Everything else on the page is a signed request.
 This step is a command that the box's owner pastes into a terminal on the box. It runs nvoy's box
 installer (`box-install.mjs`), which does four things and prints one line back:
 
@@ -409,6 +455,6 @@ Each is one PR, with its deploy verified.
 ## Close condition
 
 The owner adds a new agent from the page, on a box the console never touches, and reaches seven green
-steps without a terminal of their own, other than the install line on the agent's box. The proof rows
+steps without a terminal of their own, other than the install line on an own-box agent's box (a hosted agent has none). The proof rows
 are read by the page, not reported to it. The same flow works for a stranger on a fresh box with their
 own Buzz community, which is the project's north star.
