@@ -54,7 +54,7 @@ a machine said so: the page re-reads the result cold, or marks the step unproven
 | 4 | **Start it on its box** (hosted: seat its Claude login) | own box: runs one install line on the box; hosted: places the Claude token by path | the line makes the channel key on the box, pins the fleet's host key, and starts the harness with its channel | the agent's signed presence event says connected, newer than `bind_runtime` |
 | 5 | **Join the hive** | reads the terms, ticks "I agree", picks rooms, signs the invite | claims the invite as the agent; joins each open room as the agent | the agent is a relay member; the agent is in each room's member list |
 | 6 | **Who can give it work** | ticks names on the grid and signs; for a Buzz agent such as My Dude, runs one guarded command on the machine that runs Buzz | each agent that may now give it work gets it on its mention list; each Buzz agent it may give work to answers it | the grant, read back cold (M2, already live); each giver's agent card lists it; the Buzz agent's allow-list, copied to the page |
-| 7 | **Prove it works** | presses "Run the checks" and signs one test mention | the agent answers the mention in its thread | five rows: said hello, read back from the relay, taken as work, answered back, has its profile |
+| 7 | **Prove it works** | presses "Run the checks" and signs one test mention | the agent answers the mention in its thread | five rows, as in "Proof" below: it has posted in the room, that post read back cold, the test mention taken as work, its reply read back cold, its profile on Buzz and every public relay |
 
 The canvas for this flow is the "Add an agent" design (Claude Design, version 6). Agent branding,
 profile photos and platform logos carry over from the hive page.
@@ -156,8 +156,8 @@ and in who owns the box.
 | For | an agent the hive hosts, such as Curator | an agent that already runs somewhere the owner controls |
 | The box | a login on herd-cloud, `agent-<name>`, made by herd-infra `bin/add-agent` with `KIND=nvoy-claude` and `INSTANCE=<fleet instance id>` | the owner's own machine |
 | Who makes the box | the herd operator (Dead Rabbit), once the agent's herd-infra definition is merged; Neil takes any root step | the owner |
-| The channel key | made on that login by the same box installer, in `~/.nvoy-box/<instance>/home` | made on the owner's box by the install line |
-| The Claude login | the herd's one shared token, put by the owner (James) at a path in the agent's home, mode 0600 | the owner's own login, saved to `credential_file` |
+| The channel key | made on that login by the same box installer: `channel` and `channel.pub` in `~/.nvoy-box/<instance>/` (`home/` there is the Claude home, not the key) | made on the owner's box by the install line |
+| The Claude login | the herd's one shared token, put by the owner (James) at `~/.config/herd-secrets/claude-token` on the login, mode 0600; herd-infra's `agent-run` copies it to `~/.nvoy-box/<instance>/claude-oauth-token`, which is the installer's `credential_file`. The page never asks for it | the owner's own login, saved to `credential_file` |
 | Step 4 on the page | "Seat its Claude login": shows who provisions the login, and the path to place the token. The page asks for no pasted line | the install line, as below |
 | Proof | the same: the agent's signed presence event, newer than `bind_runtime` | the same |
 
@@ -172,7 +172,7 @@ public half for the owner's signed `bind_runtime`, and the hosted way has no pas
 1. The herd operator provisions the login with `add-agent`, and the box installer runs there as
    `agent-<name>`. It makes the channel key on that login. Only the public half leaves the box.
 2. The runner reports that public half in its request-bound receipt, as a new row `channel_key`, from
-   the file the installer wrote. The receipt is sealed to the owner and signed by the pinned runner
+   `~/.nvoy-box/<instance>/channel.pub`, which the installer wrote. The runner reads it as the login `agent-<name>` (the box directory is 0700; the public file is 0644). The private `channel` file is never read. The receipt is sealed to the owner and signed by the pinned runner
    key, like every other row. This row carries a public key only, never a secret.
 3. The page shows it as "Reported by the fleet: its channel key `<fingerprint>`", and the owner signs
    `bind_runtime` for it, as in the own-box way.
@@ -188,11 +188,9 @@ is the same as for an own-box agent: the agent's signed presence event, newer th
 Until that arrives, the step reads "Waiting for it to connect".
 
 **Open for review.** Hosted agents use the herd-infra `add-agent` route (a login with its own pane and
-sandbox, the nvoy harness in `~/.nvoy-box/<instance>/home`), not a fleet manifest `harness` block.
-That keeps the interim fleet harness (`HARNESS_PLACEMENT.md`) from being revived. Not yet checked: that
-the runner can read the installer's public-key file on the herd-cloud login. If it cannot, the operator
-posts the public half in the receipt by another request-bound route, and this section is updated before
-anything is built.
+sandbox, the nvoy harness with its Claude home in `~/.nvoy-box/<instance>/home`), not a fleet manifest `harness` block.
+That keeps the interim fleet harness (`HARNESS_PLACEMENT.md`) from being revived. Source-supported, not yet a live read: the runner reading `channel.pub` as `agent-<name>`. That is an
+implementation check. If the live read fails, this section is updated before the step is called done.
 
 ### The install line (the own-box way)
 
