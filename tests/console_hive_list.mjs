@@ -25,7 +25,7 @@ import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools'
 import { scopeHash } from '../console/scope-hash.mjs'
-import { readGrants, scopeTable, roleOf, duplicates, readCards, buildList, workSentence, workCell, givesCell, nameSlots, slotted, faceMap, askCell, PLATFORMS, platformOf, byPlatform, relayCoverage, coverageText, CARD_D, CARD_KIND, GRANT_RELAYS, NOT_READ }
+import { readGrants, scopeTable, roleOf, duplicates, readCards, buildList, workSentence, workCell, givesCell, nameSlots, slotted, faceMap, askCell, PLATFORMS, RUNS_ON, platformOf, byPlatform, relayCoverage, coverageText, CARD_D, CARD_KIND, GRANT_RELAYS, NOT_READ }
   from '../console/hive-list.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -245,6 +245,11 @@ check(!/innerHTML\s*=(?!\s*'')/.test(page), 'hive.html writes signed text only t
   check(byPlatform(rows).map(g => g.platform.id).join() === 'you,lab,buzz,other', 'groups come in the listed order, and a key nobody listed is last')
   check(!byPlatform(rows).some(g => g.platform.id === 'grok'), 'a group with nobody in it is not shown')
   check(platformOf({ pubkey: 'a135942aa05d90fff5d2062c78c61c1208903be241d3a93cb55e7009e87a3d8b', roles: [] }) === 'lab', 'crystalclaude, a Claude Code session on its own box, sits with the frontier lab harnesses')
+  const DR = 'fab8083206712754a4d41698c202db01339b16c37652d110e5e0ab57b75b1432'
+  check(platformOf({ pubkey: DR, roles: [{ role: 'voice' }] }) === 'lab' && platformOf({ pubkey: DR, roles: [] }) === 'lab', 'Dead Rabbit is a Claude Code agent first: a voice grant does not move it into your group')
+  check(platformOf({ pubkey: DR, isOwner: true, roles: [] }) === 'you', 'the owner is always in your group, whatever is listed')
+  check(platformOf({ pubkey: 'd'.repeat(64), roles: [{ role: 'voice' }] }) === 'you', 'a voice nobody listed still sits in your group')
+  check(RUNS_ON[DR] === 'Claude Code', 'the column names Dead Rabbit as Claude Code')
   check(PLATFORMS.flatMap(p => p.keys || []).every((k, i, all) => /^[0-9a-f]{64}$/.test(k) && all.indexOf(k) === i), 'every listed key is a key, in one group only')
   check(nameSlots([['Zed', 'You', 'Amy']], n => ({ You: 0, Zed: 1, Amy: 2 })[n]).join() === 'You,Zed,Amy', 'name lines follow the group order')
 }

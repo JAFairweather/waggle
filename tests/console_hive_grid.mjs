@@ -279,3 +279,11 @@ check(parseIntent(`#buzz=${mydude}:abc`).action === 'invalid' && parseIntent(`#b
 
 if (!pass) { console.log('\nconsole_hive_grid: FAIL'); process.exit(1) }
 console.log('\nconsole_hive_grid: ok')
+
+// Dead Rabbit holds a voice grant but is a listed Claude Code agent: it gets a column and is not folded.
+{
+  const DR = 'fab8083206712754a4d41698c202db01339b16c37652d110e5e0ab57b75b1432'
+  const row = { pubkey: DR, roles: [{ role: 'voice' }], answers: { work: { givers: [] } } }
+  const { groups, folded } = agentsOf([row])
+  console.log(groups.flatMap(g => g.rows).some(r => r.pubkey === DR) && !folded.some(r => r.pubkey === DR) ? 'ok   — Dead Rabbit, a voice and a listed agent, has its own column' : (process.exitCode = 1, 'FAIL — Dead Rabbit is folded away'))
+}
