@@ -8,9 +8,9 @@
 
 import { SETUP_KIND } from './hive-add-agent.mjs'
 
-// The runner's public key, hex. Null until the fleet's runner key is made and paired; until then the
-// page says the runner is not set up, and steps 3 and 4 wait for the operator as in phase A.
-export const RUNNER = null
+// The runner's public key, hex (the Bunker key `nvoy-onboard`, paired on the fleet 2026-11-08; npub1l3q5dwey…x9ugnr).
+// A receipt from any other key is not shown.
+export const RUNNER = 'fc4146bb2407094e025ce645eda8df2d0cdea8c36b8312e8f530441049a1cd09'
 
 export const RECEIPT_KIND = SETUP_KIND
 export const receiptD = request => `nvoy-onboard:${request}`
