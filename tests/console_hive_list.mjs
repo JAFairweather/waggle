@@ -25,7 +25,7 @@ import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools'
 import { scopeHash } from '../console/scope-hash.mjs'
-import { readGrants, scopeTable, roleOf, duplicates, readCards, buildList, workSentence, workCell, givesCell, nameSlots, slotted, faceMap, askCell, PLATFORMS, RUNS_ON, platformOf, byPlatform, relayCoverage, coverageText, CARD_D, CARD_KIND, GRANT_RELAYS, NOT_READ }
+import { readGrants, scopeTable, roleOf, duplicates, readCards, buildList, workSentence, quorumWarning, workCell, givesCell, nameSlots, slotted, faceMap, askCell, PLATFORMS, RUNS_ON, platformOf, byPlatform, relayCoverage, coverageText, CARD_D, CARD_KIND, GRANT_RELAYS, NOT_READ }
   from '../console/hive-list.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -214,6 +214,9 @@ check(needs.filter(n => n.kind === 'replaced').map(n => n.grant.id).join() === t
 const mixed = relayCoverage(['complete', 'partial', 'none', 'complete'])
 check(mixed.complete === 2 && mixed.partial === 1 && mixed.of === 4 && !mixed.full, 'a relay that timed out after some events is partial, not answered')
 check(relayCoverage(['complete', 'complete']).full && !relayCoverage([]).full, 'a read is full only when every relay asked sent EOSE')
+check(relayCoverage(['complete', 'complete', 'complete', 'none'], { quorum: true }).full && relayCoverage(['complete', 'complete', 'complete', 'none'], { quorum: true }).missing === 1, 'with a quorum, three of four relays answering is a full read, and one is counted missing')
+check(!relayCoverage(['complete', 'complete', 'none', 'none'], { quorum: true }).full && !relayCoverage(['complete', 'complete', 'complete', 'partial'], { quorum: false }).full, 'two of four is not a quorum, and without quorum one missing relay is still not full')
+check(!relayCoverage(['complete', 'none'], { quorum: true }).full && relayCoverage(['complete', 'partial', 'complete', 'complete'], { quorum: true }).full, 'a pair has no slack, and a relay that only partly answered does not count toward the quorum')
 check(coverageText(relayCoverage(['partial', 'none'])).none && coverageText(relayCoverage(['none'])).lead === 'Unverifiable', 'partial answers alone never show as answered')
 check(/2 of 4 relays answered in full, 1 sent only part/.test(Object.values(coverageText(mixed)).join(' ')), 'the coverage line says how many answered in full and how many in part')
 const nobody = { givers: [] }
@@ -276,5 +279,24 @@ check(!/innerHTML\s*=(?!\s*'')/.test(page), 'hive.html writes signed text only t
   check(/catch \{[^}]*openSide\(\{ kind: 'name', pk: r\.pubkey \}\)[\s\S]{0,200}selectAllChildren\(keyText\)[\s\S]{0,40}said\('Select and copy'\)/.test(page), 'a refused clipboard opens its answers with the npub selected, and claims no copy')
 }
 
-if (!pass) { console.error('console_hive_list: FAILED'); process.exit(1) }
 console.log('console_hive_list: one list, every key kept, roles from recipes, nvoy\'s fold pinned')
+
+// A quorum read warns beside the grid, naming what the missing relay could change (#734 review).
+{
+  const w = quorumWarning({ missing: 1, enough: true })
+  check(/One approval relay did not answer/.test(w) && /withdrawal/.test(w) && /approval/.test(w) && /held only on a missing relay/.test(w) && /key held only there/.test(w), 'the quorum warning names the missing relay and the approval, withdrawal and key risk')
+  check(quorumWarning({ missing: 0 }) === null && quorumWarning() === null, 'no warning when every relay answered')
+  const few = quorumWarning({ missing: 2, enough: false })
+  check(/Too few approval relays/.test(few) && !/One approval relay/.test(few) && /2 did not/.test(few), 'fewer than three answering never says exactly one relay failed')
+  check(/2 approval relays did not answer/.test(quorumWarning({ missing: 2, enough: true })), 'the count is the real count')
+  // Both of Neil's branches, on the real relayCoverage: three of four grant relays, and the card relay failing.
+  const grant = relayCoverage(['complete', 'complete', 'complete', 'none'], { quorum: true })
+  check(grant.full && !grant.all && grant.missing === 1, 'three of four grant relays is a quorum, and not every relay answered')
+  const cardFailed = relayCoverage(['none'])
+  check(!cardFailed.full && grant.missing > 0, 'a failed card read does not hide the grant read slack')
+  const page = readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
+  check(/id="quorum-note"/.test(page) && /quorumWarning\(\{ missing: partial\.slack, enough: partial\.slackEnough \}\)/.test(page) && !/quorumWarning\([^)]*partial\.approvals/.test(page), 'the page shows the warning whenever a grant read has slack, whatever the card read did')
+  check(/keys: !cardRead\.full \|\| !given\.all \|\| !held\.all/.test(page) && !/keys:[^\n]*(given|held)\.full/.test(page), 'identity completeness (keys) stays strict across every grant relay, not the quorum')
+  check(/approvals: !cardRead\.full \|\| !given\.full \|\| !held\.full/.test(page), 'only the approval squares use the quorum threshold')
+}
+if (!pass) { console.error('console_hive_list: FAILED'); process.exit(1) }

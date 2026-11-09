@@ -117,6 +117,7 @@
   button.who{background:none;border:0;border-radius:0;padding:0;margin:0;color:var(--text);font:inherit;font-weight:700;cursor:pointer;text-align:left}
   button.link{background:none;border:0;padding:0;margin:0;color:var(--gold);font:inherit;font-weight:650;cursor:pointer;text-decoration:underline}
   .footnote{font-size:12.5px;color:var(--dim);margin:10px 0 0}
+  .quorum-warn{color:var(--warn,#e0a93b);border-left:3px solid currentColor;padding-left:10px}
   details.about{margin-top:12px;font-size:13px;color:var(--dim)}details.about summary{cursor:pointer}details.about .coverage{margin:8px 0}
   .npub{font:italic 12px var(--mono);color:var(--faint);overflow-wrap:anywhere}
   dl.answers{display:grid;grid-template-columns:minmax(140px,190px) 1fr;gap:7px 16px;margin:4px 0 4px 1.2em;font-size:14px}
@@ -166,6 +167,7 @@
 
   <section class="panel" id="list-panel" hidden>
     <div class="legend" id="legend"></div>
+    <p class="footnote quorum-warn" id="quorum-note" role="status" hidden></p>
     <p class="footnote" id="ask-note"></p>
     <p class="footnote" id="grouping"><span id="grouping-words"></span> <button id="grouping-go" class="small quiet" type="button" hidden></button> <button id="rooms-again" class="small quiet" type="button" hidden>Read again</button></p>
     <div class="hive-body" id="hive-body">
@@ -231,7 +233,7 @@ import { followsOf, writerKey, draftFollow, applyFollow } from './hive-following
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
 import { viewsFor, openOwnerView, mentionLines, ownGrantsOn, nameClash, mentionWhatIf, PUBLIC_NAME } from './owner-view.mjs'
-import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK, RUNS_LOGO, RUNS_ON } from './hive-list.mjs'
+import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, quorumWarning, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK, RUNS_LOGO, RUNS_ON } from './hive-list.mjs'
 
 // The bridge publishes its roster to these relays and reads its commands from them.
 const ROSTER_RELAYS = BRIDGE_RELAYS
@@ -255,9 +257,9 @@ function query(url, filter) {
   })
 }
 // One read across a relay set, with the coverage it actually got.
-async function read(relays, filter) {
+async function read(relays, filter, opts) {
   const results = await Promise.all(relays.map(u => query(u, filter)))
-  return { events: results.flatMap(r => r.out), ...relayCoverage(results.map(r => r.state)) }
+  return { events: results.flatMap(r => r.out), ...relayCoverage(results.map(r => r.state), opts) }
 }
 
 const coverage = []
@@ -331,13 +333,13 @@ async function load({ owner: rememberedOwner = null } = {}) {
 
     st.textContent = 'Reading approvals…'
     const grantors = [...new Set([owner, ...[...cards.values()].flatMap(c => c.grantors)])]
-    const given = await read(GRANT_RELAYS, { kinds: [440, 441], authors: grantors, limit: 5000 })
+    const given = await read(GRANT_RELAYS, { kinds: [440, 441], authors: grantors, limit: 5000 }, { quorum: true })
     cover('approvals you, and anyone a card names as its owner, gave', given)
     const known = [...new Set([owner, ...(bridge ? [bridge] : []), ...roster.map(a => a.pubkey), ...cards.keys(), ...given.events.flatMap(e => e.kind === 440 ? [e.tags.find(t => t[0] === 'p')?.[1]] : [])].filter(Boolean))]
-    const held = await read(GRANT_RELAYS, { kinds: [440], '#p': known, limit: 5000 })
+    const held = await read(GRANT_RELAYS, { kinds: [440], '#p': known, limit: 5000 }, { quorum: true })
     cover('approvals these keys hold', held)
     const others = [...new Set(held.events.map(e => e.pubkey).filter(pk => !grantors.includes(pk)))]
-    const otherRevokes = others.length ? await read(GRANT_RELAYS, { kinds: [441], authors: others, limit: 5000 }) : { events: [] }
+    const otherRevokes = others.length ? await read(GRANT_RELAYS, { kinds: [441], authors: others, limit: 5000 }, { quorum: true }) : { events: [] }
     if (others.length) cover('withdrawals by anyone else who gave them', otherRevokes)
 
     const { grants, events: grantEvents } = readGrants([...given.events, ...held.events, ...otherRevokes.events], { verify: verifyEvent })
@@ -358,8 +360,12 @@ async function load({ owner: rememberedOwner = null } = {}) {
       cards: !cardRead.full,
       // A row with no card is folded with the owner alone, so a card that went unread may name other grantors.
       approvals: !cardRead.full || !given.full || !held.full || (others.length > 0 && !otherRevokes.full),
-      keys: !cardRead.full || !given.full || !held.full || (rosterRead ? !rosterRead.full : false),
+      // Identity stays strict: a key held only on a relay that did not answer may be absent from rows.
+      keys: !cardRead.full || !given.all || !held.all || (rosterRead ? !rosterRead.full : false),
       active: !active.known,
+      // A quorum answered, so squares are read; the owner is still told a relay was missing.
+      slack: Math.max(...[given, held, otherRevokes].map(r => r.missing || 0)),
+      slackEnough: [given, held, otherRevokes].every(r => r.full !== false),
     }
     drawCoverage()
     draw(rows, needs, owner, partial, posting)
@@ -370,7 +376,7 @@ async function load({ owner: rememberedOwner = null } = {}) {
       givers: Object.fromEntries(rows.filter(r => r.answers?.work).map(r => [r.pubkey, r.answers.work.givers.map(g => g.pubkey)])) })) } catch { /* private mode: the button says to open the hive */ }
     drawFollowing(rosterState, profiles, bridge)
     st.className = 'status ok'
-    st.textContent = `Read ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${rows.length} identities · ${partial.approvals || partial.keys || partial.active ? 'not every relay answered in full' : 'every relay answered'}${partial.active ? ', so the Active ticks are locked and the Buzz columns unknown until a full read' : ''}${posting ? ` · posts counted by the bridge at ${new Date(posting.at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : bridge ? '' : ' · no bridge key saved, so no post counts: paste it on Config'}`
+    st.textContent = `Read ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${rows.length} identities · ${partial.approvals || partial.keys || partial.active ? 'not every relay answered in full' : partial.slack && !partial.approvals ? 'enough relays answered (one did not; see the coverage list)' : 'every relay answered'}${partial.active ? ', so the Active ticks are locked and the Buzz columns unknown until a full read' : ''}${posting ? ` · posts counted by the bridge at ${new Date(posting.at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : bridge ? '' : ' · no bridge key saved, so no post counts: paste it on Config'}`
     $('go').textContent = 'Read again'
   } catch (e) {
     st.className = 'status err'; st.textContent = e.message || String(e)
@@ -454,10 +460,10 @@ function draw(rows, needs, owner, partial, posting = null) {
     else d.appendChild(el('div', 'who', nameOf(n.pubkey)))
     needBox.appendChild(d)
   }
-  // Stopped: given work by @mention, and nothing posted since, by the bridge's own reading.
+  // No reply seen (not "stopped": a mention that needed no answer looks the same): given work by @mention, and nothing posted since, by the bridge's own reading.
   for (const x of stoppedAgents(rows, posting, owner)) {
     const name = nameOf(x.pubkey), d = el('div', 'need')
-    d.append(el('b', null, 'Stopped. '), stoppedLine({ name, count: x.count, since: x.since, at: posting.at }))
+    d.append(el('b', null, 'No reply seen. '), stoppedLine({ name, count: x.count, since: x.since, at: posting.at }))
     const b = d.appendChild(el('button', 'small quiet', 'See it')); b.type = 'button'
     b.onclick = () => { $('find').value = name; finding = x.pubkey; dimToFocus(); openSide({ kind: 'name', pk: x.pubkey }) }
     needBox.appendChild(d)
@@ -537,6 +543,7 @@ function draw(rows, needs, owner, partial, posting = null) {
   drawLegend(hive.buzz)
   drawLeftovers(owner, nameOf)
   $('partial-note').hidden = !partial.approvals
+  { const w = quorumWarning({ missing: partial.slack, enough: partial.slackEnough }); $('quorum-note').hidden = !w; $('quorum-note').textContent = w || '' }
   for (const pk of grid.mentions.keys()) fillMentions(pk)
   drawHidden()
   drawRooms()
