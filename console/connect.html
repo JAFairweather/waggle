@@ -167,7 +167,7 @@
       <div>
         <label for="agent-name">What you call it</label>
         <input type="text" id="agent-name" placeholder="Oliver" autocomplete="off">
-        <div class="field-note" id="name-note">Display only. Never reaches a signed event.</div>
+        <div class="field-note" id="name-note">Enter a short id to get a runnable check command. This name is not signed.</div>
       </div>
       <div>
         <label for="agent-key">Its public key</label>
@@ -411,6 +411,11 @@ function refresh() {
 
 function validateFields() {
   const setNote = (id, text, cls) => { const n = $(id); n.textContent = text; n.className = `field-note${cls ? ' ' + cls : ''}` }
+  const name = $('agent-name').value.trim()
+  const id = name.toLowerCase()
+  if (!name) setNote('name-note', 'Enter a short id to get a runnable check command. This name is not signed.')
+  else if (/^[a-z0-9][a-z0-9._-]{1,63}$/.test(id)) setNote('name-note', `Check command uses --name ${id}. This name is not signed.`, 'ok')
+  else setNote('name-note', 'No check command for this name. Use 2–64 characters from a-z, 0-9, ., _, -; start with a letter or digit.', 'warn')
   const agent = $('agent-key').value.trim(), owner = $('owner-key').value.trim(), chan = $('channel-id').value.trim()
   if (!agent) setNote('key-note', '')
   else if (toHex(agent)) setNote('key-note', `Resolves to ${toHex(agent).slice(0, 12)}…`, 'ok')
