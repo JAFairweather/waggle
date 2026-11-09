@@ -338,9 +338,14 @@ export function askCell(act, { owner, nameOf, incomplete = false, givers = 1 }) 
 // partial, and a read is full only when every relay asked answered. Anything the page says is absent
 // ("nobody", "no card", a missing key) is qualified unless every read it rests on was full.
 export const PARTIAL = 'as far as the relays that answered in full show; not every relay did'
-export function relayCoverage(states) {
+// A read is full when every relay asked sent EOSE. With `quorum` (approvals only), one relay of four
+// may be down: three answering in full still reads as full, and `missing` says how many did not, so
+// the page can still tell the owner. Below three relays there is no slack, so a pair must both answer.
+export const quorumOf = n => (n >= 3 ? n - 1 : n)
+export function relayCoverage(states, { quorum = false } = {}) {
   const complete = states.filter(s => s === 'complete').length, partial = states.filter(s => s === 'partial').length
-  return { complete, partial, of: states.length, full: states.length > 0 && complete === states.length }
+  const need = quorum ? quorumOf(states.length) : states.length
+  return { complete, partial, of: states.length, missing: states.length - complete, full: states.length > 0 && complete >= need }
 }
 export function coverageText({ complete, partial, of }) {
   if (!complete && !partial) return { lead: 'Unverifiable', rest: 'no relay answered for', none: true }

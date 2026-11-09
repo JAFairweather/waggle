@@ -214,6 +214,9 @@ check(needs.filter(n => n.kind === 'replaced').map(n => n.grant.id).join() === t
 const mixed = relayCoverage(['complete', 'partial', 'none', 'complete'])
 check(mixed.complete === 2 && mixed.partial === 1 && mixed.of === 4 && !mixed.full, 'a relay that timed out after some events is partial, not answered')
 check(relayCoverage(['complete', 'complete']).full && !relayCoverage([]).full, 'a read is full only when every relay asked sent EOSE')
+check(relayCoverage(['complete', 'complete', 'complete', 'none'], { quorum: true }).full && relayCoverage(['complete', 'complete', 'complete', 'none'], { quorum: true }).missing === 1, 'with a quorum, three of four relays answering is a full read, and one is counted missing')
+check(!relayCoverage(['complete', 'complete', 'none', 'none'], { quorum: true }).full && !relayCoverage(['complete', 'complete', 'complete', 'partial'], { quorum: false }).full, 'two of four is not a quorum, and without quorum one missing relay is still not full')
+check(!relayCoverage(['complete', 'none'], { quorum: true }).full && relayCoverage(['complete', 'partial', 'complete', 'complete'], { quorum: true }).full, 'a pair has no slack, and a relay that only partly answered does not count toward the quorum')
 check(coverageText(relayCoverage(['partial', 'none'])).none && coverageText(relayCoverage(['none'])).lead === 'Unverifiable', 'partial answers alone never show as answered')
 check(/2 of 4 relays answered in full, 1 sent only part/.test(Object.values(coverageText(mixed)).join(' ')), 'the coverage line says how many answered in full and how many in part')
 const nobody = { givers: [] }
