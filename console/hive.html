@@ -360,10 +360,12 @@ async function load({ owner: rememberedOwner = null } = {}) {
       cards: !cardRead.full,
       // A row with no card is folded with the owner alone, so a card that went unread may name other grantors.
       approvals: !cardRead.full || !given.full || !held.full || (others.length > 0 && !otherRevokes.full),
-      keys: !cardRead.full || !given.full || !held.full || (rosterRead ? !rosterRead.full : false),
+      // Identity stays strict: a key held only on a relay that did not answer may be absent from rows.
+      keys: !cardRead.full || !given.all || !held.all || (rosterRead ? !rosterRead.full : false),
       active: !active.known,
       // A quorum answered, so squares are read; the owner is still told a relay was missing.
-      slack: [given, held, otherRevokes].some(r => r.missing > 0),
+      slack: Math.max(...[given, held, otherRevokes].map(r => r.missing || 0)),
+      slackEnough: [given, held, otherRevokes].every(r => r.full !== false),
     }
     drawCoverage()
     draw(rows, needs, owner, partial, posting)
@@ -374,7 +376,7 @@ async function load({ owner: rememberedOwner = null } = {}) {
       givers: Object.fromEntries(rows.filter(r => r.answers?.work).map(r => [r.pubkey, r.answers.work.givers.map(g => g.pubkey)])) })) } catch { /* private mode: the button says to open the hive */ }
     drawFollowing(rosterState, profiles, bridge)
     st.className = 'status ok'
-    st.textContent = `Read ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${rows.length} identities · ${partial.approvals || partial.keys || partial.active ? 'not every relay answered in full' : partial.slack ? 'enough relays answered (one did not; see the coverage list)' : 'every relay answered'}${partial.active ? ', so the Active ticks are locked and the Buzz columns unknown until a full read' : ''}${posting ? ` · posts counted by the bridge at ${new Date(posting.at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : bridge ? '' : ' · no bridge key saved, so no post counts: paste it on Config'}`
+    st.textContent = `Read ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${rows.length} identities · ${partial.approvals || partial.keys || partial.active ? 'not every relay answered in full' : partial.slack && !partial.approvals ? 'enough relays answered (one did not; see the coverage list)' : 'every relay answered'}${partial.active ? ', so the Active ticks are locked and the Buzz columns unknown until a full read' : ''}${posting ? ` · posts counted by the bridge at ${new Date(posting.at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : bridge ? '' : ' · no bridge key saved, so no post counts: paste it on Config'}`
     $('go').textContent = 'Read again'
   } catch (e) {
     st.className = 'status err'; st.textContent = e.message || String(e)
@@ -541,7 +543,7 @@ function draw(rows, needs, owner, partial, posting = null) {
   drawLegend(hive.buzz)
   drawLeftovers(owner, nameOf)
   $('partial-note').hidden = !partial.approvals
-  { const w = quorumWarning(partial.slack && !partial.approvals); $('quorum-note').hidden = !w; $('quorum-note').textContent = w || '' }
+  { const w = quorumWarning({ missing: partial.slack, enough: partial.slackEnough }); $('quorum-note').hidden = !w; $('quorum-note').textContent = w || '' }
   for (const pk of grid.mentions.keys()) fillMentions(pk)
   drawHidden()
   drawRooms()

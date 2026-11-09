@@ -345,7 +345,7 @@ export const quorumOf = n => (n >= 3 ? n - 1 : n)
 export function relayCoverage(states, { quorum = false } = {}) {
   const complete = states.filter(s => s === 'complete').length, partial = states.filter(s => s === 'partial').length
   const need = quorum ? quorumOf(states.length) : states.length
-  return { complete, partial, of: states.length, missing: states.length - complete, full: states.length > 0 && complete >= need }
+  return { complete, partial, of: states.length, missing: states.length - complete, all: states.length > 0 && complete === states.length, full: states.length > 0 && complete >= need }
 }
 export function coverageText({ complete, partial, of }) {
   if (!complete && !partial) return { lead: 'Unverifiable', rest: 'no relay answered for', none: true }
@@ -353,11 +353,15 @@ export function coverageText({ complete, partial, of }) {
   return { lead: `${complete} of ${of}`, rest: `relays answered in full${extra} for`, none: !complete }
 }
 
-// Shown above the grid whenever the approvals reads counted as full on a quorum, not on every relay.
-// A blank square then means "no approval seen", and one held only on the relay that did not answer
-// would change it. Null when every relay answered.
-export function quorumWarning(slack) {
-  return slack
-    ? 'One approval relay did not answer. A blank square means no approval was seen on the relays that did; an approval, or a withdrawal of one, held only on the missing relay could change a square. Read again to retry.'
-    : null
+// Shown above the grid whenever a grant read had a relay that did not answer, whatever the card read
+// did. `missing` is the most relays any grant read lacked, `enough` whether every grant read still
+// reached its quorum. A blank square then means "no approval seen", and an approval or a withdrawal
+// held only on a missing relay could change it; a key held only there may be absent from the rows.
+// Null when every grant relay answered.
+export function quorumWarning({ missing = 0, enough = true } = {}) {
+  if (!(missing > 0)) return null
+  const lead = enough
+    ? `${missing === 1 ? 'One approval relay' : `${missing} approval relays`} did not answer, so these squares rest on a quorum.`
+    : `Too few approval relays answered for a quorum (${missing} did not), so squares are shown as not known where nothing was seen.`
+  return `${lead} A blank square means no approval was seen on the relays that did; an approval, or a withdrawal of one, held only on a missing relay could change a square, and a key held only there may be missing from this list. Read again to retry.`
 }
