@@ -117,6 +117,7 @@
   button.who{background:none;border:0;border-radius:0;padding:0;margin:0;color:var(--text);font:inherit;font-weight:700;cursor:pointer;text-align:left}
   button.link{background:none;border:0;padding:0;margin:0;color:var(--gold);font:inherit;font-weight:650;cursor:pointer;text-decoration:underline}
   .footnote{font-size:12.5px;color:var(--dim);margin:10px 0 0}
+  .quorum-warn{color:var(--warn,#e0a93b);border-left:3px solid currentColor;padding-left:10px}
   details.about{margin-top:12px;font-size:13px;color:var(--dim)}details.about summary{cursor:pointer}details.about .coverage{margin:8px 0}
   .npub{font:italic 12px var(--mono);color:var(--faint);overflow-wrap:anywhere}
   dl.answers{display:grid;grid-template-columns:minmax(140px,190px) 1fr;gap:7px 16px;margin:4px 0 4px 1.2em;font-size:14px}
@@ -166,6 +167,7 @@
 
   <section class="panel" id="list-panel" hidden>
     <div class="legend" id="legend"></div>
+    <p class="footnote quorum-warn" id="quorum-note" role="status" hidden></p>
     <p class="footnote" id="ask-note"></p>
     <p class="footnote" id="grouping"><span id="grouping-words"></span> <button id="grouping-go" class="small quiet" type="button" hidden></button> <button id="rooms-again" class="small quiet" type="button" hidden>Read again</button></p>
     <div class="hive-body" id="hive-body">
@@ -231,7 +233,7 @@ import { followsOf, writerKey, draftFollow, applyFollow } from './hive-following
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
 import { viewsFor, openOwnerView, mentionLines, ownGrantsOn, nameClash, mentionWhatIf, PUBLIC_NAME } from './owner-view.mjs'
-import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK, RUNS_LOGO, RUNS_ON } from './hive-list.mjs'
+import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, quorumWarning, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK, RUNS_LOGO, RUNS_ON } from './hive-list.mjs'
 
 // The bridge publishes its roster to these relays and reads its commands from them.
 const ROSTER_RELAYS = BRIDGE_RELAYS
@@ -539,6 +541,7 @@ function draw(rows, needs, owner, partial, posting = null) {
   drawLegend(hive.buzz)
   drawLeftovers(owner, nameOf)
   $('partial-note').hidden = !partial.approvals
+  { const w = quorumWarning(partial.slack && !partial.approvals); $('quorum-note').hidden = !w; $('quorum-note').textContent = w || '' }
   for (const pk of grid.mentions.keys()) fillMentions(pk)
   drawHidden()
   drawRooms()

@@ -352,3 +352,12 @@ export function coverageText({ complete, partial, of }) {
   const extra = partial ? `, ${partial} sent only part before timing out,` : ''
   return { lead: `${complete} of ${of}`, rest: `relays answered in full${extra} for`, none: !complete }
 }
+
+// Shown above the grid whenever the approvals reads counted as full on a quorum, not on every relay.
+// A blank square then means "no approval seen", and one held only on the relay that did not answer
+// would change it. Null when every relay answered.
+export function quorumWarning(slack) {
+  return slack
+    ? 'One approval relay did not answer. A blank square means no approval was seen on the relays that did; an approval, or a withdrawal of one, held only on the missing relay could change a square. Read again to retry.'
+    : null
+}
