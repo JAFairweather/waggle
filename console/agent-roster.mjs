@@ -141,5 +141,5 @@ export function stoppedAgents(rows, posting, owner) {
 }
 const ago = secs => secs < 90 * 60 ? `${Math.max(1, Math.round(secs / 60))} minutes` : secs < 48 * 3600 ? `${Math.round(secs / 3600)} hours` : `${Math.round(secs / 86400)} days`
 export function stoppedLine({ name, count, since, at }) {
-  return `${name} was @mentioned ${ago(at - since)} ago and hasn't posted since${count > 1 ? ` (${count} mentions waiting)` : ''}. Whether it is connected right now isn't read.`
+  return `${name} was @mentioned ${ago(at - since)} ago and has no post since${count > 1 ? ` (${count} mentions waiting)` : ''}. It may have had nothing to answer, and whether it is connected right now isn't read. Nothing for you to sign.`
 }

@@ -432,11 +432,11 @@ check(!/loaded for a different bridge/.test(status()),
   check(stoppedAgents(rows, null, O).length === 0, 'no fresh bridge tally, no card')
   check(stoppedAgents([{ pubkey: O }], got, O).length === 0, 'and only for agents the hive draws')
   check(stoppedAgents([{ pubkey: O }, { pubkey: A, isBridge: true }, { pubkey: B }], got, O).map(x => x.pubkey).join() === B, "and never for the bridge's own key, which the grid draws no row for")
-  check(stoppedLine({ name: 'Pi Dog', count: 1, since: at - 40 * 60, at }) === "Pi Dog was @mentioned 40 minutes ago and hasn't posted since. Whether it is connected right now isn't read.", 'one mention, in minutes, and connection not claimed')
-  check(stoppedLine({ name: 'MC Claude', count: 3, since: at - 5 * 3600, at }) === "MC Claude was @mentioned 5 hours ago and hasn't posted since (3 mentions waiting). Whether it is connected right now isn't read.", 'several, in hours')
+  check(stoppedLine({ name: 'Pi Dog', count: 1, since: at - 40 * 60, at }) === "Pi Dog was @mentioned 40 minutes ago and has no post since. It may have had nothing to answer, and whether it is connected right now isn't read. Nothing for you to sign.", 'one mention, in minutes, and connection not claimed')
+  check(stoppedLine({ name: 'MC Claude', count: 3, since: at - 5 * 3600, at }) === "MC Claude was @mentioned 5 hours ago and has no post since (3 mentions waiting). It may have had nothing to answer, and whether it is connected right now isn't read. Nothing for you to sign.", 'several, in hours')
   check(/3 days ago/.test(stoppedLine({ name: 'x', count: 1, since: at - 3 * 86400, at })), 'and days, past two of them')
   const page = readFileSync(new URL('../console/hive.html', import.meta.url), 'utf8')
-  check(/for \(const x of stoppedAgents\(rows, posting, owner\)\)/.test(page) && /el\('b', null, 'Stopped\. '\)/.test(page) && /'See it'/.test(page), 'Needs you draws a Stopped card with one button, See it')
+  check(/for \(const x of stoppedAgents\(rows, posting, owner\)\)/.test(page) && /el\('b', null, 'No reply seen\. '\)/.test(page) && /'See it'/.test(page), 'Needs you draws a No reply seen card with one button, See it')
   check(/b\.onclick = \(\) => \{ \$\('find'\)\.value = name; finding = x\.pubkey; dimToFocus\(\); openSide\(\{ kind: 'name', pk: x\.pubkey \}\) \}/.test(page), 'See it finds the agent: its row and column, and its name panel')
 }
 

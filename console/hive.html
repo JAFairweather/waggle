@@ -454,10 +454,10 @@ function draw(rows, needs, owner, partial, posting = null) {
     else d.appendChild(el('div', 'who', nameOf(n.pubkey)))
     needBox.appendChild(d)
   }
-  // Stopped: given work by @mention, and nothing posted since, by the bridge's own reading.
+  // No reply seen (not "stopped": a mention that needed no answer looks the same): given work by @mention, and nothing posted since, by the bridge's own reading.
   for (const x of stoppedAgents(rows, posting, owner)) {
     const name = nameOf(x.pubkey), d = el('div', 'need')
-    d.append(el('b', null, 'Stopped. '), stoppedLine({ name, count: x.count, since: x.since, at: posting.at }))
+    d.append(el('b', null, 'No reply seen. '), stoppedLine({ name, count: x.count, since: x.since, at: posting.at }))
     const b = d.appendChild(el('button', 'small quiet', 'See it')); b.type = 'button'
     b.onclick = () => { $('find').value = name; finding = x.pubkey; dimToFocus(); openSide({ kind: 'name', pk: x.pubkey }) }
     needBox.appendChild(d)
