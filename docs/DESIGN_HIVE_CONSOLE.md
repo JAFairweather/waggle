@@ -58,7 +58,7 @@ comes from something the page already reads.
 | ✓ with a small "copy" mark | **Your copy says it takes work from it.** Buzz decides for this column, and the page reads your signed copy of Buzz's allow-list, not Buzz's own. | the copy (`cellOf`), which the pair check calls Claimed |
 | ! | **Takes the work, but can't answer back by name.** The row isn't on the column's @mention list, so the column can't bring the row back in. | approved, and the column's list is readable and leaves the row out (`oneWay`) |
 | blank | **Won't act on it.** Nobody has approved it. | not approved (`cellOf`) |
-| ? | **Not known yet.** One sentence says why, and one button finds out if that's possible. | the column publishes no settings, so its rules are assumed, not read; or Buzz decides and its list hasn't been copied here; or not every relay answered |
+| ? | **Not known yet.** One sentence says why, and one button finds out if that's possible. | the column publishes no settings, so its rules are assumed, not read; or Buzz decides and its list hasn't been copied here; or too few relays answered (a quorum, three of four, counts as answered) |
 | dashed + or – | **Your change**, not signed yet. It's in the bar. | the page's pending changes |
 
 A ✓ whose column keeps its @mention list private stays a ✓. Its panel says whether the column
