@@ -504,7 +504,7 @@ async function readLatest() {
   const steps = readBackSteps(latest, { sixth: form.sixth, plan })
   requestBack = steps[3]; done[5] = steps[5]; done[6] = steps[6]
   fixed = fixedBy(latest)
-  if (fixed) { form.harness = fixed.harness; form.like = fixed.like; keep(); drawRuns(); drawLike() }
+  if (fixed) { form.harness = fixed.harness; form.like = fixed.like; keep(); drawRuns(); drawLike(); drawFeedKey() }
   if (form.step === 6) drawGivers()
   joined = joinOf(latest) || joined
   drawRail(); drawRows()

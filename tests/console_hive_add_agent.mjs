@@ -224,6 +224,23 @@ check(!Object.keys(NOT_BUILT).some(n => n in PART_BUILT), 'a step is either not 
 check(/<input id="channel-key"/.test(page) && /id="box-go"/.test(page) && /id="box-status"/.test(page), 'step 4 has the paste field, its own button and its own status')
 check(/send\('box-status', 'box-go', f => draftBind\(/.test(page), 'step 4 signs a bind_runtime through the same send path as the other signatures')
 check(/<input id="feed-key"/.test(page) && /id="feed-key-field" hidden/.test(page) && /\$\(id\)\.hidden = !needsFeedKey\(form\.harness\)/.test(page), 'step 4 shows a second field for a Pi or Codex agent only')
+// A page that opens on the default harness and then reads an existing Pi or Codex request replaces form.harness with the signed
+// one; the feed field must follow it, or step 4 cannot bind the agent. Run the page's own readLatest ordering against a stub.
+{
+  const body = page.slice(page.indexOf('async function readLatest()'), page.indexOf('\n}\n', page.indexOf('async function readLatest()')))
+  const fixedAt = body.indexOf('if (fixed) {'), fixedEnd = body.indexOf('}', fixedAt)
+  const fixedLine = body.slice(fixedAt, fixedEnd + 1)
+  check(/form\.harness = fixed\.harness/.test(fixedLine) && /drawFeedKey\(\)/.test(fixedLine) && fixedLine.indexOf('form.harness = fixed.harness') < fixedLine.indexOf('drawFeedKey()'), 'reading an existing request redraws the feed field after it fixes the harness')
+  const trace = []
+  const run = new Function('fixed', 'form', 'keep', 'drawRuns', 'drawLike', 'drawFeedKey', fixedLine)
+  const form = { harness: 'claude-code', like: '' }
+  let shown = null
+  run({ harness: 'pi', like: 'pi-dog' }, form, () => {}, () => trace.push('runs'), () => trace.push('like'), () => { shown = needsFeedKey(form.harness) })
+  check(form.harness === 'pi' && shown === true && trace.join() === 'runs,like', 'starting on the default harness and reading a Pi request shows the feed field')
+  shown = null
+  run({ harness: 'claude-code', like: 'crystalclaude' }, { harness: 'pi', like: '' }, () => {}, () => {}, () => {}, () => { shown = needsFeedKey('claude-code') })
+  check(shown === false, 'and reading a Claude request hides it')
+}
 check(/feedKey: feed \}\)/.test(page) && /needsFeedKey\(form\.harness\) \? \$\('feed-key'\)\.value : ''/.test(page), 'and sends the feed key only for those harnesses')
 check(/'#d': \[requestD\(form\.name, 'bind_runtime'\)\]/.test(page) && /readBack\(back\.events, signed/.test(page), 'step 4 reads back the very bind it sent, by its own d, not the add_agent')
 check(/PART_BUILT\[s\.n\] \? 'partly built'/.test(page) && /\$\('box-later'\)\.textContent = PART_BUILT\[4\] \|\|/.test(page), 'the rail and the step say step 4 is partly built while it is, never done')
