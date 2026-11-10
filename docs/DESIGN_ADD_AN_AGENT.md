@@ -241,6 +241,12 @@ else. nvoy-onboard then installs the restricted, forced-command entry for this o
 (`instance-identity apply`) and baselines the channel. Until it has, the harness keeps retrying, and
 the page shows "waiting for the fleet".
 
+A Pi or Codex agent has two keys, one forced to each program: a channel key and a wake-feed key
+(nvoy `principal_family.mjs`). For those two harnesses step 4 shows a second field, and `bind_runtime`
+also carries `feed_key`, a key of its own. The page will not draft a bind with one key for them, and
+nvoy refuses one. For these harnesses `instance-identity apply` seats both lines, `instance-unit verify
+--family codex` checks both, and the baseline is the feed's first start rather than the Claude one.
+
 **Where the line's details come from.** The line needs four values:
 
 - the instance id;
