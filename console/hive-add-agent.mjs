@@ -87,16 +87,31 @@ export function draftAddAgent({ name, agent, harness, like, givers = [], rooms =
     ['harness', harness], ['like', like], ...g.map(pk => ['giver', pk]), ...r.map(room => ['room', room]), ...shown, ...j] }
 }
 
-// bind_runtime: the channel key the install line made on the agent's box. Public half only.
-export function draftBind({ name, agent, harness, like, channelKey, now = Math.floor(Date.now() / 1000) }) {
-  const n = common({ name, agent, harness, like })
-  if (harness === 'codex') throw new Error('A Codex agent needs a second key for its wake feed, and this request carries only one. Step 4 cannot bind it yet.')
-  const line = String(channelKey || '').trim()
-  if (/PRIVATE KEY|nsec1|bunker:|nostrconnect:/i.test(line)) throw new Error('That is private. Paste only the line that starts ssh-ed25519.')
+// A Pi or Codex agent reaches the fleet on two keys, one forced to each program (nvoy mcp/tools/principal_family.mjs).
+// Every other harness has one. The page asks for the second only for these.
+export const TWO_KEY_HARNESSES = Object.freeze(['pi', 'codex'])
+export const needsFeedKey = harness => TWO_KEY_HARNESSES.includes(harness)
+
+function sshPublic(text, what) {
+  const line = String(text || '').trim()
+  if (/PRIVATE KEY|nsec1|bunker:|nostrconnect:/i.test(line)) throw new Error(`That is private. Paste only the ${what} line that starts ssh-ed25519.`)
   const m = SSH_PUBLIC.exec(line)
-  if (!m || line.includes('\n')) throw new Error('Paste the one line the install printed, starting ssh-ed25519.')
+  if (!m || line.includes('\n')) throw new Error(`Paste one line, the ${what} the install printed, starting ssh-ed25519.`)
+  return `${m[1]} ${m[2]}`
+}
+
+// bind_runtime: the channel key the install line made on the agent's box (and, for a Pi or Codex agent, the
+// wake-feed key beside it). Public halves only.
+export function draftBind({ name, agent, harness, like, channelKey, feedKey, now = Math.floor(Date.now() / 1000) }) {
+  const n = common({ name, agent, harness, like })
+  const channel = sshPublic(channelKey, 'channel key')
+  const two = needsFeedKey(harness)
+  if (two && !String(feedKey || '').trim()) throw new Error(`A ${harness === 'pi' ? 'Pi' : 'Codex'} agent has a second key for its wake feed. Paste it too.`)
+  if (!two && String(feedKey || '').trim()) throw new Error('Only a Pi or Codex agent has a feed key; this one has one key.')
+  const feed = two ? sshPublic(feedKey, 'feed key') : null
+  if (feed && feed.split(' ')[1] === channel.split(' ')[1]) throw new Error('The feed key is the same as the channel key. Each is a key of its own.')
   return { kind: SETUP_KIND, created_at: now, content: '', tags: [['d', requestD(n, 'bind_runtime')], ['op', 'bind_runtime'], ['p', agent],
-    ['harness', harness], ['like', like], ['channel_key', `${m[1]} ${m[2]}`]] }
+    ['harness', harness], ['like', like], ['channel_key', channel], ...(feed ? [['feed_key', feed]] : [])] }
 }
 
 // Sign, check it is the request drafted and by the owner the page read as, then publish.

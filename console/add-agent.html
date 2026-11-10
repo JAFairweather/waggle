@@ -147,6 +147,8 @@
       </div>
       <ol class="rows" id="box-rows"></ol>
       <label class="field" style="margin-top:14px">The key the line printed<input id="channel-key" placeholder="ssh-ed25519 AAAA…" spellcheck="false" autocomplete="off"></label>
+      <label class="field" id="feed-key-field" hidden>Its wake-feed key<input id="feed-key" placeholder="ssh-ed25519 AAAA…" spellcheck="false" autocomplete="off"></label>
+      <p class="hint" id="feed-key-hint" hidden>A Pi or Codex agent has a second key, the one it hears wakes on. Paste that public line too; it must be a different key from the first.</p>
       <p class="hint">Only the public half: one line that starts <code>ssh-ed25519</code>. The private half stays on the box. Signing asks the server to let this one key reach <span data-name></span>'s channel.</p>
       <div class="status" id="box-status" role="status"></div>
       <div class="actions"><button type="button" id="box-go">Sign its box key</button><button type="button" class="quiet" data-next>Next: let it into the hive</button><button type="button" class="quiet" data-back>Back</button></div>
@@ -202,7 +204,7 @@
 import { verifyEvent, nip19 } from 'nostr-tools'
 import { consoleSigner } from './signer-session.mjs'
 import { signFresh } from './guarded-signer.mjs'
-import { HARNESSES, agentName, draftAddAgent, draftBind, profileTags, readBack, sendRequest, SETUP_KIND, requestD } from './hive-add-agent.mjs'
+import { HARNESSES, agentName, draftAddAgent, draftBind, needsFeedKey, profileTags, readBack, sendRequest, SETUP_KIND, requestD } from './hive-add-agent.mjs'
 import { HIVE_RELAY, readHiveTerms, sealInvite } from './hive-invite.mjs'
 import { readCards, relayCoverage, GRANT_RELAYS, CARD_RELAYS, CARD_D, RUNS_LOGO, RUNS_ON, PLATFORMS, platformOf } from './hive-list.mjs'
 import { shortNpub } from './agent-roster.mjs'
@@ -241,7 +243,7 @@ async function read(relays, filter) {
 const SAVED = 'waggle-add-agent'
 const saved = (() => { try { return JSON.parse(sessionStorage.getItem(SAVED) || '{}') } catch { return {} } })()
 const keep = () => { try { sessionStorage.setItem(SAVED, JSON.stringify(form)) } catch { /* private mode: the form lives until reload */ } }
-const form = { step: 1, name: '', display: '', about: '', harness: 'claude-code', like: '', agent: '', givers: null, rooms: null, sixth: null, channelKey: '', ...saved }
+const form = { step: 1, name: '', display: '', about: '', harness: 'claude-code', like: '', agent: '', givers: null, rooms: null, sixth: null, channelKey: '', feedKey: '', ...saved }
 
 // What the page has read: whose hive, its agents, and the newest request for this agent.
 let owner = null, loaded = false, installed = [], profiles = new Map(), latest = null, joined = null, terms = null, fixed = null, roomRead = null
@@ -354,7 +356,7 @@ function drawRuns() {
     if (RUNS_LOGO[label]) { const logo = b.appendChild(el('img')); logo.src = RUNS_LOGO[label]; logo.alt = '' }
     b.append(document.createTextNode(label))
     b.disabled = !!fixed && id !== fixed.harness
-    b.onclick = () => { form.harness = id; keep(); for (const x of runs.children) x.setAttribute('aria-pressed', String(x === b)) }
+    b.onclick = () => { form.harness = id; keep(); for (const x of runs.children) x.setAttribute('aria-pressed', String(x === b)); drawFeedKey() }
   }
   $('fixed-why').hidden = !fixed
   $('fixed-why').textContent = fixed ? 'Its setup was already sent, so what it runs in and the agent it starts like stay as they were sent. To change them, add it under a new name.' : ''
@@ -662,10 +664,13 @@ async function readBind(signed) {
   const back = await read(GRANT_RELAYS, { kinds: [SETUP_KIND], authors: [owner], '#d': [requestD(form.name, 'bind_runtime')], limit: 8 })
   return readBack(back.events, signed, { owner, verify: verifyEvent }) ? signed : null
 }
+// The wake-feed key's field shows for a harness that has one, and only then.
+function drawFeedKey() { for (const id of ['feed-key-field', 'feed-key-hint']) $(id).hidden = !needsFeedKey(form.harness) }
 $('box-go').onclick = () => {
-  const pasted = $('channel-key').value
+  const pasted = $('channel-key').value, feed = needsFeedKey(form.harness) ? $('feed-key').value : ''
   if (/PRIVATE KEY/i.test(pasted)) $('channel-key').value = ''
-  return send('box-status', 'box-go', f => draftBind({ ...f, channelKey: pasted }), () => { form.channelKey = pasted.trim(); keep() }, readBind).then(() => readProgress())
+  if (/PRIVATE KEY/i.test(feed)) $('feed-key').value = ''
+  return send('box-status', 'box-go', f => draftBind({ ...f, channelKey: pasted, feedKey: feed }), () => { form.channelKey = pasted.trim(); form.feedKey = feed.trim(); keep() }, readBind).then(() => readProgress())
 }
 $('work-go').onclick = () => {
   const stop = workSignGate(joined)
@@ -691,6 +696,8 @@ $('restart').onclick = () => { try { sessionStorage.removeItem(SAVED) } catch {}
 $('name').oninput = () => { form.name = $('name').value.trim().toLowerCase(); drawNames(); drawRail() }
 $('display').oninput = () => { form.display = $('display').value; keep() }
 $('channel-key').value = form.channelKey || ''
+$('feed-key').value = form.feedKey || ''
+drawFeedKey()
 
 // Rooms (#683): read from the room relay with one sign-in, then ticked here. Nothing is joined from
 // this page: the rooms go in the request, and the agent joins each with its own key.

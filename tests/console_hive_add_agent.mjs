@@ -18,7 +18,7 @@
 import { generateSecretKey, getPublicKey, finalizeEvent, verifyEvent } from 'nostr-tools/pure'
 import * as nip44 from 'nostr-tools/nip44'
 import { readFileSync } from 'node:fs'
-import { HARNESSES, agentName, draftAddAgent, draftBind, profileTags, readBack, requestD, sendRequest, sealedShape, SETUP_KIND } from '../console/hive-add-agent.mjs'
+import { HARNESSES, agentName, draftAddAgent, draftBind, needsFeedKey, profileTags, readBack, requestD, sendRequest, sealedShape, SETUP_KIND } from '../console/hive-add-agent.mjs'
 import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, HANDOFF, workSignGate } from '../console/add-agent-flow.mjs'
 import * as flow from '../console/add-agent-flow.mjs'
 import { draftGrant, draftRevoke } from '../console/hive-change.mjs'
@@ -74,7 +74,17 @@ check(JSON.stringify(bind.tags) === JSON.stringify([['d', 'nvoy-onboard/hr/bind_
 check(throws(() => draftBind({ ...base, channelKey: '-----BEGIN OPENSSH PRIVATE KEY-----' }), /private/), 'a private key never becomes a draft')
 check(throws(() => draftBind({ ...base, channelKey: 'ssh-rsa AAAAB3Nza' }), /starting ssh-ed25519/), 'an unsupported key type')
 check(throws(() => draftBind({ ...base, channelKey: `${KEY}\n${KEY}` }), /one line/), 'two lines')
-check(throws(() => draftBind({ ...base, harness: 'codex', channelKey: KEY }), /second key/), 'a Codex agent is refused: its wake feed needs a key this request cannot carry')
+const FEED = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI' + 'B'.repeat(43)
+for (const harness of ['pi', 'codex']) {
+  check(throws(() => draftBind({ ...base, harness, channelKey: KEY }), /second key for its wake feed/), `${harness}: a bind without the feed key is refused, so it cannot be signed with one key`)
+  const two = draftBind({ ...base, harness, channelKey: `${KEY} a@b`, feedKey: `${FEED} c@d` })
+  check(two.tags.at(-2)[0] === 'channel_key' && two.tags.at(-2)[1] === KEY && two.tags.at(-1)[0] === 'feed_key' && two.tags.at(-1)[1] === FEED, `${harness}: the bind carries channel_key then feed_key, comments dropped`)
+  check(throws(() => draftBind({ ...base, harness, channelKey: KEY, feedKey: KEY }), /same as the channel key/), `${harness}: the feed key must differ from the channel key`)
+  check(throws(() => draftBind({ ...base, harness, channelKey: KEY, feedKey: '-----BEGIN OPENSSH PRIVATE KEY-----' }), /private/), `${harness}: a private feed key never becomes a draft`)
+  check(throws(() => draftBind({ ...base, harness, channelKey: KEY, feedKey: 'ssh-rsa AAAAB3Nza' }), /starting ssh-ed25519/), `${harness}: an unsupported feed key type`)
+}
+check(throws(() => draftBind({ ...base, channelKey: KEY, feedKey: FEED }), /Only a Pi or Codex agent/), 'a one-key harness is refused a feed key rather than carrying it')
+check(needsFeedKey('pi') && needsFeedKey('codex') && !needsFeedKey('claude-code') && !needsFeedKey('antigravity'), 'only pi and codex have a feed key')
 check(draftBind({ ...base, harness: 'antigravity', channelKey: KEY }).tags.some(t => t[0] === 'harness' && t[1] === 'antigravity'), 'an Antigravity agent binds its one channel key')
 
 // ── 4. Sending ──────────────────────────────────────────────────────────────────────────────────
@@ -213,6 +223,8 @@ check(!Object.keys(NOT_BUILT).some(n => n in PART_BUILT), 'a step is either not 
 // Step 4: paste the public half the line printed, sign it as bind_runtime, read that very event back.
 check(/<input id="channel-key"/.test(page) && /id="box-go"/.test(page) && /id="box-status"/.test(page), 'step 4 has the paste field, its own button and its own status')
 check(/send\('box-status', 'box-go', f => draftBind\(/.test(page), 'step 4 signs a bind_runtime through the same send path as the other signatures')
+check(/<input id="feed-key"/.test(page) && /id="feed-key-field" hidden/.test(page) && /\$\(id\)\.hidden = !needsFeedKey\(form\.harness\)/.test(page), 'step 4 shows a second field for a Pi or Codex agent only')
+check(/feedKey: feed \}\)/.test(page) && /needsFeedKey\(form\.harness\) \? \$\('feed-key'\)\.value : ''/.test(page), 'and sends the feed key only for those harnesses')
 check(/'#d': \[requestD\(form\.name, 'bind_runtime'\)\]/.test(page) && /readBack\(back\.events, signed/.test(page), 'step 4 reads back the very bind it sent, by its own d, not the add_agent')
 check(/PART_BUILT\[s\.n\] \? 'partly built'/.test(page) && /\$\('box-later'\)\.textContent = PART_BUILT\[4\] \|\|/.test(page), 'the rail and the step say step 4 is partly built while it is, never done')
 const sealedJoin = { invite: nip44.encrypt('code', nip44.getConversationKey(O.sk, A.pk)), policy: 'v1', age: 'confirmed' }
