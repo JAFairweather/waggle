@@ -318,6 +318,9 @@ console.log('console_hive_list: one list, every key kept, roles from recipes, nv
   const bound = [{ ...crusty, channel }]
   const mid = rowsOf(bound)
   check(rowKeyOf(bound[0]) === channel && mid.some(r => r.pubkey === channel && r.noBuzz && r.hiveWriter === writer) && !mid.some(r => r.pubkey === writer), 'bound, not yet on Buzz: one row on the channel key, writer key shown on it, no row left on the old key')
+  // a card without the roster is not membership: the card is published before the rooms step
+  const cardOnly = rowsOf(bound, { cards: new Map([[channel, { instance: 'crusty', grantors: [owner.pk] }]]) }).find(r => r.pubkey === channel)
+  check(cardOnly.noBuzz === true, 'card published but not on the roster: still no Buzz channel')
   // live: roster names the channel key
   const live = rowsOf(bound, { roster: [{ pubkey: channel, label: 'Crusty' }] }).find(r => r.pubkey === channel)
   check(live.noBuzz === false && live.hiveWriter === writer && live.name === 'Crusty', 'on the roster: no longer "no Buzz channel", still names its Hive writer key')

@@ -171,7 +171,8 @@ export function buildList({ owner, grantEvents = [], grants = [], table, cards =
     const seat = seats.find(x => rowKeyOf(x) === row.pubkey) || null
     row.seat = seat
     row.hiveWriter = seat && seat.channel ? seat.pubkey : null
-    row.noBuzz = !!seat && !row.sources.has('roster') && !card
+    // Only the roster (actual membership) clears it: a card is published before the agent is in its rooms (nvoy onboard_run order).
+    row.noBuzz = !!seat && !row.sources.has('roster')
     row.name = profile.display_name || profile.name || label || seat?.label || card?.instance || null
     row.picture = profile.picture || null
     row.card = card

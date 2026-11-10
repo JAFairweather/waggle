@@ -8,7 +8,7 @@
 // has now; `channel` is the Buzz channel identity onboarding creates later (null until the owner binds it).
 // The row is keyed by `channel` once there is one, and the writer key is shown on it as the Hive writer, so
 // joining Buzz moves the same row instead of leaving an old one behind. `group` is the table group it sits
-// in (a PLATFORMS id) before and after. Add a seat when it is made; set `channel` when the bind is read back.
+// in (a PLATFORMS id) before and after. Add a seat when it is made; set `channel` when the bind is read back, to the Bunker agent pubkey in the owner's signed setup request, NOT the SSH channel-ssh.pub key staged for the broker.
 // Public keys only.
 export const SEATS = Object.freeze([
   { pubkey: '664092127d52c6a8e2fb337d0f82b62a0490060d5725e19fea92ba9861ecbecc', channel: null, label: 'Crusty', harness: 'Pi', group: 'third-party' },
