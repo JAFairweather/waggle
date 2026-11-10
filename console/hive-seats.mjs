@@ -11,7 +11,7 @@
 // in (a PLATFORMS id) before and after. Add a seat when it is made; set `channel` when the bind is read back, to the Bunker agent pubkey in the owner's signed setup request, NOT the SSH channel-ssh.pub key staged for the broker.
 // Public keys only.
 export const SEATS = Object.freeze([
-  { pubkey: '664092127d52c6a8e2fb337d0f82b62a0490060d5725e19fea92ba9861ecbecc', channel: null, label: 'Crusty', harness: 'Pi', group: 'third-party' },
+  { pubkey: '664092127d52c6a8e2fb337d0f82b62a0490060d5725e19fea92ba9861ecbecc', channel: '331458f40dfeeaea9d68ff651b951d194ced876287e2808fe9bb4796ffef2a71', label: 'Crusty', harness: 'Pi', group: 'third-party' },
 ])
 export const rowKeyOf = seat => seat.channel || seat.pubkey
 export const NO_BUZZ = 'no Buzz channel'
