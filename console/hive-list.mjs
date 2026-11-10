@@ -1,7 +1,7 @@
 // hive-list.mjs — the hive manager's one list (#613 M1, docs/HIVE_MANAGER_SPEC.md).
 //
 // Every identity the hive knows about becomes one row keyed by pubkey, whichever source named it:
-// the owner, a grant, an agent card, the bridge's roster. A key named by any source is never
+// the owner, a grant, an agent card, the bridge's roster, a herd-cloud seat (hive-seats.mjs). A key named by any source is never
 // dropped, because a list that silently loses a key is the registry problem this replaces. Each
 // answer on a row is read from the one source that owns it, and an answer that no source reports
 // says "not reported" instead of guessing.
@@ -12,6 +12,7 @@
 
 import { foldGrantsWith, grantExpired, TASK_CAPS } from './vendor/nvoy-admission.mjs'
 import { GRANT_RELAYS } from './vendor/nvoy-grant-relays.mjs'
+import { SEATS } from './hive-seats.mjs'
 import { describeGrant } from './capability-vocabulary.mjs'
 
 export { GRANT_RELAYS }
@@ -125,7 +126,7 @@ export function readCards(events, { owner, verify }) {
 const shown = (card, field) => (card?.withheld || []).includes(field) ? 'withheld' : (card?.not_reported || []).includes(field) ? 'not reported' : null
 
 // The one list. Sources only add keys; nothing here removes one.
-export function buildList({ owner, grantEvents = [], grants = [], table, cards = new Map(), roster = [], bridge = null, profiles = new Map() }) {
+export function buildList({ owner, grantEvents = [], grants = [], table, cards = new Map(), roster = [], bridge = null, profiles = new Map(), seats = [] }) {
   const rows = new Map()
   const add = (pubkey, source) => {
     const pk = String(pubkey || '').toLowerCase()
@@ -137,6 +138,7 @@ export function buildList({ owner, grantEvents = [], grants = [], table, cards =
   if (bridge) add(bridge, 'roster')
   for (const agent of roster) add(agent.pubkey, 'roster')
   for (const pk of cards.keys()) add(pk, 'card')
+  for (const seat of seats) add(seat.pubkey, 'seat')
   for (const g of grants) {
     add(g.grantor, 'grants'); add(g.grantee, 'grants')
     const subject = table.subjectOf(g.hash)
@@ -166,7 +168,10 @@ export function buildList({ owner, grantEvents = [], grants = [], table, cards =
     const card = cards.get(row.pubkey) || null
     const profile = profiles.get(row.pubkey) || {}
     const label = roster.find(a => a.pubkey === row.pubkey)?.label
-    row.name = profile.display_name || profile.name || label || card?.instance || null
+    const seat = seats.find(x => x.pubkey === row.pubkey) || null
+    row.seat = seat
+    row.noBuzz = !!seat && seat.buzz === false && !row.sources.has('roster')
+    row.name = profile.display_name || profile.name || label || seat?.label || card?.instance || null
     row.picture = profile.picture || null
     row.card = card
     row.isOwner = row.pubkey === owner
@@ -302,6 +307,7 @@ export const RUNS_ON = Object.freeze({
   'e4c0faf44d9aeabcb5459c6c3b76f2c704d7b55c7e0ddb3685fab4e4226935d8': 'Pi',
   '1b53f548acebe8dd47252717104350006f49b5c981a86ad4cfaf58d3fd7a0f1e': 'OpenClaw',
   '61cb9345ce61bb06d42bef251de746051e608a539c1430142a8afa6593db924c': 'Grok Bot',
+  ...Object.fromEntries(SEATS.map(x => [x.pubkey, x.harness])),
   ...Object.fromEntries(PLATFORMS.find(p => p.id === 'buzz').keys.map(k => [k, 'Buzz'])),
 })
 // Each harness's logo, drawn beside its name over the columns.

@@ -299,4 +299,17 @@ console.log('console_hive_list: one list, every key kept, roles from recipes, nv
   check(/keys: !cardRead\.full \|\| !given\.all \|\| !held\.all/.test(page) && !/keys:[^\n]*(given|held)\.full/.test(page), 'identity completeness (keys) stays strict across every grant relay, not the quorum')
   check(/approvals: !cardRead\.full \|\| !given\.full \|\| !held\.full/.test(page), 'only the approval squares use the quorum threshold')
 }
+
+// 7. A herd-cloud seat no other source names still gets a row (Crusty, 10 Nov), shown as having no Buzz channel.
+{
+  const { SEATS } = await import('../console/hive-seats.mjs')
+  const crusty = SEATS.find(x => x.label === 'Crusty')
+  check(!!crusty && /^[0-9a-f]{64}$/.test(crusty.pubkey) && SEATS.every(x => Object.keys(x).sort().join() === 'buzz,harness,label,pubkey'), 'SEATS holds Crusty with a public key and no other fields')
+  const t = await scopeTable([owner.pk], [], scopeHash)
+  const bare = buildList({ owner: owner.pk, table: t, seats: SEATS }).rows.find(r => r.pubkey === crusty.pubkey)
+  check(bare && bare.name === 'Crusty' && bare.noBuzz === true && bare.sources.has('seat') && RUNS_ON[crusty.pubkey] === 'Pi', 'a seat nobody else names is a row: named, no Buzz channel, Pi')
+  const onRoster = buildList({ owner: owner.pk, table: t, seats: SEATS, roster: [{ pubkey: crusty.pubkey, label: 'Crusty' }] }).rows.find(r => r.pubkey === crusty.pubkey)
+  check(onRoster.noBuzz === false, 'once the bridge roster names it, it no longer reads no Buzz channel')
+  check(!buildList({ owner: owner.pk, table: t }).rows.some(r => r.pubkey === crusty.pubkey), 'without the seats source it is absent, which is the bug')
+}
 if (!pass) { console.error('console_hive_list: FAILED'); process.exit(1) }
