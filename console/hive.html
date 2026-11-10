@@ -686,7 +686,7 @@ function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting }) {
   const a = r.answers, dl = el('dl', 'answers')
   const item = (term, text, unknown) => { dl.appendChild(el('dt', null, term)); return dl.appendChild(el('dd', unknown ? 'unknown' : null, text)) }
   const roles = r.roles.map(role => `${ROLE_NAME[role.role]}${role.of ? ` ${nameOf(role.of)}${role.name ? ` as @${role.name}` : ''}` : ''}${role.by ? ` from ${nameOf(role.by)}` : ''}${role.inEffect === false ? ' (no effect)' : ''}`)
-  item('What it is', `${STAGE[r.stage]}.${roles.length ? ` ${roles.join('; ')}.` : ''}${r.noBuzz ? ` A herd-cloud seat with ${NO_BUZZ} yet.` : ''}`)
+  item('What it is', `${STAGE[r.stage]}.${roles.length ? ` ${roles.join('; ')}.` : ''}${r.noBuzz ? ` A herd-cloud seat with ${NO_BUZZ} yet.` : ''}${r.hiveWriter ? ` Its Hive memory saves are signed by the writer key ${shortNpub(r.hiveWriter)}, a different identity.` : ''}`)
   const assumed = a.work.grantorsFrom === 'assumed' ? ' (No card, so only your approvals are counted.)' : ''
   const buzzed = hive.buzz.known && hive.buzz.lists?.get(r.pubkey)
   const unbuzzed = !buzzed && isBuzz(r, hive.buzz)
