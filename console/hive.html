@@ -233,6 +233,7 @@ import { followsOf, writerKey, draftFollow, applyFollow } from './hive-following
 import { livenessReport, MARK, PRESENT } from './agent-liveness.mjs'
 import { readPublic } from './profile-publish.mjs'
 import { viewsFor, openOwnerView, mentionLines, ownGrantsOn, nameClash, mentionWhatIf, PUBLIC_NAME } from './owner-view.mjs'
+import { SEATS, NO_BUZZ } from './hive-seats.mjs'
 import { readGrants, scopeTable, readCards, buildList, workSentence, relayCoverage, quorumWarning, coverageText, PARTIAL, ROLE_NAME, GRANT_RELAYS, CARD_RELAYS, CARD_D, NOT_READ, TALK_IS_NOT_WORK, RUNS_LOGO, RUNS_ON } from './hive-list.mjs'
 
 // The bridge publishes its roster to these relays and reads its commands from them.
@@ -352,7 +353,7 @@ async function load({ owner: rememberedOwner = null } = {}) {
     cover('profiles', names)
     const profiles = newestProfiles(names.events)
 
-    const { rows, needs } = buildList({ owner, grantEvents, grants, table, cards, roster, bridge, profiles })
+    const { rows, needs } = buildList({ owner, grantEvents, grants, table, cards, roster, bridge, profiles, seats: SEATS })
     const active = activeOf(activeRead, { owner, verify: verifyEvent })
     const buzz = buzzOf(activeRead, { owner, verify: verifyEvent })
     hive = { owner, grants, table, rows, bridge, rosterState, active: active.keys, activeKnown: active.known, buzz, views: viewsFor({ cards, takers: agentsOf(rows).groups.flatMap(g => g.rows.map(r => r.pubkey)), owner, verify: verifyEvent, opened }), profiles, rooms: hive?.rooms || null }
@@ -372,7 +373,7 @@ async function load({ owner: rememberedOwner = null } = {}) {
     // Add an agent's "Same as …" reads who gives each agent work from here, in this tab. Public keys only.
     // `complete` is false after a short read, so Same as stays off; `hive` is everyone the grid draws.
     try { sessionStorage.setItem(HANDOFF, JSON.stringify({ owner, complete: !(partial.approvals || partial.keys),
-      hive: rows.filter(r => !r.isOwner).map(r => ({ pubkey: r.pubkey, label: rowName(r), where: RUNS_ON[r.pubkey] || (r.card ? 'an agent of yours' : 'in your hive') })),
+      hive: rows.filter(r => !r.isOwner).map(r => ({ pubkey: r.pubkey, label: rowName(r), where: RUNS_ON[r.pubkey] || (r.noBuzz ? NO_BUZZ : r.card ? 'an agent of yours' : 'in your hive') })),
       givers: Object.fromEntries(rows.filter(r => r.answers?.work).map(r => [r.pubkey, r.answers.work.givers.map(g => g.pubkey)])) })) } catch { /* private mode: the button says to open the hive */ }
     drawFollowing(rosterState, profiles, bridge)
     st.className = 'status ok'
@@ -685,7 +686,7 @@ function rowView(r, { owner, nameOf, partial, rows, columns, quiet, posting }) {
   const a = r.answers, dl = el('dl', 'answers')
   const item = (term, text, unknown) => { dl.appendChild(el('dt', null, term)); return dl.appendChild(el('dd', unknown ? 'unknown' : null, text)) }
   const roles = r.roles.map(role => `${ROLE_NAME[role.role]}${role.of ? ` ${nameOf(role.of)}${role.name ? ` as @${role.name}` : ''}` : ''}${role.by ? ` from ${nameOf(role.by)}` : ''}${role.inEffect === false ? ' (no effect)' : ''}`)
-  item('What it is', `${STAGE[r.stage]}.${roles.length ? ` ${roles.join('; ')}.` : ''}`)
+  item('What it is', `${STAGE[r.stage]}.${roles.length ? ` ${roles.join('; ')}.` : ''}${r.noBuzz ? ` A herd-cloud seat with ${NO_BUZZ} yet.` : ''}${r.hiveWriter ? ` Its Hive memory saves are signed by the writer key ${shortNpub(r.hiveWriter)}, a different identity.` : ''}`)
   const assumed = a.work.grantorsFrom === 'assumed' ? ' (No card, so only your approvals are counted.)' : ''
   const buzzed = hive.buzz.known && hive.buzz.lists?.get(r.pubkey)
   const unbuzzed = !buzzed && isBuzz(r, hive.buzz)

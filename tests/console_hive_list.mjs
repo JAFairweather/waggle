@@ -299,4 +299,31 @@ console.log('console_hive_list: one list, every key kept, roles from recipes, nv
   check(/keys: !cardRead\.full \|\| !given\.all \|\| !held\.all/.test(page) && !/keys:[^\n]*(given|held)\.full/.test(page), 'identity completeness (keys) stays strict across every grant relay, not the quorum')
   check(/approvals: !cardRead\.full \|\| !given\.full \|\| !held\.full/.test(page), 'only the approval squares use the quorum threshold')
 }
+
+// 7. A herd-cloud seat no other source names (Crusty, 10 Nov) is one row, "no Buzz channel", in its table group; joining
+// Buzz moves the same row to the new channel identity and keeps the Hive writer key as a separate identity on it.
+{
+  const { SEATS, rowKeyOf } = await import('../console/hive-seats.mjs')
+  const { agentsOf } = await import('../console/hive-grid.mjs')
+  const crusty = SEATS.find(x => x.label === 'Crusty'), writer = crusty.pubkey, channel = keys().pk
+  check(/^[0-9a-f]{64}$/.test(writer) && crusty.channel === null && SEATS.every(x => Object.keys(x).sort().join() === 'channel,group,harness,label,pubkey'), 'SEATS holds Crusty: public writer key, no channel yet, and no other fields')
+  const t = await scopeTable([owner.pk], [], scopeHash)
+  const rowsOf = (seats, extra = {}) => buildList({ owner: owner.pk, table: t, seats, ...extra }).rows
+  // before: keyed by the writer key
+  const before = rowsOf(SEATS).find(r => r.pubkey === writer)
+  check(before && before.name === 'Crusty' && before.noBuzz === true && before.hiveWriter === null && RUNS_ON[writer] === 'Pi' && platformOf(before) === 'third-party', 'before Buzz: one row on the writer key, no Buzz channel, Pi, in the third-party group')
+  check(agentsOf(rowsOf(SEATS)).groups.find(g => g.platform.id === 'third-party').rows.some(r => r.pubkey === writer), 'the pre-onboarding seat is in the main grid, not folded away')
+  check(!rowsOf([]).some(r => r.pubkey === writer), 'without the seats source it is absent, which is the bug')
+  // bound but not yet live: the row moves to the channel key; no stale writer-key row
+  const bound = [{ ...crusty, channel }]
+  const mid = rowsOf(bound)
+  check(rowKeyOf(bound[0]) === channel && mid.some(r => r.pubkey === channel && r.noBuzz && r.hiveWriter === writer) && !mid.some(r => r.pubkey === writer), 'bound, not yet on Buzz: one row on the channel key, writer key shown on it, no row left on the old key')
+  // a card without the roster is not membership: the card is published before the rooms step
+  const cardOnly = rowsOf(bound, { cards: new Map([[channel, { instance: 'crusty', grantors: [owner.pk] }]]) }).find(r => r.pubkey === channel)
+  check(cardOnly.noBuzz === true, 'card published but not on the roster: still no Buzz channel')
+  // live: roster names the channel key
+  const live = rowsOf(bound, { roster: [{ pubkey: channel, label: 'Crusty' }] }).find(r => r.pubkey === channel)
+  check(live.noBuzz === false && live.hiveWriter === writer && live.name === 'Crusty', 'on the roster: no longer "no Buzz channel", still names its Hive writer key')
+  check(rowsOf(bound, { roster: [{ pubkey: channel, label: 'Crusty' }] }).filter(r => r.name === 'Crusty').length === 1, 'exactly one Crusty row after joining')
+}
 if (!pass) { console.error('console_hive_list: FAILED'); process.exit(1) }
