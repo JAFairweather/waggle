@@ -105,10 +105,15 @@ today's "I agree" step and the delegate waits for it. That is open question 4.
 
 **Fleet changes (nvoy), at each place that today trusts only grantors:**
 
-- **Discovery, `onboard_watch.mjs`.** Today it fetches kind 30078 from template grantors only
-  (lines 79–85). It would also read each grantor's kind 440 `onboard` grants and their 441
-  revocations from the same relays, cold. Every tick it would add each live grantee to the authors
-  it fetches setup requests from. A revoked grant drops its delegate from the next tick's authors.
+- **Discovery, in both fetch paths.** Today the watch tick (`onboard_watch.mjs` lines 79–85) and
+  the per-name fetch in `onboard()` (`onboard_run.mjs`, `fetchEvents`) read kind 30078 from template
+  grantors only. Both would also read each grantor's kind 440 `onboard` grants and their 441
+  revocations from the same relays, cold. Each would add live grantees to the authors it fetches
+  setup requests from. A revoked grant drops its delegate from the next tick's authors.
+- **Fail closed.** A grant counts as live only if the tick's read of grants *and* revocations
+  completed on a quorum of the configured relays. A partial or timed-out read counts as revoked
+  for that tick. The tick then runs no delegate step, and reports "grant state unknown" rather than
+  guessing.
 - **Authorization, `onboard_request.mjs` `parseSetupRequest`.** It accepts a request whose
   `event.pubkey` is a grantor, as today, *or* the grantee of a live `onboard` grant from a grantor
   of the template. A delegate request is refused when:
@@ -135,6 +140,12 @@ today's "I agree" step and the delegate waits for it. That is open question 4.
     is seated. Its staged manifest is moved aside, as a superseded one is today.
   - **An already started agent** stays seated. Removing it is James's act: his deny list (below)
     and the existing offboard.
+  - **The stop bound.** Today the runner parses authorization once, before its async steps.
+    Instead, it re-reads grant liveness (fail closed, above) at each effect boundary: staging,
+    pairing, the writer step and `apply`. So a revocation stops a delegate request at the next
+    effect boundary, at most one tick (30 s) after the relays carry the 441. The one exception is
+    an `apply` that had already passed its check when the 441 arrived. It finishes, and leaves an
+    agent James removes with his deny list and offboard.
 - **`bind_runtime` from the delegate only with a staged key.** The runner refuses a delegate bind
   unless `<request>.staged-channel.pub` exists and matches it. Today the staged file is an
   optional cross-check (Hive `nvoy-onboard-stage-request-id-source`). For the delegate it becomes
@@ -220,8 +231,9 @@ If the design is approved, `DESIGN_ADD_AN_AGENT.md` gains a pointer to this sect
   and are not equivalent to revoking:
   - **Deleting the Bunker connection** stops *future* signatures at once, but requests already
     signed stay valid until the 441. Use it alongside the 441, not instead of it.
-  - **Emptying `onboard_templates`** (a herd-infra PR) stops new delegate requests from being
-    accepted, but leaves the grant itself live.
+  - **Emptying `onboard_templates`** (a herd-infra PR) leaves no template the delegate may copy,
+    so every new delegate request is refused. The grant itself stays live. The list holds template
+    names, not the delegate's key.
 
 So James's part per agent goes from about ten signatures and pastes to two Bunker actions (make
 the key, approve its link) plus any grants he chooses to give it.
@@ -261,8 +273,29 @@ the key, approve its link) plus any grants he chooses to give it.
    1. installs that commit's list for NAME;
    2. rewrites only the two respond-to keys in `/etc/buzz-agents/NAME.json`, atomically, keeping
       the nsec and everything else;
-   3. runs `systemctl restart buzz-agent@NAME`;
+   3. restarts the unit, keeping its desired state (below);
    4. waits `STEADY` seconds as `buzz-agentctl` does and reports active or the masked journal tail.
+
+   **It's a policy-only update, not a resume.** It changes who the agent answers and nothing else.
+   It keeps the unit's state as it found it:
+   - **A running seat** is restarted and stays enabled for reboot. `buzz-agent-poststop` today
+     disables a unit after any clean stop (exit 0 or TERM), and a restart is such a stop. So the
+     action writes `/run/buzz-agents/NAME.redeploy` first, and the hook skips its disable while
+     that marker exists. The action removes the marker once the unit is active again. On failure it
+     re-enables the unit only if it was enabled before.
+   - **A seat that was deliberately stopped** (inactive and disabled, as after a Buzz Shutdown)
+     gets its file updated but is *not* started, unless the caller passes `--start`. So a redeploy
+     never revives a seat James stopped on purpose.
+   - **One at a time.** `buzz-redeploy` and `buzz-agentctl deploy` take the same per-seat lock
+     (`flock /run/buzz-agents/NAME.lock`). So a Mac Start and a herd-cloud redeploy can't
+     interleave. A deploy that finds the lock held waits up to 60 s, then refuses with "redeploy in
+     progress".
+   - **Rollback** is running the action at an earlier merged commit. The list is just a file in
+     git history, and the action records the commit it applied in `/etc/buzz-agents/NAME.list-commit`.
+
+   Tests cover a running seat (restarted, still enabled), a stopped seat (file updated, not
+   started), a stopped seat with `--start`, the hook skipping under the marker, lock contention and
+   a rollback.
 
    It never prints the file. It refuses when `NAME.json` doesn't exist yet: a seat's first deploy,
    which brings its nsec, stays the Mac's. Dead Rabbit runs it after the merge. James's hands
@@ -304,7 +337,10 @@ deploy.
    - James's deny list;
    - the signed effective writer set, with tests for the deny precedence.
 5. hive admission: mint and claim bound to the target key, with the grant checked at both.
-6. James:
+6. waggle console: today `draftGrant` refuses the `onboard` cap. Add issuing, showing and revoking
+   it on the grant grid, with the `policy` and `age` consent tags drafted from the terms James is
+   shown. Nothing on the page ticks either one for him.
+7. James:
    - makes the `nvoy-onboard-delegate` key in his Bunker;
    - pairs it with the listed permissions;
    - signs one `onboard` grant, which carries his terms acceptance and age attestation.
