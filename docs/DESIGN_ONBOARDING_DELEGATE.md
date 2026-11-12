@@ -275,97 +275,65 @@ the key, approve its link) plus any grants he chooses to give it.
    `BUZZ_ACP_RESPOND_TO=allowlist` and `BUZZ_ACP_RESPOND_TO_ALLOWLIST` come from the installed copy
    of that file. A list sent by the Mac is ignored and logged. So the two paths cannot disagree,
    and a Mac edit can no longer drift from the reviewed list.
-3. **A herd-deploy action, `buzz-redeploy NAME <herd-infra commit>`.** It runs from a merged
-   commit like every other action, and does four things:
+3. **A herd-deploy action, `buzz-redeploy NAME <herd-infra commit>`. It writes the file and
+   nothing else.** It runs from a merged commit like every other action. Under the per-seat lock
+   (`flock /run/buzz-agents/NAME.lock`, shared with `buzz-agentctl deploy`), it:
    1. installs that commit's list for NAME;
    2. rewrites only the two respond-to keys in `/etc/buzz-agents/NAME.json`, atomically, keeping
       the nsec and everything else;
-   3. restarts the unit, keeping its desired state (below);
-   4. waits `STEADY` seconds as `buzz-agentctl` does and reports active or the masked journal tail.
+   3. records the commit in `/etc/buzz-agents/NAME.list-commit`, then reports the seat's state
+      (active or not, enabled or not) and whether the running process is on an older list.
 
-   **It's a policy-only update, not a resume.** It changes who the agent answers and nothing else.
-   It keeps the unit's state as it found it:
-   - **How an owner stop is told apart, grounded in the harness.** `buzz-acp` logs "shutdown
-     command from owner" when it handles a `!shutdown` (the string is in the installed binary).
-     The exit status is not used: the current hook already treats exit 0 and TERM alike as a
-     clean stop, and the harness drains gracefully either way. Instead, the hook reads the
-     stopping invocation's own journal (`journalctl _SYSTEMD_INVOCATION_ID=<id>`) for that line.
-     The rollout adds an acceptance check on a test seat before anything relies on it: a `!shutdown`
-     must produce the line, and a `systemctl restart` must not. If a future harness changes the
-     line, that check fails and the action refuses to run.
-   - **The protocol.** Under the per-seat lock, the action:
-     1. reads the unit's current `InvocationID`, I0;
-     2. writes `/run/buzz-agents/NAME.restarting` naming I0, its own PID, and its own process start
-        time (from `/proc/PID/stat`);
-     3. calls `systemctl try-restart`, which restarts the unit only if it is running at that
-        moment, so a seat the owner has already stopped is never revived.
-   - **What the hook does.** It skips its disable only when *all* of these hold:
-     - the file names the stopping invocation;
-     - the process it names is alive with the same start time, so the action is still running;
-     - the stopping invocation's journal has no "shutdown command from owner" line.
+   **It never stops, restarts or starts the unit, and never touches its enablement.** That is the
+   whole point of this version. An owner `!shutdown` is handled by the harness itself, outside any
+   lock we control. So any action that restarts or starts a process can race it, and earlier
+   drafts of this section kept finding new orderings in which a restart outran a newer stop. An
+   action that only writes a file can't revive a stopped seat, can't undo a stop, and leaves
+   nothing behind if it dies: the file write is atomic, and the lock dies with the process.
+   `buzz-agent-poststop` stays exactly as it is today.
 
-     Anything else disables as today. So a killed action can't leave a suppression behind: its
-     PID is dead or reused with a different start time, and the hook ignores the file and
-     disables. Nothing is left that a later TERM stop of I0 could match. The action deletes the
-     file when it exits.
-   - **A newer stop wins.**
-     - A `!shutdown` that reaches I0 before or during the restart puts the line in I0's journal,
-       so the hook disables.
-     - A `!shutdown` that reaches the new invocation, I1, is an ordinary stop with no file naming
-       I1, so the hook disables.
-     - After `STEADY`, the action checks I0's journal once more. If the owner line is there but I1
-       is running (the shutdown reached I0 too late to stop it), the action runs `systemctl stop`
-       on I1, and the hook disables. The action itself never enables or starts anything, so there
-       is no window in which it could undo a stop. Boot enablement is exactly what it was.
-   - **Verify, then roll back on failure.** The action keeps a root-only copy of the previous
-     `NAME.json`. Success means I1 is active for `STEADY` seconds and `is-enabled` is unchanged. If
-     the new list fails (the unit's last result is not `success`), the action restores the
-     previous file and calls `try-restart` once more under the same protocol. It never uses a plain
-     `start`. A unit that has failed outright isn't running, so `try-restart` does nothing. The seat
-     stays down with the old list restored until an authorized start, and nothing in the rollback
-     can cross a newer owner stop. The action then reports the failure with the masked journal
-     tail.
-   - **A stopped seat** (inactive, as after a Buzz Shutdown) gets its file updated and stays
-     stopped. The action has no start option and grants no new resume authority. A stopped seat
-     is started only through a path that is already authorized: Buzz Start on James's Mac through
-     the provider, or `herd-deploy codex-four start` for the four Codex seats. Either picks up the
-     updated list. So a redeploy never revives a seat James stopped on purpose.
-   - **One at a time.** `buzz-redeploy` and `buzz-agentctl deploy` take the same per-seat lock
-     (`flock /run/buzz-agents/NAME.lock`). So a Mac Start and a herd-cloud redeploy can't
-     interleave. A deploy that finds the lock held waits up to 60 s, then refuses with "redeploy in
-     progress".
-   - **Rollback** is running the action at an earlier merged commit. The list is just a file in
-     git history, and the action records the commit it applied in `/etc/buzz-agents/NAME.list-commit`.
+   **How a new list takes effect: at the seat's next start, through a path that is already
+   authorized.** The harness reads `NAME.json` only when it starts. So the new list applies the
+   next time the seat starts, through one of today's paths:
+   - **The four Codex seats** (mydude, neil, dennis, kerouac): Dead Rabbit runs
+     `systemctl stop buzz-agent@NAME` and then `herd-deploy codex-four start`, both already within
+     its authority (James, 12 Nov). The stop is an ordinary clean stop, so the hook disables as
+     today, and codex-four start re-enables and starts the seat from the updated file.
+   - **Murphy**, and any seat not in codex-four: Buzz Start on James's Mac through the provider.
+     With item 2, `buzz-agentctl deploy` takes the list from the repo file, not from the Mac.
+
+   If the owner sends `!shutdown` at any point, that stop stands until one of those authorized
+   starts, exactly as today. This design adds no new way to start a seat.
+
+   **Reporting.** The action's output says "running on the old list until its next start" for an
+   active seat. It does not claim the list is live until the seat has restarted. Dead Rabbit's
+   `herd-deploy inspect buzz-agents` then shows the new count and mode.
+
+   **Rollback** is running the action at an earlier merged commit. It is the same file write, and
+   it takes effect at the next start. A bad list can't crash-loop a running seat, because nothing
+   restarts it; it only matters at the next start, where the masked journal shows a failure and
+   the previous commit is one action away.
 
    Tests cover:
-   - a running, enabled seat: restarted, still enabled;
-   - a running, disabled seat: restarted, still disabled;
-   - a stopped seat: file updated, not started;
-   - an owner `!shutdown` before `try-restart`: no restart, and the unit stays stopped and
-     disabled;
-   - an owner `!shutdown` reaching I0 during the restart: the owner line is in I0's journal, so
-     the hook disables;
-   - an owner `!shutdown` reaching I1: the hook disables, and the action does nothing more;
-   - the owner line found in I0 after I1 is up: the action stops I1, and the unit ends stopped
-     and disabled;
-   - a restart of the named invocation by a live action: enablement unchanged;
-   - the action killed right after writing the file, then a later TERM stop of I0: the hook sees
-     a dead or mismatched PID, ignores the file, and disables;
-   - a failed start under the new list: the file is restored, `try-restart` is a no-op on the
-     failed unit, and the seat stays down;
-   - acceptance on a test seat: a `!shutdown` logs "shutdown command from owner" and a restart
-     does not;
-   - lock contention;
-   - a rollback.
+   - a running seat: the file is updated, the unit is untouched (same InvocationID, same
+     enablement), and the report says "old list until next start";
+   - a stopped seat: the file is updated, and the seat stays stopped and disabled;
+   - an owner `!shutdown` during the action: the unit ends stopped, and the action changes nothing
+     about it;
+   - the action killed mid-write: the file is either the old or the new version, never partial,
+     and the unit is untouched;
+   - lock contention with `buzz-agentctl deploy`;
+   - a rollback to an earlier commit;
+   - a non-hex or empty list: refused before any write.
 
    **Murphy's case.** Today Murphy's file has `respond_to` owner-only with an empty list (Hive
    `buzz-murphy-respond-to-owner-only`). Because the action always writes
-   `BUZZ_ACP_RESPOND_TO=allowlist` with the repo list, Murphy's first redeploy switches it to
-   allowlist mode. Its list is James's decision (Hive `buzz-murphy-respond-to-decision`).
+   `BUZZ_ACP_RESPOND_TO=allowlist` with the repo list, the redeploy switches Murphy's file to
+   allowlist mode, and Murphy runs on it from its next Buzz Start. Its list is James's decision
+   (Hive `buzz-murphy-respond-to-decision`).
 
    It never prints the file. It refuses when `NAME.json` doesn't exist yet: a seat's first deploy,
-   which brings its nsec, stays the Mac's. Dead Rabbit runs it after the merge. James's hands
-   aren't needed.
+   which brings its nsec, stays the Mac's. Dead Rabbit runs it after the merge.
 4. **Part 1's staging lives here too.** `herd-deploy stage-channel-key NAME REQUEST` reads only
    `~/.nvoy-box/NAME/channel.pub` and writes the staged file to the fleet, as the operator helper
    does today.
@@ -387,9 +355,10 @@ deploy.
 
    Each needs a different-model read and a lead final. Changing herd-deploy itself stays
    `bin/install-herd-deploy`, run by James.
-2. Dead Rabbit runs `buzz-redeploy` for the four running seats, so each gets the reviewed list
-   without the Mac. Murphy is stopped, so its file is updated but it stays down. It comes up on the
-   reviewed list at its next authorized start: James's Buzz Start, or the provider deploy script.
+2. Dead Rabbit runs `buzz-redeploy` for all five seats. For the four Codex seats it then does a
+   stop and `codex-four start`, one seat at a time, so each comes up on the reviewed list without
+   the Mac. Murphy's file is updated, and Murphy comes up on the reviewed list at its next
+   authorized start: James's Buzz Start, or the provider deploy script.
 3. nvoy:
    - delegate discovery (`onboard_watch.mjs`);
    - authorization and consent (`onboard_request.mjs`);
