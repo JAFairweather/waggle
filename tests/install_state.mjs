@@ -48,7 +48,8 @@ ok('the state file contains no credential material', !/nsec|bunker:\/\/|private_
 const receipt = buildInstallReceipt(passed)
 ok('receipt is explicitly incomplete until every proof passes', !receipt.complete && receipt.proofs.local_preflight.status === 'passed')
 const publicPath = join(root, 'console', 'install-receipt.json')
-const published = publishInstallReceipt(path, publicPath)
+const umaskBefore = process.umask(0o077)   // a restrictive umask must not hide the public receipt from the Console host
+const published = (() => { try { return publishInstallReceipt(path, publicPath) } finally { process.umask(umaskBefore) } })()
 ok('a separately hosted Console receives only the validated public projection',
   published.installation_id === state.installation_id && (statSync(publicPath).mode & 0o777) === 0o644 &&
   !/nsec|bunker:\/\/|private_key/i.test(readFileSync(publicPath, 'utf8')))
