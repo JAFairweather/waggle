@@ -101,6 +101,16 @@ today's "I agree" step and the delegate waits for it. That is open question 4.
 - **Completion.** A request finishes only on the cold proofs it needs today: installed manifest,
   bind applied, writer listed (below), presence newer than the bind. The writer check reads the
   *effective* writer set, not only the owner's list.
+- **Grant liveness at every step, not by timestamps.** The fleet never decides a delegate
+  request's validity from its `created_at`. On every tick, and again just before `apply`, it
+  checks that the signer's `onboard` grant is live in that tick's cold read. So a request
+  backdated to before a revocation gains nothing. After a revocation:
+  - **Queued requests** (seen, not yet run) are refused at the next tick with the reason
+    "delegate revoked", and nothing is staged.
+  - **An in-flight request** (staged, not yet started) is refused before `apply`, so no principal
+    is seated. Its staged manifest is moved aside, as a superseded one is today.
+  - **An already started agent** stays seated. Removing it is James's act: his deny list (below)
+    and the existing offboard.
 - **`bind_runtime` from the delegate only with a staged key.** The runner refuses a delegate bind
   unless `<request>.staged-channel.pub` exists and matches it. Today the staged file is an
   optional cross-check (Hive `nvoy-onboard-stage-request-id-source`). For the delegate it becomes
@@ -116,10 +126,21 @@ reads that grant cold, as the fleet does.
   agent keeps writing after its request's 7 days.
 - **Adding.** The delegate may add a key only when a live, unfinished delegate `add_agent` names
   it. The relay checks this against the setup request it already stores.
-- **Removing.** The delegate can remove only keys it added. James's own list can remove any key.
-- **Revoking the delegate** freezes its list at the last version signed before the 441's
-  `created_at`. New additions stop at once, and already admitted agents keep writing. James
-  removes an agent explicitly, never as a side effect of revoking the delegate.
+- **Removing.** The delegate can remove only keys it added.
+- **James's override.** He keeps an owner-signed deny list, `nave-relay-writers-deny` (kind
+  30000, his key). The effective set is (James's list ∪ the delegate list) − James's deny list. A
+  key James denies is out even if the delegate lists it again, and only James can lift a deny. The
+  signed effective set below proves the drop. Tests cover:
+  - a denied key is absent from the effective set;
+  - the delegate re-adding it changes nothing;
+  - James lifting the deny restores it.
+- **Revoking the delegate** goes by the relay's own order, never by `created_at`, because a signer
+  can backdate that.
+  - When the relay first stores the 441, it pins the event id of the last delegate list it had
+    accepted.
+  - From then on it rejects every new delegate list, whatever its `created_at`. The pinned list
+    stays in force, so already admitted agents keep writing.
+  - James removes an agent with his deny list, never as a side effect of revoking the delegate.
 - **Cold read.** The relay publishes its effective writer set as a signed kind 30000 under its own
   key (`d` = `nave-relay-writers-effective`). The page and the runner read it cold, so "listed"
   means the relay actually enforces it.
@@ -167,10 +188,14 @@ If the design is approved, `DESIGN_ADD_AN_AGENT.md` gains a pointer to this sect
 - **Every grant:** work (`task`), `mention`, `admit` and the `onboard` grant itself. Who may
   instruct an agent is never delegated.
 - **Policy:** the template list, the daily cap and the room list.
-- **Revoking.** Any one of these stops the delegate:
-  - a kind 441 on the `onboard` grant, from the console, which takes effect at the next 30 s tick;
-  - deleting the Bunker connection, which stops signing at once;
-  - removing the key from `onboard_templates` or the relay's `delegates`, as a herd-infra PR.
+- **Revoking.** Only a kind 441 on the `onboard` grant, signed from the console, revokes. The
+  fleet acts on it at the next 30 s tick and the relay as soon as it stores it. Already signed
+  requests and lists are void from then, whatever their timestamps. Two other levers are partial
+  and are not equivalent to revoking:
+  - **Deleting the Bunker connection** stops *future* signatures at once, but requests already
+    signed stay valid until the 441. Use it alongside the 441, not instead of it.
+  - **Emptying `onboard_templates`** (a herd-infra PR) stops new delegate requests from being
+    accepted, but leaves the grant itself live.
 
 So James's part per agent goes from about ten signatures and pastes to two Bunker actions (make
 the key, approve its link) plus any grants he chooses to give it.
@@ -245,11 +270,13 @@ deploy.
    - owner and signer recording, plus the delegate receipt copy (`onboard_run.mjs`);
    - the effective writer check;
    - the template allowlist, daily cap, no-giver rule and mandatory staged key;
-   - tests for each refusal, and for a revocation that drops the delegate on the next tick.
+   - tests for each refusal, and for revocation: a queued request is refused, an in-flight one is
+     refused before `apply`, and a backdated request is still refused.
 4. nave.pub:
    - the durable delegate writer list;
-   - the freeze when the delegate is revoked;
-   - the signed effective writer set.
+   - the freeze on the relay-observed 441, by pinned event id;
+   - James's deny list;
+   - the signed effective writer set, with tests for the deny precedence.
 5. hive admission: mint and claim bound to the target key, with the grant checked at both.
 6. James:
    - makes the `nvoy-onboard-delegate` key in his Bunker;
