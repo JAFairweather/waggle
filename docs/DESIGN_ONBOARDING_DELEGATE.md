@@ -146,8 +146,10 @@ today's "I agree" step and the delegate waits for it. That is open question 4.
     the invite mint and claim. Each is a fresh, complete read of grants and 441s, never the tick's
     cached answer. The guarantee is about effects, not wall-clock time: once a fresh check sees
     the 441, the delegate request causes no new effect. A runner can wait any length of time
-    between steps, so no time bound is claimed. The 30 s figure is only the watcher's tick period,
-    which governs when *queued* requests are next looked at. The one exception is an effect that
+    between steps, so no time bound is claimed. The watcher's 30 s is only a scheduling hint for
+    when *queued* requests are next looked at: nvoy's `nvoy-onboard.timer` fires 30 s after the
+    previous run *ends* (`OnUnitInactiveSec`), plus a small random delay, and a run may hold for
+    pairing. The one exception is an effect that
     had already passed its check when the 441 arrived, such as an `apply` in progress. It
     finishes, and leaves an agent James removes with his deny list and offboard.
 - **`bind_runtime` from the delegate only with a staged key.** The runner refuses a delegate bind
