@@ -394,9 +394,12 @@ deploy.
 ## Rollout, if James approves
 
 1. herd-infra:
-   - the five `buzz-respond-to` files, from the 12 Nov hex lists;
-   - `buzz-agentctl` reading them;
-   - `buzz-redeploy` and `stage-channel-key` in herd-deploy.
+   - the five `buzz-respond-to` files, from the 12 Nov hex lists (read only by `buzz-redeploy`);
+   - `buzz-agentctl` carrying the respond-to keys and `BUZZ_HERD_LIST_COMMIT` over from the
+     existing `NAME.json` and ignoring the Mac's list (item 2). It never reads the repo files;
+   - `buzz-redeploy` and `stage-channel-key` in herd-deploy;
+   - executable tests for every case listed in this design. The "Tests cover" lists here are
+     the required coverage for those implementation PRs; this design PR adds no tests itself.
 
    Each needs a different-model read and a lead final. Changing herd-deploy itself stays
    `bin/install-herd-deploy`, run by James.
