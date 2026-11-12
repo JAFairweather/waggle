@@ -84,8 +84,8 @@ signature per agent.
 
 **James grants it with one NIP-DA event that also carries his standing consent.** It is kind 440,
 `p` = the delegate, `da-cap onboard`, scope = the hive. That is the hive's existing delegation layer
-(waggle `SPEC_EXTERNAL.md`, NIP-DA), so the console already shows it, and it is revocable with one
-kind 441. The same signed event carries the two statements that only James can make:
+(waggle `SPEC_EXTERNAL.md`, NIP-DA), and it is revocable with one kind 441. Today's console can't
+issue it yet; the rollout adds that. The same signed event carries the two statements that only James can make:
 
 - `["policy", <terms version>]`: he accepts the hive's current terms for each agent this delegate
   adds;
@@ -282,16 +282,29 @@ the key, approve its link) plus any grants he chooses to give it.
 
    **It's a policy-only update, not a resume.** It changes who the agent answers and nothing else.
    It keeps the unit's state as it found it:
-   - **A running seat** is restarted, and its boot enablement stays exactly what it was before:
-     enabled stays enabled, and active-but-disabled stays disabled. `buzz-agent-poststop` today
-     disables a unit after any clean stop (exit 0 or TERM), and a restart is such a stop. So the
-     action writes `/run/buzz-agents/NAME.redeploy` first, and the hook leaves enablement alone
-     while that marker exists. The action removes the marker once the unit is active again.
-   - **Verify, then roll back on failure.** Before acting, the action records the desired state
-     (`is-enabled` and `is-active`) and keeps a root-only copy of the previous `NAME.json`. Success
-     means the unit is active for `STEADY` seconds *and* `is-enabled` equals the recorded state. If
-     either check fails, it restores the previous file and puts the unit back in its recorded state.
-     It then reports the failure with the masked journal tail.
+   - **A running seat** is restarted, and its boot enablement ends exactly as it was before:
+     enabled stays enabled, and active-but-disabled stays disabled. `buzz-agent-poststop` is not
+     changed and nothing suppresses it. It still disables the unit after the restart's clean stop,
+     as after any clean stop. So the action leaves no marker that a crash could orphan and that
+     could hide a real shutdown. Instead, the action itself puts enablement back, under two
+     conditions:
+     - it re-enables only if it recorded `enabled` before acting;
+     - it does so only while the unit is still running the invocation the action started (same
+       `InvocationID`) and active at the end of `STEADY`.
+   - **A newer stop wins.** An owner `!shutdown` doesn't take the deploy lock, so it can land
+     during a redeploy. If the unit is no longer that invocation, or no longer active, when the
+     action finishes (for example, the owner shut it down mid-redeploy), the action treats that as
+     a newer intentional stop. It does not re-enable, restart or roll back the unit's state. It
+     keeps the new list file and reports "stopped during redeploy". A crash of the action itself
+     leaves the unit as `buzz-agent-poststop` left it, disabled after a clean stop. That's the safe
+     side: the seat stays down until an authorized start.
+   - **Verify, then roll back on failure.** Before acting, the action records `is-enabled` and
+     `is-active`, and keeps a root-only copy of the previous `NAME.json`. Success means the
+     started invocation is active for `STEADY` seconds *and* `is-enabled` equals the recorded
+     state. If the unit *fails* (exits non-zero or crash-loops; a clean owner stop doesn't count),
+     the action restores the previous file. It then restarts the unit under the old list and
+     restores the recorded enablement, under the same invocation and newer-stop rules. Finally it
+     reports the failure with the masked journal tail.
    - **A stopped seat** (inactive, as after a Buzz Shutdown) gets its file updated and stays
      stopped. The action has no start option and grants no new resume authority. A stopped seat
      is started only through a path that is already authorized: Buzz Start on James's Mac through
@@ -308,9 +321,19 @@ the key, approve its link) plus any grants he chooses to give it.
    - a running, enabled seat: restarted, still enabled;
    - a running, disabled seat: restarted, still disabled;
    - a stopped seat: file updated, not started;
-   - the hook leaving enablement alone under the marker;
+   - an owner `!shutdown` during the redeploy: the unit stays stopped and disabled, and is not
+     re-enabled or rolled back;
+   - the action killed mid-run: the unit is left as the unchanged hook leaves it, with nothing
+     orphaned;
+   - a failed start under the new list: the file is restored and the old list restarted with its
+     enablement;
    - lock contention;
    - a rollback.
+
+   **Murphy's case.** Today Murphy's file has `respond_to` owner-only with an empty list (Hive
+   `buzz-murphy-respond-to-owner-only`). Because the action always writes
+   `BUZZ_ACP_RESPOND_TO=allowlist` with the repo list, Murphy's first redeploy switches it to
+   allowlist mode. Its list is James's decision (Hive `buzz-murphy-respond-to-decision`).
 
    It never prints the file. It refuses when `NAME.json` doesn't exist yet: a seat's first deploy,
    which brings its nsec, stays the Mac's. Dead Rabbit runs it after the merge. James's hands
