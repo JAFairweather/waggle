@@ -285,40 +285,46 @@ the key, approve its link) plus any grants he chooses to give it.
 
    **It's a policy-only update, not a resume.** It changes who the agent answers and nothing else.
    It keeps the unit's state as it found it:
-   - **How an owner stop and a redeploy restart differ.** An owner `!shutdown` makes the harness
-     exit by itself with status 0. A restart is systemd killing the process with TERM. systemd
-     hands `buzz-agent-poststop` both the stopping `INVOCATION_ID` and how it ended (`EXIT_CODE`
-     and `EXIT_STATUS`). So the hook can tell the two apart without trusting timing.
-   - **The protocol.** Under the per-seat lock, the action does the following:
-     1. Reads the unit's current `InvocationID`, I0.
-     2. Writes I0 to `/run/buzz-agents/NAME.restarting`.
-     3. Calls `systemctl try-restart`. That restarts the unit only if it is running at that
-        moment, so a seat the owner has already stopped is never revived (the first window).
-   - **What the hook does.** It skips its disable in exactly one case: the stop is a TERM kill,
-     *and* the stopping invocation is I0, *and* the file names I0. When it skips, it deletes the
-     file. Every other stop disables as today, whatever the file says, an owner `!shutdown` (exit
-     0) above all. The action never enables or re-enables anything. Boot enablement is therefore
-     exactly what it was: enabled stays enabled, and active-but-disabled stays disabled. That
-     leaves no window after the action's checks for a re-enable to undo a stop (the second
-     window).
-   - **A stale file is harmless.** InvocationIDs are never reused, so a file left by a killed
-     action names an invocation that can never stop again. The action deletes it on exit, and the
-     hook deletes it on match.
-   - **A newer stop wins.** A `!shutdown` that reaches the new invocation, I1, ends with exit 0,
-     and the hook disables as usual. The action sees I1 inactive, reports "stopped during
-     redeploy", and does nothing more. One ordering remains: the owner's `!shutdown` reaches I0
-     *after* systemd has already sent it TERM, so I0 dies by TERM and the shutdown would be lost.
-     The action closes it after the restart. It reads I0's final journal lines for the harness's
-     "shutdown requested by owner" line. If the line is there, it runs `systemctl stop` on I1. No
-     file names I1, so the hook disables, and the owner's stop wins.
+   - **How an owner stop is told apart, grounded in the harness.** `buzz-acp` logs "shutdown
+     command from owner" when it handles a `!shutdown` (the string is in the installed binary).
+     The exit status is not used: the current hook already treats exit 0 and TERM alike as a
+     clean stop, and the harness drains gracefully either way. Instead, the hook reads the
+     stopping invocation's own journal (`journalctl _SYSTEMD_INVOCATION_ID=<id>`) for that line.
+     The rollout adds an acceptance check on a test seat before anything relies on it: a `!shutdown`
+     must produce the line, and a `systemctl restart` must not. If a future harness changes the
+     line, that check fails and the action refuses to run.
+   - **The protocol.** Under the per-seat lock, the action:
+     1. reads the unit's current `InvocationID`, I0;
+     2. writes `/run/buzz-agents/NAME.restarting` naming I0, its own PID, and its own process start
+        time (from `/proc/PID/stat`);
+     3. calls `systemctl try-restart`, which restarts the unit only if it is running at that
+        moment, so a seat the owner has already stopped is never revived.
+   - **What the hook does.** It skips its disable only when *all* of these hold:
+     - the file names the stopping invocation;
+     - the process it names is alive with the same start time, so the action is still running;
+     - the stopping invocation's journal has no "shutdown command from owner" line.
+
+     Anything else disables as today. So a killed action can't leave a suppression behind: its
+     PID is dead or reused with a different start time, and the hook ignores the file and
+     disables. Nothing is left that a later TERM stop of I0 could match. The action deletes the
+     file when it exits.
+   - **A newer stop wins.**
+     - A `!shutdown` that reaches I0 before or during the restart puts the line in I0's journal,
+       so the hook disables.
+     - A `!shutdown` that reaches the new invocation, I1, is an ordinary stop with no file naming
+       I1, so the hook disables.
+     - After `STEADY`, the action checks I0's journal once more. If the owner line is there but I1
+       is running (the shutdown reached I0 too late to stop it), the action runs `systemctl stop`
+       on I1, and the hook disables. The action itself never enables or starts anything, so there
+       is no window in which it could undo a stop. Boot enablement is exactly what it was.
    - **Verify, then roll back on failure.** The action keeps a root-only copy of the previous
-     `NAME.json`. Success means I1 is active for `STEADY` seconds and `is-enabled` is unchanged.
-     The unit *fails* if its last result is not `success` (a non-zero exit or a crash loop; a
-     clean owner stop is `success`). In that case the action restores the previous file and
-     restarts under the old list with the same protocol: a new I-file, then `try-restart`, or a
-     plain start only while the last result is still a failure. It then reports the failure with
-     the masked journal tail. If the owner stopped the unit meanwhile, its last result is
-     `success`, and the action leaves it stopped.
+     `NAME.json`. Success means I1 is active for `STEADY` seconds and `is-enabled` is unchanged. If
+     the new list fails (the unit's last result is not `success`), the action restores the
+     previous file and calls `try-restart` once more under the same protocol. It never uses a plain
+     `start`. A unit that has failed outright isn't running, so `try-restart` does nothing. The seat
+     stays down with the old list restored until an authorized start, and nothing in the rollback
+     can cross a newer owner stop. The action then reports the failure with the masked journal
+     tail.
    - **A stopped seat** (inactive, as after a Buzz Shutdown) gets its file updated and stays
      stopped. The action has no start option and grants no new resume authority. A stopped seat
      is started only through a path that is already authorized: Buzz Start on James's Mac through
@@ -337,16 +343,18 @@ the key, approve its link) plus any grants he chooses to give it.
    - a stopped seat: file updated, not started;
    - an owner `!shutdown` before `try-restart`: no restart, and the unit stays stopped and
      disabled;
-   - an owner `!shutdown` reaching the new invocation: the hook disables, and the action does
-     nothing more;
-   - an owner `!shutdown` reaching the old invocation after the TERM: the action stops the new
-     invocation, and the unit ends stopped and disabled;
-   - a TERM restart of the named invocation: enablement unchanged;
-   - a TERM stop of any other invocation, and any exit 0: the hook disables as today;
-   - the action killed mid-run, leaving a stale `NAME.restarting`: later stops behave exactly as
-     today;
-   - a failed start under the new list: the file is restored and the old list restarted with its
-     enablement;
+   - an owner `!shutdown` reaching I0 during the restart: the owner line is in I0's journal, so
+     the hook disables;
+   - an owner `!shutdown` reaching I1: the hook disables, and the action does nothing more;
+   - the owner line found in I0 after I1 is up: the action stops I1, and the unit ends stopped
+     and disabled;
+   - a restart of the named invocation by a live action: enablement unchanged;
+   - the action killed right after writing the file, then a later TERM stop of I0: the hook sees
+     a dead or mismatched PID, ignores the file, and disables;
+   - a failed start under the new list: the file is restored, `try-restart` is a no-op on the
+     failed unit, and the seat stays down;
+   - acceptance on a test seat: a `!shutdown` logs "shutdown command from owner" and a restart
+     does not;
    - lock contention;
    - a rollback.
 
