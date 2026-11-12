@@ -303,7 +303,7 @@ console.log('console_hive_list: one list, every key kept, roles from recipes, nv
 // 7. A herd-cloud seat no other source names (Crusty, 10 Nov) is one row, "no Buzz channel", in its table group; joining
 // Buzz moves the same row to the new channel identity and keeps the Hive writer key as a separate identity on it.
 {
-  const { SEATS, rowKeyOf } = await import('../console/hive-seats.mjs')
+  const { SEATS } = await import('../console/hive-seats.mjs')
   const { agentsOf } = await import('../console/hive-grid.mjs')
   const crusty = SEATS.find(x => x.label === 'Crusty'), writer = crusty.pubkey, channel = keys().pk
   check(/^[0-9a-f]{64}$/.test(writer) && /^[0-9a-f]{64}$/.test(crusty.channel) && crusty.channel !== writer && SEATS.every(x => Object.keys(x).sort().join() === 'channel,group,harness,label,pubkey'), 'SEATS holds Crusty: public writer key, a different public channel key, and no other fields')
