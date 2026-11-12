@@ -49,6 +49,7 @@ Bunker. Its connection asks for exactly:
 
 - `get_public_key`
 - `sign_event:30078`: setup requests only. The fleet ignores this key on every other 30078 (below).
+- `sign_event:30000`: its relay writer list only (`nave-relay-writers-delegate`, below).
 - `sign_event:27235`: NIP-98 for the invite mint, never published.
 - `nip44_encrypt`: to seal the invite to the new agent.
 - `nip44_decrypt`: for its own receipt copy. It opens only messages sealed to the delegate's key,
@@ -57,6 +58,29 @@ Bunker. Its connection asks for exactly:
 
 It does not get `sign_event:440/441` or any posting kind. So it can't issue or revoke a grant, or
 speak in a room.
+
+**The same-kind risk, and where it's closed.** A Bunker permission covers a whole kind, not one `d`
+tag. So the delegate can sign *any* kind 30078 or 30000 event, not only the ones this design
+means. That's safe only because authority comes from the signer, never from the kind. Each
+consumer that trusts these kinds names who may sign for it, and only two would ever name the
+delegate:
+
+- **nvoy-onboard** accepts it for 30078 only under `d` = `nvoy-onboard/NAME/add_agent|bind_runtime`,
+  within the limits below.
+- **nave.pub** accepts it for 30000 only under `d` = `nave-relay-writers-delegate`. It refuses and
+  doesn't store any other 30000 from that key, its own `nave-relay-writers` above all.
+
+Everything else ignores the key, because it never names the delegate as a signer:
+
+- Hive memory accepts 30078 only from its registered writers, and only James and his named
+  writers for `hive:canon`.
+- Buzz room lists and NIP-51 lists elsewhere are read only from their owners.
+
+Other relays may store a stray delegate event, but nothing treats it as authority. The rollout's
+tests include a delegate-signed `hive:canon` claim and a delegate-signed `nave-relay-writers`
+list, and both must be refused. If James finds even that wider signing ability unacceptable, the
+alternative is open question 3: no delegate writer list, and the writer entry stays his one
+signature per agent.
 
 **James grants it with one NIP-DA event that also carries his standing consent.** It is kind 440,
 `p` = the delegate, `da-cap onboard`, scope = the hive. That is the hive's existing delegation layer
@@ -189,8 +213,10 @@ If the design is approved, `DESIGN_ADD_AN_AGENT.md` gains a pointer to this sect
   instruct an agent is never delegated.
 - **Policy:** the template list, the daily cap and the room list.
 - **Revoking.** Only a kind 441 on the `onboard` grant, signed from the console, revokes. The
-  fleet acts on it at the next 30 s tick and the relay as soon as it stores it. Already signed
-  requests and lists are void from then, whatever their timestamps. Two other levers are partial
+  fleet acts on it at the next 30 s tick and the relay as soon as it stores it. From then on,
+  setup requests not yet acted on, and every later change to the delegate list, are void, whatever
+  their timestamps. The delegate list the relay last accepted stays in force, so already admitted
+  agents keep writing, subject to James's deny list. Two other levers are partial
   and are not equivalent to revoking:
   - **Deleting the Bunker connection** stops *future* signatures at once, but requests already
     signed stay valid until the 441. Use it alongside the 441, not instead of it.
