@@ -78,9 +78,8 @@ Everything else ignores the key, because it never names the delegate as a signer
 
 Other relays may store a stray delegate event, but nothing treats it as authority. The rollout's
 tests include a delegate-signed `hive:canon` claim and a delegate-signed `nave-relay-writers`
-list, and both must be refused. If James finds even that wider signing ability unacceptable, the
-alternative is open question 3: no delegate writer list, and the writer entry stays his one
-signature per agent.
+list, and both must be refused. James accepted that signing ability on 12 Nov and chose the
+delegate writer list on nave.pub (see James's decisions, below).
 
 **James grants it with one NIP-DA event that also carries his standing consent.** It is kind 440,
 `p` = the delegate, `da-cap onboard`, scope = the hive. That is the hive's existing delegation layer
@@ -100,8 +99,8 @@ fleet accepts that only while three things hold:
 - the grant was signed by a grantor of the template.
 
 If the terms change, every delegate request is refused until James signs a new grant. That is one
-signature per terms change, not per agent. If he would rather consent per agent, the page keeps
-today's "I agree" step and the delegate waits for it. That is open question 4.
+signature per terms change, not per agent. James chose this standing consent, once per terms
+version, on 12 Nov (see James's decisions, below).
 
 **Fleet changes (nvoy), at each place that today trusts only grantors:**
 
@@ -117,11 +116,11 @@ today's "I agree" step and the delegate waits for it. That is open question 4.
 - **Authorization, `onboard_request.mjs` `parseSetupRequest`.** It accepts a request whose
   `event.pubkey` is a grantor, as today, *or* the grantee of a live `onboard` grant from a grantor
   of the template. A delegate request is refused when:
-  - `like` names a template outside `onboard_templates` in the fleet config. Today that would be
-    `mc-claude` and `crystalclaude`.
+  - `like` names a template outside `onboard_templates` in the fleet config. James set it to
+    `mc-claude` and `crystalclaude` (12 Nov).
   - any `giver` is set. Who may task the new agent stays a grant, so stays James's.
   - its `consent` is missing or stale (above).
-  - more than 3 new names a day come from the delegate. The count is kept in the ledger.
+  - more than 1 new name a day comes from the delegate (James, 12 Nov). The count is kept in the ledger.
 - **Ownership and receipts, `onboard_run.mjs`.** A delegate request is recorded with
   `owner` = the grantor and `signer` = the delegate. The receipt stays sealed to the owner, so
   James can read every one on the page. The runner seals a second copy to the delegate under
@@ -391,7 +390,7 @@ with no Start. Buzz tracks its own deploy record and the seat's presence, never 
 this change Start isn't needed for list changes, so the wart only matters for a seat's first
 deploy.
 
-## Rollout, if James approves
+## Rollout (James approved, 12 Nov)
 
 1. herd-infra:
    - the five `buzz-respond-to` files, from the 12 Nov hex lists (read only by `buzz-redeploy`);
@@ -436,12 +435,16 @@ deploy.
    That's the first use of his Bunker for this. The next agent is then onboarded by Dead Rabbit
    end to end, with James approving only its pairing link and its grants.
 
-## Open questions for James
+## James's decisions (12 Nov 2026)
 
-- Should the holder be Dead Rabbit, or a dedicated seat with no other duties? A dedicated seat is
-  cleaner but adds another agent to keep alive.
-- Is a daily cap of 3, with a template list of `mc-claude` and `crystalclaude`, right?
-- Should the delegate's writer list live on nave.pub? The alternative keeps the writer list
-  James's, which costs him one signature per agent.
-- Should terms acceptance be a standing consent in the grant, once per terms version, or James's
-  own "I agree" for each agent? Per agent keeps one tap per agent; standing consent removes it.
+Recorded in Hive `waggle-onboarding-delegate-policy-decision` and relayed by Dead Rabbit (Buzz `374079c9`):
+
+- **Holder:** Dead Rabbit's seat holds the delegate, through the typed tool only.
+- **Cap and templates:** at most **1** new agent a day from the delegate, not 3. Templates: `mc-claude` and
+  `crystalclaude`.
+- **Writer list:** the delegate writer list lives on nave.pub, as designed above, with James's deny list and the
+  relay-ordered freeze.
+- **Terms:** a standing consent in the `onboard` grant, once per terms version, as designed above.
+
+These settle the four open policy choices. Part 1 can now be built. Its implementation PRs (nvoy,
+nave.pub, hive admission, waggle console, the delegate MCP tool) each need a different-model read and a lead final.
