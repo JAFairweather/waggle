@@ -144,10 +144,12 @@ today's "I agree" step and the delegate waits for it. That is open question 4.
     Instead, it re-reads grant liveness (fail closed, above) at each effect boundary: staging,
     pairing, the writer step, accepting the `bind_runtime`, `apply`, and (on the admission side)
     the invite mint and claim. Each is a fresh, complete read of grants and 441s, never the tick's
-    cached answer. So a revocation stops a delegate request at the next
-    effect boundary, at most one tick (30 s) after the relays carry the 441. The one exception is
-    an `apply` that had already passed its check when the 441 arrived. It finishes, and leaves an
-    agent James removes with his deny list and offboard.
+    cached answer. The guarantee is about effects, not wall-clock time: once a fresh check sees
+    the 441, the delegate request causes no new effect. A runner can wait any length of time
+    between steps, so no time bound is claimed. The 30 s figure is only the watcher's tick period,
+    which governs when *queued* requests are next looked at. The one exception is an effect that
+    had already passed its check when the 441 arrived, such as an `apply` in progress. It
+    finishes, and leaves an agent James removes with his deny list and offboard.
 - **`bind_runtime` from the delegate only with a staged key.** The runner refuses a delegate bind
   unless `<request>.staged-channel.pub` exists and matches it. Today the staged file is an
   optional cross-check (Hive `nvoy-onboard-stage-request-id-source`). For the delegate it becomes
@@ -280,18 +282,21 @@ the key, approve its link) plus any grants he chooses to give it.
 
    **It's a policy-only update, not a resume.** It changes who the agent answers and nothing else.
    It keeps the unit's state as it found it:
-   - **A running seat** is restarted and stays enabled for reboot. `buzz-agent-poststop` today
+   - **A running seat** is restarted, and its boot enablement stays exactly what it was before:
+     enabled stays enabled, and active-but-disabled stays disabled. `buzz-agent-poststop` today
      disables a unit after any clean stop (exit 0 or TERM), and a restart is such a stop. So the
-     action writes `/run/buzz-agents/NAME.redeploy` first, and the hook skips its disable while
-     that marker exists. The action removes the marker once the unit is active again.
+     action writes `/run/buzz-agents/NAME.redeploy` first, and the hook leaves enablement alone
+     while that marker exists. The action removes the marker once the unit is active again.
    - **Verify, then roll back on failure.** Before acting, the action records the desired state
      (`is-enabled` and `is-active`) and keeps a root-only copy of the previous `NAME.json`. Success
      means the unit is active for `STEADY` seconds *and* `is-enabled` equals the recorded state. If
      either check fails, it restores the previous file and puts the unit back in its recorded state.
      It then reports the failure with the masked journal tail.
-   - **A seat that was deliberately stopped** (inactive and disabled, as after a Buzz Shutdown)
-     gets its file updated but is *not* started, unless the caller passes `--start`. So a redeploy
-     never revives a seat James stopped on purpose.
+   - **A stopped seat** (inactive, as after a Buzz Shutdown) gets its file updated and stays
+     stopped. The action has no start option and grants no new resume authority. A stopped seat
+     is started only through a path that is already authorized: Buzz Start on James's Mac through
+     the provider, or `herd-deploy codex-four start` for the four Codex seats. Either picks up the
+     updated list. So a redeploy never revives a seat James stopped on purpose.
    - **One at a time.** `buzz-redeploy` and `buzz-agentctl deploy` take the same per-seat lock
      (`flock /run/buzz-agents/NAME.lock`). So a Mac Start and a herd-cloud redeploy can't
      interleave. A deploy that finds the lock held waits up to 60 s, then refuses with "redeploy in
@@ -299,9 +304,13 @@ the key, approve its link) plus any grants he chooses to give it.
    - **Rollback** is running the action at an earlier merged commit. The list is just a file in
      git history, and the action records the commit it applied in `/etc/buzz-agents/NAME.list-commit`.
 
-   Tests cover a running seat (restarted, still enabled), a stopped seat (file updated, not
-   started), a stopped seat with `--start`, the hook skipping under the marker, lock contention and
-   a rollback.
+   Tests cover:
+   - a running, enabled seat: restarted, still enabled;
+   - a running, disabled seat: restarted, still disabled;
+   - a stopped seat: file updated, not started;
+   - the hook leaving enablement alone under the marker;
+   - lock contention;
+   - a rollback.
 
    It never prints the file. It refuses when `NAME.json` doesn't exist yet: a seat's first deploy,
    which brings its nsec, stays the Mac's. Dead Rabbit runs it after the merge. James's hands
@@ -327,8 +336,9 @@ deploy.
 
    Each needs a different-model read and a lead final. Changing herd-deploy itself stays
    `bin/install-herd-deploy`, run by James.
-2. Dead Rabbit runs `buzz-redeploy murphy` first, then the other four. Murphy gets its list today
-   without the Mac.
+2. Dead Rabbit runs `buzz-redeploy` for the four running seats, so each gets the reviewed list
+   without the Mac. Murphy is stopped, so its file is updated but it stays down. It comes up on the
+   reviewed list at its next authorized start: James's Buzz Start, or the provider deploy script.
 3. nvoy:
    - delegate discovery (`onboard_watch.mjs`);
    - authorization and consent (`onboard_request.mjs`);
