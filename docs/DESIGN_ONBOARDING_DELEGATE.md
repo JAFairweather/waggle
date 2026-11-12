@@ -279,10 +279,12 @@ the key, approve its link) plus any grants he chooses to give it.
    nothing else.** It runs from a merged commit like every other action. Under the per-seat lock
    (`flock /run/buzz-agents/NAME.lock`, shared with `buzz-agentctl deploy`), it:
    1. installs that commit's list for NAME;
-   2. rewrites only the two respond-to keys in `/etc/buzz-agents/NAME.json`, atomically, keeping
-      the nsec and everything else;
-   3. records the commit in `/etc/buzz-agents/NAME.list-commit`, then reports the seat's state
-      (active or not, enabled or not) and whether the running process is on an older list.
+   2. rewrites, in **one** atomic write of `/etc/buzz-agents/NAME.json` (temp file, fsync,
+      rename), the two respond-to keys plus a third key, `BUZZ_HERD_LIST_COMMIT`, naming the
+      commit. The nsec and everything else are kept. The list and its commit live in the same file,
+      so there is no separate marker that a death between two writes could leave out of step. The
+      harness ignores the extra key.
+   3. reports the seat's state (active or not, enabled or not), installed versus live (below).
 
    **It never stops, restarts or starts the unit, and never touches its enablement.** That is the
    whole point of this version. An owner `!shutdown` is handled by the harness itself, outside any
@@ -312,13 +314,22 @@ the key, approve its link) plus any grants he chooses to give it.
 
    **Reporting: installed versus live, separately.** For each seat, the action and `herd-deploy
    inspect buzz-agents` report two things:
-   - **Installed:** the list commit and entry count in `NAME.json` now.
-   - **Live:** whether the running process started *after* that file was written. That compares
-     the unit's `ActiveEnterTimestamp` with the file's mtime, so live equals installed only once the
-     seat has started on the new file.
+   - **Installed:** the `BUZZ_HERD_LIST_COMMIT` and entry count in `NAME.json` now.
+   - **Live:** what the running process actually loaded. `buzz-agent@.service` hands the file to the
+     harness with `LoadCredential=env:/etc/buzz-agents/%i.json`, so systemd copies it at start into
+     the unit's credential directory, `/run/credentials/buzz-agent@NAME.service/env`. That copy is
+     what the harness read. Inspect reads the copy (as root, printing nothing but the commit, the
+     mode and the entry count) and reports its `BUZZ_HERD_LIST_COMMIT` and respond-to fields. So
+     the live list is observed directly, not inferred from timestamps. A file rewritten after
+     systemd's copy shows correctly as installed ≠ live.
+   - **Unknown, not guessed:**
+     - If the unit isn't running, or the credential copy is missing or unreadable, live reads
+       "unknown".
+     - A copy written before this design has no commit key, so it reads "pre-design list" with its
+       mode and count.
 
-   A running seat on an older file shows as "installed <commit>, live: older file, applies at next
-   start". The design never reports a list as live before the seat has actually started on it.
+   A running seat on an older list shows as "installed <commit>, live <older commit>, applies at
+   next start". The design never reports a list as live unless the loaded copy shows it.
 
    **Rollback** is running the action at an earlier merged commit. It is the same file write, and
    it takes effect at the next start. A bad list can't crash-loop a running seat, because nothing
@@ -331,8 +342,11 @@ the key, approve its link) plus any grants he chooses to give it.
    - a stopped seat: the file is updated, and the seat stays stopped and disabled;
    - an owner `!shutdown` during the action: the unit ends stopped, and the action changes nothing
      about it;
-   - the action killed mid-write: the file is either the old or the new version, never partial,
-     and the unit is untouched;
+   - the action killed mid-write: the file is either the old or the new version, list and commit
+     together, never partial and never a new list with an old commit, and the unit is untouched;
+   - a rewrite landing after systemd's credential copy but before the unit is active: inspect
+     reports installed (new) ≠ live (old), read from the copy;
+   - a stopped unit, or an unreadable credential copy: live reads "unknown";
    - lock contention with `buzz-agentctl deploy`;
    - a rollback to an earlier commit;
    - a non-hex or empty list: refused before any write.
