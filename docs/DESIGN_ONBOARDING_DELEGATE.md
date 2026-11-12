@@ -292,22 +292,33 @@ the key, approve its link) plus any grants he chooses to give it.
    nothing behind if it dies: the file write is atomic, and the lock dies with the process.
    `buzz-agent-poststop` stays exactly as it is today.
 
-   **How a new list takes effect: at the seat's next start, through a path that is already
-   authorized.** The harness reads `NAME.json` only when it starts. So the new list applies the
-   next time the seat starts, through one of today's paths:
-   - **The four Codex seats** (mydude, neil, dennis, kerouac): Dead Rabbit runs
-     `systemctl stop buzz-agent@NAME` and then `herd-deploy codex-four start`, both already within
-     its authority (James, 12 Nov). The stop is an ordinary clean stop, so the hook disables as
-     today, and codex-four start re-enables and starts the seat from the updated file.
-   - **Murphy**, and any seat not in codex-four: Buzz Start on James's Mac through the provider.
-     With item 2, `buzz-agentctl deploy` takes the list from the repo file, not from the Mac.
+   **How a new list takes effect: at the seat's next start, whenever and however that start is
+   independently authorized.** The harness reads `NAME.json` only when it starts, so the new list
+   applies the next time the seat starts. This design neither triggers that start nor schedules
+   one. In particular, it does **not** use `herd-deploy codex-four start` as an activation step.
+   That command acts on all four Codex seats at once: `enable --now` on every stopped one and
+   `enable` on every running one. So using it to activate one seat's list could revive a
+   different seat James had stopped, or re-enable one he had disabled. Starts stay what they are
+   today:
+   - Buzz Start on James's Mac through the provider. With item 2, `buzz-agentctl deploy` takes the
+     list from the repo file, not from the Mac.
+   - `codex-four start`, only when James or Dead Rabbit runs it *for its own purpose* (bringing
+     the four up while the Mac sleeps), never as part of a list change.
+   - A crash restart by systemd (`Restart=on-failure`) or a reboot of an enabled seat.
 
-   If the owner sends `!shutdown` at any point, that stop stands until one of those authorized
-   starts, exactly as today. This design adds no new way to start a seat.
+   An owner `!shutdown` at any point stands until one of those starts, exactly as today. This
+   design adds no new way to start a seat. If James wants a list live sooner, he restarts that
+   seat himself with Buzz Start. That is an owner act, and it can't override his own stop.
 
-   **Reporting.** The action's output says "running on the old list until its next start" for an
-   active seat. It does not claim the list is live until the seat has restarted. Dead Rabbit's
-   `herd-deploy inspect buzz-agents` then shows the new count and mode.
+   **Reporting: installed versus live, separately.** For each seat, the action and `herd-deploy
+   inspect buzz-agents` report two things:
+   - **Installed:** the list commit and entry count in `NAME.json` now.
+   - **Live:** whether the running process started *after* that file was written. That compares
+     the unit's `ActiveEnterTimestamp` with the file's mtime, so live equals installed only once the
+     seat has started on the new file.
+
+   A running seat on an older file shows as "installed <commit>, live: older file, applies at next
+   start". The design never reports a list as live before the seat has actually started on it.
 
    **Rollback** is running the action at an earlier merged commit. It is the same file write, and
    it takes effect at the next start. A bad list can't crash-loop a running seat, because nothing
@@ -355,10 +366,10 @@ deploy.
 
    Each needs a different-model read and a lead final. Changing herd-deploy itself stays
    `bin/install-herd-deploy`, run by James.
-2. Dead Rabbit runs `buzz-redeploy` for all five seats. For the four Codex seats it then does a
-   stop and `codex-four start`, one seat at a time, so each comes up on the reviewed list without
-   the Mac. Murphy's file is updated, and Murphy comes up on the reviewed list at its next
-   authorized start: James's Buzz Start, or the provider deploy script.
+2. Dead Rabbit runs `buzz-redeploy` for all five seats. That is file-only. Each seat comes up on
+   its reviewed list at its next independently authorized start, and `inspect buzz-agents` shows
+   installed versus live per seat until then. For Murphy, which is stopped now, that next start is
+   James's Buzz Start, or the provider deploy script.
 3. nvoy:
    - delegate discovery (`onboard_watch.mjs`);
    - authorization and consent (`onboard_request.mjs`);
