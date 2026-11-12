@@ -271,20 +271,33 @@ the key, approve its link) plus any grants he chooses to give it.
    per line, with a comment naming who it is. It is reviewed like any herd-infra change, and it is
    **high-risk**, because it decides who may instruct the agent. That needs a different-model read
    plus a lead final.
-2. **`buzz-agentctl` reads the repo list.** On every deploy, from the Mac or from the box,
-   `BUZZ_ACP_RESPOND_TO=allowlist` and `BUZZ_ACP_RESPOND_TO_ALLOWLIST` come from the installed copy
-   of that file. A list sent by the Mac is ignored and logged. So the two paths cannot disagree,
-   and a Mac edit can no longer drift from the reviewed list.
+2. **One policy artifact on the box: `NAME.json`.** The respond-to keys and their commit live only
+   in `/etc/buzz-agents/NAME.json`. No separately installed list file exists on the box, so there
+   is never a second artifact to drift from it.
+   - **`buzz-agentctl deploy` (a Mac Start) keeps what `NAME.json` already holds.** When it
+     writes the Mac's environment, it carries over `BUZZ_ACP_RESPOND_TO`,
+     `BUZZ_ACP_RESPOND_TO_ALLOWLIST` and `BUZZ_HERD_LIST_COMMIT` from the existing file, in the
+     same atomic write. A list sent by the Mac is ignored and logged. So a Mac edit can't drift
+     from the reviewed list, and the policy and its commit move together.
+   - **A seat's very first deploy** has no `NAME.json` yet. It takes the Mac's list once and
+     marks it `BUZZ_HERD_LIST_COMMIT=mac-initial`, so inspect shows it as unreviewed until the
+     first `buzz-redeploy`.
 3. **A herd-deploy action, `buzz-redeploy NAME <herd-infra commit>`. It writes the file and
-   nothing else.** It runs from a merged commit like every other action. Under the per-seat lock
-   (`flock /run/buzz-agents/NAME.lock`, shared with `buzz-agentctl deploy`), it:
-   1. installs that commit's list for NAME;
-   2. rewrites, in **one** atomic write of `/etc/buzz-agents/NAME.json` (temp file, fsync,
+   nothing else.** It runs from a merged commit like every other action. It reads the list from
+   that commit's checkout of `agents/NAME/buzz-respond-to` in memory, and validates it (64-hex
+   each, non-empty) before any write. Then, under the per-seat lock (`flock
+   /run/buzz-agents/NAME.lock`, shared with `buzz-agentctl deploy`), it:
+   1. rewrites, in **one** atomic write of `/etc/buzz-agents/NAME.json` (temp file, fsync,
       rename), the two respond-to keys plus a third key, `BUZZ_HERD_LIST_COMMIT`, naming the
-      commit. The nsec and everything else are kept. The list and its commit live in the same file,
-      so there is no separate marker that a death between two writes could leave out of step. The
-      harness ignores the extra key.
-   3. reports the seat's state (active or not, enabled or not), installed versus live (below).
+      commit. The nsec and everything else are kept. The harness ignores the extra key.
+   2. reports the seat's state (active or not, enabled or not), installed versus live (below).
+
+   **That rename is the only write**, so the action has no boundary to die between. If it dies
+   before the rename, `NAME.json` is the old list with the old commit. After it, the file is the
+   new list with the new commit. Either way, the next independently authorized start (a Mac
+   Start, `codex-four start` for its own purpose, a crash restart or a reboot) runs exactly the
+   pair `NAME.json` holds, and inspect reports exactly that pair as installed. Rollback is the
+   same single write at an earlier commit, so it can't split the pair either.
 
    **It never stops, restarts or starts the unit, and never touches its enablement.** That is the
    whole point of this version. An owner `!shutdown` is handled by the harness itself, outside any
@@ -302,8 +315,8 @@ the key, approve its link) plus any grants he chooses to give it.
    `enable` on every running one. So using it to activate one seat's list could revive a
    different seat James had stopped, or re-enable one he had disabled. Starts stay what they are
    today:
-   - Buzz Start on James's Mac through the provider. With item 2, `buzz-agentctl deploy` takes the
-     list from the repo file, not from the Mac.
+   - Buzz Start on James's Mac through the provider. With item 2, `buzz-agentctl deploy` keeps the
+     list and commit already in `NAME.json`, not the Mac's.
    - `codex-four start`, only when James or Dead Rabbit runs it *for its own purpose* (bringing
      the four up while the Mac sleeps), never as part of a list change.
    - A crash restart by systemd (`Restart=on-failure`) or a reboot of an enabled seat.
@@ -347,6 +360,13 @@ the key, approve its link) plus any grants he chooses to give it.
    - a rewrite landing after systemd's credential copy but before the unit is active: inspect
      reports installed (new) ≠ live (old), read from the copy;
    - a stopped unit, or an unreadable credential copy: live reads "unknown";
+   - the action killed before or after its single rename, then an independently authorized start
+     and an inspect: the start runs exactly the pair `NAME.json` holds (old or new), and inspect
+     reports that same pair as installed;
+   - a Mac Start after a redeploy: `NAME.json` keeps the redeployed list and commit, and the Mac's
+     list is ignored and logged;
+   - a first deploy with no `NAME.json`: the Mac's list is written with commit `mac-initial`, and
+     inspect shows it as unreviewed;
    - lock contention with `buzz-agentctl deploy`;
    - a rollback to an earlier commit;
    - a non-hex or empty list: refused before any write.
