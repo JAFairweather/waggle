@@ -142,7 +142,9 @@ today's "I agree" step and the delegate waits for it. That is open question 4.
     and the existing offboard.
   - **The stop bound.** Today the runner parses authorization once, before its async steps.
     Instead, it re-reads grant liveness (fail closed, above) at each effect boundary: staging,
-    pairing, the writer step and `apply`. So a revocation stops a delegate request at the next
+    pairing, the writer step, accepting the `bind_runtime`, `apply`, and (on the admission side)
+    the invite mint and claim. Each is a fresh, complete read of grants and 441s, never the tick's
+    cached answer. So a revocation stops a delegate request at the next
     effect boundary, at most one tick (30 s) after the relays carry the 441. The one exception is
     an `apply` that had already passed its check when the 441 arrived. It finishes, and leaves an
     agent James removes with his deny list and offboard.
@@ -281,8 +283,12 @@ the key, approve its link) plus any grants he chooses to give it.
    - **A running seat** is restarted and stays enabled for reboot. `buzz-agent-poststop` today
      disables a unit after any clean stop (exit 0 or TERM), and a restart is such a stop. So the
      action writes `/run/buzz-agents/NAME.redeploy` first, and the hook skips its disable while
-     that marker exists. The action removes the marker once the unit is active again. On failure it
-     re-enables the unit only if it was enabled before.
+     that marker exists. The action removes the marker once the unit is active again.
+   - **Verify, then roll back on failure.** Before acting, the action records the desired state
+     (`is-enabled` and `is-active`) and keeps a root-only copy of the previous `NAME.json`. Success
+     means the unit is active for `STEADY` seconds *and* `is-enabled` equals the recorded state. If
+     either check fails, it restores the previous file and puts the unit back in its recorded state.
+     It then reports the failure with the masked journal tail.
    - **A seat that was deliberately stopped** (inactive and disabled, as after a Buzz Shutdown)
      gets its file updated but is *not* started, unless the caller passes `--start`. So a redeploy
      never revives a seat James stopped on purpose.
@@ -339,7 +345,11 @@ deploy.
 5. hive admission: mint and claim bound to the target key, with the grant checked at both.
 6. waggle console: today `draftGrant` refuses the `onboard` cap. Add issuing, showing and revoking
    it on the grant grid, with the `policy` and `age` consent tags drafted from the terms James is
-   shown. Nothing on the page ticks either one for him.
+   shown. Nothing on the page ticks either one for him. Acceptance checks:
+   - the page refuses to draft an `onboard` grant whose `policy` isn't the hive's current terms
+     version, or without his own age tick;
+   - the issued grant reads back cold with both tags;
+   - a 441 from the grid reads back, and the fleet's next tick reports the delegate as revoked.
 7. James:
    - makes the `nvoy-onboard-delegate` key in his Bunker;
    - pairs it with the listed permissions;
