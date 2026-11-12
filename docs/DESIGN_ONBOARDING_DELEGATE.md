@@ -227,8 +227,9 @@ If the design is approved, `DESIGN_ADD_AN_AGENT.md` gains a pointer to this sect
 - **Every grant:** work (`task`), `mention`, `admit` and the `onboard` grant itself. Who may
   instruct an agent is never delegated.
 - **Policy:** the template list, the daily cap and the room list.
-- **Revoking.** Only a kind 441 on the `onboard` grant, signed from the console, revokes. The
-  fleet acts on it at the next 30 s tick and the relay as soon as it stores it. From then on,
+- **Revoking.** Only a kind 441 on the `onboard` grant, signed from the console, revokes. The fleet
+  honours it at its next fresh grant check before any new effect, and the relay as soon as it
+  stores the 441. No wall-clock deadline is promised (see the stop bound above). From then on,
   setup requests not yet acted on, and every later change to the delegate list, are void, whatever
   their timestamps. The delegate list the relay last accepted stays in force, so already admitted
   agents keep writing, subject to James's deny list. Two other levers are partial
@@ -282,29 +283,40 @@ the key, approve its link) plus any grants he chooses to give it.
 
    **It's a policy-only update, not a resume.** It changes who the agent answers and nothing else.
    It keeps the unit's state as it found it:
-   - **A running seat** is restarted, and its boot enablement ends exactly as it was before:
-     enabled stays enabled, and active-but-disabled stays disabled. `buzz-agent-poststop` is not
-     changed and nothing suppresses it. It still disables the unit after the restart's clean stop,
-     as after any clean stop. So the action leaves no marker that a crash could orphan and that
-     could hide a real shutdown. Instead, the action itself puts enablement back, under two
-     conditions:
-     - it re-enables only if it recorded `enabled` before acting;
-     - it does so only while the unit is still running the invocation the action started (same
-       `InvocationID`) and active at the end of `STEADY`.
-   - **A newer stop wins.** An owner `!shutdown` doesn't take the deploy lock, so it can land
-     during a redeploy. If the unit is no longer that invocation, or no longer active, when the
-     action finishes (for example, the owner shut it down mid-redeploy), the action treats that as
-     a newer intentional stop. It does not re-enable, restart or roll back the unit's state. It
-     keeps the new list file and reports "stopped during redeploy". A crash of the action itself
-     leaves the unit as `buzz-agent-poststop` left it, disabled after a clean stop. That's the safe
-     side: the seat stays down until an authorized start.
-   - **Verify, then roll back on failure.** Before acting, the action records `is-enabled` and
-     `is-active`, and keeps a root-only copy of the previous `NAME.json`. Success means the
-     started invocation is active for `STEADY` seconds *and* `is-enabled` equals the recorded
-     state. If the unit *fails* (exits non-zero or crash-loops; a clean owner stop doesn't count),
-     the action restores the previous file. It then restarts the unit under the old list and
-     restores the recorded enablement, under the same invocation and newer-stop rules. Finally it
-     reports the failure with the masked journal tail.
+   - **How an owner stop and a redeploy restart differ.** An owner `!shutdown` makes the harness
+     exit by itself with status 0. A restart is systemd killing the process with TERM. systemd
+     hands `buzz-agent-poststop` both the stopping `INVOCATION_ID` and how it ended (`EXIT_CODE`
+     and `EXIT_STATUS`). So the hook can tell the two apart without trusting timing.
+   - **The protocol.** Under the per-seat lock, the action does the following:
+     1. Reads the unit's current `InvocationID`, I0.
+     2. Writes I0 to `/run/buzz-agents/NAME.restarting`.
+     3. Calls `systemctl try-restart`. That restarts the unit only if it is running at that
+        moment, so a seat the owner has already stopped is never revived (the first window).
+   - **What the hook does.** It skips its disable in exactly one case: the stop is a TERM kill,
+     *and* the stopping invocation is I0, *and* the file names I0. When it skips, it deletes the
+     file. Every other stop disables as today, whatever the file says, an owner `!shutdown` (exit
+     0) above all. The action never enables or re-enables anything. Boot enablement is therefore
+     exactly what it was: enabled stays enabled, and active-but-disabled stays disabled. That
+     leaves no window after the action's checks for a re-enable to undo a stop (the second
+     window).
+   - **A stale file is harmless.** InvocationIDs are never reused, so a file left by a killed
+     action names an invocation that can never stop again. The action deletes it on exit, and the
+     hook deletes it on match.
+   - **A newer stop wins.** A `!shutdown` that reaches the new invocation, I1, ends with exit 0,
+     and the hook disables as usual. The action sees I1 inactive, reports "stopped during
+     redeploy", and does nothing more. One ordering remains: the owner's `!shutdown` reaches I0
+     *after* systemd has already sent it TERM, so I0 dies by TERM and the shutdown would be lost.
+     The action closes it after the restart. It reads I0's final journal lines for the harness's
+     "shutdown requested by owner" line. If the line is there, it runs `systemctl stop` on I1. No
+     file names I1, so the hook disables, and the owner's stop wins.
+   - **Verify, then roll back on failure.** The action keeps a root-only copy of the previous
+     `NAME.json`. Success means I1 is active for `STEADY` seconds and `is-enabled` is unchanged.
+     The unit *fails* if its last result is not `success` (a non-zero exit or a crash loop; a
+     clean owner stop is `success`). In that case the action restores the previous file and
+     restarts under the old list with the same protocol: a new I-file, then `try-restart`, or a
+     plain start only while the last result is still a failure. It then reports the failure with
+     the masked journal tail. If the owner stopped the unit meanwhile, its last result is
+     `success`, and the action leaves it stopped.
    - **A stopped seat** (inactive, as after a Buzz Shutdown) gets its file updated and stays
      stopped. The action has no start option and grants no new resume authority. A stopped seat
      is started only through a path that is already authorized: Buzz Start on James's Mac through
@@ -321,10 +333,16 @@ the key, approve its link) plus any grants he chooses to give it.
    - a running, enabled seat: restarted, still enabled;
    - a running, disabled seat: restarted, still disabled;
    - a stopped seat: file updated, not started;
-   - an owner `!shutdown` during the redeploy: the unit stays stopped and disabled, and is not
-     re-enabled or rolled back;
-   - the action killed mid-run: the unit is left as the unchanged hook leaves it, with nothing
-     orphaned;
+   - an owner `!shutdown` before `try-restart`: no restart, and the unit stays stopped and
+     disabled;
+   - an owner `!shutdown` reaching the new invocation: the hook disables, and the action does
+     nothing more;
+   - an owner `!shutdown` reaching the old invocation after the TERM: the action stops the new
+     invocation, and the unit ends stopped and disabled;
+   - a TERM restart of the named invocation: enablement unchanged;
+   - a TERM stop of any other invocation, and any exit 0: the hook disables as today;
+   - the action killed mid-run, leaving a stale `NAME.restarting`: later stops behave exactly as
+     today;
    - a failed start under the new list: the file is restored and the old list restarted with its
      enablement;
    - lock contention;
