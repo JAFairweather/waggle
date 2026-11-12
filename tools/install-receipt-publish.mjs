@@ -5,7 +5,7 @@
 // and validates that state, rebuilds the public receipt through the shared schema, and atomically
 // writes only that receipt. It accepts no credential flags and never follows an output symlink.
 
-import { constants, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, renameSync,
+import { constants, closeSync, existsSync, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync, renameSync,
   unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,7 +28,8 @@ export function publishInstallReceipt(statePath, outputPath) {
   const temp = `${output}.tmp-${process.pid}`
   const fd = openSync(temp, 'wx', 0o644)
   try {
-    writeFileSync(fd, body); fsyncSync(fd); closeSync(fd)
+    // The Console host reads this file, so it is 0644 whatever the caller's umask (0077 would make it 0600).
+    fchmodSync(fd, 0o644); writeFileSync(fd, body); fsyncSync(fd); closeSync(fd)
     renameSync(temp, output)
     const dirFd = openSync(dirname(output), constants.O_RDONLY | constants.O_DIRECTORY)
     try { fsyncSync(dirFd) } finally { closeSync(dirFd) }
