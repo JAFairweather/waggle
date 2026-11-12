@@ -51,35 +51,90 @@ Bunker. Its connection asks for exactly:
 - `sign_event:30078`: setup requests only. The fleet ignores this key on every other 30078 (below).
 - `sign_event:27235`: NIP-98 for the invite mint, never published.
 - `nip44_encrypt`: to seal the invite to the new agent.
+- `nip44_decrypt`: for its own receipt copy. It opens only messages sealed to the delegate's key,
+  never James's.
 - `sign_event:22242`: room-read auth.
 
-It does not get `nip44_decrypt`, `sign_event:440/441` or any posting kind. So it can't read
-receipts sealed to James, issue or revoke a grant, or speak in a room.
+It does not get `sign_event:440/441` or any posting kind. So it can't issue or revoke a grant, or
+speak in a room.
 
-**James grants it with one NIP-DA event:** kind 440, `p` = the delegate, `da-cap onboard`, scope =
-the hive. That is the hive's existing delegation layer (waggle `SPEC_EXTERNAL.md`, NIP-DA), so the
-console already shows it, and it is revocable with one kind 441. Three changes would honour it:
+**James grants it with one NIP-DA event that also carries his standing consent.** It is kind 440,
+`p` = the delegate, `da-cap onboard`, scope = the hive. That is the hive's existing delegation layer
+(waggle `SPEC_EXTERNAL.md`, NIP-DA), so the console already shows it, and it is revocable with one
+kind 441. The same signed event carries the two statements that only James can make:
 
-- **nvoy `onboard_request.mjs`.** Accept an `add_agent` signed by a key that holds a live
-  `onboard` grant from a grantor of the template, as well as from the grantor itself. The request
-  is then treated as the grantor's (`owner` = the grantor), so receipts stay sealed to James.
-  Delegate requests are refused when:
+- `["policy", <terms version>]`: he accepts the hive's current terms for each agent this delegate
+  adds;
+- `["age", "confirmed"]`: his own age attestation.
+
+`DESIGN_ADD_AN_AGENT.md` makes both the owner's act, and they stay his. The delegate never asserts
+them. Its requests carry `["consent", <grant id>]` instead of the `policy` and `age` tags. The
+fleet accepts that only while three things hold:
+
+- the grant is live;
+- the grant's `policy` equals the hive's current terms version;
+- the grant was signed by a grantor of the template.
+
+If the terms change, every delegate request is refused until James signs a new grant. That is one
+signature per terms change, not per agent. If he would rather consent per agent, the page keeps
+today's "I agree" step and the delegate waits for it. That is open question 4.
+
+**Fleet changes (nvoy), at each place that today trusts only grantors:**
+
+- **Discovery, `onboard_watch.mjs`.** Today it fetches kind 30078 from template grantors only
+  (lines 79–85). It would also read each grantor's kind 440 `onboard` grants and their 441
+  revocations from the same relays, cold. Every tick it would add each live grantee to the authors
+  it fetches setup requests from. A revoked grant drops its delegate from the next tick's authors.
+- **Authorization, `onboard_request.mjs` `parseSetupRequest`.** It accepts a request whose
+  `event.pubkey` is a grantor, as today, *or* the grantee of a live `onboard` grant from a grantor
+  of the template. A delegate request is refused when:
   - `like` names a template outside `onboard_templates` in the fleet config. Today that would be
     `mc-claude` and `crystalclaude`.
   - any `giver` is set. Who may task the new agent stays a grant, so stays James's.
-  - more than 3 new names a day come from the delegate.
+  - its `consent` is missing or stale (above).
+  - more than 3 new names a day come from the delegate. The count is kept in the ledger.
+- **Ownership and receipts, `onboard_run.mjs`.** A delegate request is recorded with
+  `owner` = the grantor and `signer` = the delegate. The receipt stays sealed to the owner, so
+  James can read every one on the page. The runner seals a second copy to the delegate under
+  `d` = `nvoy-onboard:<request>:delegate`, *without* the `pairing` field. The pairing link is
+  James's Bunker approval, so only he sees it.
+- **Completion.** A request finishes only on the cold proofs it needs today: installed manifest,
+  bind applied, writer listed (below), presence newer than the bind. The writer check reads the
+  *effective* writer set, not only the owner's list.
 - **`bind_runtime` from the delegate only with a staged key.** The runner refuses a delegate bind
   unless `<request>.staged-channel.pub` exists and matches it. Today the staged file is an
   optional cross-check (Hive `nvoy-onboard-stage-request-id-source`). For the delegate it becomes
   mandatory. The staged key is read from the box by a herd-deploy action (Part 2's
   `stage-channel-key NAME`, which runs as root on herd-cloud). So the delegate can only bind the
   key that the agent's own box made. It can never bind a key of its choosing.
-- **nave.pub writers.** Let the relay read a second list, `nave-relay-writers-delegate` (kind
-  30000), signed by a key in the relay's `delegates`. It may only *add* agent keys that also appear
-  in a live `add_agent`. James's own list stays authoritative, and a key on the delegate list only
-  is dropped when its request expires (7 days).
-- **Invites.** The hive admission API accepts a mint from the delegate when it holds the
-  `onboard` grant, single-use, 24 h, max 1 use. That is the same as the page mints today.
+
+**nave.pub writers, durable.** The relay honours a second list, `nave-relay-writers-delegate`
+(kind 30000), signed by a key that holds a live `onboard` grant from the relay owner. The relay
+reads that grant cold, as the fleet does.
+
+- **Lasting.** An entry is not tied to its request. It lasts until it is removed, so an admitted
+  agent keeps writing after its request's 7 days.
+- **Adding.** The delegate may add a key only when a live, unfinished delegate `add_agent` names
+  it. The relay checks this against the setup request it already stores.
+- **Removing.** The delegate can remove only keys it added. James's own list can remove any key.
+- **Revoking the delegate** freezes its list at the last version signed before the 441's
+  `created_at`. New additions stop at once, and already admitted agents keep writing. James
+  removes an agent explicitly, never as a side effect of revoking the delegate.
+- **Cold read.** The relay publishes its effective writer set as a signed kind 30000 under its own
+  key (`d` = `nave-relay-writers-effective`). The page and the runner read it cold, so "listed"
+  means the relay actually enforces it.
+
+**Invites bound to the agent.** A bearer code minted by the delegate could be claimed by any key,
+so the admission API changes:
+
+- **Mint.** It takes `for` = the new agent's pubkey and `request` = the `add_agent` id. It accepts
+  the delegate only while its `onboard` grant from a hive owner is live, and refuses a `for` that
+  the request doesn't name.
+- **Claim.** It is accepted only when signed by that same `for` key. The `onboard` grant is checked
+  again at claim time, so revoking between mint and claim makes the invite dead.
+- **Lifetime.** Single use and 24 h, as today. The invite is still sealed to the agent, so the
+  delegate never sees the code in clear after sealing. It holds the code only between mint and
+  seal, as the page does today.
 
 **Who holds it: Dead Rabbit's seat.** Dead Rabbit already speaks for James and runs herd-deploy.
 It reaches the key only through a new MCP tool, `nvoy-onboard-driver`, never a raw signer. The
@@ -95,10 +150,20 @@ reads it back. Then it posts one line in #waggle-test ("onboard: request hr like
 …"), so every use is visible. The tool is the only process given the connection's `bunker_uri_ref`
 (root 0600, outside Dead Rabbit's home, like the runner's).
 
+### The change to the Add-an-agent boundary, stated plainly
+
+`DESIGN_ADD_AN_AGENT.md` reserves to James three things: signing setup requests, accepting terms
+(with the age attestation), and grants. This design changes only the first. A key James granted
+may sign `add_agent` and `bind_runtime` for agents within the limits above. Terms and age stay
+his own signed statements, given once in the grant rather than per agent. Grants are unchanged.
+If the design is approved, `DESIGN_ADD_AN_AGENT.md` gains a pointer to this section.
+
 ### What stays James's
 
 - **Making the agent's key and approving its pairing link.** Both happen in his Bunker, and the
   key is his.
+- **Accepting the terms and confirming his age.** He does this in the `onboard` grant he signs
+  himself, and again whenever the terms change.
 - **Every grant:** work (`task`), `mention`, `admit` and the `onboard` grant itself. Who may
   instruct an agent is never delegated.
 - **Policy:** the template list, the daily cap and the room list.
@@ -175,14 +240,21 @@ deploy.
 2. Dead Rabbit runs `buzz-redeploy murphy` first, then the other four. Murphy gets its list today
    without the Mac.
 3. nvoy:
-   - the `onboard` grant check in `onboard_request.mjs`;
+   - delegate discovery (`onboard_watch.mjs`);
+   - authorization and consent (`onboard_request.mjs`);
+   - owner and signer recording, plus the delegate receipt copy (`onboard_run.mjs`);
+   - the effective writer check;
    - the template allowlist, daily cap, no-giver rule and mandatory staged key;
-   - tests for each refusal.
-4. nave.pub: the delegate writer list. hive admission: the delegate mint.
-5. James:
+   - tests for each refusal, and for a revocation that drops the delegate on the next tick.
+4. nave.pub:
+   - the durable delegate writer list;
+   - the freeze when the delegate is revoked;
+   - the signed effective writer set.
+5. hive admission: mint and claim bound to the target key, with the grant checked at both.
+6. James:
    - makes the `nvoy-onboard-delegate` key in his Bunker;
    - pairs it with the listed permissions;
-   - signs one `onboard` grant.
+   - signs one `onboard` grant, which carries his terms acceptance and age attestation.
 
    That's the first use of his Bunker for this. The next agent is then onboarded by Dead Rabbit
    end to end, with James approving only its pairing link and its grants.
@@ -194,3 +266,5 @@ deploy.
 - Is a daily cap of 3, with a template list of `mc-claude` and `crystalclaude`, right?
 - Should the delegate's writer list live on nave.pub? The alternative keeps the writer list
   James's, which costs him one signature per agent.
+- Should terms acceptance be a standing consent in the grant, once per terms version, or James's
+  own "I agree" for each agent? Per agent keeps one tap per agent; standing consent removes it.
