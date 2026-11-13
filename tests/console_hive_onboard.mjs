@@ -160,5 +160,19 @@ console.log('onboard grant: issue, read back cold, fold, revoke')
   } else console.log('skip — no nvoy checkout here (set NVOY_DIR) for the fleet-fold cross-check')
 }
 
+console.log('the hive page: the ticks are the owner\'s')
+{
+  const page = readFileSync(join(ROOT, 'console/hive.html'), 'utf8')
+  check(page.includes("from './hive-onboard.mjs'") && /draftOnboardGrant\(/.test(page) && /onboardGrantsOf\(/.test(page), 'the hive page drafts and shows onboard grants through hive-onboard.mjs')
+  const boxes = ['onboard-agree', 'onboard-age'].map(id => page.match(new RegExp(`<input[^>]*id="${id}"[^>]*>`))?.[0] || '')
+  check(boxes.every(b => b && /type="checkbox"/.test(b) && !/\bchecked\b/.test(b)), 'both ticks are checkboxes, unticked in the page')
+  check(!/\$\('onboard-(agree|age)'\)\.checked\s*=\s*(true|!)/.test(page) && /\$\('onboard-agree'\)\.checked = false; \$\('onboard-age'\)\.checked = false/.test(page),
+    'the page only ever clears the ticks (when the terms are read again), never sets them')
+  check(/onboardGate\(terms, \{ agreed, ageConfirmed \}\)/.test(page) && /draftOnboardGrant\(\{ delegate: pk, owner: hive\.owner, terms, agreed, ageConfirmed, scopeHash \}\)/.test(page),
+    'the draft is made from the ticks the owner set, past the gate')
+  check(/key: `onboard-stop:\$\{g\.id\}`[\s\S]{0,200}draftRevoke\(\{ grantId: g\.id \}\)/.test(page), 'withdrawing drafts a 441 on that grant, signed through the same change bar')
+  check(!/signEvent\(/.test(page.split("from './hive-onboard.mjs'")[1] || 'signEvent('), 'the onboard wiring never calls signEvent directly')
+}
+
 console.log(pass ? '\nconsole hive onboard: all checks pass' : '\nconsole hive onboard: FAILURES')
 process.exit(pass ? 0 : 1)
