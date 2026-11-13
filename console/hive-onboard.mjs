@@ -90,6 +90,19 @@ function usable(g, terms) {
   return { ok: true, reason: 'the fleet accepts requests under it' }
 }
 
+// Just before signing: the hive's terms are read again, and an onboard grant is signed only if the hive
+// still serves the version it carries. The owner agreed to the terms he was shown; if they changed, or
+// cannot be read, nothing is signed and he reads and ticks again. Any other event passes untouched.
+export async function recheckOnboard(template, { readTerms }) {
+  if (template?.kind !== 440 || one(template, 'da-cap') !== ONBOARD_CAP) return { ok: true }
+  let now
+  try { now = await readTerms() } catch (e) { now = { ok: false, reason: e?.message || String(e) } }
+  if (!now?.ok) return { ok: false, reason: `Can't read the hive's terms again before signing (${now?.reason || 'not read'}). Nothing was signed; read the terms and tick again.` }
+  const drafted = one(template, 'policy')
+  if (now.version !== drafted) return { ok: false, reason: `The hive's terms changed from ${drafted} to ${now.version} since you read them. Nothing was signed; read the new terms and tick again.` }
+  return { ok: true }
+}
+
 // Plain words for the confirm panel, names only.
 export function describeOnboard(change, nameOf) {
   if (change.action === 'give') return `Give: ${nameOf(change.delegate)} may ask the fleet to add new agents to your hive, at most one a day, `

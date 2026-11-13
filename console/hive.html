@@ -236,7 +236,7 @@ import { validControlState, postingCounts, notAnswering, stoppedAgents, stoppedL
 import { scopeHash } from './scope-hash.mjs'
 import { signFresh } from './guarded-signer.mjs'
 import { readHiveTerms } from './hive-invite.mjs'
-import { draftOnboardGrant, onboardGrantsOf, onboardGate, describeOnboard } from './hive-onboard.mjs'
+import { draftOnboardGrant, onboardGrantsOf, onboardGate, describeOnboard, recheckOnboard } from './hive-onboard.mjs'
 import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, draftMention, mentionName, MENTION_NAME, describeChange, applyChange, relayHost } from './hive-change.mjs'
 import { agentsOf, gridOf, reachOf, cellOf, cellKey, toggle, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, BUZZ_D, buzzOf, draftBuzz, sameBuzz, buzzWords, isBuzz, day, roomLinesOf, groupingLine, roomsOfAgent } from './hive-grid.mjs'
 import { squareOf as stateOf, panelOf, backOf, GLYPH, ANSWER, LEGEND, listsToOpen } from './hive-square.mjs'
@@ -476,6 +476,12 @@ async function drawOnboard() {
     b.onclick = () => propose([{ key: `onboard-stop:${g.id}`, sign: '–', words: describeOnboard({ action: 'stop', grant: g }, keyName),
       draft: () => [draftRevoke({ grantId: g.id })] }])
   }
+}
+function dropOnboardDraft() {
+  for (const key of [...extras.keys()]) if (key.startsWith('onboard-give:')) { extras.delete(key); drafted.delete(key) }
+  onboardTerms = null
+  $('onboard-agree').checked = false; $('onboard-age').checked = false
+  $('onboard-version').textContent = 'not read yet'; $('onboard-terms').textContent = ''
 }
 $('onboard-terms-go').onclick = async () => {
   const os = $('onboard-status'), box = $('onboard-terms')
@@ -1223,6 +1229,12 @@ $('change-go').onclick = async () => {
     const each = []
     for (const c of list) for (const template of await templatesOf(c)) each.push({ template, words: upper(c.words) })
     total = each.length
+    // An onboard grant carries the terms the owner agreed to. Read them again first; if they changed or
+    // can't be read, nothing at all is signed and the drafted grant is dropped so he reads and ticks again.
+    for (const c of each) {
+      const again = await recheckOnboard(c.template, { readTerms: () => readHiveTerms() })
+      if (!again.ok) { dropOnboardDraft(); throw new Error(again.reason) }
+    }
     $('change-title').textContent = 'Approve in your Bunker…'
     const signer = await consoleSigner()
     for (const c of each) {

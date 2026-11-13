@@ -24,7 +24,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nos
 import { scopeHash } from '../console/scope-hash.mjs'
 import { scopeHashSync } from '../src/scope_hash.mjs'
 import { applyChange, draftRevoke } from '../console/hive-change.mjs'
-import { ONBOARD_CAP, onboardGate, draftOnboardGrant, onboardGrantsOf, describeOnboard } from '../console/hive-onboard.mjs'
+import { ONBOARD_CAP, onboardGate, draftOnboardGrant, onboardGrantsOf, describeOnboard, recheckOnboard } from '../console/hive-onboard.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 let pass = true
@@ -160,6 +160,20 @@ console.log('onboard grant: issue, read back cold, fold, revoke')
   } else console.log('skip — no nvoy checkout here (set NVOY_DIR) for the fleet-fold cross-check')
 }
 
+console.log('onboard grant: the terms are read again just before signing')
+{
+  const t = await draftOnboardGrant({ delegate, owner, terms: TERMS, agreed: true, ageConfirmed: true, scopeHash })
+  check((await recheckOnboard(t, { readTerms: async () => TERMS })).ok, 'same terms version at signing: it may be signed')
+  const changed = await recheckOnboard(t, { readTerms: async () => ({ ...TERMS, version: '2026-12-01' }) })
+  check(!changed.ok && /changed from 2026-11-01 to 2026-12-01/.test(changed.reason), 'the hive changed its terms after he read them: nothing is signed, and it says from what to what')
+  check(!(await recheckOnboard(t, { readTerms: async () => ({ ok: false, reason: 'timeout' }) })).ok, 'terms unreadable at signing: nothing is signed')
+  check(!(await recheckOnboard(t, { readTerms: async () => { throw new Error('offline') } })).ok, 'a read that throws: nothing is signed')
+  const revoke = draftRevoke({ grantId: 'ab'.repeat(32) }), task = { kind: 440, tags: [['da-cap', 'task']] }
+  let reads = 0
+  check((await recheckOnboard(revoke, { readTerms: async () => { reads++; return { ok: false } } })).ok && (await recheckOnboard(task, { readTerms: async () => { reads++; return { ok: false } } })).ok && reads === 0,
+    'other changes (a 441, a task grant) are not held to the terms and trigger no read')
+}
+
 console.log('the hive page: the ticks are the owner\'s')
 {
   const page = readFileSync(join(ROOT, 'console/hive.html'), 'utf8')
@@ -171,6 +185,10 @@ console.log('the hive page: the ticks are the owner\'s')
   check(/onboardGate\(terms, \{ agreed, ageConfirmed \}\)/.test(page) && /draftOnboardGrant\(\{ delegate: pk, owner: hive\.owner, terms, agreed, ageConfirmed, scopeHash \}\)/.test(page),
     'the draft is made from the ticks the owner set, past the gate')
   check(/key: `onboard-stop:\$\{g\.id\}`[\s\S]{0,200}draftRevoke\(\{ grantId: g\.id \}\)/.test(page), 'withdrawing drafts a 441 on that grant, signed through the same change bar')
+  check(/for \(const c of each\) \{\s*const again = await recheckOnboard\(c\.template, \{ readTerms: \(\) => readHiveTerms\(\) \}\)\s*if \(!again\.ok\) \{ dropOnboardDraft\(\); throw new Error\(again\.reason\) \}\s*\}\s*\$\('change-title'\)\.textContent = 'Approve in your Bunker…'/.test(page),
+    'the page re-reads the terms for every onboard grant before anything is sent to the signer, and on a mismatch drops the draft and signs nothing')
+  check(/function dropOnboardDraft\(\) \{[\s\S]{0,300}extras\.delete\(key\); drafted\.delete\(key\)[\s\S]{0,200}\$\('onboard-agree'\)\.checked = false; \$\('onboard-age'\)\.checked = false/.test(page),
+    'dropping the draft clears the pending grant and both ticks, so he reads and ticks again')
   check(!/signEvent\(/.test(page.split("from './hive-onboard.mjs'")[1] || 'signEvent('), 'the onboard wiring never calls signEvent directly')
 }
 
