@@ -615,5 +615,56 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   check(/done\[3\] = requestBack && progress\.writers\?\.state === 'listed' && !!progress\.card/.test(page) && /done\[4\] = bound\.ok && !!progress\.presence\?\.ok/.test(page), 'step 3 is done on the request, the writer list and the card read back; step 4 on the bind and the presence')
 }
 
+// ── 9. Two ways in (#735 B2, DESIGN_ADD_AN_AGENT "Two ways in") ─────────────────────────────────
+{
+  const { createHash } = await import('node:crypto')
+  const P = progressMod
+  check(flow.WAYS.map(w => w.id).join() === 'hosted,own' && flow.WAYS[0].label === 'Launch a new agent' && flow.WAYS[1].label === 'Add identity to an existing agent', 'step 1 offers the two ways, in the design\'s words')
+  check(flow.wayOf('hosted') === 'hosted' && ['own', undefined, null, '', 'HOSTED', 'x'].every(v => flow.wayOf(v) === 'own'), 'anything but hosted is the own-box way, so an older saved form reads as before')
+  check(flow.stepsFor('own') === STEPS && flow.stepsFor(undefined) === STEPS, 'the own-box way keeps the seven steps as they are')
+  const hs = flow.stepsFor('hosted')
+  check(hs.length === 7 && hs[3].n === 4 && hs[3].label === 'Seat its Claude login' && hs.every((s, i) => i === 3 || s === STEPS[i]), 'the hosted way differs only at step 4, "Seat its Claude login"')
+  check(Object.isFrozen(hs) && Object.isFrozen(hs[3]), 'and its steps are frozen like the others')
+  check(flow.harnessFits('hosted', 'claude-code') && !flow.harnessFits('hosted', 'pi') && !flow.harnessFits('hosted', 'codex') && flow.harnessFits('own', 'pi'), 'a hosted agent runs in Claude Code only; the own-box way takes any harness')
+  check(flow.hostedSeat('hr').login === 'agent-hr' && flow.hostedSeat('hr').tokenPath === '~/.config/herd-secrets/claude-token' && flow.hostedSeat('hr').mode === '0600', 'the hosted login and the token path, from the design')
+  check([undefined, '', 'My Agent', '-x', 'a'.repeat(65), 'x;rm'].every(v => flow.hostedSeat(v).login === null), 'no login is named for a name that fails the check')
+  check(/channel key/.test(flow.partBuilt(null, 'hosted')[4]) && !/install line/.test(flow.partBuilt(null, 'hosted')[4]) && /install line/.test(flow.partBuilt(null, 'own')[4]) && Object.keys(flow.partBuilt('f'.repeat(64), 'hosted')).length === 0, 'without a runner, the hosted step 4 waits on the key, not an install line')
+
+  // The fleet's channel_key row: offered only in the runner's own shape, with a fingerprint the page recomputes.
+  const blob = Buffer.concat([Buffer.from([0, 0, 0, 11]), Buffer.from('ssh-ed25519'), Buffer.from([0, 0, 0, 32]), Buffer.alloc(32, 7)])
+  const body = blob.toString('base64'), fp = 'SHA256:' + createHash('sha256').update(blob).digest('base64').replace(/=+$/, '')
+  const opened = (row) => P.openedReceipt(JSON.stringify({ v: 1, name: 'hr', request: 'r', instance: 'hr', steps: row ? [row] : [] }), { name: 'hr', request: 'r' })
+  const done = detail => opened({ step: 'channel_key', state: 'done', detail })
+  const good = await P.reportedKey(done(`ssh-ed25519 ${body} (${fp}), staged for the owner to bind`))
+  check(good.state === 'reported' && good.key === `ssh-ed25519 ${body}` && good.fingerprint === fp, 'the runner\'s channel_key row is offered as the key and its fingerprint')
+  check((await P.reportedKey(done(`ssh-ed25519 ${body} (${fp})`))).state === 'reported', 'with or without the runner\'s trailing words')
+  const otherFp = 'SHA256:' + createHash('sha256').update(Buffer.alloc(51, 1)).digest('base64').replace(/=+$/, '')
+  for (const [detail, why] of [[`ssh-ed25519 ${body} (${otherFp}), staged for the owner to bind`, 'a fingerprint that is not the key\'s'],
+    [`ecdsa-sha2-nistp256 ${body} (${fp})`, 'a key type the page cannot fingerprint'], [`ssh-ed25519 ${body} (${fp}) and more`, 'extra text'],
+    [`ssh-ed25519 ${body}`, 'no fingerprint'], [`-----BEGIN OPENSSH PRIVATE KEY----- (${fp})`, 'a private key'], ['', 'nothing']]) {
+    const r = await P.reportedKey(done(detail))
+    check(r.state === 'malformed' && !('key' in r), `not offered: ${why}`)
+  }
+  const refused = await P.reportedKey(opened({ step: 'channel_key', state: 'refused', detail: 'the staged channel key is not bound to this instance and request' }))
+  check(refused.state === 'refused' && /not bound/.test(P.reportedLine(refused, 'hr')) && !('key' in refused), 'a refused row is shown in the fleet\'s words, with no key')
+  check((await P.reportedKey(opened({ step: 'channel_key', state: 'pending', detail: 'staging' }))).state === 'pending', 'a pending row waits')
+  check((await P.reportedKey(opened(null))).state === 'none' && (await P.reportedKey(null)).state === 'unread', 'no row is "not reported yet"; no receipt is "not read"')
+  const lines = await Promise.all(['none', 'pending', 'refused', 'malformed'].map(async st => P.reportedLine({ state: st, text: 'x' }, 'hr')))
+  check(/^Reported by the fleet: its channel key SHA256:/.test(P.reportedLine(good, 'hr')) && [P.reportedLine(good, 'hr'), ...lines].every(t => !/verified|Read back|proof/i.test(t)), 'the report reads as "the fleet says", never as verified or read back')
+
+  // The page: the hosted way is the page's own choice, never a request tag; the token is never asked for; the report never takes a tick.
+  const hostedBox = page.slice(page.indexOf('<div id="hosted-box"'), page.indexOf('<div class="later-box" id="box-later">'))
+  check(hostedBox.length > 0 && !/<input|<textarea|contenteditable/i.test(hostedBox), 'the hosted step 4 has no field for the Claude token')
+  check(/\$\('hosted-token'\)\.textContent = seat\.tokenPath/.test(page) && /\$\('hosted-login'\)\.textContent = /.test(page), 'the login and the token path reach the page as text')
+  check(/'Its channel key', [^\n]*, false, reportedLine\(progress\.reported, n\)\]/.test(page), 'the fleet\'s report of the key is a row that never takes a tick')
+  check(/done\[4\] = bound\.ok && !!progress\.presence\?\.ok/.test(page), 'step 4 is still done only on the bind and the presence, for both ways')
+  const use = page.slice(page.indexOf("$('hosted-use').onclick"), page.indexOf("$('box-go').onclick"))
+  check(/\$\('channel-key'\)\.value = r\.key/.test(use) && !/send\(|sign/i.test(use.replace(/Nothing is signed until you press "Sign its box key"/, '')), '"Use the reported key" fills the field and signs nothing: the bind stays the owner\'s act')
+  check(/if \(!harnessFits\(form\.way, form\.harness\)\) throw new Error\(HOSTED_HARNESS_ONLY\)/.test(page), 'no signature goes out for a hosted agent on another harness')
+  check(!/['"]way['"]/.test(readFileSync(new URL('../console/hive-add-agent.mjs', import.meta.url), 'utf8')) && (f => !/\bway\b/.test(f.slice(f.lastIndexOf('return {'))))(page.slice(page.indexOf('function fields('), page.indexOf('\n}\n', page.indexOf('function fields(')))), 'the way is not a tag on any request')
+  check(/progress\.reported = wayOf\(form\.way\) === 'hosted' \? await reportedKey\(progress\.opened\) : null/.test(page), 'the report is read only for a hosted agent, from the receipt already opened from the pinned runner')
+  check(/'Waiting for it to connect'/.test(page), 'until the presence arrives, a hosted step 4 reads "Waiting for it to connect"')
+}
+
 if (fails) { console.error(`\nconsole_hive_add_agent: ${fails} failing`); process.exit(1) }
 console.log('\nconsole_hive_add_agent: all passed')

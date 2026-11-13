@@ -94,6 +94,9 @@
     <section data-step="1">
       <h1>Who is the new agent?</h1>
       <p class="intro">Give it a name and say what it runs in. It starts out working like an agent you already have, and you can change anything later.</p>
+      <div class="group-label">How it comes in</div>
+      <div class="pills" id="way" role="group" aria-label="How it comes in"></div>
+      <p class="hint" id="way-why"></p>
       <div class="fields"><label class="field">Name<input id="name" placeholder="crystalclaude" spellcheck="false" autocomplete="off"></label>
         <label class="field">Works like<select id="like" aria-label="Agent it starts like"><option value="">Reading your agents…</option></select></label></div>
       <div class="fields"><label class="field">Display name<input id="display" placeholder="Crystal Claude" maxlength="64" autocomplete="off"></label>
@@ -136,8 +139,17 @@
     </section>
 
     <section data-step="4" hidden>
-      <h1>Start <span data-name></span> on its box</h1>
-      <p class="intro">This starts it on its own box as <span data-name></span>, makes the key for its private line right there, and keeps it running after a restart.</p>
+      <h1 id="box-head">Start <span data-name></span> on its box</h1>
+      <p class="intro" id="box-intro">This starts it on its own box as <span data-name></span>, makes the key for its private line right there, and keeps it running after a restart.</p>
+      <div id="hosted-box" hidden>
+        <ol class="boxes">
+          <li><span class="n">1</span><div><p>The herd operator makes its login on herd-cloud, <code id="hosted-login"></code>, with herd-infra's <code>add-agent</code>, once its herd-infra definition is merged. That login makes the key for its private line, and only the public half leaves it.</p></div></li>
+          <li class="careful"><span class="n">2</span><div><p>You place the herd's Claude login on that login, at <code id="hosted-token"></code>, mode <code>0600</code>.</p><p class="small">This page never asks for the token, never shows it and never sends it anywhere. Place it by path on the login, not through chat.</p></div></li>
+          <li><span class="n">3</span><div><p>The fleet reports the login's channel key to you, sealed in its receipt. Check the fingerprint, then sign it below. Signing is your act; the fleet's report alone proves nothing.</p>
+            <p class="small" id="hosted-reported" role="status"></p>
+            <div class="actions" id="hosted-use-row" hidden><button type="button" class="quiet" id="hosted-use">Use the reported key</button></div></div></li>
+        </ol>
+      </div>
       <div class="later-box" id="box-later"></div>
       <div id="install-box" hidden>
         <p class="hint">Run this in a terminal on <span data-name></span>'s box. It needs <code>git</code>, <code>node</code> 20 or later, <code>ssh</code> and <code>claude</code>, and changes nothing when one is missing. Run it again after it asks you to save the Claude login; a second run keeps its key.</p>
@@ -146,7 +158,7 @@
         <p class="small">The fleet's address and host key come sealed to you in its receipt, signed by the fleet's runner key, which this page pins. The page checks each field before it builds the line.</p>
       </div>
       <ol class="rows" id="box-rows"></ol>
-      <label class="field" style="margin-top:14px">The key the line printed<input id="channel-key" placeholder="ssh-ed25519 AAAA…" spellcheck="false" autocomplete="off"></label>
+      <label class="field" style="margin-top:14px"><span id="channel-key-label">The key the line printed</span><input id="channel-key" placeholder="ssh-ed25519 AAAA…" spellcheck="false" autocomplete="off"></label>
       <label class="field" id="feed-key-field" hidden>Its wake-feed key<input id="feed-key" placeholder="ssh-ed25519 AAAA…" spellcheck="false" autocomplete="off"></label>
       <p class="hint" id="feed-key-hint" hidden>A Pi or Codex agent has a second key, the one it hears wakes on. Paste that public line too; it must be a different key from the first.</p>
       <p class="hint">Only the public half: one line that starts <code>ssh-ed25519</code>. The private half stays on the box. Signing asks the server to let this one key reach <span data-name></span>'s channel.</p>
@@ -210,10 +222,10 @@ import { readCards, relayCoverage, GRANT_RELAYS, CARD_RELAYS, CARD_D, RUNS_LOGO,
 import { shortNpub } from './agent-roster.mjs'
 import { draftGrant, applyChange, sameAsDrafted, publishTo, relayHost } from './hive-change.mjs'
 import { scopeHash } from './scope-hash.mjs'
-import { STEPS, NOT_BUILT, PART_BUILT, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, roomChoices, testMention, proofFilters, proofRows, profileRow, answers, roomsToSign, roomsFor, workSignGate, relaysOf, PROFILE_RELAY_LIMIT } from './add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, PART_BUILT, partBuilt, WAYS, wayOf, stepsFor, harnessFits, HOSTED_HARNESS, HOSTED_HARNESS_ONLY, hostedSeat, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, roomChoices, testMention, proofFilters, proofRows, profileRow, answers, roomsToSign, roomsFor, workSignGate, relaysOf, PROFILE_RELAY_LIMIT } from './add-agent-flow.mjs'
 import { readRooms, roomsOf, roomsNeed, loadRoomRelay, relayKeyFor, proveInRoom, PROOF_WAIT_SECS } from './room-lists.mjs'
 import { wsReadBack } from './profile-publish.mjs'
-import { RUNNER, receiptFilter, newestReceipt, openedReceipt, TOOL_ROWS, stepRow, runnerQuiet, installLine, writersFilter, writersPlan, draftWriters, WRITER_RELAY, fingerprint, presenceFilter, presenceRow } from './onboard-progress.mjs'
+import { RUNNER, receiptFilter, newestReceipt, openedReceipt, TOOL_ROWS, stepRow, runnerQuiet, installLine, writersFilter, writersPlan, draftWriters, WRITER_RELAY, fingerprint, presenceFilter, presenceRow, reportedKey, reportedLine } from './onboard-progress.mjs'
 
 const $ = id => document.getElementById(id)
 // Everything shown here came from someone else's signature, so it reaches the DOM only as text.
@@ -243,7 +255,7 @@ async function read(relays, filter) {
 const SAVED = 'waggle-add-agent'
 const saved = (() => { try { return JSON.parse(sessionStorage.getItem(SAVED) || '{}') } catch { return {} } })()
 const keep = () => { try { sessionStorage.setItem(SAVED, JSON.stringify(form)) } catch { /* private mode: the form lives until reload */ } }
-const form = { step: 1, name: '', display: '', about: '', harness: 'claude-code', like: '', agent: '', givers: null, rooms: null, sixth: null, channelKey: '', feedKey: '', ...saved }
+const form = { step: 1, way: 'own', name: '', display: '', about: '', harness: 'claude-code', like: '', agent: '', givers: null, rooms: null, sixth: null, channelKey: '', feedKey: '', ...saved }
 
 // What the page has read: whose hive, its agents, and the newest request for this agent.
 let owner = null, loaded = false, installed = [], profiles = new Map(), latest = null, joined = null, terms = null, fixed = null, roomRead = null
@@ -252,7 +264,7 @@ let proof = { state: null, events: [], sent: null }, outside = null, cardRelays 
 const done = { 1: false, 2: false, 3: false, 4: false, 5: false, 6: false, 7: false }
 // Steps 3 and 4 (#721): the runner's newest sealed receipt for the newest request, opened once per
 // receipt; the writer list, the card and the presence event, each read cold by this page.
-let progress = { receipt: null, opened: null, error: null, refusedId: null, writers: null, card: null, presence: null }, requestBack = false
+let progress = { receipt: null, opened: null, error: null, refusedId: null, writers: null, card: null, presence: null, reported: null }, requestBack = false
 
 const nameShown = () => form.name || 'the new agent'
 function drawNames() { for (const n of document.querySelectorAll('[data-name]')) n.textContent = nameShown() }
@@ -260,7 +272,7 @@ function drawNames() { for (const n of document.querySelectorAll('[data-name]'))
 function drawRail() {
   $('caption').textContent = `${form.name || 'New agent'} · step ${form.step} of 7`
   const rail = $('rail'); rail.textContent = ''
-  for (const s of STEPS) {
+  for (const s of stepsFor(form.way)) {
     const li = rail.appendChild(el('li', done[s.n] ? 'done' : NOT_BUILT[s.n] || PART_BUILT[s.n] ? 'later' : ''))
     const b = li.appendChild(el('button')); b.type = 'button'
     if (s.n === form.step) b.setAttribute('aria-current', 'step')
@@ -273,6 +285,7 @@ function go(n) {
   form.step = n; keep()
   for (const s of document.querySelectorAll('main.step > section')) s.hidden = Number(s.dataset.step) !== n
   drawRail(); drawNames()
+  if (n === 4) drawBoxWay()
   if (n === 6) drawGivers()
   if (n === 5 && !terms) readHiveTerms().then(showTerms)
   if (n === 3 || n === 4) readProgress({ retry: true })
@@ -296,10 +309,14 @@ function drawRows() {
     ["Allowed on the server's relay", 'your writer list on the relay names ' + n, progress.writers?.state === 'listed', writersState()],
     ['Its agent card', 'seen on the card relays, naming you as its owner', !!progress.card, progress.card ? 'Read back' : progress.card === false ? 'Not on the card relays yet' : ''],
   ])
-  const bound = stepRow(progress.opened, 'started')
+  const bound = stepRow(progress.opened, 'started'), hosted = wayOf(form.way) === 'hosted'
+  // Hosted (#735 B2): the fleet's report of the key is reported work, so its row never takes a tick.
+  // Until the presence arrives, the step reads "Waiting for it to connect".
+  const presence = progress.presence?.ok ? progress.presence.state : hosted && (!progress.presence || /no presence from it yet/.test(progress.presence.state)) ? 'Waiting for it to connect' : progress.presence?.state || ''
   rows($('box-rows'), [
-    ['Bound on the server', "the fleet let the key you pasted reach " + n + "'s channel", bound.ok, bound.state],
-    ['Connected with this key', n + "'s own signed presence names the key you pasted", !!progress.presence?.ok, progress.presence?.state || ''],
+    ...(hosted ? [['Its channel key', 'the fleet says: made on ' + (hostedSeat(form.name).login || 'its login') + ', public half only', false, reportedLine(progress.reported, n)]] : []),
+    ['Bound on the server', "the fleet let the key you " + (hosted ? 'signed' : 'pasted') + " reach " + n + "'s channel", bound.ok, bound.state],
+    ['Connected with this key', n + "'s own signed presence names the key you " + (hosted ? 'signed' : 'pasted'), !!progress.presence?.ok, presence],
   ])
   done[3] = requestBack && progress.writers?.state === 'listed' && !!progress.card
   done[4] = bound.ok && !!progress.presence?.ok
@@ -341,12 +358,53 @@ function drawProgress() {
   $('pair-state').textContent = pr ? `The link is ready, sealed to you. It works until ${new Date(pr.expiresAt * 1000).toLocaleTimeString()}; after that the fleet makes a new one.`
     : paired ? `Approved: your Bunker answers for ${n}.` : PART_BUILT[3] ? 'The operator passes the link on to you for now. Your Bunker asks you before it accepts.'
       : 'The link shows here once the fleet makes it. Your Bunker asks you before it accepts.'
+  drawBoxWay()
+  if (wayOf(form.way) === 'hosted') {
+    // No install line: a hosted agent has none (DESIGN_ADD_AN_AGENT "Two ways in").
+    const r = progress.reported, part = partBuilt(RUNNER, 'hosted')[4]
+    $('install-box').hidden = true
+    $('box-later').hidden = !part && !progress.error
+    $('box-later').textContent = part || (progress.error ? `Can't read the fleet's report: ${progress.error}` : '')
+    $('hosted-reported').textContent = reportedLine(r, n)
+    $('hosted-use-row').hidden = r?.state !== 'reported'
+    return
+  }
   let text = null
   try { text = progress.opened?.install ? installLine(progress.opened.install) : null } catch {}
   $('install-box').hidden = !text
   $('install-line').textContent = text || ''
   $('box-later').hidden = !!text
   $('box-later').textContent = PART_BUILT[4] || (progress.error ? `Can't build the line: ${progress.error}` : `The line shows here once the fleet has staged ${n} and reported it.`)
+}
+// Step 4's words and boxes for the way chosen in step 1. Text only: the login name is the checked name.
+function drawBoxWay() {
+  const hosted = wayOf(form.way) === 'hosted', seat = hostedSeat(form.name), n = nameShown()
+  $('hosted-box').hidden = !hosted
+  $('box-head').textContent = hosted ? `Seat ${n}'s Claude login` : `Start ${n} on its box`
+  $('box-intro').textContent = hosted
+    ? `${n} runs on herd-cloud, on a login of its own. The herd operator makes the login; you place its Claude login by path, then sign the channel key the fleet reports.`
+    : `This starts it on its own box as ${n}, makes the key for its private line right there, and keeps it running after a restart.`
+  $('hosted-login').textContent = seat.login || 'agent-<name>'
+  $('hosted-token').textContent = seat.tokenPath
+  $('channel-key-label').textContent = hosted ? 'Its channel key, as the fleet reported it' : 'The key the line printed'
+}
+// Step 1: how it comes in. A hosted agent runs in Claude Code only, so choosing hosted moves the harness
+// there, and a setup already sent with another harness can't be hosted (its harness is fixed).
+function drawWay() {
+  const box = $('way'); box.textContent = ''
+  for (const w of WAYS) {
+    const b = box.appendChild(el('button')); b.type = 'button'; b.setAttribute('aria-pressed', String(w.id === wayOf(form.way)))
+    b.append(document.createTextNode(w.label), el('span', 'sub', ' · ' + w.sub))
+    b.disabled = w.id === 'hosted' && !!fixed && fixed.harness !== HOSTED_HARNESS
+    b.onclick = () => {
+      form.way = w.id
+      if (!harnessFits(form.way, form.harness)) form.harness = HOSTED_HARNESS
+      keep(); drawWay(); drawRuns(); drawFeedKey(); drawRail(); drawRows()
+    }
+  }
+  $('way-why').textContent = wayOf(form.way) === 'hosted'
+    ? 'Hosted on herd-cloud: the herd runs it on a login of its own. No line to run anywhere; you place its Claude login by path in step 4.'
+    : 'It already runs on a box you control. In step 4 you run one line on that box.'
 }
 
 function drawRuns() {
@@ -355,7 +413,8 @@ function drawRuns() {
     const b = runs.appendChild(el('button')); b.type = 'button'; b.setAttribute('aria-pressed', String(id === form.harness))
     if (RUNS_LOGO[label]) { const logo = b.appendChild(el('img')); logo.src = RUNS_LOGO[label]; logo.alt = '' }
     b.append(document.createTextNode(label))
-    b.disabled = !!fixed && id !== fixed.harness
+    b.disabled = !!fixed && id !== fixed.harness || !harnessFits(form.way, id)
+    if (!harnessFits(form.way, id)) b.title = HOSTED_HARNESS_ONLY
     b.onclick = () => { form.harness = id; keep(); for (const x of runs.children) x.setAttribute('aria-pressed', String(x === b)); drawFeedKey() }
   }
   $('fixed-why').hidden = !fixed
@@ -472,6 +531,7 @@ function fields({ signing = false } = {}) {
   if (/^nsec1/i.test(pasted)) { $('key').value = ''; throw new Error('That is the private key. Clear it from your clipboard, and paste the npub instead.') }
   if (/^npub1/.test(pasted)) { const d = nip19.decode(pasted); if (d.type !== 'npub') throw new Error('That is not an npub.'); agent = d.data }
   const others = othersThan(installed.map(a => ({ id: a.id, pubkey: a.pubkey })), { name, agent, owner, latest })
+  if (!harnessFits(form.way, form.harness)) throw new Error(HOSTED_HARNESS_ONLY)
   const gap = changedFrom(latest, { harness: form.harness, like: $('like').value })
   if (gap) throw new Error(gap)
   if (!loaded) throw new Error('Still reading your agents. Try again in a moment.')
@@ -505,6 +565,9 @@ async function readLatest() {
   requestBack = steps[3]; done[5] = steps[5]; done[6] = steps[6]
   fixed = fixedBy(latest)
   if (fixed) { form.harness = fixed.harness; form.like = fixed.like; keep(); drawRuns(); drawLike(); drawFeedKey() }
+  // A setup already sent with a harness other than Claude Code can't be hosted, so the page goes back to the own-box way.
+  if (fixed && !harnessFits(form.way, fixed.harness)) { form.way = 'own'; keep(); drawRuns() }
+  drawWay()
   if (form.step === 6) drawGivers()
   joined = joinOf(latest) || joined
   drawRail(); drawRows()
@@ -539,6 +602,7 @@ async function readProgress({ retry = false } = {}) {
         } catch (e) { Object.assign(progress, { error: `The fleet's receipt didn't open: ${e.message || String(e)}`, refusedId: r.id }) }
       }
     }
+    progress.reported = wayOf(form.way) === 'hosted' ? await reportedKey(progress.opened) : null
     const started = progress.opened?.steps.get('started')
     progress.presence = presenceRow(p.events, { agent: form.agent, instance: form.name, key: await fingerprint(form.channelKey),
       since: started?.state === 'done' && Number.isFinite(started.at) && started.at > 0 ? Math.floor(started.at / 1000) : null, verify: verifyEvent })
@@ -666,6 +730,13 @@ async function readBind(signed) {
 }
 // The wake-feed key's field shows for a harness that has one, and only then.
 function drawFeedKey() { for (const id of ['feed-key-field', 'feed-key-hint']) $(id).hidden = !needsFeedKey(form.harness) }
+$('hosted-use').onclick = () => {
+  const r = progress.reported
+  if (r?.state !== 'reported') return
+  $('channel-key').value = r.key
+  $('box-status').className = 'status'
+  $('box-status').textContent = `Filled in the key the fleet reported, ${r.fingerprint}. Nothing is signed until you press "Sign its box key".`
+}
 $('box-go').onclick = () => {
   const pasted = $('channel-key').value, feed = needsFeedKey(form.harness) ? $('feed-key').value : ''
   if (/PRIVATE KEY/i.test(pasted)) $('channel-key').value = ''
@@ -792,7 +863,7 @@ $('about').oninput = () => { form.about = $('about').value; keep() }
 const OWNER_KEY = 'waggle-hive-owner'
 async function start() {
   $('name').value = form.name; $('display').value = form.display || ''; $('about').value = form.about || ''; $('key').value = form.agent ? nip19.npubEncode(form.agent) : ''
-  drawRuns(); drawRows(); go(form.step)
+  drawWay(); drawRuns(); drawRows(); go(form.step)
   try { const v = localStorage.getItem(OWNER_KEY); owner = /^[0-9a-f]{64}$/.test(v || '') ? v : null } catch {}
   if (!owner) {
     try { owner = String(await (await consoleSigner()).getPublicKey()).toLowerCase(); try { localStorage.setItem(OWNER_KEY, owner) } catch {} }
