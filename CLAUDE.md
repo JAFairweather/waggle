@@ -41,7 +41,15 @@ public Nostr. A private community is valuable *because* it is walled, and the wa
 stops its members reaching anyone outside it. waggle treats that as **routing**, not permissions:
 the wall stays up, and the door is per-message and consensual in both directions.
 
-**Four lanes, one process:**
+**Current default (#658): carrying is off.** `src/bridge.mjs` enables the routes below only when
+`WAGGLE_CARRYING=on`. With the default, it counts working-channel posts and publishes owner control
+state, while participants receive channel messages through their own nvoy brokers. A source-level
+default is not proof of a host's current environment; the last documented live carrying-off check
+is [waggle #660](https://github.com/JAFairweather/waggle/issues/660), dated 29 October 2026.
+Hive memory's canonical implementation is in [nvoy](https://github.com/JAFairweather/nvoy/blob/main/mcp/tools/memory-daemon.mjs);
+waggle's earlier memory design is archived in `docs/archive/DESIGN_HIVE_MEMORY.md`.
+
+**Former carrying routes, available only when explicitly enabled:**
 
 | Lane | Direction | What crosses | What waggle sees |
 |---|---|---|---|
@@ -64,9 +72,10 @@ not in the source you edited.
   private key", never "never holds a key", never "nothing on the box worth taking". waggle *is* a
   member. That key is the thing worth taking, which is *why* the identity is lean and re-mintable,
   why the tripwire exists, and why rotation is the remedy. **A bounded loss, not no loss.**
-- **A granted participant *posts in* as a first-class member.** The write half is exact. The read
-  half is not: the community relay will not serve an external key, so what reaches an outside
-  agent is the return lane — **mentions only**. Do not claim read.
+- **A granted participant *posts in* as a first-class member.** The older external-key route
+  did not grant community-relay reads: with carrying enabled, the return lane delivered **mentions
+  only**. The current default has no return-lane carry; a persistent participant receives working-
+  channel messages through its own nvoy broker. Do not describe the former return lane as active.
 
   **This is settled by live evidence — stop re-deriving it (#344).** It has been re-opened twice
   on the theory that the wall is channel membership and could be walked around. It is not. The
@@ -106,8 +115,8 @@ not in the source you edited.
     separate open question (#399), and the wall paragraph stands until that experiment runs.
     Community read-back is still `403 RBAC: access denied` — the same refusal an unadmitted key
     gets, so it distinguishes nothing. Membership buys write, not read.
-  - **The return lane is the design, not a shortfall.** Do not describe it as a workaround for
-    missing read, and do not plan work that assumes native read is coming.
+  - **The return lane is a retained, disabled route.** It was the intended answer for the older
+    external-key path, and it is off by default under #658. Current participant delivery uses nvoy.
 - **You act as your OWN participant key, never as the bridge.** Signing as waggle is
   impersonation; signing as your own admitted key is the mechanism.
 
@@ -236,8 +245,8 @@ that merely ran.** The suite was green through all of them.
 
 ## Tests
 
-`npm test` — 140 suites, against the real exported functions with synthetic events. No production
-state, no network, no writes outside a temp dir. The join-custody suite opens a **loopback TLS**
+`npm test` — the suite roster in `package.json`, against the real exported functions with synthetic events. No production
+state, no external network, no writes outside a temp dir. The join-custody suite opens a **loopback TLS**
 socket on an ephemeral port, because `tools/join.mjs` can only be driven end to end over the wss
 transport it requires, and it trusts a per-run certificate rather than relaxing that requirement.
 

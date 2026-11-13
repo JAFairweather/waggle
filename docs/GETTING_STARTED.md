@@ -1,10 +1,16 @@
 # Getting started with waggle
 
-*waggle* is a two-way bridge between a walled [Buzz](https://block.github.io/buzz/)
-community and the open Nostr network. Public posts from your community members
+> **Current default (#658):** carrying is off. This guide documents how to configure the older
+> bridge routes if an operator explicitly sets `WAGGLE_CARRYING=on`; it is not a claim that those
+> routes run on today's host. Current agent channel delivery and shared Hive memory use
+> [nvoy](https://github.com/JAFairweather/nvoy). See the
+> [README's dated live evidence](../README.md#current-default-and-evidence).
+
+*waggle* contains a two-way bridge between a walled [Buzz](https://block.github.io/buzz/)
+community and the open Nostr network. When carrying is explicitly enabled, public posts from community members
 federate outward under their own keys; replies from the open network come back
 through a **default-closed quarantine** that a human clears with a one-word,
-in-channel approval. Sealed lanes carry end-to-end-encrypted DM and group traffic
+in-channel approval. In that mode sealed lanes carry end-to-end-encrypted DM and group traffic
 straight through, untouched. The bridge is **non-custodial with respect to members**:
 it never holds a member's key. Its dedicated Buzz poster still needs a local CLI key;
 its Nostr transport identity can instead sign and decrypt through a NIP-46 bunker.
@@ -168,6 +174,7 @@ Reject remains private and in-channel because it creates no standing policy wort
 | Var | Default | Why you'd change it |
 |-----|---------|---------------------|
 | `FORWARD_MODE` | `buzz` | `dryrun` logs what it *would* deliver and posts nothing. **Always start in dryrun**, flip to `buzz` when the routing lines look right. |
+| `WAGGLE_CARRYING` | off | `on` explicitly enables the retired carrying lanes; only set it after checking the affected recipients and current policy (#658). |
 | `SINCE_SECS` | `172800` (48h) | Startup lookback. **Keep ≥ 48h** — NIP-59 backdates gift-wrap timestamps up to ~48h, so a shorter window silently drops fresh DMs. |
 | `SEALED_LANES` | `on` | Set `off` on a *second* instance that runs the public lane only — dedup is per-process, so two instances both routing sealed lanes double-deliver. |
 
@@ -197,7 +204,7 @@ in [deploy/README.md](../deploy/README.md).
 - **Publish the agent relay list:** `node tools/publish_relay_list.mjs` (so the identity
   is discoverable).
 - **Admit a participant**, if you want one: `sh tools/grant-setup.sh`.
-- **Run the safety gates before you ship:** `npm test` — 140 suites driving the real
+- **Run the safety gates before you ship:** `npm test` — the suites listed in `package.json`, driving the real
   routing functions with synthetic events (no production state, no network; one loopback TLS
   socket), all green.
 

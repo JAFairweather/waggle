@@ -30,15 +30,15 @@
 
 ## What is this, really?
 
-waggle lets a private community meet the open network on its own terms. One dedicated bridge agent carries traffic across the boundary, while people keep their own identities and the community keeps its walls.
+waggle was built to let a private community meet the open network on its own terms. Its carrying lanes are now **off by default** under [#658](https://github.com/JAFairweather/waggle/issues/658). In default mode the bridge counts working-channel posts and publishes owner control state; agents use their own nvoy participants for channel delivery. `WAGGLE_CARRYING=on` explicitly restores the older bridge routes.
 
-Members can federate an opted-in post outward under their own Nostr keys. Replies and outside messages come back to a door that is closed by default: a person admits what belongs in the room. Sealed direct and group traffic is carried, never opened.
+The carrying code supports member-signed outward posts, default-closed quarantine for incoming public replies, and sealed direct and group routes. These are available only when carrying is enabled. [nvoy](https://github.com/JAFairweather/nvoy) owns the active participant and Hive memory paths; waggle is not the canonical memory store.
 
 The bridge uses only its own operational identities—its Buzz poster and Nostr transport identity—and never holds a member’s key. The Nostr identity can sign and decrypt through a NIP-46 bunker; Buzz posting still uses the dedicated local CLI key. That makes the bridge a route with a narrow, visible job, rather than a proxy for everyone’s voice.
 
 ---
 
-## Stuff you do in waggle
+## Carrying capabilities, when enabled
 
 - **Take a conversation public without becoming a bot.** A member chooses a post, and it is published under that member’s own key.
 - **Invite the outside world without opening an inbox.** Public replies land in a default-closed quarantine until a human releases them.
@@ -65,7 +65,7 @@ The bridge uses only its own operational identities—its Buzz poster and Nostr 
 
 ---
 
-## How it works
+## How carrying works when enabled
 
 | Lane | Direction | Boundary |
 |---|---|---|
@@ -88,17 +88,11 @@ One boundary, dedicated bridge identities, and evidence that matches the action:
 
 ---
 
-## What is actually true today
+## Current default and evidence
 
-| ✅ Works today | 🚧 Being wired up | 💭 Strong opinions, pending code |
-|---|---|---|
-| Member-signed outward federation and cold read-back | Broader live wake and delivery proof coverage | Native foreign-signed rendering inside Buzz |
-| Default-closed inbound quarantine and signed browser/in-channel moderation | More packaged deployment paths | A world where every bridge defaults to human choice |
-| Signed, revocable participant grants | Additional operational consoles | |
-| Return-leg sealed delivery to admitted guests | | |
-| Consent-gated feed following and tripwire detection | | |
+The [bridge source](src/bridge.mjs) defaults `WAGGLE_CARRYING` to off. In that mode it does not mirror public notes, deliver return-lane DMs, route sealed lanes or relay ingress, or seat agents from grants. It continues post counting and control-state publication. The carrying tests run with the old lanes explicitly enabled; passing them does not show that those lanes run in production.
 
-<sub>“Works today” means exercised against the real exported functions and verified by read-back where a relay is involved. It does not mean a relay’s acceptance alone.</sub>
+The last documented live check is dated **29 October 2026**: the read-lane service restarted with carrying off and logged no return-lane delivery afterward ([#660](https://github.com/JAFairweather/waggle/issues/660)). This is a dated observation, not a fresh check of today's host. The active participant route and shared memory implementation live in [nvoy](https://github.com/JAFairweather/nvoy); the latter is served from its [memory daemon](https://github.com/JAFairweather/nvoy/blob/main/mcp/tools/memory-daemon.mjs).
 
 ---
 
@@ -121,7 +115,7 @@ The setup intentionally never asks an agent to supply its own key, and never acc
 
 ## Tests
 
-`npm test` runs 140 suites against real exported functions with synthetic events—no production state and no network. The join-custody suite drives `tools/join.mjs` over a loopback TLS socket on an ephemeral port, since that tool's transport is wss-only by design. The suite is designed to prove what the bridge refuses as carefully as what it delivers:
+`npm test` runs the suites listed in `package.json` against real exported functions with synthetic events—no production state and no external network. The join-custody suite drives `tools/join.mjs` over a loopback TLS socket on an ephemeral port, since that tool's transport is wss-only by design. The suite is designed to prove what the bridge refuses as carefully as what it delivers:
 
 boot · install state · config example coverage · suite roster · wordmark · module callers · off-box policy protocol · standing trusted-reply policy · policy receipt verification · derive-only shadow client · shadow-mode gate · sealed direct-envelope policy · receipt-bound withdrawal policy · policy journal · policy-owned Buzz artifacts · off-box policy service · policy request queue · remote-only policy gate · forced-command policy runner · policy-host deployment · Nostr remote signer · dual-push profile publisher · read resilience · egress catalogue · egress ban · durable dedup store · relay fan-out · proof-of-work bounds · proof-of-work wiring · outbound relay set · tool relay defaults · relay refusal ledger · quarantine gating · deletion propagation · sealed-lane rate caps · grant admission · admission return-lane lifecycle · member seating · message rendering · deployed-build verification · routing-policy snapshot · latency trace · return lane · return-lane inbox · return-lane notify · notify-only wake · wake spool · wake spool lane · wake tripwire · agent relay send · return-lane scan · typed channel task carry · task-route mention · task-route bridge sender · return-lane no-miss · return-lane pending · relay ingress · tripwire setup · tripwire union · tripwire detection drill · relay membership wall · deploy runner · console Host check · undelivered record · console pending requests · in-door consent · consent-request template · consent gate · consent ask · recipient DM relays · DM relay-list publisher · watchlist hot-reload · signed owner control state · signed trust tiers · trust-gradient lane vocabulary · agent lifecycle catalogue · agent lifecycle lane · capability issue paths · agent challenge gate · host bootstrap · host facts · console importmap coverage · console access list · console hive list · console hive change · console hive following · hive add an agent · console hive what if · console hive grid · console owner view · console mention fix · console pair check · console hive square · console hive focus · console room lists · console hive bridge · capability vocabulary · challenge registry · join request · join approval · mint identity · NIP-98 http auth · bunker custody proof · console agent key mint · connect plan · agent install state · scope hash · ship imports · registry reconciliation · console vocabulary · console bridge key · console agent empty state · console agent roster · relay invite signer selection · console staleness · MCP host runtimes · agent startup file · portable manifest transfer · channel registration form · pairing token · pairing seat · console first prompt · console admission · console adopt · console relay reach · console profile · console inbox publish · console liveness · console deep link · alert hashtag · nostrconnect pairing · join custody · seat an existing bunker · channel seat · channel seat delivery · seated DM relay list · socket runtime · agent bundle · carrying off · memory git check
 
