@@ -119,6 +119,7 @@
   .footnote{font-size:12.5px;color:var(--dim);margin:10px 0 0}
   .quorum-warn{color:var(--warn,#e0a93b);border-left:3px solid currentColor;padding-left:10px}
   details.about{margin-top:12px;font-size:13px;color:var(--dim)}details.about summary{cursor:pointer}details.about .coverage{margin:8px 0}
+  #onboard-panel label.tick{display:block;margin:6px 0}#onboard-panel .need.revoked,#onboard-panel .need.expired{opacity:.6}
   .npub{font:italic 12px var(--mono);color:var(--faint);overflow-wrap:anywhere}
   dl.answers{display:grid;grid-template-columns:minmax(140px,190px) 1fr;gap:7px 16px;margin:4px 0 4px 1.2em;font-size:14px}
   dl.answers dt{font:600 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--dim);padding-top:3px}
@@ -198,6 +199,20 @@
     <div id="following-status" class="status" role="status"></div>
   </section>
 
+  <section class="panel" id="onboard-panel" hidden><h2>Who may add agents <span class="hint">a delegate that asks the fleet for new agents for you</span></h2>
+    <p class="footnote" id="onboard-note"></p>
+    <div id="onboard-list"></div>
+    <details id="onboard-give"><summary>Let someone add agents for you</summary>
+      <p class="footnote">They may ask the fleet for at most one new agent a day, from the templates you list. The agent's key, its pairing and who may give it work stay yours. You can withdraw this at any time.</p>
+      <div class="ask"><input id="onboard-target" placeholder="Paste the delegate's npub" spellcheck="false" autocomplete="off" aria-label="Delegate's npub"><button id="onboard-terms-go" class="small quiet" type="button">Read the hive's terms</button></div>
+      <div id="onboard-terms"></div>
+      <label class="tick"><input type="checkbox" id="onboard-agree"> I agree to the hive's terms (<span id="onboard-version">not read yet</span>) for every agent this delegate adds.</label>
+      <label class="tick"><input type="checkbox" id="onboard-age"> I confirm the age requirement for every agent this delegate adds. Tick it only if it is true.</label>
+      <button id="onboard-go" class="small" type="button">Add to the changes</button>
+      <div id="onboard-status" class="status" role="status"></div>
+    </details>
+  </section>
+
   <div id="change-bar" role="region" aria-label="Changes waiting for your signature" hidden>
     <div class="words">
       <div class="title" id="change-title"></div>
@@ -220,6 +235,8 @@ import { loadBridgeKey } from './bridge-key-store.mjs'
 import { validControlState, postingCounts, notAnswering, stoppedAgents, stoppedLine, shortNpub } from './agent-roster.mjs'
 import { scopeHash } from './scope-hash.mjs'
 import { signFresh } from './guarded-signer.mjs'
+import { readHiveTerms } from './hive-invite.mjs'
+import { draftOnboardGrant, onboardGrantsOf, onboardGate, describeOnboard, recheckOnboard } from './hive-onboard.mjs'
 import { CHANGE_CAPS, approvalsOf, draftGrant, draftRevoke, draftMention, mentionName, MENTION_NAME, describeChange, applyChange, relayHost } from './hive-change.mjs'
 import { agentsOf, gridOf, reachOf, cellOf, cellKey, toggle, changeWords, summaryOf, leftovers, ACTIVE_KIND, ACTIVE_D, readActive, activeNow, draftActive, activeOf, tickChange, runsOf, idleOf, BUZZ_D, buzzOf, draftBuzz, sameBuzz, buzzWords, isBuzz, day, roomLinesOf, groupingLine, roomsOfAgent } from './hive-grid.mjs'
 import { squareOf as stateOf, panelOf, backOf, GLYPH, ANSWER, LEGEND, listsToOpen } from './hive-square.mjs'
@@ -356,7 +373,7 @@ async function load({ owner: rememberedOwner = null } = {}) {
     const { rows, needs } = buildList({ owner, grantEvents, grants, table, cards, roster, bridge, profiles, seats: SEATS })
     const active = activeOf(activeRead, { owner, verify: verifyEvent })
     const buzz = buzzOf(activeRead, { owner, verify: verifyEvent })
-    hive = { owner, grants, table, rows, bridge, rosterState, active: active.keys, activeKnown: active.known, buzz, views: viewsFor({ cards, takers: agentsOf(rows).groups.flatMap(g => g.rows.map(r => r.pubkey)), owner, verify: verifyEvent, opened }), profiles, rooms: hive?.rooms || null }
+    hive = { owner, grants, given: given.events, givenFull: !!given.full, table, rows, bridge, rosterState, active: active.keys, activeKnown: active.known, buzz, views: viewsFor({ cards, takers: agentsOf(rows).groups.flatMap(g => g.rows.map(r => r.pubkey)), owner, verify: verifyEvent, opened }), profiles, rooms: hive?.rooms || null }
     const partial = {
       cards: !cardRead.full,
       // A row with no card is folded with the owner alone, so a card that went unread may name other grantors.
@@ -376,6 +393,7 @@ async function load({ owner: rememberedOwner = null } = {}) {
       hive: rows.filter(r => !r.isOwner).map(r => ({ pubkey: r.pubkey, label: rowName(r), where: RUNS_ON[r.pubkey] || (r.noBuzz ? NO_BUZZ : r.card ? 'an agent of yours' : 'in your hive') })),
       givers: Object.fromEntries(rows.filter(r => r.answers?.work).map(r => [r.pubkey, r.answers.work.givers.map(g => g.pubkey)])) })) } catch { /* private mode: the button says to open the hive */ }
     drawFollowing(rosterState, profiles, bridge)
+    drawOnboard()
     st.className = 'status ok'
     st.textContent = `Read ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · ${rows.length} identities · ${partial.approvals || partial.keys || partial.active ? 'not every relay answered in full' : partial.slack && !partial.approvals ? 'enough relays answered (one did not; see the coverage list)' : 'every relay answered'}${partial.active ? ', so the Active ticks are locked and the Buzz columns unknown until a full read' : ''}${posting ? ` · posts counted by the bridge at ${new Date(posting.at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : bridge ? '' : ' · no bridge key saved, so no post counts: paste it on Config'}`
     $('go').textContent = 'Read again'
@@ -434,6 +452,61 @@ $('follow-go').onclick = () => {
   try { pk = writerKey($('follow-target').value, nip19.decode) } catch (e) { fs.className = 'status err'; fs.textContent = e.message; return }
   if (followsOf(hive?.rosterState).includes(pk)) { fs.className = 'status'; fs.textContent = 'The hive already follows them.'; return }
   changeFollow(pk, true)
+}
+
+// ── Who may add agents (DESIGN_ONBOARDING_DELEGATE, piece 6): the owner's onboard grants. ──
+// The terms are read when the owner asks, and both ticks are his: the page clears them whenever the
+// terms are read again and never sets either.
+let onboardTerms = null
+const keyName = pk => { try { return grid ? grid.nameOf(pk) : shortNpub(pk) } catch { return shortNpub(pk) } }
+async function drawOnboard() {
+  if (!hive) return
+  $('onboard-panel').hidden = false
+  const list = $('onboard-list'); list.textContent = ''
+  const grants = await onboardGrantsOf(hive.given, { owner: hive.owner, verify: verifyEvent, scopeHash, terms: onboardTerms })
+  $('onboard-note').textContent = (grants.some(g => g.live) ? '' : 'No one may add agents for you. ')
+    + (hive.givenFull ? '' : 'Not every relay answered in full, so a grant or a withdrawal held only there may be missing.')
+  for (const g of grants) {
+    const row = list.appendChild(el('div', `need onboard ${g.state}`))
+    const when = new Date(g.at * 1000).toLocaleDateString()
+    row.append(el('b', null, keyName(g.delegate)), el('span', null, ` · ${g.state === 'live' ? 'may add agents' : g.state} · terms ${g.policy || 'none given'} · age ${g.age === 'confirmed' ? 'confirmed' : 'not confirmed'} · signed ${when}`))
+    if (!g.live) continue
+    row.append(el('span', `hint ${g.usable.ok === false ? 'err' : ''}`, ` · ${g.usable.reason}`))
+    const b = row.appendChild(el('button', 'small quiet', 'Withdraw')); b.type = 'button'
+    b.onclick = () => propose([{ key: `onboard-stop:${g.id}`, sign: '–', words: describeOnboard({ action: 'stop', grant: g }, keyName),
+      draft: () => [draftRevoke({ grantId: g.id })] }])
+  }
+}
+function dropOnboardDraft() {
+  for (const key of [...extras.keys()]) if (key.startsWith('onboard-give:')) { extras.delete(key); drafted.delete(key) }
+  onboardTerms = null
+  $('onboard-agree').checked = false; $('onboard-age').checked = false
+  $('onboard-version').textContent = 'not read yet'; $('onboard-terms').textContent = ''
+}
+$('onboard-terms-go').onclick = async () => {
+  const os = $('onboard-status'), box = $('onboard-terms')
+  $('onboard-agree').checked = false; $('onboard-age').checked = false
+  os.className = 'status'; os.textContent = 'Reading the hive\'s terms…'; box.textContent = ''
+  onboardTerms = await readHiveTerms().catch(e => ({ ok: false, reason: e.message || String(e) }))
+  if (!onboardTerms.ok) { os.className = 'status err'; os.textContent = `Can't read the hive's terms (${onboardTerms.reason}).`; $('onboard-version').textContent = 'not read'; return }
+  $('onboard-version').textContent = onboardTerms.version
+  if (onboardTerms.terms) box.appendChild(el('pre', 'json', onboardTerms.terms))
+  if (onboardTerms.privacy) box.appendChild(el('pre', 'json', onboardTerms.privacy))
+  os.textContent = onboardTerms.version === 'none' ? 'The hive has no terms. The two ticks are still yours.' : 'Read them, then tick for yourself.'
+  drawOnboard()
+}
+$('onboard-go').onclick = () => {
+  const os = $('onboard-status')
+  if (!hive) { os.className = 'status err'; os.textContent = 'Read the hive first.'; return }
+  let pk
+  try { pk = writerKey($('onboard-target').value, nip19.decode) } catch (e) { os.className = 'status err'; os.textContent = e.message.replace(/writer/g, 'delegate'); return }
+  const terms = onboardTerms, agreed = $('onboard-agree').checked === true, ageConfirmed = $('onboard-age').checked === true
+  const gate = onboardGate(terms, { agreed, ageConfirmed })
+  if (!gate.ok) { os.className = 'status err'; os.textContent = gate.reason; return }
+  if (pk === hive.owner) { os.className = 'status err'; os.textContent = 'You need no grant to add agents to your own hive.'; return }
+  propose([{ key: `onboard-give:${pk}`, sign: '+', words: describeOnboard({ action: 'give', delegate: pk, policy: terms.version }, keyName),
+    draft: () => [draftOnboardGrant({ delegate: pk, owner: hive.owner, terms, agreed, ageConfirmed, scopeHash })] }])
+  os.className = 'status'; os.textContent = 'Added to the changes below. Nothing is signed until you press Sign.'
 }
 
 // One name per identity, everywhere on the page (#654): an unnamed voice row is "Your voice".
@@ -1156,6 +1229,12 @@ $('change-go').onclick = async () => {
     const each = []
     for (const c of list) for (const template of await templatesOf(c)) each.push({ template, words: upper(c.words) })
     total = each.length
+    // An onboard grant carries the terms the owner agreed to. Read them again first; if they changed or
+    // can't be read, nothing at all is signed and the drafted grant is dropped so he reads and ticks again.
+    for (const c of each) {
+      const again = await recheckOnboard(c.template, { readTerms: () => readHiveTerms() })
+      if (!again.ok) { dropOnboardDraft(); throw new Error(again.reason) }
+    }
     $('change-title').textContent = 'Approve in your Bunker…'
     const signer = await consoleSigner()
     for (const c of each) {
