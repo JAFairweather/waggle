@@ -148,10 +148,42 @@ export function draftWriters(keys, { now = Math.floor(Date.now() / 1000), after 
 export async function fingerprint(channelKey) {
   const m = /^ssh-ed25519 ([A-Za-z0-9+/]+={0,2})$/.exec(String(channelKey || '').trim())
   if (!m) return null
-  const bytes = Uint8Array.from(globalThis.atob(m[1]), c => c.charCodeAt(0))
+  // A body that isn't valid base64 (a fleet row or a paste such as 'ssh-ed25519 A') has no fingerprint:
+  // null, never a throw, so the step that reads it redraws and says so.
+  let bytes
+  try { bytes = Uint8Array.from(globalThis.atob(m[1]), c => c.charCodeAt(0)) } catch { return null }
   const sum = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', bytes))
   return 'SHA256:' + globalThis.btoa(String.fromCharCode(...sum)).replace(/=+$/, '')
 }
+// A hosted agent's channel key, as the fleet reports it (#735 B2; nvoy ONBOARD_PHASE_B, `channel_key`). The
+// key is made on the agent's herd-cloud login, and a reviewed helper stages its public half for the runner,
+// which reports it in a `channel_key` row: `<type> <key> (SHA256:<fingerprint>), staged for the owner to
+// bind`. That is reported work, never proof: the owner's bind is the act, and the presence event stays the
+// proof. The page offers the key only in exactly that shape, for an ssh-ed25519 key, and only when the
+// fingerprint it computes from the key itself matches the one the row states. Any other row is not offered,
+// and a refused row is shown with the fleet's own words. `step` is 'feed_key' for a Pi or Codex wake feed.
+const REPORTED = /^(ssh-ed25519) ([A-Za-z0-9+/]+={0,2}) \((SHA256:[A-Za-z0-9+/]{43})\)(, staged for the owner to bind)?$/
+export async function reportedKey(opened, step = 'channel_key') {
+  const s = opened?.steps?.get(step)
+  if (!s) return { state: opened ? 'none' : 'unread' }
+  if (s.state === 'refused') return { state: 'refused', text: s.detail }
+  if (s.state !== 'done') return { state: 'pending', text: s.detail }
+  const m = REPORTED.exec(s.detail)
+  if (!m) return { state: 'malformed' }
+  const key = `${m[1]} ${m[2]}`
+  const fp = await fingerprint(key)
+  return fp && fp === m[3] ? { state: 'reported', key, fingerprint: fp } : { state: 'malformed' }
+}
+// What step 4 says about that report, in the "the fleet says" voice: never "verified", never done.
+export function reportedLine(r, name) {
+  if (!r || r.state === 'unread') return 'Not read by this page yet'
+  if (r.state === 'none') return `Waiting for the fleet: it hasn't reported ${name}'s channel key yet`
+  if (r.state === 'pending') return `Waiting for the fleet: ${r.text}`
+  if (r.state === 'refused') return `The fleet refused the staged key: ${r.text}`
+  if (r.state === 'malformed') return "The fleet's report of the key doesn't pass the page's checks, so it isn't offered"
+  return `Reported by the fleet: its channel key ${r.fingerprint}`
+}
+
 export const presenceFilter = agent => ({ kinds: [SETUP_KIND], authors: [agent], '#d': [PRESENCE_D], limit: 5 })
 // `since` is the bind time in seconds. Without a finite, positive one there is nothing to be newer than,
 // so no presence can be green: an unknown bind time never lets an old signed presence stand in for it.

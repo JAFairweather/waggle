@@ -22,6 +22,32 @@ export const STEPS = Object.freeze([
   { n: 7, label: 'Prove it works', sub: 'read back from the relay' },
 ])
 
+// Two ways in (#735 B2, DESIGN_ADD_AN_AGENT "Two ways in"). Step 1 asks which. Steps 1 to 3 and 5 to 7
+// are the same for both; only step 4, and who owns the box, differ. The choice is the page's own: it is
+// not a tag on any request, so nothing the fleet reads changes with it.
+export const WAYS = Object.freeze([
+  Object.freeze({ id: 'hosted', label: 'Launch a new agent', sub: 'hosted on herd-cloud' }),
+  Object.freeze({ id: 'own', label: 'Add identity to an existing agent', sub: 'on a box you run' }),
+])
+// Anything but 'hosted' is the own-box way, so a form saved before this choice existed reads as it did.
+export const wayOf = v => v === 'hosted' ? 'hosted' : 'own'
+// A hosted agent is a herd-cloud login made by herd-infra `bin/add-agent` with KIND=nvoy-claude: the nvoy
+// Claude harness on the herd's shared Claude login. No other harness runs there yet.
+export const HOSTED_HARNESS = 'claude-code'
+export const harnessFits = (way, harness) => wayOf(way) !== 'hosted' || harness === HOSTED_HARNESS
+export const HOSTED_HARNESS_ONLY = 'A hosted agent runs in Claude Code on herd-cloud. To use another harness, add it on a box you run.'
+export function stepsFor(way) {
+  if (wayOf(way) !== 'hosted') return STEPS
+  return Object.freeze(STEPS.map(s => s.n === 4 ? Object.freeze({ n: 4, label: 'Seat its Claude login', sub: 'hosted on herd-cloud' }) : s))
+}
+// Where a hosted agent's box is, and where its Claude login goes. Paths and who acts, never the token: the
+// page never asks for it, shows it or relays it. The owner places it by path on the login.
+export const TOKEN_PATH = '~/.config/herd-secrets/claude-token'
+export function hostedSeat(name) {
+  const n = typeof name === 'string' && /^[a-z0-9][a-z0-9._-]{1,63}$/.test(name) ? name : null
+  return { login: n ? `agent-${n}` : null, tokenPath: TOKEN_PATH, mode: '0600' }
+}
+
 // Steps the page cannot carry out yet, and what each waits on. Shown as such, never as done.
 export const NOT_BUILT = Object.freeze({})
 
@@ -29,9 +55,11 @@ export const NOT_BUILT = Object.freeze({})
 // Steps 3 and 4 wait on the fleet's runner key (nvoy ONBOARD_PHASE_B, "The runner key"): until the
 // page pins one, no receipt is read, so the pairing link and the install line come from the operator.
 // The writer list, the agent card and the presence are read either way.
-export const partBuilt = runner => Object.freeze(runner ? {} : {
+export const partBuilt = (runner, way = 'own') => Object.freeze(runner ? {} : {
   3: "The fleet's runner isn't set up yet, so the operator runs these steps and passes the pairing link on to you.",
-  4: "The fleet's runner isn't set up yet, so the operator gives you the install line. Run it on the box, paste the key it prints here, and sign it.",
+  4: wayOf(way) === 'hosted'
+    ? "The fleet's runner isn't set up yet, so it can't report the agent's channel key to you. The operator passes the key on; paste it here and sign it."
+    : "The fleet's runner isn't set up yet, so the operator gives you the install line. Run it on the box, paste the key it prints here, and sign it.",
 })
 export const PART_BUILT = partBuilt(RUNNER)
 
