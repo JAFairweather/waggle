@@ -641,10 +641,11 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   const otherFp = 'SHA256:' + createHash('sha256').update(Buffer.alloc(51, 1)).digest('base64').replace(/=+$/, '')
   for (const [detail, why] of [[`ssh-ed25519 ${body} (${otherFp}), staged for the owner to bind`, 'a fingerprint that is not the key\'s'],
     [`ecdsa-sha2-nistp256 ${body} (${fp})`, 'a key type the page cannot fingerprint'], [`ssh-ed25519 ${body} (${fp}) and more`, 'extra text'],
-    [`ssh-ed25519 ${body}`, 'no fingerprint'], [`-----BEGIN OPENSSH PRIVATE KEY----- (${fp})`, 'a private key'], ['', 'nothing']]) {
+    [`ssh-ed25519 ${body}`, 'no fingerprint'], [`ssh-ed25519 A (SHA256:${'A'.repeat(43)})`, 'a key body that is not valid base64'], [`-----BEGIN OPENSSH PRIVATE KEY----- (${fp})`, 'a private key'], ['', 'nothing']]) {
     const r = await P.reportedKey(done(detail))
     check(r.state === 'malformed' && !('key' in r), `not offered: ${why}`)
   }
+  check(await P.fingerprint('ssh-ed25519 A') === null && await P.fingerprint('ssh-ed25519 AAAAA') === null, 'a pasted key whose body is not valid base64 has no fingerprint, and does not throw')
   const refused = await P.reportedKey(opened({ step: 'channel_key', state: 'refused', detail: 'the staged channel key is not bound to this instance and request' }))
   check(refused.state === 'refused' && /not bound/.test(P.reportedLine(refused, 'hr')) && !('key' in refused), 'a refused row is shown in the fleet\'s words, with no key')
   check((await P.reportedKey(opened({ step: 'channel_key', state: 'pending', detail: 'staging' }))).state === 'pending', 'a pending row waits')

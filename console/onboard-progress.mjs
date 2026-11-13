@@ -148,7 +148,10 @@ export function draftWriters(keys, { now = Math.floor(Date.now() / 1000), after 
 export async function fingerprint(channelKey) {
   const m = /^ssh-ed25519 ([A-Za-z0-9+/]+={0,2})$/.exec(String(channelKey || '').trim())
   if (!m) return null
-  const bytes = Uint8Array.from(globalThis.atob(m[1]), c => c.charCodeAt(0))
+  // A body that isn't valid base64 (a fleet row or a paste such as 'ssh-ed25519 A') has no fingerprint:
+  // null, never a throw, so the step that reads it redraws and says so.
+  let bytes
+  try { bytes = Uint8Array.from(globalThis.atob(m[1]), c => c.charCodeAt(0)) } catch { return null }
   const sum = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', bytes))
   return 'SHA256:' + globalThis.btoa(String.fromCharCode(...sum)).replace(/=+$/, '')
 }
