@@ -625,7 +625,38 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   const hs = flow.stepsFor('hosted')
   check(hs.length === 7 && hs[3].n === 4 && hs[3].label === 'Seat its Claude login' && hs.every((s, i) => i === 3 || s === STEPS[i]), 'the hosted way differs only at step 4, "Seat its Claude login"')
   check(Object.isFrozen(hs) && Object.isFrozen(hs[3]), 'and its steps are frozen like the others')
-  check(flow.harnessFits('hosted', 'claude-code') && !flow.harnessFits('hosted', 'pi') && !flow.harnessFits('hosted', 'codex') && flow.harnessFits('own', 'pi'), 'a hosted agent runs in Claude Code only; the own-box way takes any harness')
+  check(flow.harnessFits('hosted', 'claude-code') && flow.harnessFits('own', 'claude-code'), 'Claude Code is enabled in both ways: it has completed a live add and has both a hosted setup and box-install.mjs')
+  for (const [id] of HARNESSES.filter(([id]) => id !== 'claude-code')) {
+    check(!flow.harnessFits('hosted', id) && flow.harnessWhy('hosted', id) === flow.HOSTED_HARNESS_ONLY, `hosted ${id}: disabled with the hosted reason`)
+    check(!flow.harnessFits('own', id) && typeof flow.harnessWhy('own', id) === 'string' && /box-install\.mjs/.test(flow.harnessWhy('own', id)) && /completed a live add/.test(flow.harnessWhy('own', id)), `own-box ${id} (#718): disabled with its Step 4 / live-add reason`)
+  }
+  check(/second key for its wake feed/.test(flow.harnessWhy('own', 'codex')) && /second key for its wake feed/.test(flow.harnessWhy('own', 'pi')), 'Codex and Pi name the second wake-feed key gap as well as box-install.mjs')
+  check(/no install line for Gemini \(Antigravity\)/.test(flow.harnessWhy('own', 'antigravity')), 'Gemini (Antigravity) names the missing Step 4 install line')
+  check(flow.runsNote('hosted', null) === flow.HOSTED_HARNESS_ONLY && /Only Claude Code is enabled right now/.test(flow.runsNote('own', null)) && /Its setup was already sent/.test(flow.runsNote('own', { harness: 'pi', like: 'pi-dog' })), 'Step 1 shows a visible reason below Runs in for hosted, own-box, and already-sent requests')
+  // UI regression (#718): run the page's own drawRuns() against a DOM stub for both ways and a resumed request.
+  {
+    const drawRunsSrc = page.slice(page.indexOf('function drawRuns()'), page.indexOf('\n}\n', page.indexOf('function drawRuns()')) + 3)
+    const runDraw = ({ way = 'own', harness = 'claude-code', fixed = null } = {}) => {
+      const form = { way, harness }
+      const makeNode = (tag) => ({ tag, children: [], attrs: {}, disabled: false, hidden: false, title: '', textContent: '', src: '', alt: '',
+        setAttribute(k, v) { this.attrs[k] = v }, append(...xs) { this.children.push(...xs) }, appendChild(n) { this.children.push(n); return n } })
+      const nodes = { runs: makeNode('div'), 'fixed-why': makeNode('p') }
+      const fn = new Function('HARNESSES', 'RUNS_LOGO', 'form', 'fixed', 'keep', 'el', 'document', '$', 'harnessFits', 'harnessWhy', 'runsNote', 'HOSTED_HARNESS', 'drawFeedKey', `${drawRunsSrc}; drawRuns(); return { form, nodes: { runs: $('runs'), why: $('fixed-why') } }`)
+      return fn(HARNESSES, {}, form, fixed, () => {}, (tag, cls, text) => { const n = makeNode(tag); if (text != null) n.textContent = text; return n },
+        { createTextNode: text => ({ text }) }, id => nodes[id], flow.harnessFits, flow.harnessWhy, flow.runsNote, flow.HOSTED_HARNESS, () => {})
+    }
+    const ownUi = runDraw({ way: 'own', harness: 'codex', fixed: null })
+    check(ownUi.form.harness === 'claude-code', 'UI (#718): an unsent form with a disabled harness falls back to Claude Code on draw')
+    const ownBtns = ownUi.nodes.runs.children
+    check(ownBtns.length === HARNESSES.length && !ownBtns[0].disabled && ownBtns[0].attrs['aria-pressed'] === 'true' && !ownBtns[0].title, 'UI (#718): Claude Code button is enabled and pressed on own-box')
+    check(ownBtns.slice(1).every((b, i) => b.disabled && b.attrs['aria-pressed'] === 'false' && b.title === flow.harnessWhy('own', HARNESSES[i + 1][0])), 'UI (#718): every unready runner button is disabled with its reason on own-box')
+    ownBtns[1].onclick()
+    check(ownUi.form.harness === 'claude-code' && ownBtns[0].attrs['aria-pressed'] === 'true' && ownBtns[1].attrs['aria-pressed'] === 'false', 'UI (#718): clicking a disabled runner changes nothing')
+    check(!ownUi.nodes.why.hidden && ownUi.nodes.why.textContent === flow.runsNote('own', null), 'UI (#718): the reason is also shown visibly below the Runs in pills')
+    const resumedUi = runDraw({ way: 'own', harness: 'pi', fixed: { harness: 'pi', like: 'pi-dog' } })
+    const piIdx = HARNESSES.findIndex(([id]) => id === 'pi')
+    check(resumedUi.form.harness === 'pi' && !resumedUi.nodes.runs.children[piIdx].disabled && resumedUi.nodes.runs.children[piIdx].attrs['aria-pressed'] === 'true' && resumedUi.nodes.runs.children.every((b, i) => i === piIdx ? !b.disabled : b.disabled), 'UI (#718): an already-sent request keeps its fixed harness enabled and disables the rest')
+  }
   check(flow.hostedSeat('hr').login === 'agent-hr' && flow.hostedSeat('hr').tokenPath === '~/.config/herd-secrets/claude-token' && flow.hostedSeat('hr').mode === '0600', 'the hosted login and the token path, from the design')
   check([undefined, '', 'My Agent', '-x', 'a'.repeat(65), 'x;rm'].every(v => flow.hostedSeat(v).login === null), 'no login is named for a name that fails the check')
   check(/channel key/.test(flow.partBuilt(null, 'hosted')[4]) && !/install line/.test(flow.partBuilt(null, 'hosted')[4]) && /install line/.test(flow.partBuilt(null, 'own')[4]) && Object.keys(flow.partBuilt('f'.repeat(64), 'hosted')).length === 0, 'without a runner, the hosted step 4 waits on the key, not an install line')
@@ -661,7 +692,7 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   check(/done\[4\] = bound\.ok && !!progress\.presence\?\.ok/.test(page), 'step 4 is still done only on the bind and the presence, for both ways')
   const use = page.slice(page.indexOf("$('hosted-use').onclick"), page.indexOf("$('box-go').onclick"))
   check(/\$\('channel-key'\)\.value = r\.key/.test(use) && !/send\(|sign/i.test(use.replace(/Nothing is signed until you press "Sign its box key"/, '')), '"Use the reported key" fills the field and signs nothing: the bind stays the owner\'s act')
-  check(/if \(!harnessFits\(form\.way, form\.harness\)\) throw new Error\(HOSTED_HARNESS_ONLY\)/.test(page), 'no signature goes out for a hosted agent on another harness')
+  check(/if \(\(wayOf\(form\.way\) === 'hosted' \|\| !fixed\) && !harnessFits\(form\.way, form\.harness\)\) throw new Error\(harnessWhy\(form\.way, form\.harness\)\)/.test(page) && (page.match(/throw new Error\(harnessWhy\(form\.way, form\.harness\)\)/g) || []).length === 2, 'neither step 1 Next nor any signature goes out for an unready runner when no setup has been sent yet')
   check(!/['"]way['"]/.test(readFileSync(new URL('../console/hive-add-agent.mjs', import.meta.url), 'utf8')) && (f => !/\bway\b/.test(f.slice(f.lastIndexOf('return {'))))(page.slice(page.indexOf('function fields('), page.indexOf('\n}\n', page.indexOf('function fields(')))), 'the way is not a tag on any request')
   check(/progress\.reported = wayOf\(form\.way\) === 'hosted' \? await reportedKey\(progress\.opened\) : null/.test(page), 'the report is read only for a hosted agent, from the receipt already opened from the pinned runner')
   check(/'Waiting for it to connect'/.test(page), 'until the presence arrives, a hosted step 4 reads "Waiting for it to connect"')

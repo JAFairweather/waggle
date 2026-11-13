@@ -222,7 +222,7 @@ import { readCards, relayCoverage, GRANT_RELAYS, CARD_RELAYS, CARD_D, RUNS_LOGO,
 import { shortNpub } from './agent-roster.mjs'
 import { draftGrant, applyChange, sameAsDrafted, publishTo, relayHost } from './hive-change.mjs'
 import { scopeHash } from './scope-hash.mjs'
-import { STEPS, NOT_BUILT, PART_BUILT, partBuilt, WAYS, wayOf, stepsFor, harnessFits, HOSTED_HARNESS, HOSTED_HARNESS_ONLY, hostedSeat, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, roomChoices, testMention, proofFilters, proofRows, profileRow, answers, roomsToSign, roomsFor, workSignGate, relaysOf, PROFILE_RELAY_LIMIT } from './add-agent-flow.mjs'
+import { STEPS, NOT_BUILT, PART_BUILT, partBuilt, WAYS, wayOf, stepsFor, harnessFits, harnessWhy, runsNote, HOSTED_HARNESS, HOSTED_HARNESS_ONLY, hostedSeat, newestAdd, joinOf, readBackSteps, workGrantPlan, pickerOf, HANDOFF, sameAs, handoffState, hiveChoices, othersThan, fixedBy, changedFrom, giverPlan, reconcileGivers, goneLine, roomChoices, testMention, proofFilters, proofRows, profileRow, answers, roomsToSign, roomsFor, workSignGate, relaysOf, PROFILE_RELAY_LIMIT } from './add-agent-flow.mjs'
 import { readRooms, roomsOf, roomsNeed, loadRoomRelay, relayKeyFor, proveInRoom, PROOF_WAIT_SECS } from './room-lists.mjs'
 import { wsReadBack } from './profile-publish.mjs'
 import { RUNNER, receiptFilter, newestReceipt, openedReceipt, TOOL_ROWS, stepRow, runnerQuiet, installLine, writersFilter, writersPlan, draftWriters, WRITER_RELAY, fingerprint, presenceFilter, presenceRow, reportedKey, reportedLine } from './onboard-progress.mjs'
@@ -408,17 +408,20 @@ function drawWay() {
 }
 
 function drawRuns() {
+  if (!fixed && !harnessFits(form.way, form.harness)) { form.harness = HOSTED_HARNESS; keep() }
   const runs = $('runs'); runs.textContent = ''
   for (const [id, label] of HARNESSES) {
     const b = runs.appendChild(el('button')); b.type = 'button'; b.setAttribute('aria-pressed', String(id === form.harness))
     if (RUNS_LOGO[label]) { const logo = b.appendChild(el('img')); logo.src = RUNS_LOGO[label]; logo.alt = '' }
     b.append(document.createTextNode(label))
-    b.disabled = !!fixed && id !== fixed.harness || !harnessFits(form.way, id)
-    if (!harnessFits(form.way, id)) b.title = HOSTED_HARNESS_ONLY
-    b.onclick = () => { form.harness = id; keep(); for (const x of runs.children) x.setAttribute('aria-pressed', String(x === b)); drawFeedKey() }
+    const why = fixed && id === fixed.harness ? null : harnessWhy(form.way, id)
+    b.disabled = !!fixed && id !== fixed.harness || !!why
+    if (why) b.title = why
+    b.onclick = () => { if (b.disabled) return; form.harness = id; keep(); for (const x of runs.children) x.setAttribute('aria-pressed', String(x === b)); drawFeedKey() }
   }
-  $('fixed-why').hidden = !fixed
-  $('fixed-why').textContent = fixed ? 'Its setup was already sent, so what it runs in and the agent it starts like stay as they were sent. To change them, add it under a new name.' : ''
+  const note = runsNote(form.way, fixed)
+  $('fixed-why').hidden = !note
+  $('fixed-why').textContent = note || ''
 }
 const agentLabel = a => profiles.get(a.pubkey)?.name || a.id
 function drawLike() {
@@ -531,7 +534,7 @@ function fields({ signing = false } = {}) {
   if (/^nsec1/i.test(pasted)) { $('key').value = ''; throw new Error('That is the private key. Clear it from your clipboard, and paste the npub instead.') }
   if (/^npub1/.test(pasted)) { const d = nip19.decode(pasted); if (d.type !== 'npub') throw new Error('That is not an npub.'); agent = d.data }
   const others = othersThan(installed.map(a => ({ id: a.id, pubkey: a.pubkey })), { name, agent, owner, latest })
-  if (!harnessFits(form.way, form.harness)) throw new Error(HOSTED_HARNESS_ONLY)
+  if ((wayOf(form.way) === 'hosted' || !fixed) && !harnessFits(form.way, form.harness)) throw new Error(harnessWhy(form.way, form.harness))
   const gap = changedFrom(latest, { harness: form.harness, like: $('like').value })
   if (gap) throw new Error(gap)
   if (!loaded) throw new Error('Still reading your agents. Try again in a moment.')
@@ -545,6 +548,7 @@ function fields({ signing = false } = {}) {
 function checkName() {
   form.name = agentName($('name').value); form.like = $('like').value
   if (!form.like) throw new Error('Pick an agent for it to start like.')
+  if ((wayOf(form.way) === 'hosted' || !fixed) && !harnessFits(form.way, form.harness)) throw new Error(harnessWhy(form.way, form.harness))
   profileTags({ displayName: $('display').value.trim() || form.name, about: $('about').value })
   form.display = $('display').value; form.about = $('about').value
   keep(); done[1] = true
