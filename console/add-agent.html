@@ -397,8 +397,10 @@ function drawWay() {
     b.append(document.createTextNode(w.label), el('span', 'sub', ' · ' + w.sub))
     b.disabled = w.id === 'hosted' && !!fixed && fixed.harness !== HOSTED_HARNESS
     b.onclick = () => {
+      if (b.disabled) return
       form.way = w.id
-      if (!harnessFits(form.way, form.harness)) form.harness = HOSTED_HARNESS
+      if (fixed) form.harness = fixed.harness
+      else if (!harnessFits(form.way, form.harness)) form.harness = HOSTED_HARNESS
       keep(); drawWay(); drawRuns(); drawFeedKey(); drawRail(); drawRows()
     }
   }

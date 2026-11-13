@@ -633,17 +633,19 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
   check(/second key for its wake feed/.test(flow.harnessWhy('own', 'codex')) && /second key for its wake feed/.test(flow.harnessWhy('own', 'pi')), 'Codex and Pi name the second wake-feed key gap as well as box-install.mjs')
   check(/no install line for Gemini \(Antigravity\)/.test(flow.harnessWhy('own', 'antigravity')), 'Gemini (Antigravity) names the missing Step 4 install line')
   check(flow.runsNote('hosted', null) === flow.HOSTED_HARNESS_ONLY && /Only Claude Code is enabled right now/.test(flow.runsNote('own', null)) && /Its setup was already sent/.test(flow.runsNote('own', { harness: 'pi', like: 'pi-dog' })), 'Step 1 shows a visible reason below Runs in for hosted, own-box, and already-sent requests')
-  // UI regression (#718): run the page's own drawRuns() against a DOM stub for both ways and a resumed request.
+  // UI regression (#718): run the page's own drawWay() and drawRuns() against a DOM stub for both ways and a resumed request.
   {
+    const drawWaySrc = page.slice(page.indexOf('function drawWay()'), page.indexOf('\n}\n', page.indexOf('function drawWay()')) + 3)
     const drawRunsSrc = page.slice(page.indexOf('function drawRuns()'), page.indexOf('\n}\n', page.indexOf('function drawRuns()')) + 3)
     const runDraw = ({ way = 'own', harness = 'claude-code', fixed = null } = {}) => {
       const form = { way, harness }
       const makeNode = (tag) => ({ tag, children: [], attrs: {}, disabled: false, hidden: false, title: '', textContent: '', src: '', alt: '',
         setAttribute(k, v) { this.attrs[k] = v }, append(...xs) { this.children.push(...xs) }, appendChild(n) { this.children.push(n); return n } })
-      const nodes = { runs: makeNode('div'), 'fixed-why': makeNode('p') }
-      const fn = new Function('HARNESSES', 'RUNS_LOGO', 'form', 'fixed', 'keep', 'el', 'document', '$', 'harnessFits', 'harnessWhy', 'runsNote', 'HOSTED_HARNESS', 'drawFeedKey', `${drawRunsSrc}; drawRuns(); return { form, nodes: { runs: $('runs'), why: $('fixed-why') } }`)
-      return fn(HARNESSES, {}, form, fixed, () => {}, (tag, cls, text) => { const n = makeNode(tag); if (text != null) n.textContent = text; return n },
-        { createTextNode: text => ({ text }) }, id => nodes[id], flow.harnessFits, flow.harnessWhy, flow.runsNote, flow.HOSTED_HARNESS, () => {})
+      const nodes = { way: makeNode('div'), 'way-why': makeNode('p'), runs: makeNode('div'), 'fixed-why': makeNode('p') }
+      const fn = new Function('WAYS', 'HARNESSES', 'RUNS_LOGO', 'form', 'fixed', 'keep', 'el', 'document', '$', 'wayOf', 'harnessFits', 'harnessWhy', 'runsNote', 'HOSTED_HARNESS', 'drawFeedKey', 'drawRail', 'drawRows',
+        `${drawWaySrc}\n${drawRunsSrc}\ndrawWay(); drawRuns(); return { form, nodes: { way: $('way'), wayWhy: $('way-why'), runs: $('runs'), why: $('fixed-why') } }`)
+      return fn(flow.WAYS, HARNESSES, {}, form, fixed, () => {}, (tag, cls, text) => { const n = makeNode(tag); if (text != null) n.textContent = text; return n },
+        { createTextNode: text => ({ text }) }, id => nodes[id], flow.wayOf, flow.harnessFits, flow.harnessWhy, flow.runsNote, flow.HOSTED_HARNESS, () => {}, () => {}, () => {})
     }
     const ownUi = runDraw({ way: 'own', harness: 'codex', fixed: null })
     check(ownUi.form.harness === 'claude-code', 'UI (#718): an unsent form with a disabled harness falls back to Claude Code on draw')
@@ -653,9 +655,16 @@ check(/complete: !\(partial\.approvals \|\| partial\.keys\)/.test(readFileSync(n
     ownBtns[1].onclick()
     check(ownUi.form.harness === 'claude-code' && ownBtns[0].attrs['aria-pressed'] === 'true' && ownBtns[1].attrs['aria-pressed'] === 'false', 'UI (#718): clicking a disabled runner changes nothing')
     check(!ownUi.nodes.why.hidden && ownUi.nodes.why.textContent === flow.runsNote('own', null), 'UI (#718): the reason is also shown visibly below the Runs in pills')
-    const resumedUi = runDraw({ way: 'own', harness: 'pi', fixed: { harness: 'pi', like: 'pi-dog' } })
-    const piIdx = HARNESSES.findIndex(([id]) => id === 'pi')
-    check(resumedUi.form.harness === 'pi' && !resumedUi.nodes.runs.children[piIdx].disabled && resumedUi.nodes.runs.children[piIdx].attrs['aria-pressed'] === 'true' && resumedUi.nodes.runs.children.every((b, i) => i === piIdx ? !b.disabled : b.disabled), 'UI (#718): an already-sent request keeps its fixed harness enabled and disables the rest')
+    for (const [fixedHarness, fixedLike] of [['pi', 'pi-dog'], ['codex', 'dj-codex']]) {
+      const resumedUi = runDraw({ way: 'own', harness: fixedHarness, fixed: { harness: fixedHarness, like: fixedLike } })
+      const idx = HARNESSES.findIndex(([id]) => id === fixedHarness)
+      check(resumedUi.form.harness === fixedHarness && !resumedUi.nodes.runs.children[idx].disabled && resumedUi.nodes.runs.children[idx].attrs['aria-pressed'] === 'true' && resumedUi.nodes.runs.children.every((b, i) => i === idx ? !b.disabled : b.disabled), `UI (#718): an already-sent ${fixedHarness} request keeps its fixed harness enabled and disables the rest`)
+      check(resumedUi.nodes.way.children[0].disabled && !resumedUi.nodes.way.children[1].disabled, `UI (#718): hosted way is disabled and own-box is enabled on a resumed ${fixedHarness} request`)
+      resumedUi.nodes.way.children[0].onclick()
+      check(resumedUi.form.way === 'own' && resumedUi.form.harness === fixedHarness, `UI (#718): clicking disabled hosted way on a resumed ${fixedHarness} request changes nothing`)
+      resumedUi.nodes.way.children[1].onclick()
+      check(resumedUi.form.harness === fixedHarness && !resumedUi.nodes.runs.children[idx].disabled && resumedUi.nodes.runs.children[idx].attrs['aria-pressed'] === 'true' && flow.changedFrom({ tags: [['harness', fixedHarness], ['like', fixedLike]] }, { harness: resumedUi.form.harness, like: fixedLike }) === null, `UI (#718): clicking own-box on a resumed ${fixedHarness} request preserves fixed.harness and keeps it pressed`)
+    }
   }
   check(flow.hostedSeat('hr').login === 'agent-hr' && flow.hostedSeat('hr').tokenPath === '~/.config/herd-secrets/claude-token' && flow.hostedSeat('hr').mode === '0600', 'the hosted login and the token path, from the design')
   check([undefined, '', 'My Agent', '-x', 'a'.repeat(65), 'x;rm'].every(v => flow.hostedSeat(v).login === null), 'no login is named for a name that fails the check')
