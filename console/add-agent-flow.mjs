@@ -33,9 +33,31 @@ export const WAYS = Object.freeze([
 export const wayOf = v => v === 'hosted' ? 'hosted' : 'own'
 // A hosted agent is a herd-cloud login made by herd-infra `bin/add-agent` with KIND=nvoy-claude: the nvoy
 // Claude harness on the herd's shared Claude login. No other harness runs there yet.
+// On a box you run (#718), a runner is offered only when the fleet can take it through every step and it has
+// completed a live add. Today `box-install.mjs` sets up Claude Code with one key only; Pi and Codex need a
+// second wake-feed key, and the other runners have no step-4 install line yet.
 export const HOSTED_HARNESS = 'claude-code'
-export const harnessFits = (way, harness) => wayOf(way) !== 'hosted' || harness === HOSTED_HARNESS
-export const HOSTED_HARNESS_ONLY = 'A hosted agent runs in Claude Code on herd-cloud. To use another harness, add it on a box you run.'
+export const LIVE_HARNESSES = Object.freeze(['claude-code'])
+export const HOSTED_HARNESS_ONLY = 'A hosted agent runs in Claude Code on herd-cloud; no other harness has a hosted setup yet.'
+export const HARNESS_WHY = Object.freeze({
+  codex: "Not ready yet: a Codex agent needs a second key for its wake feed, Step 4's install line (box-install.mjs) sets up Claude Code with one key only, and Codex has not completed a live add yet.",
+  pi: "Not ready yet: a Pi agent needs a second key for its wake feed, Step 4's install line (box-install.mjs) sets up Claude Code with one key only, and Pi has not completed a live add yet.",
+  openclaw: "Not ready yet: Step 4 has no install line for OpenClaw yet (box-install.mjs sets up Claude Code only), and it has not completed a live add yet.",
+  grokbot: "Not ready yet: Step 4 has no install line for Grok Bot yet (box-install.mjs sets up Claude Code only), and it has not completed a live add yet.",
+  hermes: "Not ready yet: Step 4 has no install line for Hermes yet (box-install.mjs sets up Claude Code only), and it has not completed a live add yet.",
+  antigravity: "Not ready yet: Step 4 has no install line for Gemini (Antigravity) yet (box-install.mjs sets up Claude Code only), and it has not completed a live add yet.",
+})
+export function harnessWhy(way, harness) {
+  if (wayOf(way) === 'hosted' && harness !== HOSTED_HARNESS) return HOSTED_HARNESS_ONLY
+  if (LIVE_HARNESSES.includes(harness)) return null
+  return HARNESS_WHY[harness] || 'This runner cannot complete every setup step yet.'
+}
+export const harnessFits = (way, harness) => harnessWhy(way, harness) === null
+export function runsNote(way, fixed = null) {
+  if (fixed) return 'Its setup was already sent, so what it runs in and the agent it starts like stay as they were sent. To change them, add it under a new name.'
+  if (wayOf(way) === 'hosted') return HOSTED_HARNESS_ONLY
+  return "Only Claude Code is enabled right now: it is the only runner that has completed a live add. Step 4's install line (box-install.mjs) sets up Claude Code with one key only; Codex and Pi need a second wake-feed key, and Gemini (Antigravity), OpenClaw, Grok Bot and Hermes have no install line yet."
+}
 export function stepsFor(way) {
   if (wayOf(way) !== 'hosted') return STEPS
   return Object.freeze(STEPS.map(s => s.n === 4 ? Object.freeze({ n: 4, label: 'Seat its Claude login', sub: 'hosted on herd-cloud' }) : s))
