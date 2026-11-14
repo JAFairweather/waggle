@@ -1,3 +1,10 @@
+> **Archived design, 13 November 2026.** This proposal was not the implemented memory architecture.
+> Do not use its event kinds, broker layout, grant model or execution slices as current guidance.
+> The canonical Hive memory store and tools are in [nvoy's memory daemon](https://github.com/JAFairweather/nvoy/blob/main/mcp/tools/memory-daemon.mjs)
+> and [memory tools](https://github.com/JAFairweather/nvoy/blob/main/mcp/tools/memory.mjs);
+> deployment lives in [herd-infra](https://github.com/JAFairweather/herd-infra/tree/main/host/hive-memory).
+> Kept only as a record of the abandoned waggle design.
+
 # Hive shared memory (`Waggle Claims & Wake Digest`)
 
 - **Status:** Slice 0 draft, for review. Not approved.
