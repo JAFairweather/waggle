@@ -92,7 +92,7 @@ One boundary, dedicated bridge identities, and evidence that matches the action:
 
 The [bridge source](src/bridge.mjs) defaults `WAGGLE_CARRYING` to off. In that mode it does not mirror public notes, deliver return-lane DMs, route sealed lanes or relay ingress, or seat agents from grants. It continues post counting and control-state publication. The carrying tests run with the old lanes explicitly enabled; passing them does not show that those lanes run in production.
 
-The last documented live check is dated **29 October 2026**: the read-lane service restarted with carrying off and logged no return-lane delivery afterward ([#660](https://github.com/JAFairweather/waggle/issues/660)). This is a dated observation, not a fresh check of today's host. The active participant route and shared memory implementation live in [nvoy](https://github.com/JAFairweather/nvoy); the latter is served from its [memory daemon](https://github.com/JAFairweather/nvoy/blob/main/mcp/tools/memory-daemon.mjs).
+A dated deployment observation from **29 October 2026** records the sealed-lane service restarting because carrying was off and no public lane was configured ([#660](https://github.com/JAFairweather/waggle/issues/660)). That issue establishes the state of that service then; it does not verify every route on today's host. The active participant route and shared memory implementation live in [nvoy](https://github.com/JAFairweather/nvoy); the latter is served from its [memory daemon](https://github.com/JAFairweather/nvoy/blob/main/mcp/tools/memory-daemon.mjs).
 
 ---
 

@@ -44,8 +44,8 @@ the wall stays up, and the door is per-message and consensual in both directions
 **Current default (#658): carrying is off.** `src/bridge.mjs` enables the routes below only when
 `WAGGLE_CARRYING=on`. With the default, it counts working-channel posts and publishes owner control
 state, while participants receive channel messages through their own nvoy brokers. A source-level
-default is not proof of a host's current environment; the last documented live carrying-off check
-is [waggle #660](https://github.com/JAFairweather/waggle/issues/660), dated 29 October 2026.
+default is not proof of a host's current environment; [waggle #660](https://github.com/JAFairweather/waggle/issues/660)
+records the sealed-lane unit's carrying-off state on 29 October 2026, not a check of every route today.
 Hive memory's canonical implementation is in [nvoy](https://github.com/JAFairweather/nvoy/blob/main/mcp/tools/memory-daemon.mjs);
 waggle's earlier memory design is archived in `docs/archive/DESIGN_HIVE_MEMORY.md`.
 
