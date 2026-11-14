@@ -174,7 +174,7 @@ Reject remains private and in-channel because it creates no standing policy wort
 | Var | Default | Why you'd change it |
 |-----|---------|---------------------|
 | `FORWARD_MODE` | `buzz` | `dryrun` logs what it *would* deliver and posts nothing. **Always start in dryrun**, flip to `buzz` when the routing lines look right. |
-| `WAGGLE_CARRYING` | off | `on` explicitly enables the retired carrying lanes; only set it after checking the affected recipients and current policy (#658). |
+| `WAGGLE_CARRYING` | off | `on` explicitly enables the older carrying lanes; only set it after checking the affected recipients and current policy (#658). |
 | `SINCE_SECS` | `172800` (48h) | Startup lookback. **Keep ≥ 48h** — NIP-59 backdates gift-wrap timestamps up to ~48h, so a shorter window silently drops fresh DMs. |
 | `SEALED_LANES` | `on` | Set `off` on a *second* instance that runs the public lane only — dedup is per-process, so two instances both routing sealed lanes double-deliver. |
 

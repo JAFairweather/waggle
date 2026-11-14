@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // memory-git-check.mjs — harness-side git checkout and evidence staleness checker
-// (docs/DESIGN_HIVE_MEMORY.md § "Harness-side git check vs. broker-side claim digest").
+// (docs/archive/DESIGN_HIVE_MEMORY.md § "Harness-side git check vs. broker-side claim digest").
 //
 // Brokers run on the fleet box and cannot inspect a Mac harness's local git working tree.
 // This tool runs locally inside the agent's harness where the git checkout lives:
