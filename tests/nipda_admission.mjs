@@ -195,5 +195,27 @@ check(/-> STAGING/.test(routeOf(reply(strangerSk, strangerPk))), 'revoked partic
   check(grantSet.has(okPk), 'an unrevoked grant arriving at the same point still admits')
 }
 
+// One 441 naming several grants revokes every one (CAPABILITY-GRANTS.md §1.1, fixture neg-441-multi-e).
+// Before this, only the first `e` tag was read: the grant named second stayed admitted, and its 440
+// was not refused on a later replay.
+{
+  const aSk = generateSecretKey(), aPk = getPublicKey(aSk), bSk = generateSecretKey(), bPk = getPublicKey(bSk)
+  const ga = grant(grantorSk, aPk, CHAN), gb = grant(grantorSk, bPk, CHAN)
+  processGrantEvent(ga); processGrantEvent(gb)
+  check(grantSet.has(aPk) && grantSet.has(bPk), 'two grantees admitted before a multi-target 441')
+  const both = (sk, ids) => wire(finalizeEvent({ kind: 441, created_at: now(), tags: ids.map(id => ['e', id]), content: '' }, sk))
+  processGrantEvent(both(outsiderSk, [ga.id, gb.id]))
+  check(grantSet.has(aPk) && grantSet.has(bPk), "a non-grantor's multi-target 441 revokes neither")
+  processGrantEvent(both(grantorSk, [ga.id, gb.id]))
+  check(!grantSet.has(aPk), 'a 441 naming two grants revokes the first')
+  check(!grantSet.has(bPk), '…and the one named second')
+  processGrantEvent(gb)
+  check(!grantSet.has(bPk), '…and a replay of the second grant is refused by id')
+  const cSk = generateSecretKey(), cPk = getPublicKey(cSk), gc = grant(grantorSk, cPk, CHAN)
+  processGrantEvent(both(grantorSk, ['9'.repeat(64), gc.id]))
+  processGrantEvent(gc)
+  check(!grantSet.has(cPk), 'a 441 seen first keeps out a grant it names second, when that 440 arrives')
+}
+
 console.info(pass ? '\nNIPDA PASS — admission tier holds, and a grantee may hold more than one grant' : '\nNIPDA FAIL')
 process.exit(pass ? 0 : 1)
