@@ -1158,31 +1158,36 @@ function processGrantEvent(ev, { emitFn = emit, queryFn = query } = {}) {
   try { ok = verifyEvent(ev) } catch { ok = false }
   if (!ok) { err(`NIPDA drop[bad-signature]: kind${ev.kind} ${String(ev.id).slice(0, 12)}…`); return }
   if (ev.kind === NIPDA.revocation) {
-    const target = (ev.tags || []).filter(t => t[0] === 'e').map(t => t[1])[0]
+    // Every target it names, not only the first (CAPABILITY-GRANTS.md §1.1, fixture neg-441-multi-e):
+    // honoring only the first left a grant named second admitted after its grantor revoked it.
+    const targets = [...new Set((ev.tags || []).filter(t => t?.[0] === 'e' && typeof t[1] === 'string' && t[1]).map(t => t[1].toLowerCase()))]
     // Recorded BEFORE the loop, because the common case on replay is that the loop matches nothing
-    // — the grant it revokes has not arrived yet. A 441 carries only an `e` tag, never a `p`, so
+    // — the grant it revokes has not arrived yet. A 441 carries only `e` tags, never a `p`, so
     // this is the only thing that can be known about it in isolation.
-    if (target) revokedGrants.add(String(target).toLowerCase())
-    // Remove THIS grant, then ask whether the grantee still holds another. Deleting the grantee
-    // outright was #364: it removed a key that still had a live, unrevoked grant, and did it
-    // silently from the operator's side — the relay lane, live @mention refs, the GRANTED bypass
-    // and activeReturnLane() all simply stopped working for them.
-    let matched = false
-    for (const [pk, grants] of grantSet) {
-      if (!grants.delete(target)) continue
-      matched = true
-      if (grants.size) {
-        log(`NIPDA revoked one of several: grantee ${pk.slice(0, 12)}… keeps ${grants.size} live grant(s), still admitted (441 ${ev.id.slice(0, 12)}…)`)
-        continue                  // the row still has a justification, so it is left alone
+    for (const target of targets) revokedGrants.add(target)
+    if (!targets.length) log(`NIPDA revocation recorded: 441 ${ev.id.slice(0, 12)}… targets nothing`)
+    for (const target of targets) {
+      // Remove THIS grant, then ask whether the grantee still holds another. Deleting the grantee
+      // outright was #364: it removed a key that still had a live, unrevoked grant, and did it
+      // silently from the operator's side — the relay lane, live @mention refs, the GRANTED bypass
+      // and activeReturnLane() all simply stopped working for them.
+      let matched = false
+      for (const [pk, grants] of grantSet) {
+        if (!grants.delete(target)) continue
+        matched = true
+        if (grants.size) {
+          log(`NIPDA revoked one of several: grantee ${pk.slice(0, 12)}… keeps ${grants.size} live grant(s), still admitted (441 ${ev.id.slice(0, 12)}…)`)
+          continue                  // the row still has a justification, so it is left alone
+        }
+        grantSet.delete(pk)
+        log(`NIPDA revoked: grantee ${pk.slice(0, 12)}… held no other grant, no longer admitted (441 ${ev.id.slice(0, 12)}…)`)
+        if (CARRYING) unseatGrantee(pk, emitFn)   // the row loses its only justification the moment the LAST grant does
       }
-      grantSet.delete(pk)
-      log(`NIPDA revoked: grantee ${pk.slice(0, 12)}… held no other grant, no longer admitted (441 ${ev.id.slice(0, 12)}…)`)
-      if (CARRYING) unseatGrantee(pk, emitFn)   // the row loses its only justification the moment the LAST grant does
+      // Silence here was the other half of #364. A 441 matching nothing is ordinary — the 440 has
+      // usually not arrived yet, and `revokedGrants` above is what makes that safe — but "recorded,
+      // matched nothing" and "revoked someone" must not look the same in the journal.
+      if (!matched) log(`NIPDA revocation recorded: 441 ${ev.id.slice(0, 12)}… targets ${target.slice(0, 12)}…, which no admitted grantee is holding — its 440 will be refused if it arrives`)
     }
-    // Silence here was the other half of #364. A 441 matching nothing is ordinary — the 440 has
-    // usually not arrived yet, and `revokedGrants` above is what makes that safe — but "recorded,
-    // matched nothing" and "revoked someone" must not look the same in the journal.
-    if (!matched) log(`NIPDA revocation recorded: 441 ${ev.id.slice(0, 12)}… targets ${String(target || 'nothing').slice(0, 12)}…, which no admitted grantee is holding — its 440 will be refused if it arrives`)
     return
   }
   if (ev.kind !== NIPDA.grant) return
