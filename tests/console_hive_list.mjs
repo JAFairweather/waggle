@@ -33,9 +33,9 @@ let pass = true
 const check = (cond, label) => { console.log(`${cond ? 'ok  ' : 'FAIL'} — ${label}`); if (!cond) pass = false }
 
 // 4. The pin. Moving it is a deliberate act: re-vendor from nvoy, then update both lines.
-const NVOY_PIN = '7af1d1ffadfd20ca352a8c5bcba34432b9612d42'
+const NVOY_PIN = '26935996cf885e9e97627c152962aa900f477b05'
 const VENDORED = {
-  'nvoy-admission.mjs': 'c14082b1c9cee9faca9898ec2a12379fa5f533b654139212484d3ebe80cbd2ff',
+  'nvoy-admission.mjs': '933217a83edf93d56bae2fe05965d5fd770119e435520648a78bc7bb134cb51e',
   'nvoy-grant-relays.mjs': 'cb0ea44165fa83979eb2dcd9b015674651895acf18bc38c183a50190e37c58f9',
 }
 for (const [file, sha] of Object.entries(VENDORED)) {
